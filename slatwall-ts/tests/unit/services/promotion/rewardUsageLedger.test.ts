@@ -22,9 +22,10 @@
 // `tests/unit/domain/entities/product.test.ts` extend a legacy suite, and
 // `meta/tests/functional/admin/entity/ProductTest.cfc` is an empty stub
 // contributing zero coverage to anybody. Nothing is borrowed here and no lineage
-// is claimed. The claim is also ASSERTED rather than merely written down - see
-// the first test below, which reads the fixture graph's own
-// `legacyTestCoverageExists` flag.
+// is claimed. The claim is also ASSERTED rather than merely written down -
+// `legacyExtendedSuites` in tests/traceability/legacyTestMap.ts names the only two
+// suites that extend legacy coverage, and blocks A7 and A14 hold that list to the
+// suites on disk.
 //
 // ---------------------------------------------------------------------------
 // WHAT THIS SUITE PINS - FIVE INLINE CFML FRAGMENTS, NOT A CFML FUNCTION
@@ -445,14 +446,12 @@ describe('RewardUsageLedger', () => {
     ledger = new RewardUsageLedger();
   });
 
-  describe('traceability - this suite is net-new', () => {
-    it('has no legacy antecedent, and the fixture graph records the same finding', () => {
-      // Asserted rather than merely written in the banner above: the fixture
-      // graph carries the measured claim, and a suite that presented net-new
-      // coverage as parity would fail the traceability gate.
-      expect(fixtures.legacyTestCoverageExists).toBe(false);
-    });
-  });
+  // TRACEABILITY: that this suite is NET-NEW - no legacy antecedent under `meta/tests/` - is not
+  // asserted here against a fixture-authored boolean, which could only ever agree with itself.
+  // tests/traceability/legacyTestMap.ts owns the provenance: `legacyExtendedSuites` names the ONLY
+  // two suites that carry a legacy assertion forward, block A7 asserts that the list is exactly
+  // those two, and block A14 accounts for every suite on disk. A suite presenting net-new coverage
+  // as parity therefore fails the ledger, not a self-agreeing flag.
 
   describe('the shipped surface', () => {
     it('publishes one accessor and three synchronous methods, and takes no collaborator', () => {

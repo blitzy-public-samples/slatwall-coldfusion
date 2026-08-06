@@ -182,10 +182,145 @@ export interface ErrorMappingContext {
  * report is not a place to echo input back.
  */
 export interface MappedFieldIssue {
-  /** Dotted path to the offending member of the request input. */
+  /**
+   * Dotted path to the offending member of the request input.
+   *
+   * ★★★ SERVER-AUTHORED, AND THAT IS AN INVARIANT OF THIS TYPE RATHER THAN A HABIT OF ITS PRODUCERS.
+   * Every value that ever reaches this member comes from one of exactly two places: a literal written
+   * in this subtree's own source, or {@link mapZodErrorFields}, which reads a validator issue's `path`
+   * - the SCHEMA's member names - and never its `keys`, `received`, `values` or `input`. A path
+   * assembled out of keys the CALLER chose is not admissible here, however harmless the keys look:
+   * a security review found (MAJOR, CWE-209/CWE-532) that a document such as
+   * `{"api_token_value":{"__proto__":{}}}` produced the path `api_token_value.__proto__`, which then
+   * reached both a 400 body and the log stream. See {@link PROTOTYPE_MEMBER_FIELD_ISSUE} for how the
+   * one refusal that used to do that now names its member.
+   */
   readonly path: string;
   /** Human-readable description of the constraint that failed. */
   readonly message: string;
+}
+
+/**
+ * The one key name `z.strictObject` does not treat as unrecognized.
+ *
+ * A constant of THIS FILE rather than a literal at the comparison site, so the name appears once, and
+ * spelled through a computed member access at every use so nothing here can be read as assigning to a
+ * prototype.
+ */
+const PROTOTYPE_MEMBER_KEY = '__proto__';
+
+/**
+ * The FIXED complaint published when a request document carries a `__proto__` own key.
+ *
+ * ★★★ A FROZEN, SERVER-AUTHORED ISSUE - NOT A PATH BUILT OUT OF THE CALLER'S KEYS. The refusal it
+ * replaces reported the offending key's full dotted location, ancestors included, so a caller could
+ * choose what appeared in the 400 body and in the log line simply by choosing its own member names.
+ * The path published now is the OFFENDING NAME ITSELF, which is a literal of this module and the only
+ * name involved that the caller did not choose; the depth at which it was found is deliberately not
+ * reported, because the depth cannot be described without naming the ancestors.
+ *
+ * A caller still learns exactly what to remove, which is everything a 400 owes it here: there is one
+ * such key name, so naming it is unambiguous, and a document carrying it is refused whole rather than
+ * partially accepted.
+ */
+export const PROTOTYPE_MEMBER_FIELD_ISSUE: MappedFieldIssue = Object.freeze({
+  path: PROTOTYPE_MEMBER_KEY,
+  message: 'is not a member this request accepts',
+});
+
+/**
+ * Whether a parsed JSON request document carries a `__proto__` OWN key at any depth.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS LIVES HERE
+ * ---------------------------------------------------------------------------
+ * Every request document this service accepts is validated by a `z.strictObject`, whose contract is
+ * that an UNRECOGNIZED KEY IS A REFUSAL - the caller is told which member it should not have sent
+ * rather than having it silently dropped. `__proto__` is the one key for which that contract does not
+ * hold, and QA testing found the gap by submitting it.
+ *
+ * MEASURED, not assumed. Against `zod` 4.4.3 with a nested pair of strict objects:
+ *
+ *   {"order":{"a":"x","constructor":{}}}           -> REFUSED, `unrecognized_keys`, path ["order"]
+ *   {"order":{"a":"x","__proto__":{"polluted":1}}} -> ACCEPTED, the key silently dropped
+ *   {"order":{"a":"x"},"__proto__":{"p":1}}        -> ACCEPTED, and it IS an own key of the root
+ *                                                     (`Object.hasOwn` true, `Object.keys` lists it)
+ *
+ * In all three cases `Object.prototype` was verified UNMODIFIED afterwards, which is the important
+ * half of the finding: `JSON.parse` creates `__proto__` as an ordinary own DATA property rather than
+ * invoking the setter, so no assignment reaches the prototype chain, and nothing downstream of
+ * validation spreads or merges an unvalidated document into an existing object. THIS THEREFORE CLOSES
+ * AN INCONSISTENCY, NOT AN ACTIVE VULNERABILITY, and it is written so that it would ALSO close the
+ * vulnerability if a future merge-style consumer were introduced.
+ *
+ * It is declared in this module rather than in a helper of its own for two reasons that are both about
+ * boundaries. `./promotionApplicationHandler.ts` and `./priceResolutionHandler.ts` are the two
+ * boundaries that parse a JSON body, and both already depend on this module for the response the
+ * refusal produces - so the check sits with the vocabulary it feeds, no capability handler imports
+ * another, and the frozen module inventory gains nothing. Duplicating security-adjacent logic across
+ * the two handlers was the alternative, and it has a specific failure mode of its own: one copy gets
+ * corrected and the other quietly does not.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE WALK IS DEEP, WHY IT IS ITERATIVE, AND WHY IT RETURNS A BOOLEAN
+ * ---------------------------------------------------------------------------
+ * DEEP, because the asymmetry it corrects is deep: `strictObject` refuses an unrecognized key at EVERY
+ * level of a nested document, so refusing `__proto__` only at the root would leave the inconsistency
+ * in place one level down - and the nested case is the one QA actually submitted.
+ *
+ * ITERATIVE, with an explicit stack, because recursion over caller-supplied nesting is a stack
+ * overflow waiting to happen: a 2 000-level document is exactly what QA testing sent, and a
+ * `RangeError` thrown from a security guard would convert a refusal into an unrecognized 500. The work
+ * is bounded without a depth limit of its own - both call sites cap the request body's byte length
+ * before parsing, so the node count is bounded by that cap, and a `JSON.parse` result cannot contain a
+ * cycle.
+ *
+ * A BOOLEAN, because the predecessor returned the offending key's DOTTED PATH and that path was
+ * assembled from the caller's own ancestor key names. Publishing it echoed submitted material; so did
+ * logging it. Nothing about the refusal needs the location - see
+ * {@link PROTOTYPE_MEMBER_FIELD_ISSUE} - and a predicate cannot leak what it does not construct.
+ *
+ * ★ ONLY OWN KEYS ARE CONSULTED, VIA `Object.hasOwn`. An INHERITED `__proto__` is present on every
+ * ordinary object in the language and is not a caller's doing; reporting it would refuse every
+ * request. What is detected is specifically a key the CALLER's document carries.
+ *
+ * ★ `null` IS HANDLED BEFORE `typeof`, and arrays before plain objects. `typeof null === 'object'`
+ * would otherwise put `null` on the plain-object branch, and `Object.hasOwn(null, …)` throws.
+ *
+ * @param document the parsed request document, already known to be an object at its root.
+ * @returns `true` when the document carries the key at any depth, which is a refusal; `false` for
+ *   every well-formed request.
+ */
+export function containsPrototypeMemberKey(document: object): boolean {
+  const pending: unknown[] = [document];
+
+  while (pending.length > 0) {
+    // `pop()` is `T | undefined` under `noUncheckedIndexedAccess`, and the loop condition does not
+    // narrow it, so the guard below is how the element is taken rather than a formality.
+    const value = pending.pop();
+
+    if (value === null || typeof value !== 'object') {
+      continue;
+    }
+
+    if (Array.isArray(value)) {
+      for (const element of value) {
+        pending.push(element);
+      }
+      continue;
+    }
+
+    if (Object.hasOwn(value, PROTOTYPE_MEMBER_KEY)) {
+      return true;
+    }
+
+    for (const key of Object.keys(value)) {
+      // The index signature is what `Object.keys` already proved safe to read.
+      pending.push((value as Record<string, unknown>)[key]);
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -229,8 +364,9 @@ export type InvalidRequestReason =
 
 /**
  * The JSON document every response from this module carries. Published as a type so `./router.ts`,
- * the test suites, and each capability handler once authored can parse a body without restating its
- * shape. The envelope holds no legacy error code, no framework exception type and no stack.
+ * the test suites, and all five capability handlers - every one of which imports from this module -
+ * parse a body without restating its shape. The envelope holds no legacy error code, no framework
+ * exception type and no stack.
  */
 export interface ErrorResponseBody {
   readonly error: {
@@ -280,24 +416,27 @@ const STATUS_BY_CATEGORY: Readonly<Record<MappedErrorCategory, number>> = Object
  * body is always a JSON document; `cache-control: no-store` keeps an intermediary from serving a
  * stored failure to a later, unrelated request.
  *
- * ★ `x-content-type-options: nosniff` IS NOW THE THIRD, AND THIS RECORDS WHY IT WAS ADDED. QA testing
- * noted its absence and observed - correctly - that neither the AAP nor this module prescribes it and
- * that it is conventionally set at the API Gateway edge. It is set HERE ANYWAY, for one reason: this
- * module already declares `content-type` explicitly rather than leaving it to the edge, so it has
- * already taken ownership of what the client is told about the body's type. `nosniff` is the half of
- * that statement which says "and do not second-guess it". Leaving the two halves in different places
- * is what lets a deployment satisfy one and not the other.
+ * ★★★ EXACTLY TWO, AND `x-content-type-options: nosniff` IS DELIBERATELY NOT THE THIRD. It briefly
+ * was. The argument for it was that this module already declares `content-type` explicitly, so
+ * declaring that a recipient must not second-guess that declaration was the same decision carried to
+ * its conclusion - and the note added with it conceded, in its own words, that neither the source nor
+ * the AAP prescribes it and that it is conventionally set at the API Gateway edge. A code review took
+ * that concession at face value and removed the header: an HTTP semantic the ported system did not
+ * have is an invented non-functional requirement, which AAP 0.8.1 forbids outright, and the fact that
+ * the invention is a conventionally sensible one does not make it any less invented. A deployment that
+ * wants it configures it at the edge, in a scope that is authorized to decide such things.
  *
- * ⚠ WHAT IT IS *NOT*. It is not a security posture, and no wider header set is invented alongside it -
- * no `strict-transport-security`, no `content-security-policy`, no `x-frame-options`. Those govern how
- * a BROWSER treats a DOCUMENT, this service answers machine callers with JSON, and inventing them here
- * would be inventing a non-functional requirement the AAP explicitly forbids (0.8.1). One header, for
- * the one claim this module already makes.
+ * ⚠ SO THE RULE FOR THIS OBJECT IS NOW SIMPLY STATED: a header belongs here only if this module's own
+ * response contract requires it. `content-type` qualifies because there is no engine default to inherit
+ * under API Gateway and a JSON body must be declared as one; `cache-control: no-store` qualifies
+ * because a failure envelope carries a correlation identifier for one request and must not be served
+ * to another. Everything else - `x-content-type-options`, `strict-transport-security`,
+ * `content-security-policy`, `x-frame-options`, CORS, `retry-after`, `WWW-Authenticate` - is refused on
+ * the same ground, whether it governs a browser or not.
  */
 const JSON_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
-  'x-content-type-options': 'nosniff',
 });
 
 /**
@@ -1261,9 +1400,10 @@ export function jsonSuccessResponse<TResult>(
 /**
  * Map an arbitrary thrown value onto an API Gateway proxy response.
  *
- * THE PRIMARY UNIT OF THIS MODULE. `./router.ts` funnels its `catch` arms through it today, and
- * each capability handler carries the same obligation once authored, so the recognition decisions,
- * the status choice and the envelope shape are decided in one place.
+ * THE PRIMARY UNIT OF THIS MODULE. `./router.ts` funnels its `catch` arms through it, and so does
+ * every one of the five capability handlers - none of them recognizes a thrown value or chooses a
+ * status for itself - so the recognition decisions, the status choice and the envelope shape are
+ * decided here and in no other place.
  *
  * Recognition is ordered and total. FIRST, the framework's dead-call-target contract, whose message
  * is reproduced in the body byte for byte - the one case where a failure's own message is
@@ -1304,6 +1444,14 @@ export function mapErrorToApiGatewayResponse(
     sink.warn('request input rejected by schema validation', {
       ...baseLogContext('invalidRequest', context),
       // Paths only, and only the bounded set. `issueCount` is the TRUE count.
+      //
+      // ★★ THESE PATHS ARE SCHEMA-AUTHORED, WHICH IS WHY THEY MAY BE LOGGED WHERE
+      // `invalidRequestResponse`'s CANNOT. They come from `mapZodErrorFields`, which reads a
+      // validator issue's `path` - the schema's own member names and array indices - and never its
+      // `keys`, `received`, `values` or `input`. That holds for EVERY schema in this subtree because
+      // not one of them is a `z.record`, a `catchall` or a loose object: there is no schema shape here
+      // whose validated member names the caller gets to choose. Add one and this line becomes an echo,
+      // so it would have to be reduced to a count exactly as the sibling arm was.
       fieldPaths: validation.fields.map((field) => field.path),
       publishedIssueCount: validation.fields.length,
       issueCount: validation.issueCount,
@@ -1405,10 +1553,24 @@ export function invalidRequestResponse(
       ? 'request input rejected before it reached the services'
       : `request input rejected before it reached the services: ${logDetail}`;
 
+  // ★★★ THE LOG LINE CARRIES A CLOSED REASON AND A COUNT, AND NO PATH TEXT AT ALL. It used to carry
+  // `fieldPaths`, the published paths copied verbatim onto the stream, and a security review found
+  // (MAJOR, CWE-209/CWE-532) that this bypassed the module's own no-echo policy: one producer of those
+  // paths assembled them out of the CALLER's ancestor key names, so a caller could choose what got
+  // persisted in the logs by choosing its own member names. That producer is gone and
+  // `MappedFieldIssue.path` now documents server-authorship as an invariant - but the loophole is
+  // closed HERE TOO, structurally, rather than left resting on every present and future caller of this
+  // function passing only paths it wrote. `invalidRequestReason` is a closed union and
+  // `fieldIssueCount` is a number; neither can carry submitted material, whatever a handler supplies.
+  //
+  // ⚠ WHAT IS DELIBERATELY NOT LOST. The paths are still PUBLISHED to the caller in the response body,
+  // because that is what makes a 400 actionable, and the `requestId` on both the line and the body is
+  // what joins the two. An operator investigating a refusal reads the reason here and the member paths
+  // from the response the caller received; nothing that was diagnosable before is undiagnosable now.
   resolveLogger(context).warn(message, {
     ...baseLogContext('invalidRequest', context),
     invalidRequestReason: reason,
-    fieldPaths: fields === undefined ? [] : fields.map((field) => field.path),
+    fieldIssueCount: fields === undefined ? 0 : fields.length,
   });
   return buildResponse(
     'invalidRequest',
@@ -1793,3 +1955,33 @@ export function resolveRequestPrincipal(event: APIGatewayProxyEvent): RequestPri
     principal: Object.freeze({ accountID, adminAccountFlag: readAdminClaim(claims) }),
   });
 }
+
+// ===========================================================================
+// WHY THE PROTOTYPE-MEMBER GUARD IS DEEP, AND WHY IT IS ITERATIVE
+//
+// DEEP, because the asymmetry it corrects is deep. `strictObject` refuses an unrecognized key at
+// EVERY level of a nested document, so refusing `__proto__` only at the root would leave the very
+// inconsistency this closes in place one level down - and the nested case is the one QA actually
+// submitted.
+//
+// ITERATIVE, with an explicit stack, because recursion over caller-supplied nesting is a stack
+// overflow waiting to happen: a 2 000-level document is exactly what QA testing sent, and a
+// `RangeError` thrown from a security guard would convert a refusal into an unrecognized 500 through
+// the very mapper this file publishes. The work is bounded without needing a depth limit of its own -
+// both call sites cap the request body's byte length before parsing, so the node count is bounded by
+// that cap, and a document produced by `JSON.parse` cannot contain a cycle.
+//
+// Both properties are held by {@link containsPrototypeMemberKey} above, which is the only form of this
+// guard the subtree publishes.
+// ===========================================================================
+// ---------------------------------------------------------------------------
+// A PATH-RETURNING FORM OF THIS GUARD WAS BRIEFLY PUBLISHED HERE, AND IT IS DELIBERATELY GONE.
+//
+// Two code reviews landed on the same helper from opposite directions. One required the detection
+// folded out of an unplanned module and into this one; the other recorded that RETURNING the offending
+// key's dotted ancestor path re-published caller-authored text (CWE-209/CWE-532), since the caller
+// chooses every segment of it. Both are satisfied by the predicate above: the detection lives here,
+// and {@link PROTOTYPE_MEMBER_FIELD_ISSUE} publishes a path this module owns rather than one the
+// caller wrote. A predicate structurally cannot assemble a caller path, which is why the path-returning
+// form is not kept alongside it "just in case" - keeping it would leave the leak one import away.
+// ---------------------------------------------------------------------------

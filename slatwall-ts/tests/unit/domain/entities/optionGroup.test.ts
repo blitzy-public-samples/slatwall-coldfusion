@@ -82,7 +82,7 @@
 // path cannot produce. Left unreached, and said so plainly.
 // --------------------------------------------------------------------------
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Option } from '../../../../src/domain/entities/option.js';
 import { ENTITY_CODE_PATTERN, OptionGroup } from '../../../../src/domain/entities/optionGroup.js';
@@ -124,8 +124,13 @@ function anOption(init: {
  *
  * JUDGMENT CALL: a hand-written closure rather than `vi.fn()` or a spy. P3 prefers inline in-memory
  * doubles, and the tie-breaker is a constructor-injected random SOURCE - not a port - so there is
- * nothing to intercept. `vi` is never imported by this suite, which is why no `afterEach`
- * restoration is needed.
+ * nothing to intercept for any case that supplies one.
+ *
+ * THE ONE PLACE `vi` IS USED, AND WHY IT HAS TO BE. Two cases exercise the DEFAULT source, which is
+ * `Math.random` reached inside the entity rather than a constructor argument, so scripting it is the
+ * only way to make those cases deterministic - and a code review required exactly that in place of
+ * the 200 sampled draws they used to run. `restoreMocks` is enabled in `vitest.config.ts`, so the
+ * spy is restored after every test without an `afterEach` here.
  */
 function scriptedTieBreaker(...draws: readonly number[]): OptionSortTieBreaker {
   let cursor = 0;
@@ -296,19 +301,33 @@ describe('the DEFAULT tie-breaking source (S-13)', () => {
     anOption({ optionID: 'second', optionName: 'Red' }),
   ];
 
-  it('is genuinely non-deterministic, which is what makes it a random source at all', () => {
+  it('★★ IS the random source, proven by SCRIPTING the entropy rather than sampling it', () => {
     // ★ THIS IS AN EMPIRICAL CHECK, NOT A RESTATEMENT OF THE ANNOTATION. `aGroup` passes
     // `optionSortTieBreaker: undefined`, which is the deliberate statement "use the legacy
-    // random source", so this reaches `randRange(1,100)` for real. If the default were ever
-    // replaced by a constant the sort would become stable and this case would fail.
-    const observed = new Set<string>();
+    // random source", so this reaches the default `randRange(1,100)` implementation for real.
+    //
+    // ★★★ AND IT IS NOW DETERMINISTIC. This case used to draw 200 real samples and assert
+    // `observed.size > 1`. A code review rejected that, correctly: a probabilistic assertion can
+    // fail without anything being wrong, it says nothing about WHICH outcomes are possible, and 200
+    // iterations of a sort is a cost paid for no additional evidence. Stubbing the entropy proves
+    // MORE with one draw pair each: the default consults `Math.random` once per element, and the
+    // SAME data in the SAME order comes back in the OPPOSITE order when only the draws swap - which
+    // a constant default could not produce, and which sampling could only suggest.
+    const random = vi.spyOn(Math, 'random');
 
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      observed.add(idsOf(aGroup(tiedPair()).getOptions('optionName')).join(','));
-    }
+    // 0.08 -> floor(8) + 1 = 9, and 0.99 -> floor(99) + 1 = 100. The key is `{VALUE}.{DRAW}` sorted
+    // as TEXT, so `Red.100` precedes `Red.9`.
+    random.mockReturnValueOnce(0.08).mockReturnValueOnce(0.99);
 
-    // Both orderings must appear. Seeing only one across 200 draws is not chance.
-    expect(observed.size).toBeGreaterThan(1);
+    expect(idsOf(aGroup(tiedPair()).getOptions('optionName'))).toEqual(['second', 'first']);
+    expect(random).toHaveBeenCalledTimes(2);
+
+    // Swap ONLY the draws. Same options, same order, same sort arguments.
+    random.mockReset();
+    random.mockReturnValueOnce(0.99).mockReturnValueOnce(0.08);
+
+    expect(idsOf(aGroup(tiedPair()).getOptions('optionName'))).toEqual(['first', 'second']);
+    expect(random).toHaveBeenCalledTimes(2);
   });
 
   it('produces only outcomes the legacy algorithm can produce, collision included', () => {
@@ -318,13 +337,52 @@ describe('the DEFAULT tie-breaking source (S-13)', () => {
     // the other is silently dropped. That is legacy behaviour this port preserves, so a
     // single-element result is legitimate here and is enumerated rather than treated as a
     // failure. Nothing outside these three shapes may ever appear.
+    //
+    // ★★★ ENUMERATED RATHER THAN SAMPLED. The earlier form ran 200 real draws and checked each
+    // outcome against a set of four permitted strings - which could pass while never once reaching
+    // the collision it exists to admit, and which asserted only that nothing illegitimate appeared.
+    // Scripting the entropy covers the outcome space exhaustively instead: two draws either differ
+    // one way, differ the other way, or collide, and each row below names the exact result.
+    const random = vi.spyOn(Math, 'random');
+    const outcomeFor = (first: number, second: number): string => {
+      random.mockReset();
+      random.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+      return idsOf(aGroup(tiedPair()).getOptions('optionName')).join(',');
+    };
+
+    // `{VALUE}.{DRAW}` sorted as TEXT, so the lower draw's key sorts LAST when the other draw's
+    // rendering is a prefix-shorter string: 9 -> `Red.9`, 100 -> `Red.100`.
+    expect(outcomeFor(0.08, 0.99)).toBe('second,first');
+    expect(outcomeFor(0.99, 0.08)).toBe('first,second');
+
+    // ★ THE COLLISION, REACHED ON PURPOSE RATHER THAN HOPED FOR. Equal draws compose one key, the
+    // later assignment overwrites the earlier, and the sort returns ONE element - the preserved
+    // legacy defect this block admits.
+    expect(outcomeFor(0.41, 0.41)).toBe('second');
+
+    // AND THE DERIVATION IS PINNED AT A BUCKET BOUNDARY, which is what makes the three rows above an
+    // exhaustive account rather than three arbitrary points. `floor(r * 100) + 1` puts 0.410 and
+    // 0.419 in the SAME bucket - so they collide - while 0.409 and 0.410 fall either side of it and
+    // do not. The same holds at both ends of the inclusive 1..100 range.
+    expect(outcomeFor(0.41, 0.419)).toBe('second');
+    expect(outcomeFor(0.409, 0.41)).toBe('first,second');
+    expect(outcomeFor(0, 0.009)).toBe('second');
+    expect(outcomeFor(0.99, 0.999999)).toBe('second');
+
+    // Every outcome produced above is one of the four the legacy algorithm can produce, and the
+    // union is stated so a fifth shape would have to appear here to pass.
     const legitimate = new Set(['first,second', 'second,first', 'first', 'second']);
+    const produced = new Set([
+      outcomeFor(0.08, 0.99),
+      outcomeFor(0.99, 0.08),
+      outcomeFor(0.41, 0.41),
+    ]);
 
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      const outcome = idsOf(aGroup(tiedPair()).getOptions('optionName')).join(',');
-
+    for (const outcome of produced) {
       expect(legitimate).toContain(outcome);
     }
+    expect(produced.size).toBe(3);
   });
 });
 

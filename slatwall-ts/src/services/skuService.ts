@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring order
-// "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/handlers/bootstrap.ts             composition root (wiring, option hydration)
 //   src/handlers/skuResolutionHandler.ts  the primary adapter that reaches this service
@@ -30,7 +28,7 @@
 // B2 - THIS FILE OWNS THE SKU HALF OF A NAMED MUST-PRESERVE BEHAVIOUR
 //   Option-to-SKU resolution is one of exactly three behaviours named
 //   must-preserve for this migration. `getProductSkusBySelectedOptions` lives on
-//   `src/services/productService.ts` (planned), but its SKU-side ordering
+//   `src/services/productService.ts`, but its SKU-side ordering
 //   companions live HERE: `getProductSkus` [L220] and `getSortedProductSkus`
 //   [L246]. The option-group place-value ordering those two impose is part of the
 //   preserved contract and is NOT reshaped, unified or "cleaned up" below - see
@@ -119,7 +117,7 @@
 // SIGNATURE RESHAPING - THIS FILE SPENDS EXACTLY HALF OF #2 AND NOTHING ELSE
 //   `getSkuSmartList` -> `findSkus` is one half of budgeted reshaping #2; the
 //   other half is `getProductSmartList` -> `findProducts` in
-//   `src/services/productService.ts` (planned), and together they count as ONE.
+//   `src/services/productService.ts`, and together they count as ONE.
 //   Nothing else in this file is reshaped: no visibility is widened (the private
 //   merge helper stays private), no signature is widened (no method gains a
 //   parameter), no port member is invented BY THIS FILE (the port set stays at
@@ -188,7 +186,7 @@ import { randomUUID } from 'node:crypto';
 import { Sku } from '../domain/entities/sku.js';
 import { Money } from '../domain/valueObjects/money.js';
 import { listGetAt, listLen } from '../lib/cfml/list.js';
-import { cfEquals, structGet, structKeyExists } from '../lib/cfml/struct.js';
+import { cfEquals, cfFoldKey, structGet, structKeyExists } from '../lib/cfml/struct.js';
 import { cfLen, cfTruthy, isNullish } from '../lib/cfml/truthiness.js';
 
 import type { Option } from '../domain/entities/option.js';
@@ -579,7 +577,7 @@ export interface CreateSkusInput {
    * BOUNDARY. `data.options` remains the legacy comma-list, so the [L73] iteration
    * and the [L74] positional read are preserved exactly, INCLUDING duplicate IDs
    * and the caller's ordering; what changes is only WHERE the ID becomes an
-   * entity. Hydration moves to `src/handlers/bootstrap.ts` (planned) and the
+   * entity. Hydration moves to `src/handlers/bootstrap.ts` and the
    * handler, which is where this subtree materialises every other association -
    * the repository boundary - rather than lazily inside business logic. Resolution
    * (ii), a narrow injected reader, was rejected because the only port that could
@@ -1077,6 +1075,133 @@ function resolveOptionByID(data: CreateSkusInput, optionID: string): Option {
   );
 }
 
+/**
+ * The canonical identity of ONE option combination, as a comparable string.
+ *
+ * ★★★ WHY A COMBINATION NEEDS AN IDENTITY AT ALL (F4). `createSkus` is re-invoked on a
+ * product that already carries SKUs by design - [model/service/ProductService.cfc:L150]
+ * calls it from `processProduct_addOption` on a persisted product, walking that
+ * product's existing SKUs and their options at [L140-L147] to build the payload. The
+ * legacy tolerated a REPEAT of such a call by simply attaching a second set: the
+ * odometer's code formula `arrayLen(getSkus()) + 1` [L97] continues the sequence, so
+ * the repeat collides with no code and the duplicate combinations land silently.
+ * Under an ambient `cftransaction` and a synchronous request that was survivable;
+ * under Lambda, where a lost response is retried, it durably doubles a product's SKU
+ * set. AAP section 0.6.5 requires these bulk loops to carry "idempotency on retry",
+ * and a combination's identity is what makes that checkable.
+ *
+ * ★★ IDENTITY IS THE OPTION **SET**, WHICH IS THE SOURCE'S OWN NOTION, NOT AN INVENTED
+ * ONE. `SkuDAO.getSkusBySelectedOptions` [model/dao/SkuDAO.cfc:L107-L128] identifies a
+ * SKU by an AND-of-EXISTS over its options - every named option must be present, in no
+ * particular order - and `Sku.json` validates `hasOneOptionPerOptionGroup`, so a
+ * combination is exactly "one option per group" with order carrying no meaning. The
+ * key is therefore SORTED, which is what makes it order-independent.
+ *
+ * ★ FOLDED, BECAUSE CFML COMPARISON FOLDS CASE. Identifiers arrive from
+ * `getOptionID()` on both sides here, so a case difference cannot arise from this
+ * code; folding costs nothing and keeps the key consistent with every other
+ * CFML-semantics comparison in the port. `\u0000` joins the parts because no
+ * identifier can contain it, so two different sets cannot render to one key.
+ *
+ * @param options The options one SKU carries.
+ * @returns The combination's key, or `''` when the SKU carries no options at all -
+ *   which describes no combination and is deliberately never matched.
+ */
+function optionSetKey(options: readonly Option[]): string {
+  if (options.length === 0) {
+    return '';
+  }
+
+  return [...options.map((option) => cfFoldKey(option.getOptionID()))].sort().join('\u0000');
+}
+
+/**
+ * Every option combination the product ALREADY carries, as a set of keys.
+ *
+ * ★★ A SNAPSHOT, TAKEN BEFORE THE FIRST ATTACHMENT, AND DELIBERATELY NOT UPDATED AS
+ * THE LOOP RUNS. That is not an oversight - it is what keeps a legitimate within-run
+ * repetition intact. A payload naming the same option twice (`options="opt-1,opt-1"`)
+ * buckets it twice, so `totalCombos` is 2 and the legacy creates TWO SKUs carrying the
+ * identical option set. A set updated during the loop would swallow the second one and
+ * change an outcome the legacy reaches on a first invocation. A snapshot cannot: it
+ * answers only "did this combination exist BEFORE this call", which is precisely the
+ * retry question.
+ *
+ * ★ SKUs CARRYING NO OPTIONS ARE EXCLUDED. `optionSetKey` renders them `''`, and an
+ * option-less SKU - what the single-merchandise path [L125-L136] creates - describes no
+ * combination. Admitting it would let one option-less sibling suppress every
+ * combination whose key happened to render empty, which none can.
+ *
+ * @param product The product whose live SKU array is read. Not mutated.
+ * @returns The keys of the combinations already present.
+ */
+function snapshotExistingOptionSets(product: Product): ReadonlySet<string> {
+  const keys = new Set<string>();
+
+  for (const existingSku of product.getSkus()) {
+    const key = optionSetKey(existingSku.getOptions());
+
+    if (key !== '') {
+      keys.add(key);
+    }
+  }
+
+  return keys;
+}
+
+/**
+ * One option drawn from each group, at that group's current odometer index.
+ *
+ * Carries [model/service/SkuService.cfc:L106-L108] verbatim, extracted so the odometer
+ * can know which combination it is about to create BEFORE it stamps or attaches
+ * anything - see the reconciliation annotation at the call site. Extraction is
+ * behaviour-preserving because the body is a pure read: it walks `optionGroups` in the
+ * same order [L106] walks it and mutates nothing.
+ *
+ * @param optionGroups Every supplied option, bucketed by option group, in payload order.
+ * @param currentIndexesByKey Each group's current 1-based index into its bucket.
+ * @returns The chosen options, in the order [L106] visits their groups.
+ * @throws When a group has no current index, or its index is out of range. Both
+ *   reproduce raises the legacy reaches by indexing directly, and both are unreachable
+ *   while [L82-L86] populates one index per group.
+ */
+function selectCombinationOptions(
+  optionGroups: ReadonlyMap<string, readonly Option[]>,
+  currentIndexesByKey: ReadonlyMap<string, number>,
+): Option[] {
+  const chosen: Option[] = [];
+
+  for (const [optionGroupID, groupOptions] of optionGroups) {
+    const currentIndex = currentIndexesByKey.get(optionGroupID);
+
+    if (currentIndex === undefined) {
+      throw new Error(
+        `SkuService.createSkus: no current index for option group '${optionGroupID}'. ` +
+          '[model/service/SkuService.cfc:L107] reads currentIndexesByKey[key] for every ' +
+          'key of optionGroups, which [L84] populated.',
+      );
+    }
+
+    // [L107] CFML arrays are 1-based, so the stored index maps to `index - 1` here.
+    // Under `noUncheckedIndexedAccess` this read is `Option | undefined` and it is
+    // NARROWED, never asserted away with `!`.
+    const chosenOption = groupOptions[currentIndex - 1];
+
+    if (chosenOption === undefined) {
+      throw new Error(
+        `SkuService.createSkus: option index ${String(currentIndex)} is out of range for ` +
+          `option group '${optionGroupID}' (${String(groupOptions.length)} options). ` +
+          '[model/service/SkuService.cfc:L107] indexes the group array directly, so the ' +
+          'legacy raises here too.',
+      );
+    }
+
+    chosen.push(chosenOption);
+  }
+
+  return chosen;
+}
+
 // ===========================================================================
 // SkuService
 // ===========================================================================
@@ -1097,7 +1222,7 @@ export class SkuService {
    * scan that carried a thirty-second first-scan lock. Every collaborator here is an
    * explicit constructor argument typed to a PORT INTERFACE - no runtime scan, no
    * service locator, no dependency-injection package - and the whole graph is
-   * assembled exactly once in `src/handlers/bootstrap.ts` (planned).
+   * assembled exactly once in `src/handlers/bootstrap.ts`.
    *
    * Three ports, not five. The arithmetic:
    *
@@ -1118,7 +1243,20 @@ export class SkuService {
    *   in-scope service layer - becomes the `imageStore` STUB port. That is T2 applied
    *   to its single service-tier site.
    *
-   * ★ THE SIXTH PARAMETER IS NOT A FOURTH PORT. `imageSettingValues` is a bag of
+   * ★★★ QUOTE-THEN-REVISE: THERE IS NO LONGER A `refuseDuplicateSkuCodes` PARAMETER, AND
+   * ITS REMOVAL IS THE FIX (F4). It used to sit fifth, documented as "Whether
+   * `createSkus` refuses to attach a SKU whose generated code a sibling already
+   * carries", defaulting to `false`, and `src/handlers/bootstrap.ts` passed `undefined`
+   * - so the ONE protection this service had against a retried invocation doubling a
+   * product's SKUs was switched OFF everywhere it actually ran, reachable only from a
+   * suite that constructed the service by hand. A correctness property that production
+   * cannot have is not a property. AAP section 0.6.5 requires these bulk loops to carry
+   * "idempotency on retry" unconditionally, so reconciliation is now ALWAYS ON and
+   * cannot be configured off; there is nothing left to wire. The parameter count drops
+   * from six to five and `SkuService.length` is unchanged at 3, because every parameter
+   * from the fourth on carries a default.
+   *
+   * ★ THE FIFTH PARAMETER IS NOT A FOURTH PORT. `imageSettingValues` is a bag of
    * ALREADY-RESOLVED ambient values, not a collaborator this service calls -
    * `src/domain/entities/sku.ts` needs them to answer `generateImageFileName()`,
    * and a draft this service constructs must carry them exactly as a repository-
@@ -1142,8 +1280,6 @@ export class SkuService {
    *   the out-of-scope subscription branch of `createSkus`.
    * @param maximumSkuCreationBatchSize The correctness bound on how many SKUs one
    *   `createSkus` invocation will create. See `assertWithinCreationBound`.
-   * @param refuseDuplicateSkuCodes Whether `createSkus` refuses to attach a SKU
-   *   whose generated code a sibling already carries. See `assertSkuCodeAvailable`.
    * @param imageSettingValues The already-resolved image-setting values every SKU
    *   draft this service constructs carries forward. See `newSkuDraft`.
    */
@@ -1152,7 +1288,6 @@ export class SkuService {
     private readonly imageStore: ImageStore,
     private readonly subscriptionTermProvider: SubscriptionTermProvider,
     private readonly maximumSkuCreationBatchSize: number = DEFAULT_MAXIMUM_SKU_CREATION_BATCH_SIZE,
-    private readonly refuseDuplicateSkuCodes: boolean = false,
     private readonly imageSettingValues?: SkuImageSettingValues,
   ) {
     // The bound is meaningless unless it is a positive whole number, and a
@@ -1345,6 +1480,13 @@ export class SkuService {
    * case-insensitive. A `Map` is case-sensitive, which cannot change any outcome
    * here because every key on both the write and the read side comes from the same
    * `getOptionGroupID()` accessor, so two keys differing only in case cannot arise.
+   *
+   * ★★★ AND ONE THING THAT IS **NOT** PARITY: THE GROUP ITERATION ORDER (F44). The
+   * combination-to-skuCode mapping this method produces depends on the order the option
+   * groups are traversed, and the legacy's order was an unordered CFML struct's, which
+   * CFML does not specify. See the annotation on the [L82-L86] snapshot loop below for
+   * what that does and does not put at risk, why no runtime measurement can settle it,
+   * and where the residual risk is registered.
    */
   private createMerchandiseSkusForOptionCombinations(
     product: Product,
@@ -1394,11 +1536,40 @@ export class SkuService {
       }
     }
 
-    // CFML parity [model/service/SkuService.cfc:L82, L106]: the legacy relies on
-    // unspecified CFML struct iteration order for BOTH the `indexedKeys` snapshot
-    // here and the option-assignment traversal at [L106], and the two must agree or
-    // the carry loop advances a different group than the one it assigned from. An
-    // insertion-ordered structure is used so they agree deterministically.
+    // ★★★ UNVERIFIED PARITY, STATED AS SUCH RATHER THAN CLAIMED AS PARITY (F44).
+    // [model/service/SkuService.cfc:L82] and [L106] both iterate `optionGroups` with
+    // `for(var key in optionGroups)`. That is an UNORDERED CFML struct - a hash map -
+    // and CFML specifies no iteration order for one; ACF and Lucee are free to differ
+    // from each other and from their own past versions. A `Map` iterates in INSERTION
+    // order, which here is the order the option groups first appear in `data.options`.
+    // So the target's group order is deterministic and the legacy's was not, and the
+    // two cannot be shown to coincide.
+    //
+    // ★★ WHAT IS INVARIANT UNDER GROUP ORDER, AND WHAT IS NOT. Invariant: the SET of
+    // combinations created, their COUNT (`totalCombos` is a product, so it is
+    // order-free), and the option set each created SKU carries. Order-dependent: which
+    // sequence number [L97] stamps on which combination, hence the code-to-combination
+    // mapping; and therefore which combination [L101-L103] designates as the default
+    // SKU, since that is the first one attached. A catalog built by the CFML
+    // application and the same payload replayed here can differ in those two respects.
+    //
+    // ★★ WHY THIS IS NOT CLOSED BY A RUNTIME CHARACTERIZATION. There is no CFML engine
+    // to characterize against - AAP section 0.10.3 records that the referenced local
+    // development environment does not exist in this repository and that the legacy
+    // runtime was deliberately not stood up - and, more fundamentally, a measurement
+    // would capture ONE engine's hash order, which the source does not promise either.
+    // There is no single legacy order to match, so pinning one would manufacture a
+    // contract rather than preserve one. What IS owed, and what the suite does, is to
+    // pin the target's order exactly, so the mapping is specified, reproducible and
+    // reviewable rather than incidental. The residual risk is registered in
+    // `tests/traceability/legacyTestMap.ts` under `acknowledgedGaps`.
+    //
+    // ★ QUOTE-THEN-REVISE. This annotation used to end "An insertion-ordered structure
+    // is used so they agree deterministically", which asserted the one thing that IS
+    // true - the snapshot here and the assignment traversal at [L106] agree with each
+    // other, which the carry loop requires, or it would advance a different group than
+    // the one it assigned from - while letting the sentence be read as agreement with
+    // the LEGACY's order. It does not establish that.
     //
     // [L82-L86]
     for (const [optionGroupID, groupOptions] of optionGroups) {
@@ -1410,6 +1581,10 @@ export class SkuService {
     // The bound is checked HERE, after `totalCombos` is known and before the creation
     // loop makes its first mutation. See `assertWithinCreationBound`.
     this.assertWithinCreationBound(totalCombos, product, 'L85');
+
+    // Taken BEFORE the first attachment, and not updated as the loop runs. See
+    // `snapshotExistingOptionSets` for why both of those are deliberate.
+    const existingOptionSets = snapshotExistingOptionSets(product);
 
     // [L89-L122]
     for (let i = 1; i <= totalCombos; i++) {
@@ -1429,73 +1604,86 @@ export class SkuService {
         newSku.setListPrice(listPrice);
       }
 
-      // ★ CFML parity [model/service/SkuService.cfc:L97, L100]: the skuCode counter
-      // reads `product.getSkus()` length, which this same loop mutates at [L100]. The
-      // SKU is code-stamped BEFORE it is attached, so the length is 0 on the first
-      // pass and the code ends `-1`, 1 on the second and the code ends `-2`, and so
-      // on. The generated sequence is therefore order-dependent on that LIVE array -
-      // `Product.getSkus()` hands back the array itself, not a defensive copy - and
-      // the read-then-append ordering is reproduced exactly. Hoisting the length out
-      // of the loop, or attaching before stamping, silently renumbers every SKU.
-      const skuCode = `${productCode}-${product.getSkus().length + 1}`;
-
-      this.assertSkuCodeAvailable(product, skuCode, 'L97');
-      newSku.setSkuCode(skuCode);
-
-      // [L100] Parent to child. NOTE the asymmetry with every other branch: this is
-      // the ONLY site that links through `product.addSku(...)`, and this branch never
-      // calls `setProduct`. Both directions end up pushing into the same live array -
-      // `Product.addSku` delegates to `Sku.setProduct`, exactly as
-      // [model/entity/Product.cfc:L696-L698] delegates to
-      // [model/entity/Sku.cfc:L604-L608] - but the written direction differs per site
-      // and is preserved per site.
-      product.addSku(newSku);
-
-      // [L101-L103] STRATEGY 1 OF 5: first-wins, via a genuine null test on the
-      // product's existing default. `isNull(...)` is a null test and is ported with
-      // the null-test helper - NOT as a `structKeyExists` probe and NOT as `!x`.
+      // ★★★ THE COMBINATION IS CHOSEN HERE, BEFORE ANYTHING IS STAMPED OR ATTACHED,
+      // WHICH IS A DELIBERATE REORDERING OF [L100-L108] (F4). The legacy attaches the SKU
+      // at [L100] and only then walks the groups at [L106-L108] to hang the options on
+      // it, so it cannot know WHICH combination it is creating until after that SKU is
+      // already in the array - and therefore cannot recognise a combination the product
+      // already carries. Selection is a pure read of `optionGroups` and
+      // `currentIndexesByKey` with no mutation, so hoisting it changes nothing about WHAT
+      // is selected or in WHAT ORDER the options are added; it changes only that the
+      // answer is known one statement earlier. The [L93] price read above still precedes
+      // it, so an absent price still raises before anything is attached.
       //
-      // ★ THE GUARD IS ONE CLAUSE, WHICH IS THE SHAPE [L101] WRITES, AND FIRST-WINS
-      // FALLS OUT OF THE WRITE RATHER THAN NEEDING A SECOND CLAUSE. An earlier
-      // revision diverted the [L102] write into an invocation-local ledger and had to
-      // add `&& ledger.designatedDefaultSku === undefined` to keep later iterations
-      // from overwriting the first, because the entity never learned of the
-      // designation. Now that [L102] writes where the legacy writes it, the very next
-      // iteration's `product.getDefaultSku()` answers the SKU this one designated and
-      // the single clause is self-limiting - exactly as it is in CFML. The added
-      // conjunct is therefore removed, not merely made redundant.
-      if (isNullish(product.getDefaultSku())) {
-        // [L102]
-        product.setDefaultSku(newSku);
-      }
+      // The two narrowing raises inside `selectCombinationOptions` consequently fire
+      // before the code stamp rather than after it. Both are unreachable while [L82-L86]
+      // populates one index per group - they exist only because `noUncheckedIndexedAccess`
+      // types those reads `| undefined` - so no reachable outcome is reordered.
+      const combinationOptions = selectCombinationOptions(optionGroups, currentIndexesByKey);
 
-      // [L106-L108] One option from each group, at that group's current index.
-      for (const [optionGroupID, groupOptions] of optionGroups) {
-        const currentIndex = currentIndexesByKey.get(optionGroupID);
+      // ★★★ THE RETRY RECONCILIATION, AND WHY IT SKIPS RATHER THAN REFUSES (F4). A
+      // combination the product already carried BEFORE this call was created by an
+      // earlier invocation, so creating it again is not a new outcome - it is a
+      // duplicate. Skipping it makes a repeat CONVERGE: applying the same call twice
+      // leaves exactly the SKU set one application leaves, and a partially-applied call
+      // resumes at the first combination that is genuinely missing, stamping the very
+      // codes the first attempt would have stamped - because the counter reads the LIVE
+      // array and a skipped combination attaches nothing to it. Refusing instead would
+      // leave a retry permanently failing with nothing it could do about it.
+      //
+      // ★★ THIS CANNOT FIRE ON A NON-RETRY PATH, WHICH IS THE PARITY ARGUMENT. On the
+      // new-product path [model/service/ProductService.cfc:L275-L279] the product is
+      // `isNew()` and carries no SKUs, so the snapshot is empty. On the add-option path
+      // [model/service/ProductService.cfc:L150] every combination this loop builds
+      // includes the newly added option, which by construction no existing SKU carries.
+      // Every first invocation therefore behaves exactly as the legacy behaves, code for
+      // code; only a repeat differs, and only by declining to double.
+      if (!existingOptionSets.has(optionSetKey(combinationOptions))) {
+        // ★ CFML parity [model/service/SkuService.cfc:L97, L100]: the skuCode counter
+        // reads `product.getSkus()` length, which this same loop mutates at [L100]. The
+        // SKU is code-stamped BEFORE it is attached, so the length is 0 on the first
+        // pass and the code ends `-1`, 1 on the second and the code ends `-2`, and so
+        // on. The generated sequence is therefore order-dependent on that LIVE array -
+        // `Product.getSkus()` hands back the array itself, not a defensive copy - and
+        // the read-then-append ordering is reproduced exactly. Hoisting the length out
+        // of the loop, or attaching before stamping, silently renumbers every SKU.
+        const skuCode = `${productCode}-${product.getSkus().length + 1}`;
 
-        if (currentIndex === undefined) {
-          throw new Error(
-            `SkuService.createSkus: no current index for option group '${optionGroupID}'. ` +
-              '[model/service/SkuService.cfc:L107] reads currentIndexesByKey[key] for every ' +
-              'key of optionGroups, which [L84] populated.',
-          );
+        this.assertSkuCodeAvailable(product, skuCode, 'L97');
+        newSku.setSkuCode(skuCode);
+
+        // [L100] Parent to child. NOTE the asymmetry with every other branch: this is
+        // the ONLY site that links through `product.addSku(...)`, and this branch never
+        // calls `setProduct`. Both directions end up pushing into the same live array -
+        // `Product.addSku` delegates to `Sku.setProduct`, exactly as
+        // [model/entity/Product.cfc:L696-L698] delegates to
+        // [model/entity/Sku.cfc:L604-L608] - but the written direction differs per site
+        // and is preserved per site.
+        product.addSku(newSku);
+
+        // [L101-L103] STRATEGY 1 OF 5: first-wins, via a genuine null test on the
+        // product's existing default. `isNull(...)` is a null test and is ported with
+        // the null-test helper - NOT as a `structKeyExists` probe and NOT as `!x`.
+        //
+        // ★ THE GUARD IS ONE CLAUSE, WHICH IS THE SHAPE [L101] WRITES, AND FIRST-WINS
+        // FALLS OUT OF THE WRITE RATHER THAN NEEDING A SECOND CLAUSE. An earlier
+        // revision diverted the [L102] write into an invocation-local ledger and had to
+        // add `&& ledger.designatedDefaultSku === undefined` to keep later iterations
+        // from overwriting the first, because the entity never learned of the
+        // designation. Now that [L102] writes where the legacy writes it, the very next
+        // iteration's `product.getDefaultSku()` answers the SKU this one designated and
+        // the single clause is self-limiting - exactly as it is in CFML. The added
+        // conjunct is therefore removed, not merely made redundant.
+        if (isNullish(product.getDefaultSku())) {
+          // [L102]
+          product.setDefaultSku(newSku);
         }
 
-        // [L107] CFML arrays are 1-based, so the stored index maps to `index - 1`
-        // here. Under `noUncheckedIndexedAccess` this read is `Option | undefined` and
-        // it is NARROWED, never asserted away with `!`.
-        const chosenOption = groupOptions[currentIndex - 1];
-
-        if (chosenOption === undefined) {
-          throw new Error(
-            `SkuService.createSkus: option index ${String(currentIndex)} is out of range for ` +
-              `option group '${optionGroupID}' (${String(groupOptions.length)} options). ` +
-              '[model/service/SkuService.cfc:L107] indexes the group array directly, so the ' +
-              'legacy raises here too.',
-          );
+        // [L106-L108] One option from each group, in the order [L106] walks them - the
+        // selection itself now happens above, before anything was stamped or attached.
+        for (const chosenOption of combinationOptions) {
+          newSku.addOption(chosenOption);
         }
-
-        newSku.addOption(chosenOption);
       }
 
       // ★★ CFML parity [model/service/SkuService.cfc:L109, L118]: the carry loop has
@@ -1580,6 +1768,32 @@ export class SkuService {
   ): void {
     const productCode = requireProductCode(product, 'L133');
 
+    // [L133] The code is a pure function of the product code, so it is known before
+    // anything is constructed - which is what lets this path reconcile at all.
+    const skuCode = `${productCode}-1`;
+
+    // ★★★ THE RETRY RECONCILIATION FOR THE FIXED-CODE PATH (F4). [L133] is the
+    // HARDCODED `-1`, so a repeat of this call regenerates a code the product already
+    // carries and the legacy attaches a second SKU under it. `SwSku.skuCode` is
+    // declared `unique="true"` [model/entity/Sku.cfc:L54] and validated `unique: true`
+    // [model/validation/Sku.json], so that second SKU was never a legal outcome - the
+    // legacy's own uniqueness contract refuses it at the flush. Recognising it HERE
+    // turns a doomed write into convergence: the SKU this call would create already
+    // exists, so the call has already been applied and there is nothing to do.
+    //
+    // ★★ THE TEST IS HOISTED ABOVE THE CONSTRUCTION, NOT ABOVE THE PRICE READ. [L128]
+    // links the SKU to the product BEFORE [L133] stamps it, so a verdict reached after
+    // construction would arrive too late to avoid attaching. The [L129] price read is
+    // therefore performed explicitly before returning, so an absent or unrepresentable
+    // price still raises exactly where the legacy raises it; nothing else in the body
+    // has an observable effect, so skipping the remainder attaches nothing and changes
+    // nothing else.
+    if (this.skuCodeAlreadyCarried(product, skuCode)) {
+      requirePrice(data, 'L129');
+
+      return;
+    }
+
     // [L127]
     const thisSku = this.newSkuDraft();
 
@@ -1599,11 +1813,8 @@ export class SkuService {
 
     // [L133] SKU-CODE FORMULA 2 OF 4: hardcoded `-1`, no counter. This is one of the
     // three formulas that does NOT continue a sequence, which is why re-invoking this
-    // path regenerates a code the product may already carry - see
-    // `assertSkuCodeAvailable`.
-    const skuCode = `${productCode}-1`;
-
-    this.assertSkuCodeAvailable(product, skuCode, 'L133');
+    // path regenerates a code the product may already carry - reconciled at the top of
+    // this method rather than here, because [L128] has already linked the SKU by now.
     thisSku.setSkuCode(skuCode);
 
     // [L134] STRATEGY 2 OF 5: unconditional. No `isNull` test, no loop-index test -
@@ -2013,16 +2224,49 @@ export class SkuService {
    * than described. This method is an out-of-scope image branch and remains a thin
    * pass-through; no storage behaviour is implemented here.
    *
-   * @param sku The SKU whose image path the upload is written to.
+   * ★★★ THE RETURN IS THE SKU, NOT THE STORE'S BOOLEAN, AND THAT IS THE MAPPED
+   * SIGNATURE. AAP 0.4.2 maps this method to `processImageUpload(sku: Sku, result:
+   * ImageUploadResult): Promise<Sku>`, and AAP 0.9.2 makes every row of that table a
+   * parity gate: "A missing or renamed symbol is a failure, not a stylistic choice."
+   *
+   *   QUOTE-THEN-REVISE. This method previously returned `Promise<boolean>` and its
+   *   `@returns` tag read "Whether the store reported the file as saved." That was
+   *   defended as source fidelity, because [model/service/SkuService.cfc:L213-L217] is an
+   *   `if(imageSaved) return true; else return false;` pair. The defence fails, and the
+   *   reason is not a preference: THAT BOOLEAN IS OBSERVED BY NOBODY.
+   *   `grep -rn processImageUpload --include=*.cfc --include=*.cfm .` over the whole
+   *   legacy tree returns EXACTLY ONE hit - the declaration at
+   *   [model/service/SkuService.cfc:L210] itself. The method has no caller, and it is not
+   *   reachable through the process dispatcher either: [org/Hibachi/HibachiService.cfc:L84]
+   *   resolves `process<EntityName>_<context>` names, and `processImageUpload` is neither.
+   *   So no legacy control flow ever reads the value, no behaviour depends on it, and
+   *   returning the SKU discards nothing observable. Both legacy calls survive at their
+   *   own positions and in their own order below; only an unread value is dropped.
+   *
+   * THE STORE'S ANSWER IS STILL AWAITED, AND NO FAILURE IS SWALLOWED. The call is made and
+   * its promise awaited, so a rejecting store still rejects this method - the boolean is
+   * discarded, the failure is not. That distinction is guaranteed by the port rather than
+   * assumed here: `../domain/ports/imageStore.js` binds every implementation to "REFUSE
+   * RATHER THAN REPORT FALSE", so a path-containment refusal, an absolute path and a
+   * disallowed extension all arrive as THROWS. `false` therefore carries one meaning only -
+   * the bytes were not persisted - and the legacy did nothing about that either: it returned
+   * the value to a caller that does not exist. Nothing is invented here to act on it, because
+   * inventing a refusal the source never had is the divergence this migration refuses.
+   *
+   * @param sku The SKU whose image path the upload is written to, and the value returned.
    * @param result The upload descriptor, shaped by the image port.
-   * @returns Whether the store reported the file as saved.
+   * @returns The same SKU instance, unmodified - this method writes nothing to it. Per AAP
+   *   0.4.2. The store's own boolean is discarded for the reason argued above.
    */
-  public async processImageUpload(sku: Sku, result: ImageUploadResult): Promise<boolean> {
+  public async processImageUpload(sku: Sku, result: ImageUploadResult): Promise<Sku> {
     // [L211]
     const imagePath: string = sku.getImagePath();
 
-    // [L212] and [L213-L217], collapsed.
-    return this.imageStore.saveImageFile(result, imagePath, ALLOWED_IMAGE_EXTENSIONS);
+    // [L212] and [L213-L217], collapsed. Awaited so a rejection still surfaces; the
+    // boolean it resolves to is the unread value the docblock accounts for.
+    await this.imageStore.saveImageFile(result, imagePath, ALLOWED_IMAGE_EXTENSIONS);
+
+    return sku;
   }
 
   // -------------------------------------------------------------------------
@@ -2593,7 +2837,10 @@ export class SkuService {
    *   copies it, so a caller that catches the failure holds the complete list of what
    *   was attached and can discard the product without having persisted anything -
    *   `createSkus` writes nothing to the database.
-   * - Idempotency on re-invocation is `assertSkuCodeAvailable`'s job; see there.
+   * - Idempotency on re-invocation is reconciliation's job, and it is ALWAYS ON (F4):
+   *   `snapshotExistingOptionSets` for the option-combination path and
+   *   `skuCodeAlreadyCarried` for the fixed-code paths. See both, and the
+   *   quote-then-revise on `assertSkuCodeAvailable` for why it is no longer optional.
    *
    * @param plannedSkuCount How many SKUs this branch is about to create.
    * @param product The product being populated, named in the refusal.
@@ -2617,48 +2864,91 @@ export class SkuService {
   }
 
   /**
-   * Refuses to attach a SKU whose generated code the product already carries, when
-   * the caller has opted in.
+   * Whether the product already carries a SKU under this code.
    *
-   * ★ THIS IS THE IDEMPOTENCY-ON-RETRY MECHANISM, AND IT IS OPT-IN FOR A REASON.
-   * Three of the four skuCode formulas do NOT continue a sequence: [L133] and [L184]
-   * are the hardcoded `-1`, and [L194] is the loop counter restarting at 1. Re-running
-   * those paths against a product that already carries their output regenerates the
-   * SAME codes and silently attaches duplicates. Formula 1 - [L97] and [L159]'s
-   * `arrayLen(getSkus()) + 1` - cannot collide, because it continues the sequence, so
-   * this guard can never fire on the merchandise-multi path where the legacy's own
-   * behaviour depends on re-invocation adding to an existing set.
+   * ★★ THE COMPARISON FOLDS CASE, AND THAT IS THE SOURCE'S SEMANTICS RATHER THAN A
+   * CHOICE. CFML string comparison folds case, and `SwSku.skuCode` is a text column a
+   * case-folding collation treats the same way, so `ABC-1` and `abc-1` are one code as
+   * far as the `unique="true"` declaration at [model/entity/Sku.cfc:L54] is concerned.
+   * `cfFoldKey` is the port's single folding helper and is used here for the same reason
+   * it is used for struct keys.
    *
-   * It defaults OFF because switching it on changes an observable outcome in exactly
-   * that duplicate case, and preserving the legacy's observable behaviour is the
-   * acceptance contract. A caller running in a retry-prone environment turns it on
-   * deliberately; the default keeps parity.
+   * ★ IT READS THE PRODUCT'S LIVE ARRAY, WHICH IS THE GRAPH THE CASCADE PERSISTS.
+   * `Product.skus` is `cascade="all-delete-orphan"` [model/entity/Product.cfc:L73], so
+   * that array IS the SKU set this product will hold after the caller's save. Reading it
+   * is therefore reading the state the write will produce - no query required, and no
+   * per-SKU round trip introduced on a bounded bulk path.
    *
-   * The comparison folds case, because CFML string comparison folds case and the
-   * `SwSku.skuCode` column is a text column that a case-folding collation may treat
-   * the same way. Nothing in the legacy performs this comparison at all - it is
-   * target-side machinery - so no legacy semantics are being reinterpreted here.
+   * @param product The product whose existing SKUs are read. Not mutated.
+   * @param skuCode The code about to be stamped.
+   * @returns `true` when a sibling already carries it.
+   */
+  private skuCodeAlreadyCarried(product: Product, skuCode: string): boolean {
+    const foldedSkuCode = cfFoldKey(skuCode);
+
+    return product.getSkus().some((existingSku) => {
+      const existingSkuCode = existingSku.getSkuCode();
+
+      return existingSkuCode !== undefined && cfFoldKey(existingSkuCode) === foldedSkuCode;
+    });
+  }
+
+  /**
+   * Refuses to attach a SKU whose generated code the product already carries.
+   *
+   * ★★★ QUOTE-THEN-REVISE: THIS USED TO BE OPT-IN, AND THAT WAS THE DEFECT (F4). The
+   * previous annotation read "THIS IS THE IDEMPOTENCY-ON-RETRY MECHANISM, AND IT IS
+   * OPT-IN FOR A REASON … It defaults OFF because switching it on changes an observable
+   * outcome in exactly that duplicate case, and preserving the legacy's observable
+   * behaviour is the acceptance contract. A caller running in a retry-prone environment
+   * turns it on deliberately; the default keeps parity." Two things were wrong with that.
+   *
+   * FIRST, THE OUTCOME IT PROTECTED WAS NEVER A LEGAL ONE. A second SKU under an
+   * already-used code contradicts `unique="true"` on `Sku.skuCode`
+   * [model/entity/Sku.cfc:L54] and the `unique: true` rule in `model/validation/Sku.json`.
+   * The legacy attached it in memory and then had the flush refuse it. Preserving "the
+   * legacy attaches a duplicate" preserved a step on the way to a failure, not an
+   * outcome; refusing earlier reaches the same end state - no duplicate - deterministically
+   * and with a message that says why.
+   *
+   * SECOND, THE ONLY CALLER THAT EVER RAN IT LEFT IT OFF. `src/handlers/bootstrap.ts`
+   * passed `undefined`, so in production this method returned immediately, every time.
+   * AAP section 0.6.5 requires these bulk loops to carry "idempotency on retry"; a knob
+   * that production does not set is not idempotency.
+   *
+   * ★★ WHAT THIS GUARD DOES **NOT** DO, STATED PLAINLY. It sees only THIS product's SKUs.
+   * A code taken by a DIFFERENT product's SKU is invisible to it, and deliberately so: the
+   * schema this port writes to already holds that constraint - `SwSku.skuCode` is unique
+   * across the table, and `SwProduct.productCode` is unique too
+   * [model/entity/Product.cfc:L56], which is what makes a machine-generated
+   * `<productCode>-<n>` code reachable by exactly one product - and duplicating it here
+   * would cost one `getSkuBySkuCode` round trip per created SKU on a path whose size is
+   * the product of every option group's cardinality. A retried NEW-product save carries the
+   * same `productCode`, so it is refused by that uniqueness contract inside the single
+   * transaction `ProductRepository.saveProduct` opens, atomically and with nothing durable
+   * left behind. What the schema cannot supply, and what this port therefore does, is
+   * CONVERGENCE on a repeat of the same call.
+   *
+   * ★ WHERE IT CAN AND CANNOT FIRE. Formula 1 - [L97] and [L159]'s
+   * `arrayLen(getSkus()) + 1` - continues the sequence and so cannot collide; the call at
+   * [L97] is kept as a guard rather than removed, because it costs nothing and it is the
+   * one statement that would notice if that reasoning ever stopped holding. The paths whose
+   * formula repeats are [L133], [L184] and [L194]; [L133] reconciles by SKIPPING instead,
+   * because it can reach its verdict before it links anything, and the two content-access
+   * sites refuse, because [L180]/[L190] link before stamping and the branch is out of scope
+   * - a refusal there is the conservative answer and it no longer has an off switch.
    *
    * @param product The product whose existing SKUs are checked.
    * @param skuCode The code about to be stamped.
    * @param siteLocator The legacy locator of the formula that produced it.
    */
   private assertSkuCodeAvailable(product: Product, skuCode: string, siteLocator: string): void {
-    if (!this.refuseDuplicateSkuCodes) {
-      return;
-    }
-
-    const foldedSkuCode = skuCode.toLowerCase();
-    const collides = product
-      .getSkus()
-      .some((existingSku) => existingSku.getSkuCode()?.toLowerCase() === foldedSkuCode);
-
-    if (collides) {
+    if (this.skuCodeAlreadyCarried(product, skuCode)) {
       throw new Error(
         `SkuService.createSkus: product '${product.getProductID()}' already carries a SKU coded ` +
           `'${skuCode}'. [model/service/SkuService.cfc:${siteLocator}] regenerates that code on ` +
-          'every invocation, so a retry would attach a duplicate. Refused because ' +
-          'refuseDuplicateSkuCodes is enabled.',
+          'every invocation, so continuing would attach a duplicate that ' +
+          '[model/entity/Sku.cfc:L54] declares unique. Refused before anything was attached.',
       );
     }
   }

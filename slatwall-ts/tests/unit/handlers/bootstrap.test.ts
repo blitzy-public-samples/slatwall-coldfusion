@@ -29,7 +29,7 @@
 // to say "the collaborators the SCOPE ITSELF PUBLISHES - `scope.priceGroupService` and
 // `scope.priceGroupRepository`". Finding F18 withdrew the six raw repositories from `RequestScope`
 // because publishing them put seven durable mutations within reach of anything holding a scope; the
-// instance identity this reasoning depends on is unchanged, and only the route to it moved.) `vi` is vitest itself, already one of the fourteen exact pins; NO MOCKING
+// instance identity this reasoning depends on is unchanged, and only the route to it moved.) `vi` is vitest itself, already one of the thirteen exact pins; NO MOCKING
 // LIBRARY IS ADDED, and every spy is restored in a suite-local `afterEach` as well as by the global
 // one in `tests/setup.ts`.
 //
@@ -76,6 +76,7 @@ import type { OrderView } from '../../../src/domain/views/orderView.js';
 // in one statement and walks the legacy candidate sequence in memory - a walk that cannot fail - and
 // the class is retired. The cases that named it are inverted in the walk's own describe block below.
 import {
+  EuropeanCentralBankCurrencyConverter,
   bootstrapCompositionRoot,
   OrderViewDocumentDataError,
   resetCompositionRoot,
@@ -92,6 +93,7 @@ import type {
   RequestScopeInput,
 } from '../../../src/handlers/bootstrap.js';
 import { appConfig } from '../../../src/lib/config.js';
+import { logger } from '../../../src/lib/logger.js';
 import type { EnvironmentSource } from '../../../src/lib/config.js';
 import type {
   PreparedStatementExecutor,
@@ -127,6 +129,12 @@ import type { Sku } from '../../../src/domain/entities/sku.js';
 import { Brand } from '../../../src/domain/entities/brand.js';
 import { RoundingRule } from '../../../src/domain/entities/roundingRule.js';
 import { toCurrencyCode } from '../../../src/domain/valueObjects/currencyCode.js';
+import type { CurrencyCode } from '../../../src/domain/valueObjects/currencyCode.js';
+import type { CurrencyConverter } from '../../../src/domain/ports/currencyConverter.js';
+// The port's own folding helper, so this suite's doubles key their maps exactly as the adapters do.
+import { cfFoldKey } from '../../../src/lib/cfml/struct.js';
+import { CfmlBooleanConversionError } from '../../../src/lib/cfml/truthiness.js';
+import type { CfBooleanInput } from '../../../src/lib/cfml/truthiness.js';
 // ★ IMPORTED FROM THE COMPOSITION ROOT, NOT FROM THE FEED SERVICE. This type used to be exported
 // from `src/integrations/google/googleFeedService.js` beside a branded `TrustedFeedHost` and the
 // `toTrustedFeedHost` mint that produced it. A completeness review withdrew all of that from the feed
@@ -159,6 +167,27 @@ import { MysqlSkuRepository } from '../../../src/repositories/mysql/mysqlSkuRepo
 
 /** `SELECT_CURRENCY_RECORDS_SQL`, the one EAGER read tier 1 performs. */
 const CURRENCY_RECORDS_SQL = 'SELECT currencyCode, activeFlag FROM SwCurrency';
+
+/**
+ * `buildSelectGeneralSettingsSql(7)`, the SECOND eager read tier 1 performs.
+ *
+ * ★ IT IS WHY TIER ONE ISSUES TWO STATEMENTS RATHER THAN ONE. The composition root used to build
+ * `BootstrapSettingsProvider` from the DECLARED DEFAULTS ALONE, so `SwSetting` was never consulted for
+ * a general setting: `skuCurrency` answered the literal `'USD'` however the installation was
+ * configured, and an explicitly emptied `skuEligibleCurrencies` could not close the cascade gate
+ * [model/entity/Sku.cfc:L373]. Code review recorded that as a CRITICAL money defect. This is the
+ * legacy's own relationship-free probe [model/service/SettingService.cfc:L490, L595-L608], quoted
+ * verbatim including all seventeen relationship columns - the column list IS the predicate, because
+ * the empty candidate requires every one of them to be NULL.
+ */
+const PER_SKU_SETTINGS_PREDICATE = 'WHERE LOWER(settingName) IN (?, ?)';
+
+const GENERAL_SETTINGS_SQL =
+  'SELECT settingName, settingValue, accountID, contentID, cmsContentID, brandID, emailID, ' +
+  'emailTemplateID, fulfillmentMethodID, paymentMethodID, productID, productTypeID, ' +
+  'shippingMethodID, shippingMethodRateID, siteID, skuID, subscriptionTermID, ' +
+  'subscriptionUsageID, taskID FROM SwSetting ' +
+  'WHERE LOWER(settingName) IN (?, ?, ?, ?, ?, ?, ?)';
 
 /** `SELECT_ACCOUNT_PRICE_GROUP_IDS_SQL`, the first statement the price-group pass issues. */
 const ACCOUNT_PRICE_GROUP_IDS_SQL =
@@ -205,7 +234,7 @@ const UNUSED_MUTATION_RESULT: SqlMutationResult = Object.freeze({
  * A hand-written `PreparedStatementExecutor` that records every statement and answers from a
  * text-keyed table.
  *
- * Hand-written because the fourteen exact pins include no mocking library and none may be added,
+ * Hand-written because the thirteen exact pins include no mocking library and none may be added,
  * and because what this suite needs from a double is exactly two things a library would not give it
  * more cheaply: the ORDER statements arrived in, and the ability to answer one specific statement
  * while every other one answers nothing.
@@ -271,12 +300,38 @@ class RecordingExecutor implements PreparedStatementExecutor {
  */
 const UNUSED_PLACEHOLDER = 'unused-by-this-suite';
 
+/**
+ * A NAMED host that can never resolve, which is what `DB_TLS_MODE=verify-identity` requires.
+ *
+ * Two rules in `src/lib/config.ts` constrain this value from opposite directions, and only a named
+ * host satisfies the pair the fixture below actually sets:
+ *
+ * * cleartext (`disabled`) is admitted ONLY for a provable loopback destination, in every
+ *   environment - which is why this fixture does not use `disabled`; and
+ * * `verify-identity` REFUSES AN IP LITERAL (F47, CWE-295), because a certificate binds to host
+ *   NAMES and an address would silently reduce the mode to a chain-only check.
+ *
+ * So the loopback literal an earlier revision carried here is precisely what the mode below
+ * rejects. `.invalid` is the reserved never-resolvable TLD [RFC 2606]: it is a NAME, so the
+ * identity rule is satisfied, and nothing in this suite opens a connection for it to fail to
+ * resolve. The value is distinctive on purpose - the non-disclosure cases below search the whole
+ * root for it, so it deliberately shares no substring with `UNUSED_PLACEHOLDER`, which covers the
+ * account pair - two needles that cannot alias are two independent assertions.
+ */
+const UNRESOLVABLE_HOST = 'slatwall-database.invalid';
+
 /** Every variable `src/lib/config.ts` requires with no default, with a MIS-CASED dialect spelling. */
 const BASE_ENVIRONMENT: EnvironmentSource = Object.freeze({
-  DB_HOST: `${UNUSED_PLACEHOLDER}.invalid`,
+  DB_HOST: UNRESOLVABLE_HOST,
   DB_USER: UNUSED_PLACEHOLDER,
   DB_PASSWORD: UNUSED_PLACEHOLDER,
-  DB_TLS_MODE: 'disabled',
+  // F48: this fixture paired a non-loopback host with `disabled` transport, which the configuration
+  // contract refuses outright - cleartext is admitted only for a provable loopback destination, in
+  // every environment. The fixture describes a suite that never connects, so the mode is raised to
+  // the recommended `verify-identity`, which a NAMED host satisfies and which needs no trust
+  // anchor. F47 is the other half of that bargain: `verify-identity` refuses an IP literal, so the
+  // host above is a name rather than the loopback address.
+  DB_TLS_MODE: 'verify-identity',
   // `mySql` rather than `MySQL`: three legacy sites spell the product name three different ways, so
   // the case-folding normalization in `src/lib/config.ts` is part of the contract, not a nicety.
   DB_DIALECT: 'mySql',
@@ -320,6 +375,50 @@ const INACTIVE_CURRENCY_ROWS: readonly SqlRow[] = Object.freeze([
   Object.freeze({ currencyCode: 'USD', activeFlag: 0 }),
   Object.freeze({ currencyCode: 'EUR', activeFlag: 0 }),
 ]);
+
+/**
+ * Every relationship column of `SwSetting`, in the order the subject selects them.
+ *
+ * The list IS the predicate: a global probe requires every one of them to be NULL
+ * [model/service/SettingService.cfc:L768-L870], so a row must carry all seventeen columns for the
+ * index to classify it correctly. Omitting one would make the row look scoped and hide it.
+ */
+const SETTING_RELATIONSHIP_COLUMN_NAMES: readonly string[] = Object.freeze([
+  'accountID',
+  'contentID',
+  'cmsContentID',
+  'brandID',
+  'emailID',
+  'emailTemplateID',
+  'fulfillmentMethodID',
+  'paymentMethodID',
+  'productID',
+  'productTypeID',
+  'shippingMethodID',
+  'shippingMethodRateID',
+  'siteID',
+  'skuID',
+  'subscriptionTermID',
+  'subscriptionUsageID',
+  'taskID',
+]);
+
+/**
+ * One GLOBAL `SwSetting` row: the named setting, its value, and every relationship column NULL.
+ *
+ * Relationship-free is what makes the row global, and it is the only shape the composition root's
+ * probe can match - see `GENERAL_SETTINGS_SQL`. A case that wants a SCOPED row spreads a column over
+ * the result, which is how the "not global" case below builds one.
+ */
+function generalSettingRow(settingName: string, settingValue: string | null): SqlRow {
+  const row: Record<string, unknown> = { settingName, settingValue };
+
+  for (const columnName of SETTING_RELATIONSHIP_COLUMN_NAMES) {
+    row[columnName] = null;
+  }
+
+  return row;
+}
 
 // ---------------------------------------------------------------------------
 // Narrowing helpers. `noUncheckedIndexedAccess` is on, so every indexed read is
@@ -462,6 +561,54 @@ function deepValues(subject: unknown): readonly unknown[] {
   return collected;
 }
 
+/**
+ * Every property NAME reachable from a subject, breadth-first, de-duplicated and sorted per level.
+ *
+ * The companion to `deepValues` above, and it exists because the least-privilege diagnostics case
+ * needs to assert that a name is ABSENT. Searching the serialized text for an absent name is unsound
+ * in both directions: `ratesRetrievedAt` is a substring of the surviving `ratesRetrievedAtConfigured`,
+ * so a text search reports a withdrawn key as still present; and a key whose value happens to be
+ * `undefined` disappears from `JSON.stringify` output entirely, so a text search reports a published
+ * key as withdrawn. Walking keys is exact in both cases.
+ *
+ * Breadth-first with each level sorted, rather than one flat sorted list, so the assertion reads in the
+ * order a reviewer thinks about the shape: the top-level members first, then everything nested below
+ * them. The visited set makes the walk safe against cycles, exactly as in `deepValues`.
+ */
+function deepKeys(subject: unknown): readonly string[] {
+  const collected: string[] = [];
+  const seen = new Set<unknown>();
+  let frontier: readonly unknown[] = [subject];
+
+  while (frontier.length > 0) {
+    const level: string[] = [];
+    const next: unknown[] = [];
+
+    for (const value of frontier) {
+      if (value === null || typeof value !== 'object' || seen.has(value)) {
+        continue;
+      }
+
+      seen.add(value);
+
+      const members = value as Record<string, unknown>;
+
+      for (const key of Object.keys(members)) {
+        if (!level.includes(key)) {
+          level.push(key);
+        }
+
+        next.push(members[key]);
+      }
+    }
+
+    collected.push(...level.sort());
+    frontier = next;
+  }
+
+  return collected;
+}
+
 // ---------------------------------------------------------------------------
 // ★★ THERE IS NO `raisedBy` HELPER ANY MORE, AND ITS OWN DOCUMENTATION IS WHY.
 //
@@ -491,9 +638,21 @@ function deepValues(subject: unknown): readonly unknown[] {
 // assertion - which is the exact vacuity this suite exists to avoid.
 // ---------------------------------------------------------------------------
 
-/** A recording executor already seeded with the one statement tier 1 issues. */
-function makeExecutor(currencyRows: readonly SqlRow[] = CURRENCY_ROWS): RecordingExecutor {
-  return new RecordingExecutor().seed(CURRENCY_RECORDS_SQL, currencyRows);
+/**
+ * A recording executor already seeded with the TWO statements tier 1 issues.
+ *
+ * The settings read is seeded with NO ROWS by default, which is the ordinary case: an installation
+ * with no `SwSetting` override resolves every key from its declared default, exactly as the legacy
+ * did [model/service/SettingService.cfc:L481-L486]. A case that needs a configured value seeds its
+ * own rows over this one.
+ */
+function makeExecutor(
+  currencyRows: readonly SqlRow[] = CURRENCY_ROWS,
+  settingRows: readonly SqlRow[] = NO_ROWS,
+): RecordingExecutor {
+  return new RecordingExecutor()
+    .seed(CURRENCY_RECORDS_SQL, currencyRows)
+    .seed(GENERAL_SETTINGS_SQL, settingRows);
 }
 
 /**
@@ -722,22 +881,147 @@ describe('bootstrapCompositionRoot tier-one initialization', () => {
     expect(root.dialect).toBe(root.diagnostics.dialect);
   });
 
-  it('carries the two defaulted database values through from the environment contract', async () => {
+  it('★★ PUBLISHES NEITHER THE DEFAULTED SCHEMA NAME NOR THE DEFAULTED PORT', async () => {
     const executor = makeExecutor();
 
     const root = await bootWith(executor);
 
-    // ★★ QUOTE-THEN-REVISE. This case used to read `root.config.database` and its note said:
-    // "Only the two non-secret defaults are asserted. Host, user and credential are required
-    // with no default, and this suite never asserts their values beyond the placeholder host it
-    // supplied itself." Then it asserted the host on the very next line, which is the tell: the
-    // note was describing a discipline the SURFACE did not enforce, and F17 is exactly that gap.
+    // ★★ QUOTE-THEN-REVISE, TWICE OVER. This case first read `root.config.database` and asserted
+    // the two non-secret defaults came through. F17 moved it to `root.diagnostics.database` and it
+    // went on asserting them, on the ground quoted in its own note - the two defaults are visible
+    // "because those two are what make a misconfiguration diagnosable".
     //
-    // The two defaults still come through, and they are the two the redaction keeps visible
-    // "because those two are what make a misconfiguration diagnosable". The host assertion moves
-    // to the case below, where it becomes an assertion that the host is NOT readable.
-    expect(root.diagnostics.database['database']).toBe('Slatwall');
-    expect(root.diagnostics.database['port']).toBe(3306);
+    // ⚠ THAT GROUND WAS BORROWED FROM `src/repositories/mysql/connection.ts`, WHICH NOW SAYS THE
+    // OPPOSITE: it withdrew the port and the database name from its pool-created log line and named
+    // them "reconnaissance" together. `src/lib/logger.ts` redacts a context key called `port` for
+    // the same reason, and a sibling case in that suite pins it. So this case is inverted rather
+    // than deleted: what it asserts now is that the defaults the environment contract supplies are
+    // resolved and USED without being published back out.
+    //
+    // The defaults themselves are still pinned - `Slatwall` and `3306` - in
+    // `tests/unit/lib/config.test.ts`, against the configuration object that legitimately carries
+    // them. Their absence HERE is what this case is for.
+    expect(Object.keys(root.diagnostics)).not.toContain('database');
+    expect(JSON.stringify(root.diagnostics)).not.toContain('Slatwall');
+    expect(JSON.stringify(root.diagnostics)).not.toContain('3306');
+    expect(deepValues(root).filter((value) => String(value) === 'Slatwall')).toStrictEqual([]);
+    expect(deepValues(root).filter((value) => String(value) === '3306')).toStrictEqual([]);
+  });
+
+  it('★★ REDUCES THE DIAGNOSTIC SURFACE TO CLOSED ENUMERATIONS, A BOOLEAN AND TWO COUNTS', async () => {
+    // ★★★ THE LEAST-PRIVILEGE SHAPE, ASSERTED AS A SET SO A MEMBER CANNOT CREEP BACK. Code review
+    // raised the published diagnostics as MINOR / Security - Least Privilege: the exported record
+    // "exposes database/port, all pool limits, feed allow-list, and complete rate table to every
+    // root consumer", and asked for it to be reduced "to fixed booleans/classifiers needed by
+    // actual handlers". No handler in this tree reads `root.diagnostics` at all, so the reduction
+    // costs no caller anything.
+    const executor = makeExecutor();
+
+    const root = await bootWith(executor);
+
+    // `database` and `pool` are GONE rather than redacted. A record of five identical markers is
+    // not a diagnostic, and there is no reduced form of a capacity number that is not one.
+    expect(Object.keys(root.diagnostics).sort()).toStrictEqual([
+      'currency',
+      'dialect',
+      'environment',
+      'feed',
+      'tls',
+    ]);
+
+    // What survives, and the shape of each: two closed enumerations, a posture triple whose third
+    // member is a boolean, and two counts.
+    // `development`, because `BASE_ENVIRONMENT` omits `NODE_ENV` and that is the documented default.
+    expect(root.diagnostics.environment).toBe('development');
+    expect(root.diagnostics.dialect).toBe('MySQL');
+    expect(Object.keys(root.diagnostics.tls).sort()).toStrictEqual([
+      'certificateAuthorityConfigured',
+      'minimumVersion',
+      'mode',
+    ]);
+    expect(root.diagnostics.tls.certificateAuthorityConfigured).toBe(false);
+    expect(Object.keys(root.diagnostics.feed)).toStrictEqual(['allowedHostCount']);
+    expect(Object.keys(root.diagnostics.currency).sort()).toStrictEqual([
+      'ratesRetrievedAtConfigured',
+      'referenceRateCount',
+    ]);
+
+    // ★ AND EVERY WITHDRAWN FACT IS ABSENT AT EVERY DEPTH, not merely absent from the member it used
+    // to sit on. A root that dropped `pool` and republished `connectionLimit` beside `dialect` would
+    // satisfy the key-set assertions above. The check walks keys rather than searching the serialized
+    // text so that `ratesRetrievedAt` can be named as withdrawn without the surviving
+    // `ratesRetrievedAtConfigured` matching it as a substring.
+    expect(deepKeys(root.diagnostics)).toStrictEqual([
+      'currency',
+      'dialect',
+      'environment',
+      'feed',
+      'tls',
+      'allowedHostCount',
+      'certificateAuthorityConfigured',
+      'minimumVersion',
+      'mode',
+      'ratesRetrievedAtConfigured',
+      'referenceRateCount',
+    ]);
+    for (const withdrawn of [
+      'database',
+      'host',
+      'port',
+      'user',
+      'password',
+      'pool',
+      'connectionLimit',
+      'connectTimeoutMs',
+      'maxIdle',
+      'idleTimeoutMs',
+      'allowedHosts',
+      'europeanCentralBankRates',
+      'ratesRetrievedAt',
+      'certificateAuthority',
+    ]) {
+      expect(deepKeys(root.diagnostics)).not.toContain(withdrawn);
+    }
+  });
+
+  it('reports the two optional data sets as counts, so a caller can tell loaded from empty', async () => {
+    // The counts exist to answer two questions and no others: did the allow-list load, and did
+    // rates arrive. Both answers must distinguish "configured" from "empty" WITHOUT enumerating,
+    // so this case supplies one of each and asserts the arithmetic rather than the contents.
+    const executor = makeExecutor();
+
+    const root = await bootWith(executor, {
+      ...BASE_ENVIRONMENT,
+      FEED_ALLOWED_HOSTS: 'shop.example.com, feeds.example.com',
+      ECB_REFERENCE_RATES: 'USD=1.0850,GBP=0.8400,CHF=0.9500',
+      ECB_RATES_RETRIEVED_AT: new Date().toISOString(),
+    });
+
+    expect(root.diagnostics.feed.allowedHostCount).toBe(2);
+    expect(root.diagnostics.currency.referenceRateCount).toBe(3);
+    expect(root.diagnostics.currency.ratesRetrievedAtConfigured).toBe(true);
+
+    // ★ AND NOT ONE OF THE FIVE SUPPLIED VALUES IS READABLE THROUGH THE COUNT. This is the half of
+    // the reduction that a count alone would not prove: a member could carry both a length and the
+    // list it was taken from.
+    const surface = JSON.stringify(root.diagnostics);
+    for (const supplied of ['shop.example.com', 'feeds.example.com', '1.0850', '0.8400']) {
+      expect(surface).not.toContain(supplied);
+    }
+  });
+
+  it('reports an unconfigured deployment as two zeroes rather than as absent members', async () => {
+    // `0` and `false` are meaningful readings, not missing data: both keys are optional, an empty
+    // allow-list means this deployment serves no feed, and an empty rate table means every
+    // non-pivot conversion passes through. A surface that omitted the members when unset would make
+    // "unconfigured" indistinguishable from "member not implemented".
+    const executor = makeExecutor();
+
+    const root = await bootWith(executor);
+
+    expect(root.diagnostics.feed.allowedHostCount).toBe(0);
+    expect(root.diagnostics.currency.referenceRateCount).toBe(0);
+    expect(root.diagnostics.currency.ratesRetrievedAtConfigured).toBe(false);
   });
 
   it('★★★ PUBLISHES NO DATABASE CREDENTIAL, HOST OR ACCOUNT ANYWHERE ON THE ROOT', async () => {
@@ -751,19 +1035,27 @@ describe('bootstrapCompositionRoot tier-one initialization', () => {
 
     const root = await bootWith(executor);
 
-    // The three never-echoed fields arrive as markers, because `database` IS `toJSON()`'s output.
-    expect(root.diagnostics.database['host']).toBe('[REDACTED]');
-    expect(root.diagnostics.database['user']).toBe('[REDACTED]');
-    expect(root.diagnostics.database['password']).toBe('[REDACTED]');
+    // ★ THERE IS NO LONGER A `database` MEMBER TO READ MARKERS OUT OF, and that is a stronger
+    // outcome than the three marker assertions this case used to make. `toJSON()` still replaces
+    // all five of its fields - `tests/unit/lib/config.test.ts` pins that - but the projection is no
+    // longer republished here at all, so the question "is the marker correct" does not arise on
+    // this surface.
+    expect(root.diagnostics).not.toHaveProperty('database');
 
-    // ★★ AND THE PLACEHOLDER HOST THIS SUITE SUPPLIED ITSELF IS NOWHERE ON THE ROOT, serialized or
-    // walked. Asserting on the marker alone would pass for a root that ALSO published the live
-    // config beside it, so the real assertion is the absence of the value across the whole surface.
-    // `UNUSED_PLACEHOLDER` is what `BASE_ENVIRONMENT` sets `DB_HOST`, `DB_USER` and `DB_PASSWORD`
-    // from, which is what makes one search cover all three.
+    // ★★ AND NEITHER THE ACCOUNT THIS SUITE SUPPLIED NOR THE HOST IS ANYWHERE ON THE ROOT,
+    // serialized or walked. Asserting on the marker alone would pass for a root that ALSO published
+    // the live config beside it, so the real assertion is the absence of the values across the whole
+    // surface. `UNUSED_PLACEHOLDER` is what `BASE_ENVIRONMENT` sets `DB_USER` and `DB_PASSWORD`
+    // from, which is what makes one search cover both; the host is searched for separately because
+    // `DB_TLS_MODE=verify-identity` REQUIRES a NAMED host there (F47), so it carries its own
+    // distinctive value and cannot share the placeholder.
     expect(JSON.stringify(root.diagnostics)).not.toContain(UNUSED_PLACEHOLDER);
+    expect(JSON.stringify(root.diagnostics)).not.toContain(UNRESOLVABLE_HOST);
     expect(
       deepValues(root).filter((value) => String(value).includes(UNUSED_PLACEHOLDER)),
+    ).toStrictEqual([]);
+    expect(
+      deepValues(root).filter((value) => String(value).includes(UNRESOLVABLE_HOST)),
     ).toStrictEqual([]);
 
     // ★ AND `config` IS GONE RATHER THAN RENAMED. A root that kept the member and added the
@@ -771,7 +1063,7 @@ describe('bootstrapCompositionRoot tier-one initialization', () => {
     expect(Object.keys(root)).not.toContain('config');
   });
 
-  it('reads SwCurrency exactly once, eagerly, with no parameters, and issues no other statement', async () => {
+  it('reads SwCurrency and SwSetting exactly once each, eagerly, and issues no other statement', async () => {
     const executor = makeExecutor();
 
     await bootWith(executor);
@@ -779,7 +1071,11 @@ describe('bootstrapCompositionRoot tier-one initialization', () => {
     // EAGERLY: the count is taken before any request scope exists, so the read
     // cannot have been triggered by request-time work.
     expect(executor.countOf(CURRENCY_RECORDS_SQL)).toBe(1);
-    expect(executor.calls).toHaveLength(1);
+    // ★ THE SECOND EAGER READ. `setting()` is SYNCHRONOUS and returns a non-optional string, so
+    // every configured value must exist before the provider reaches the domain - see
+    // `GENERAL_SETTINGS_SQL`. One read for all seven names, whatever the request goes on to do.
+    expect(executor.countOf(GENERAL_SETTINGS_SQL)).toBe(1);
+    expect(executor.calls).toHaveLength(2);
     expect(executor.mutationCalls).toHaveLength(0);
 
     // NO PARAMETERS: `readCurrencyRecords` calls `execute(sql)` with one
@@ -817,6 +1113,79 @@ describe('bootstrapCompositionRoot tier-one initialization', () => {
     expect(root.settingsProvider.setting('skuCurrency')).toBe('USD');
     expect(root.settingsProvider.setting('globalURLKeyProduct')).toBe('sp');
     expect(root.settingsProvider.setting('globalURLKeyProductType')).toBe('spt');
+  });
+
+  // -------------------------------------------------------------------------
+  // ★★★ THE CONFIGURED VALUES. `SwSetting` was never consulted for a general setting until this
+  // revision, which code review recorded as a CRITICAL money defect: `skuCurrency` answered the
+  // literal `'USD'` however the installation was configured, so a shop trading in another currency
+  // had every price read out of the SKU's own base columns as though it were dollars.
+  // -------------------------------------------------------------------------
+
+  it('★★★ prefers a CONFIGURED SwSetting row over the declared default, for every key', async () => {
+    // CFML parity [model/service/SettingService.cfc:L595-L608]: with no object in hand the
+    // relationship-free probe IS the resolution, and its row wins over the seeded default
+    // [L481-L486]. All seventeen relationship columns are NULL, which is what makes the row global.
+    const executor = makeExecutor(CURRENCY_ROWS, [
+      generalSettingRow('skuCurrency', 'GBP'),
+      generalSettingRow('globalURLKeyProduct', 'shop'),
+      generalSettingRow('globalURLKeyProductType', 'dept'),
+      generalSettingRow('skuEligibleCurrencies', 'GBP,EUR'),
+    ]);
+
+    const root = await bootWith(executor);
+
+    expect(root.settingsProvider.setting('skuCurrency')).toBe('GBP');
+    expect(root.settingsProvider.setting('globalURLKeyProduct')).toBe('shop');
+    expect(root.settingsProvider.setting('globalURLKeyProductType')).toBe('dept');
+
+    // The configured list beats the RUNTIME-COMPUTED default too - the active-currency list is the
+    // setting's `defaultValue` [model/service/SettingService.cfc:L222], not its answer.
+    expect(root.settingsProvider.setting('skuEligibleCurrencies')).toBe('GBP,EUR');
+  });
+
+  it('★★★ honours a CONFIGURED EMPTY skuEligibleCurrencies, closing the cascade gate', async () => {
+    // ★ EMPTY IS NOT ABSENT. The legacy sets `foundValue = true` in the same breath as the
+    // assignment [model/service/SettingService.cfc:L525-L527], so a row that blanks a setting
+    // SUPPRESSES the default rather than falling through to it. For this key that is the difference
+    // between a closed cascade gate [model/entity/Sku.cfc:L373] - every price accessor answering
+    // nothing - and a fully priced catalog. A `||` fallback would silently reopen it.
+    const executor = makeExecutor(CURRENCY_ROWS, [generalSettingRow('skuEligibleCurrencies', '')]);
+
+    const root = await bootWith(executor);
+
+    expect(root.settingsProvider.setting('skuEligibleCurrencies')).toBe('');
+
+    // And the runtime-computed default is genuinely non-empty for these rows, so the assertion
+    // above cannot be satisfied by an installation that simply has no active currency.
+    const unconfigured = await bootWith(makeExecutor());
+    expect(unconfigured.settingsProvider.setting('skuEligibleCurrencies')).toBe('USD,GBP');
+  });
+
+  it('★★ matches the setting name WITHOUT REGARD TO CASE, as every legacy probe does', async () => {
+    // CFML parity [model/service/SettingService.cfc:L783]: every probe opens with
+    // `LOWER(allSettings.settingName) = <cfqueryparam LCASE(settingName)>`, so a row stored as
+    // `SKUCURRENCY` answered a request for `skuCurrency`. The names are bound folded and the index
+    // is keyed folded, so both halves of that comparison are reproduced.
+    const executor = makeExecutor(CURRENCY_ROWS, [generalSettingRow('SKUCURRENCY', 'JPY')]);
+
+    const root = await bootWith(executor);
+
+    expect(root.settingsProvider.setting('skuCurrency')).toBe('JPY');
+  });
+
+  it('★★ ignores a row that carries any relationship column, because such a row is not global', async () => {
+    // CFML parity [model/service/SettingService.cfc:L768-L870]: the probe emits `AND <col> IS NULL`
+    // for every non-participating column, so a row scoped to a product, a brand or an account is
+    // INVISIBLE to a relationship-free lookup. Promoting one into the global answer would apply one
+    // product's currency to the whole catalog.
+    const executor = makeExecutor(CURRENCY_ROWS, [
+      { ...generalSettingRow('skuCurrency', 'CHF'), productID: 'product-1' },
+    ]);
+
+    const root = await bootWith(executor);
+
+    expect(root.settingsProvider.setting('skuCurrency')).toBe('USD');
   });
 
   it('yields an EMPTY eligible list when no currency row is active, which is the gate the cascade honours', async () => {
@@ -1093,9 +1462,10 @@ describe('bootstrapCompositionRoot memoization', () => {
     // Every statement the graph issued went to the recording executor. If
     // `getPreparedStatementExecutor()` had been reached, the eager read would
     // have gone to a pool instead and this ledger would be empty.
-    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls).toHaveLength(2);
     expect(executor.calls.map((recorded: RecordedStatement): string => recorded.sql)).toEqual([
       CURRENCY_RECORDS_SQL,
+      GENERAL_SETTINGS_SQL,
     ]);
   });
 
@@ -1123,7 +1493,7 @@ describe('createRequestScope', () => {
   // prefix. This suite needs a value it controls, not one it inherits.
   const ACCOUNT_ID = 'account-bootstrap-scope-1';
 
-  it('★★ publishes exactly the SIXTEEN documented members, and NOT ONE RAW REPOSITORY', async () => {
+  it('★★ publishes exactly the SEVENTEEN documented members, and NOT ONE RAW REPOSITORY', async () => {
     const root = await bootWith(makeExecutor());
 
     const scope = await root.createRequestScope();
@@ -1158,11 +1528,23 @@ describe('createRequestScope', () => {
     // index is now deferred so catalog, SKU, price and feed scopes do not pay for an
     // unbounded read they cannot consult. The composed order-pricing operation prepares
     // it itself; this explicit member supports direct synchronous promotion queries.
+    //
+    // ★★ SIXTEEN BECAME SEVENTEEN WITH `feedCriteria` (F26). AAP 0.4.2 freezes the ported feed
+    // method as `generateProductFeed(criteria: FeedCriteria)`, so the origin authority and the
+    // request instant are the METHOD ARGUMENT rather than the port's constructor state - and this
+    // tier is what must assemble them, because it alone holds the deployment-owned allow-list the
+    // host is matched against and this request's single instant. The member PUBLISHES NO NEW
+    // CAPABILITY: it is a two-member frozen data object, it reaches no adapter and no repository,
+    // and it is `undefined` for every request that carried no feed host - which is the same
+    // condition that leaves `productFeedPort` undefined, so the pair travels together. It replaces
+    // the per-request port FACTORY the previous design forced onto the module-private graph, so the
+    // composition root publishes strictly less machinery than before.
     expect(Object.keys(scope).sort()).toEqual([
       'brandService',
       'currencyConverter',
       'currentAccountContext',
       'entityLoaders',
+      'feedCriteria',
       'getSalePriceDetailsForProductSkus',
       'materializeOrderView',
       'now',
@@ -1370,15 +1752,16 @@ describe('createRequestScope', () => {
     await root.createRequestScope();
     await root.createRequestScope();
 
-    // Three scopes, ZERO zone reads, and the tier-one read still exactly once.
-    expect(executor.calls).toHaveLength(1);
+    // Three scopes, ZERO zone reads, and the two tier-one reads still exactly once each.
+    expect(executor.calls).toHaveLength(2);
     expect(executor.countOf(CURRENCY_RECORDS_SQL)).toBe(1);
+    expect(executor.countOf(GENERAL_SETTINGS_SQL)).toBe(1);
     expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(0);
 
     // And nothing else crept in. Asserted as a SET so a per-scope read added later fails here
     // rather than passing quietly.
     expect(new Set(executor.calls.map((call: RecordedStatement): string => call.sql))).toEqual(
-      new Set([CURRENCY_RECORDS_SQL]),
+      new Set([CURRENCY_RECORDS_SQL, GENERAL_SETTINGS_SQL]),
     );
   });
 
@@ -1648,16 +2031,54 @@ describe('createRequestScope', () => {
     expect(admitted.calls.length).toBe(admittedBefore);
   });
 
-  it('refuses a feed host when the allow-list is empty, rather than admitting everything', async () => {
-    // No `FEED_ALLOWED_HOSTS` in this environment, so the configured list is EMPTY - the
-    // deliberate default, because an empty list matches nothing and a deployment that does
-    // not serve a feed therefore cannot accidentally serve one.
-    const root = await bootWith(makeExecutor());
+  it('refuses a feed host against an EXPLICITLY empty allow-list, rather than admitting everything', async () => {
+    // QUOTE-THEN-REVISE. This case booted with NO `FEED_ALLOWED_HOSTS` at all and was annotated
+    // "so the configured list is EMPTY - the deliberate default, because an empty list matches
+    // nothing and a deployment that does not serve a feed therefore cannot accidentally serve
+    // one." F40: an UNSET variable is no longer an empty list, because the source publishes this
+    // feed publicly with no allow-list whatsoever, so deny-by-default withdrew the capability
+    // rather than hardening it. Deny-all is still available and still asserted here - it is now
+    // requested, by SETTING the variable to a value that names no host.
+    const root = await bootWith(
+      makeExecutor(),
+      Object.freeze({ ...BASE_ENVIRONMENT, FEED_ALLOWED_HOSTS: '' }),
+    );
 
     const error = await rejectionOf(() => root.createRequestScope({ feedHost: FEED_HOST }));
 
     expect(error.name).toBe('UntrustedFeedHostError');
     expect(error.message).toContain('allow-list');
+  });
+
+  it('★★★ serves the feed on the request authority when NO allow-list is configured (F40)', async () => {
+    // THE SOURCE-EQUIVALENT DEFAULT. `integrationServices/google/controllers/feed.cfc:L54`
+    // declares `this.publicMethods="product"` and the view renders `http://#CGI.HTTP_HOST#`, so
+    // the legacy served the feed for whatever authority the request carried and had no
+    // allow-list to consult. A deployment that sets nothing must therefore get a WORKING feed.
+    const executor = makeExecutor();
+    const root = await bootWith(executor);
+
+    const scope = await root.createRequestScope({ feedHost: FEED_HOST });
+
+    expect(scope.productFeedPort).toBeDefined();
+    expect(scope.feedCriteria).toBeDefined();
+    expect(scope.feedCriteria?.feedHost).toBe(FEED_HOST);
+  });
+
+  it('normalizes the admitted authority even with no allow-list, and still refuses a blank one', async () => {
+    // "No membership test" is not "no validation". The candidate is still trimmed and case-folded,
+    // so the origin the renderer composes is canonical; and a candidate with nothing in it is still
+    // refused, because there is nothing to serve.
+    const root = await bootWith(makeExecutor());
+
+    const scope = await root.createRequestScope({ feedHost: `  ${FEED_HOST.toUpperCase()}  ` });
+
+    expect(scope.feedCriteria?.feedHost).toBe(FEED_HOST);
+
+    const error = await rejectionOf(() => root.createRequestScope({ feedHost: '   ' }));
+
+    expect(error.name).toBe('UntrustedFeedHostError');
+    expect(error.message).toContain('empty or contains only whitespace');
   });
 
   it('resolves both construction cycles before returning, so no wiring fault is reachable', async () => {
@@ -2468,9 +2889,11 @@ describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
     await scope.updateOrderAmountsWithPriceGroupsThenPromotions(makeOrderViewFixture());
 
     // The composed operation performs the deferred zone read before either pass,
-    // even when both passes are substituted.
-    expect(executor.calls).toHaveLength(2);
+    // even when both passes are substituted. Three statements in total: the two eager tier-one
+    // reads plus the one deferred zone read.
+    expect(executor.calls).toHaveLength(3);
     expect(executor.countOf(CURRENCY_RECORDS_SQL)).toBe(1);
+    expect(executor.countOf(GENERAL_SETTINGS_SQL)).toBe(1);
     expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(1);
     expect(executor.mutationCalls).toHaveLength(0);
   });
@@ -2674,23 +3097,56 @@ describe('RequestScope.materializeOrderView', () => {
     const products = options.products ?? new Map<string, Product>();
     const skusByProductID = options.skusByProductID ?? new Map<string, readonly Sku[]>();
 
-    vi.spyOn(adapters.productRepository, 'getProductByProductID').mockImplementation(
-      (productID: string): Promise<Product | undefined> => {
-        productReads.push(productID);
+    // ★★★ THE SPIES TARGET THE SET-BASED READS, WHICH IS WHAT THE HYDRATION CALLS NOW (F5).
+    // QUOTE-THEN-REVISE: they used to be installed on `getProductByProductID` and `getProductSkus`,
+    // the SINGULAR reads, because the hydration called each of them once per product - which code
+    // review recorded as at least 2P graph-load paths for P products. Both are now one call for the
+    // whole distinct set. THE RECORDED FACTS ARE DELIBERATELY UNCHANGED - `productReads` is still the
+    // identifiers asked for, in order, and `skuReads` is still one entry per product with the
+    // `fetchOptions` flag it was read under - so every case below asserts exactly what it asserted
+    // before, and a regression to per-product reads would show up as repeated entries rather than as a
+    // silently different shape.
+    //
+    // A spy installed on the SINGULAR reads would now record nothing at all, so these two lines are
+    // also what keeps the batching honest: if the hydration ever went back to looping, these counters
+    // would report one entry per call and the "ONCE, however many items name it" cases would fail.
+    vi.spyOn(adapters.productRepository, 'getProductsByProductID').mockImplementation(
+      (productIDs: readonly string[]): Promise<ReadonlyMap<string, Product>> => {
+        const resolved = new Map<string, Product>();
 
-        return Promise.resolve(products.get(productID));
+        for (const productID of productIDs) {
+          productReads.push(productID);
+
+          const product = products.get(productID);
+
+          if (product !== undefined) {
+            // Keyed the way the real adapter keys it: FOLDED, so a caller spelling that differs in
+            // case from the stored identifier still finds its product.
+            resolved.set(cfFoldKey(productID), product);
+          }
+        }
+
+        return Promise.resolve(resolved);
       },
     );
-    vi.spyOn(adapters.skuRepository, 'getProductSkus').mockImplementation(
-      // TWO parameters, and the second IS `fetchOptions`: the ported port declares
-      // `getProductSkus(product, fetchOptions)` [src/domain/ports/skuRepository.ts], which is the
-      // legacy's own eager-fetch decision surfaced [model/dao/SkuDAO.cfc:L152-L163]. There is no
-      // `sorted` parameter on this read.
-      (product: Product, fetchOptions: boolean): Promise<Sku[]> => {
-        const productID = product.getProductID();
-        skuReads.push({ productID, fetchOptions });
+    vi.spyOn(adapters.skuRepository, 'getProductSkusForProducts').mockImplementation(
+      // TWO parameters, and the second IS `fetchOptions`: the set-based twin carries the singular
+      // read's own flag [src/domain/ports/skuRepository.ts], which is the legacy's eager-fetch
+      // decision surfaced [model/dao/SkuDAO.cfc:L152-L163]. There is no `sorted` parameter on either.
+      (
+        requested: readonly Product[],
+        fetchOptions: boolean,
+      ): Promise<ReadonlyMap<string, Sku[]>> => {
+        const resolved = new Map<string, Sku[]>();
 
-        return Promise.resolve([...(skusByProductID.get(productID) ?? [])]);
+        for (const product of requested) {
+          const productID = product.getProductID();
+          skuReads.push({ productID, fetchOptions });
+
+          resolved.set(cfFoldKey(productID), [...(skusByProductID.get(productID) ?? [])]);
+        }
+
+        return Promise.resolve(resolved);
       },
     );
     armSetLoader(scope, options.priceGroups ?? []);
@@ -3125,19 +3581,22 @@ describe('RequestScope.materializeOrderView', () => {
     const first = await openScopeWithAdapters(root);
     const second = await openScopeWithAdapters(root);
 
-    // Only the FIRST scope's repository is armed.
-    vi.spyOn(adaptersOf(first).productRepository, 'getProductByProductID').mockImplementation(
-      (): Promise<Product | undefined> => Promise.resolve(product),
+    // Only the FIRST scope's repository is armed. Both spies target the SET-BASED reads, because those
+    // are what the hydration calls (F5) - see the note in `openHydration`.
+    vi.spyOn(adaptersOf(first).productRepository, 'getProductsByProductID').mockImplementation(
+      (): Promise<ReadonlyMap<string, Product>> =>
+        Promise.resolve(new Map([[cfFoldKey(DOCUMENT_PRODUCT_ID), product]])),
     );
-    vi.spyOn(adaptersOf(first).skuRepository, 'getProductSkus').mockImplementation(
-      (): Promise<Sku[]> => Promise.resolve([sku]),
+    vi.spyOn(adaptersOf(first).skuRepository, 'getProductSkusForProducts').mockImplementation(
+      (): Promise<ReadonlyMap<string, Sku[]>> =>
+        Promise.resolve(new Map([[cfFoldKey(DOCUMENT_PRODUCT_ID), [sku]]])),
     );
     const secondProductReads: string[] = [];
-    vi.spyOn(adaptersOf(second).productRepository, 'getProductByProductID').mockImplementation(
-      (productID: string): Promise<Product | undefined> => {
-        secondProductReads.push(productID);
+    vi.spyOn(adaptersOf(second).productRepository, 'getProductsByProductID').mockImplementation(
+      (productIDs: readonly string[]): Promise<ReadonlyMap<string, Product>> => {
+        secondProductReads.push(...productIDs);
 
-        return Promise.resolve(undefined);
+        return Promise.resolve(new Map<string, Product>());
       },
     );
 
@@ -3162,11 +3621,13 @@ describe('RequestScope.materializeOrderView', () => {
     const scope = await openScopeWithAdapters(root);
     const adapters = adaptersOf(scope);
 
-    vi.spyOn(adapters.productRepository, 'getProductByProductID').mockImplementation(
-      (): Promise<Product | undefined> => Promise.resolve(product),
+    vi.spyOn(adapters.productRepository, 'getProductsByProductID').mockImplementation(
+      (): Promise<ReadonlyMap<string, Product>> =>
+        Promise.resolve(new Map([[cfFoldKey(DOCUMENT_PRODUCT_ID), product]])),
     );
-    vi.spyOn(adapters.skuRepository, 'getProductSkus').mockImplementation((): Promise<Sku[]> =>
-      Promise.resolve([sku]),
+    vi.spyOn(adapters.skuRepository, 'getProductSkusForProducts').mockImplementation(
+      (): Promise<ReadonlyMap<string, Sku[]>> =>
+        Promise.resolve(new Map([[cfFoldKey(DOCUMENT_PRODUCT_ID), [sku]]])),
     );
     const priceGroupPass = vi
       .spyOn(observableOrderPass(scope.priceGroupService), 'updateOrderAmountsWithPriceGroups')
@@ -3217,6 +3678,182 @@ describe('RequestScope.materializeOrderView', () => {
     // formality.
     expect(productReads).toEqual([DOCUMENT_PRODUCT_ID, DOCUMENT_SECOND_PRODUCT_ID]);
     expect(skuReads).toHaveLength(2);
+    expect(itemAt(view, 0).sku).toBe(firstSku);
+    expect(itemAt(view, 1).sku).toBe(secondSku);
+  });
+
+  it('★★★ REFUSES a CROSSED pair - product A with a SKU that belongs to product B', async () => {
+    // ★★★ THE CASE A CODE REVIEW ASKED FOR, AND THE ONE THE TWO CASES ABOVE COULD NOT CATCH. SKU
+    // resolution used to pool every named product's SKUs into ONE map keyed by SKU identifier alone,
+    // so the per-item check answered "is this SKU carried by ANY product in this document" instead of
+    // "by the product named on THIS item". With one product in the document the two questions coincide,
+    // which is why the single-product refusal case above passed while the defect stood; with TWO they
+    // diverge, and a crossed pair walked straight through (CWE-20).
+    //
+    // WHAT WOULD FOLLOW FROM ADMITTING IT, stated because "malformed input accepted" understates it:
+    // the item would be priced against a SKU whose product-type ancestry, brand and option membership
+    // belong to a product the caller never named on that line - and those are precisely the gates
+    // reward and qualifier membership are decided by [model/service/PromotionService.cfc:L864-L865,
+    // L808-L818]. A discount would be computed against the wrong catalogue.
+    const first = documentProduct(DOCUMENT_PRODUCT_ID);
+    const second = documentProduct(DOCUMENT_SECOND_PRODUCT_ID);
+    const firstSku = documentSku(DOCUMENT_SKU_ID, first);
+    const secondSku = documentSku(DOCUMENT_SECOND_SKU_ID, second);
+    const { scope } = await openHydration({
+      products: new Map([
+        [DOCUMENT_PRODUCT_ID, first],
+        [DOCUMENT_SECOND_PRODUCT_ID, second],
+      ]),
+      // Each product carries exactly its OWN sku. Neither carries the other's, which is what makes the
+      // document below crossed rather than merely unusual.
+      skusByProductID: new Map([
+        [DOCUMENT_PRODUCT_ID, [firstSku]],
+        [DOCUMENT_SECOND_PRODUCT_ID, [secondSku]],
+      ]),
+    });
+
+    const raised = await rejectionOf(() =>
+      scope.materializeOrderView(
+        orderDocument({
+          orderItems: [
+            // Item 0 is correct, so the refusal cannot be an artefact of a document that is wrong
+            // throughout - the first item resolves and the SECOND is the crossed one.
+            itemDocument(),
+            itemDocument({
+              orderItemID: DOCUMENT_SECOND_ITEM_ID,
+              productID: DOCUMENT_SECOND_PRODUCT_ID,
+              // ★ THE CROSSING: the SECOND product named with the FIRST product's SKU. Both
+              // identifiers exist, and both are named elsewhere in this very document - the pooled map
+              // is exactly what used to make that enough.
+              skuID: DOCUMENT_SKU_ID,
+            }),
+          ],
+        }),
+      ),
+    );
+
+    // The same refusal the single-product mismatch earns, indexed to the offending item: BOTH members
+    // named, because which half of the pair is wrong is the caller's decision, and NEITHER value
+    // repeated back.
+    expect(raised).toBeInstanceOf(OrderViewDocumentDataError);
+    expect(requireDocumentDataError(raised).fields).toEqual([
+      {
+        path: 'order.orderItems.1.skuID',
+        message: 'does not name a sku carried by the product named on the same order item',
+      },
+      {
+        path: 'order.orderItems.1.productID',
+        message: 'names a product that does not carry the sku named on the same order item',
+      },
+    ]);
+    expect(publishedTextOf(raised)).not.toContain(DOCUMENT_SKU_ID);
+    expect(publishedTextOf(raised)).not.toContain(DOCUMENT_SECOND_PRODUCT_ID);
+  });
+
+  it('★★ still admits the SAME two products when each item names its OWN sku, in either order', async () => {
+    // The complement of the crossed case, and it is not a duplicate of the two-product case above: it
+    // states the SKUs in the opposite order to the products so the pair lookup cannot be passing by
+    // positional coincidence. A guard that refused this would have broken every legitimate multi-product
+    // order, which is the regression the crossed-pair fix must not introduce.
+    const first = documentProduct(DOCUMENT_PRODUCT_ID);
+    const second = documentProduct(DOCUMENT_SECOND_PRODUCT_ID);
+    const firstSku = documentSku(DOCUMENT_SKU_ID, first);
+    const secondSku = documentSku(DOCUMENT_SECOND_SKU_ID, second);
+    const { scope } = await openHydration({
+      products: new Map([
+        [DOCUMENT_PRODUCT_ID, first],
+        [DOCUMENT_SECOND_PRODUCT_ID, second],
+      ]),
+      skusByProductID: new Map([
+        [DOCUMENT_PRODUCT_ID, [firstSku]],
+        [DOCUMENT_SECOND_PRODUCT_ID, [secondSku]],
+      ]),
+    });
+
+    const view = await scope.materializeOrderView(
+      orderDocument({
+        orderItems: [
+          itemDocument({
+            orderItemID: DOCUMENT_SECOND_ITEM_ID,
+            productID: DOCUMENT_SECOND_PRODUCT_ID,
+            skuID: DOCUMENT_SECOND_SKU_ID,
+          }),
+          itemDocument(),
+        ],
+      }),
+    );
+
+    expect(itemAt(view, 0).sku).toBe(secondSku);
+    expect(itemAt(view, 1).sku).toBe(firstSku);
+  });
+
+  it('★★★ reads TWO products in ONE call and their SKUs in ONE call, not one call each (F5)', async () => {
+    // ★★★ THE FINDING, ASSERTED AT THE COUNT OF CALLS RATHER THAN THE COUNT OF IDENTIFIERS. Every case
+    // above pins WHICH products and SKUs were asked for; none of them could distinguish "one call
+    // carrying two identifiers" from "two calls carrying one each", and that distinction IS the
+    // finding: code review recorded at least 2P graph-load paths for P products, because the hydration
+    // looped `getProductByProductID` and then `getProductSkus`. Each of those calls is a graph read, a
+    // SKU read, an option read and a sale-price resolution, so a ten-product order paid for up to
+    // forty statements to hydrate ten products.
+    //
+    // The loader underneath ALWAYS took a list - `materializeProducts` binds an `IN` list and has since
+    // it was written - so nothing about the fetch shape changes here; what changed is that this file
+    // stopped calling it one identifier at a time.
+    const first = documentProduct(DOCUMENT_PRODUCT_ID);
+    const second = documentProduct(DOCUMENT_SECOND_PRODUCT_ID);
+    const firstSku = documentSku(DOCUMENT_SKU_ID, first);
+    const secondSku = documentSku(DOCUMENT_SECOND_SKU_ID, second);
+    const root = await bootWith(makeExecutor());
+    const scope = await openScopeWithAdapters(root);
+    const adapters = adaptersOf(scope);
+
+    const productLoads = vi
+      .spyOn(adapters.productRepository, 'getProductsByProductID')
+      .mockImplementation((): Promise<ReadonlyMap<string, Product>> =>
+        Promise.resolve(
+          new Map([
+            [cfFoldKey(DOCUMENT_PRODUCT_ID), first],
+            [cfFoldKey(DOCUMENT_SECOND_PRODUCT_ID), second],
+          ]),
+        ),
+      );
+    const skuLoads = vi
+      .spyOn(adapters.skuRepository, 'getProductSkusForProducts')
+      .mockImplementation((): Promise<ReadonlyMap<string, Sku[]>> =>
+        Promise.resolve(
+          new Map([
+            [cfFoldKey(DOCUMENT_PRODUCT_ID), [firstSku]],
+            [cfFoldKey(DOCUMENT_SECOND_PRODUCT_ID), [secondSku]],
+          ]),
+        ),
+      );
+    armSetLoader(scope, []);
+
+    const view = await scope.materializeOrderView(
+      orderDocument({
+        orderItems: [
+          itemDocument(),
+          itemDocument({
+            orderItemID: DOCUMENT_SECOND_ITEM_ID,
+            productID: DOCUMENT_SECOND_PRODUCT_ID,
+            skuID: DOCUMENT_SECOND_SKU_ID,
+          }),
+        ],
+      }),
+    );
+
+    // ONE call each, whatever the product count.
+    expect(productLoads).toHaveBeenCalledTimes(1);
+    expect(skuLoads).toHaveBeenCalledTimes(1);
+
+    // AND BOTH IDENTIFIERS TRAVELLED IN THAT ONE CALL, so this is not passing because a product was
+    // dropped. The SKU call receives the PRODUCTS - it needs each one's base type to choose its
+    // eager-fetch join [model/dao/SkuDAO.cfc:L150-L168] - and the eager flag is still TRUE.
+    expect(productLoads).toHaveBeenCalledWith([DOCUMENT_PRODUCT_ID, DOCUMENT_SECOND_PRODUCT_ID]);
+    expect(skuLoads).toHaveBeenCalledWith([first, second], true);
+
+    // And the view is the same view the per-product loop produced: each item's SKU by identity, from
+    // its own product.
     expect(itemAt(view, 0).sku).toBe(firstSku);
     expect(itemAt(view, 1).sku).toBe(secondSku);
   });
@@ -3413,10 +4050,19 @@ describe('RequestScope.getSalePriceDetailsForProductSkus', () => {
 
 /** The five variables with no default. Every case adds only what it is about. */
 const BASE_ENV: Readonly<Record<string, string>> = Object.freeze({
-  DB_HOST: 'db.internal.invalid',
+  // A NAMED host, because `DB_TLS_MODE` below is `verify-identity` and `src/lib/config.ts` refuses
+  // that mode against an IP literal (F47) - a certificate binds to names, so an address would
+  // silently reduce the mode to a chain-only check. `.invalid` never resolves [RFC 2606] and
+  // nothing here connects.
+  DB_HOST: 'slatwall-database.invalid',
   DB_USER: 'slatwall',
   DB_PASSWORD: 'unit-test-password',
-  DB_TLS_MODE: 'disabled',
+  // F48: this fixture paired a non-loopback host with `disabled` transport, which the configuration
+  // contract refuses outright - cleartext is admitted only for a provable loopback destination, in
+  // every environment. The fixture describes a suite that never connects, so the mode is raised to
+  // the recommended `verify-identity`, which the NAMED host above satisfies and which needs no
+  // trust anchor.
+  DB_TLS_MODE: 'verify-identity',
   DB_DIALECT: 'MySQL',
 });
 
@@ -3497,8 +4143,58 @@ class StubExecutor implements PreparedStatementExecutor {
     return Promise.resolve({ affectedRows: this.affectedRows, warningStatus: 0 });
   }
 
-  transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {
-    return work(this);
+  /**
+   * How many real UNITS OF WORK were begun - outermost `transaction` calls only.
+   *
+   * ★ RECORDED BECAUSE ATOMICITY IS OTHERWISE INVISIBLE FROM OUTSIDE (F3). A double that merely
+   * ran the callback could not distinguish "one unit of work carrying three writes" from "three
+   * units of work carrying one each" - the `mutations` log looks identical either way, and the
+   * difference is exactly what a partial-failure defect turns on. Additive: no existing case reads
+   * these, so none changes.
+   *
+   * ★★ WHY THIS COUNTS OUTERMOST CALLS ONLY, WHICH IS NOT WHAT IT FIRST COUNTED. The first version
+   * incremented on every call and read `5` for a four-SKU repricing wrapped in one transaction,
+   * because each adapter write wraps its own statements too. That number was an artefact of the
+   * double, not of the code under test: the REAL executor JOINS rather than nests - documented at
+   * `src/repositories/mysql/connection.ts` - so an inner `transaction` call issues no `BEGIN` and
+   * runs `work` inline on the outer connection, and the true unit count was always one. Counting
+   * every call would have made this metric report a defect that does not exist while being unable
+   * to report the one that did.
+   */
+  transactionsOpened = 0;
+
+  /**
+   * Every `transaction` call, joins included.
+   *
+   * Kept alongside {@link transactionsOpened} so a case can prove that joining actually HAPPENED -
+   * more calls than units begun - rather than inferring it from a single number that would read the
+   * same way if the inner adapters had stopped wrapping their writes.
+   */
+  transactionCalls = 0;
+
+  /** The deepest `transaction` call nesting reached - `1` when nothing joined. */
+  maximumTransactionDepth = 0;
+
+  private openTransactions = 0;
+
+  async transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {
+    this.transactionCalls += 1;
+
+    if (this.openTransactions === 0) {
+      this.transactionsOpened += 1;
+    }
+
+    this.openTransactions += 1;
+    this.maximumTransactionDepth = Math.max(this.maximumTransactionDepth, this.openTransactions);
+
+    try {
+      // The SAME executor is handed to the callback, matching the real one's documented JOINING
+      // behaviour: MySQL has no nested transactions, so an inner `transaction` call participates
+      // in the outer one rather than opening a second.
+      return await work(this);
+    } finally {
+      this.openTransactions -= 1;
+    }
   }
 }
 
@@ -3506,6 +4202,8 @@ interface RootOptions {
   readonly env?: Readonly<Record<string, string>>;
   readonly executor?: StubExecutor;
   readonly rates?: Readonly<Record<string, string>>;
+  /** Pairs with `rates`: when the overridden table was retrieved. Unvalidated, by design. */
+  readonly ratesRetrievedAt?: Date;
 }
 
 async function makeRoot(options: RootOptions = {}): Promise<CompositionRoot> {
@@ -3513,6 +4211,9 @@ async function makeRoot(options: RootOptions = {}): Promise<CompositionRoot> {
     executor: options.executor ?? new StubExecutor(),
     environment: { ...BASE_ENV, ...options.env },
     ...(options.rates === undefined ? {} : { europeanCentralBankRates: options.rates }),
+    ...(options.ratesRetrievedAt === undefined
+      ? {}
+      : { europeanCentralBankRatesRetrievedAt: options.ratesRetrievedAt }),
   });
 }
 
@@ -3646,10 +4347,17 @@ describe('bootstrapCompositionRoot', () => {
     it('reads the allow-list from configuration', async () => {
       const root = await makeRoot({ env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST } });
 
-      // ★ `root.config` UNTIL F17. The allow-list is deployment-owned configuration and carries
-      // nothing secret, so the redacted projection republishes `feed` whole and the claim is
-      // unchanged. What moved is only which member the assertion reads it from.
-      expect(root.diagnostics.feed.allowedHosts).toStrictEqual([ALLOWED_FEED_HOST]);
+      // ★ `root.config` UNTIL F17, THEN `root.diagnostics.feed.allowedHosts` UNTIL THE
+      // LEAST-PRIVILEGE REDUCTION. The published member is now a COUNT: the list is deployment
+      // topology, and "how many hosts loaded" is what a diagnostic surface was ever needed for.
+      //
+      // The claim this case makes - the allow-list comes from configuration - is not weakened by
+      // that, because the count alone would be satisfied by a list read from anywhere. It is the two
+      // cases immediately below that pin the CONTENT, and they pin it behaviourally, through the only
+      // consumer that matters: the configured host mints a feed port and any other host is refused.
+      // That is a stronger proof of provenance than reading the list back out of a diagnostic.
+      expect(root.diagnostics.feed.allowedHostCount).toBe(1);
+      expect(JSON.stringify(root.diagnostics)).not.toContain(ALLOWED_FEED_HOST);
     });
 
     it('mints a feed port for a host that IS on the deployment allow-list', async () => {
@@ -3674,16 +4382,27 @@ describe('bootstrapCompositionRoot', () => {
       }).rejects.toBeInstanceOf(UntrustedFeedHostError);
     });
 
-    it('refuses every host when no allow-list is configured, publishing no feed at all', () => {
-      // The intended default rather than a degraded mode: an empty list matches
-      // nothing, so a deployment that does not serve a feed cannot accidentally serve
-      // one. This is also why the variable stayed OPTIONAL - making it required would
-      // have broken every deployment that never had a feed.
+    it('refuses every host against an EXPLICITLY empty allow-list, publishing no feed at all', () => {
+      // QUOTE-THEN-REVISE. This booted with no `FEED_ALLOWED_HOSTS` and called that "the intended
+      // default rather than a degraded mode". F40 reversed which state is the default: UNSET is now
+      // no policy at all and serves the request's authority, matching a source method that is
+      // declared public and consults no list. Deny-all is requested by setting the variable empty,
+      // and that is what is asserted here. The variable stays OPTIONAL either way, which is what
+      // keeps every feed-less deployment starting.
       return expect(async () => {
-        const root = await makeRoot();
+        const root = await makeRoot({ env: { FEED_ALLOWED_HOSTS: '' } });
 
         await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
       }).rejects.toBeInstanceOf(UntrustedFeedHostError);
+    });
+
+    it('★★★ admits the request authority when the deployment configured no list (F40)', async () => {
+      const root = await makeRoot();
+
+      const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
+
+      expect(scope.productFeedPort).toBeDefined();
+      expect(scope.feedCriteria?.feedHost).toBe(ALLOWED_FEED_HOST);
     });
 
     it('mints no feed port when the request names no host', async () => {
@@ -3726,13 +4445,17 @@ describe('bootstrapCompositionRoot', () => {
         env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST, ...env },
         executor: new StubExecutor(),
       });
-      const port = (await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST })).productFeedPort;
+      const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
+      const port = scope.productFeedPort;
+      const criteria = scope.feedCriteria;
 
-      if (port === undefined) {
-        throw new Error('expected a feed port for an allow-listed host');
+      if (port === undefined || criteria === undefined) {
+        throw new Error('expected a feed port and its criteria for an allow-listed host');
       }
 
-      return { document: port.generateProductFeed() };
+      // AAP 0.4.2: the origin authority and the instant are the METHOD ARGUMENT, and the root is
+      // what assembles them - it holds the allow-list this criteria's host was matched against.
+      return { document: port.generateProductFeed(criteria) };
     }
 
     it('★★ publishes http URLs from the shipped wiring, with nothing configured', async () => {
@@ -3809,9 +4532,14 @@ describe('bootstrapCompositionRoot', () => {
           ECB_RATES_RETRIEVED_AT: new Date().toISOString(),
         },
       }).then(async (root) => {
-        // ★ `root.config` UNTIL F17, for the same reason as S-15 above: a published exchange rate
-        // is a public reference figure, so `currency` survives the redaction whole.
-        expect(root.diagnostics.currency.europeanCentralBankRates).toStrictEqual({ USD: '1.0850' });
+        // ★ `root.config` UNTIL F17, THEN THE WHOLE TABLE UNTIL THE LEAST-PRIVILEGE REDUCTION. The
+        // published members are now a count and a boolean. As with the feed allow-list above, that
+        // costs this case nothing: the rate's VALUE is proved below by converting with it, which is
+        // the only thing a rate table is for and cannot be satisfied by a table read back out of a
+        // diagnostic.
+        expect(root.diagnostics.currency.referenceRateCount).toBe(1);
+        expect(root.diagnostics.currency.ratesRetrievedAtConfigured).toBe(true);
+        expect(JSON.stringify(root.diagnostics)).not.toContain('1.0850');
 
         // EUR is the implicit pivot and is deliberately absent from the table, so a
         // EUR-to-USD conversion exercises the multiply-out half against a configured
@@ -3854,6 +4582,106 @@ describe('bootstrapCompositionRoot', () => {
       // the emitting module, so it is asserted here as well as in the logger's suite.
       expect(warned[0]?.context['ageInDays']).toBe(3);
       expect(warned[0]?.context['rowCount']).toBe(1);
+    });
+
+    it('★★★ REPORTS A FUTURE RETRIEVAL INSTANT INSTEAD OF CALLING THE TABLE CURRENT', async () => {
+      // ★★★ A REPORTING INVERSION, NOT A PARSE ERROR, AND THE CASE THAT PROVES THE ARM. The age
+      // is a subtraction, so an instant ahead of this host's clock makes it NEGATIVE - and a
+      // negative age is LESS THAN the one-day window, so before this arm existed the table sailed
+      // past the staleness branch and was announced as "resolved from configuration". The one
+      // value collected to make a stale table visible instead guaranteed it looked current.
+      //
+      // ★ IT IS DRIVEN THROUGH THE OVERRIDE SEAM BECAUSE THAT IS THE ROUTE THAT CAN STILL REACH
+      // IT. `src/lib/config.ts` now refuses a future `ECB_RATES_RETRIEVED_AT` outright, so a
+      // fully configured table cannot get here; `CompositionOverrides.europeanCentralBankRates`
+      // supplies a table DIRECTLY and bypasses that resolver, while the instant still comes from
+      // configuration - so the pairing is reachable and the arm is not dead code. A configured
+      // instant one day ahead is used, which config would refuse on its own; here it arrives
+      // beside an overridden table.
+      const { lines } = captureLogLines();
+      const overriddenTable = Object.freeze({ USD: '1.0850' });
+
+      // THE CONTROL HALF FIRST, so the assertion below is a difference in the INSTANT and not in
+      // the override: the same overridden table with a PAST instant reports its age normally.
+      await makeRoot({
+        rates: overriddenTable,
+        ratesRetrievedAt: new Date(Date.now() - 3 * 86_400_000),
+      });
+
+      expect(
+        lines.filter((line) => line.message.includes('retrieval instant in the future')),
+      ).toStrictEqual([]);
+      expect(
+        lines.filter((line) => line.message.includes('older than the one-day refresh window')),
+      ).toHaveLength(1);
+
+      lines.length = 0;
+
+      await makeRoot({
+        rates: overriddenTable,
+        ratesRetrievedAt: new Date(Date.now() + 86_400_000),
+      });
+
+      const warned = lines.filter((line) =>
+        line.message.includes('retrieval instant in the future'),
+      );
+
+      expect(warned).toHaveLength(1);
+      expect(warned[0]?.level).toBe('warn');
+      // A negative age, rounded toward zero, so an operator sees the direction rather than a
+      // redacted marker. `ageInDays` is in the logger's diagnostic allow-list; `rowCount` too.
+      expect(warned[0]?.context['ageInDays']).toBe(-1);
+      expect(warned[0]?.context['rowCount']).toBe(1);
+      // And it did NOT also claim the table was resolved normally.
+      expect(
+        lines.filter((line) => line.message.includes('resolved from configuration')),
+      ).toStrictEqual([]);
+    });
+
+    it('reports an OVERRIDDEN table with no paired instant as being of unknown age', async () => {
+      // The arm whose own comment always claimed this was what it was for. It used not to be:
+      // the CONFIGURED instant was reported whatever the table's provenance, so a composition
+      // that overrode the table and configured an instant had one table's freshness reported for
+      // another's rates. The instant now travels with the table it describes.
+      const { lines } = captureLogLines();
+
+      await makeRoot({
+        env: {
+          ECB_REFERENCE_RATES: 'USD=1.0850',
+          ECB_RATES_RETRIEVED_AT: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+        },
+        rates: Object.freeze({ GBP: '0.8520' }),
+      });
+
+      const reported = lines.filter((line) => line.message.includes('without a retrieval instant'));
+
+      expect(reported).toHaveLength(1);
+      expect(reported[0]?.context).toStrictEqual({ rowCount: 1 });
+      // The configured instant is three days old; nothing claims the OVERRIDDEN table is.
+      expect(
+        lines.filter((line) => line.message.includes('older than the one-day refresh window')),
+      ).toStrictEqual([]);
+    });
+
+    it('treats a few seconds of clock skew as an age of zero rather than as a future instant', async () => {
+      // The allowance exists so that two unsynchronized clocks do not make a routine cold start
+      // look alarming. Thirty seconds ahead is skew; it reports the ordinary line with an age of
+      // zero, not the future warning.
+      const { lines } = captureLogLines();
+
+      await makeRoot({
+        rates: Object.freeze({ USD: '1.0850' }),
+        ratesRetrievedAt: new Date(Date.now() + 30_000),
+      });
+
+      expect(
+        lines.filter((line) => line.message.includes('retrieval instant in the future')),
+      ).toStrictEqual([]);
+
+      const resolved = lines.filter((line) => line.message.includes('resolved from configuration'));
+
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0]?.context['ageInDays']).toBe(0);
     });
 
     it('★★ STILL USES a stale table, which is the deliberately declined half of S-20', () => {
@@ -3900,7 +4728,18 @@ describe('bootstrapCompositionRoot', () => {
       // [model/entity/Sku.cfc:L416-L428] consumes that value as a price. What the fix
       // could change is whether the event is visible - and now it is.
       const { lines } = captureLogLines();
-      const root = await makeRoot();
+      // ★ A TABLE IS CONFIGURED, AND THE CASE NOW SAYS SO. It used to boot with NO rates at all,
+      // which is a DIFFERENT legacy state: an absent table makes the legacy read an unassigned
+      // variable and raise [model/service/CurrencyService.cfc:L104-L131], and the port now
+      // reproduces that refusal - see the empty-table case below. The pass-through this case is
+      // about is the OTHER state, [L100-L101]: a table that is present but does not quote one of
+      // the two codes. `GBP` is deliberately absent from it.
+      const root = await makeRoot({
+        env: {
+          ECB_REFERENCE_RATES: 'USD=1.0850',
+          ECB_RATES_RETRIEVED_AT: new Date().toISOString(),
+        },
+      });
 
       const converted = await (
         await root.createRequestScope()
@@ -3946,22 +4785,81 @@ describe('bootstrapCompositionRoot', () => {
       // same-currency call the unchanged amount is the right answer anyway. That is
       // precisely why the observability half of S-20 reports and does not refuse.
       const { lines } = captureLogLines();
-      const root = await makeRoot();
+      // The table quotes USD and NOT GBP, so the same-currency call under test is GBP-to-GBP: the
+      // gate fails on a code that is not quotable, exactly as a cross-currency call would, and
+      // there is no same-currency short-circuit to rescue it. Booting with no table at all would
+      // now REFUSE rather than pass through, which is a different legacy state - see below.
+      const root = await makeRoot({
+        env: {
+          ECB_REFERENCE_RATES: 'USD=1.0850',
+          ECB_RATES_RETRIEVED_AT: new Date().toISOString(),
+        },
+      });
 
       const converted = await (
         await root.createRequestScope()
       ).currencyConverter.convertCurrency(
         Money.fromDecimalString('100.00'),
-        toCurrencyCode('USD'),
-        toCurrencyCode('USD'),
+        toCurrencyCode('GBP'),
+        toCurrencyCode('GBP'),
       );
 
       expect(converted.toFixed2()).toBe('100.00');
 
       const reported = lines.filter((line) => line.message.includes('passed through'));
       expect(reported).toHaveLength(1);
-      expect(reported[0]?.context['originalCurrencyCode']).toBe('USD');
-      expect(reported[0]?.context['convertToCurrencyCode']).toBe('USD');
+      expect(reported[0]?.context['originalCurrencyCode']).toBe('GBP');
+      expect(reported[0]?.context['convertToCurrencyCode']).toBe('GBP');
+    });
+
+    it('★★★ REFUSES a cross-currency conversion when NO rate table is available at all', async () => {
+      // ★★★ THE FAIL-CLOSED HALF, AND IT IS A DIFFERENT LEGACY STATE FROM THE PASS-THROUGH.
+      // Code review recorded that with no rates injected EVERY cross-currency conversion passed
+      // through 1:1 in production, while the legacy actively fetched and daily-refreshed the ECB
+      // table [model/service/CurrencyService.cfc:L102-L131]. Read that function to its end: the
+      // `catch` swallows a failed fetch and the NEXT statement returns
+      // `variables.europeanCentralBankRates`, which on a cold start was never assigned - CFML
+      // refuses that at runtime. So the legacy RAISES when it has no table; it does not price at
+      // par. Answering 1:1 here published base-currency numerals as foreign-currency prices,
+      // invisibly and for every eligible currency at once.
+      const root = await makeRoot();
+      const scope = await root.createRequestScope();
+
+      await expect(
+        scope.currencyConverter.convertCurrency(
+          Money.fromDecimalString('100.00'),
+          toCurrencyCode('USD'),
+          toCurrencyCode('GBP'),
+        ),
+      ).rejects.toThrow(/No European Central Bank reference-rate table is available/u);
+
+      // It names the two codes and NOTHING else - no amount, no configuration value.
+      await expect(
+        scope.currencyConverter.convertCurrency(
+          Money.fromDecimalString('100.00'),
+          toCurrencyCode('USD'),
+          toCurrencyCode('GBP'),
+        ),
+      ).rejects.toThrow(/so USD cannot be converted to GBP/u);
+    });
+
+    it('★★ still converts the EURO PIVOT to itself with no table, because that needs no rate', async () => {
+      // The refusal above is scoped to conversions that actually need a quote. Both sides of a
+      // EUR-to-EUR call resolve as the pivot [model/service/CurrencyService.cfc:L87, L93], so the
+      // guard never fails and the emptiness test is never reached. A single-currency installation
+      // is therefore unaffected by the fail-closed rule: step 3 of the cascade
+      // [model/entity/Sku.cfc:L416-L428] only converts currencies that need converting.
+      const root = await makeRoot();
+
+      const converted = await (
+        await root.createRequestScope()
+      ).currencyConverter.convertCurrency(
+        Money.fromDecimalString('100.00'),
+        toCurrencyCode('EUR'),
+        toCurrencyCode('EUR'),
+      );
+
+      expect(converted.toFixed2()).toBe('100.00');
     });
 
     it('converts a same-currency call through the pivot, and reports nothing, once it has a rate', async () => {
@@ -3988,6 +4886,132 @@ describe('bootstrapCompositionRoot', () => {
 
       expect(converted.toFixed2()).toBe('100.00');
       expect(lines.filter((line) => line.message.includes('passed through'))).toStrictEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The logging threshold this root hands to `src/lib/logger.ts`
+  //
+  // ★★ THE COMPOSITION ROOT IS THE SEAM BETWEEN CONFIGURATION AND LOGGING, AND THAT IS WHY THESE
+  // CASES LIVE HERE RATHER THAN IN `tests/unit/lib/logger.test.ts`. `src/lib/config.ts` and
+  // `src/lib/logger.ts` deliberately import nothing - configuration must be able to fail before
+  // logging exists, and logging must be able to report that failure - so the resolved `LOG_LEVEL`
+  // cannot travel between them directly. This module holds both and performs the handover, which
+  // makes the handover this file's property to assert.
+  //
+  // ★ IT REPLACES A LOGGER-SIDE ARRANGEMENT THAT ECHOED THE REJECTED VALUE. The earlier report was
+  // emitted by the logger and carried the raw token under `configuredLogLevel`, admitting anything
+  // matching `[A-Za-z0-9_.-]{1,32}` verbatim and retaining it in a process-global set - the shape of
+  // an access key or a short bearer token. The value is now discarded at resolution, so the only
+  // strings these cases can observe are members of a closed classifier union.
+  // -------------------------------------------------------------------------
+
+  describe('the adopted logging threshold', () => {
+    /**
+     * The composition adopts a process-wide threshold, so it is restored after every case here for
+     * the same reason `tests/unit/lib/logger.test.ts` restores it: `isolate: true` keeps it inside
+     * this file, and this keeps it inside one case.
+     */
+    afterEach(() => {
+      logger.adoptConfiguredThreshold(undefined);
+    });
+
+    /**
+     * Emit one entry at `level` through the process-wide logger with NO pinned threshold, and report
+     * whether it survived the filter. This is how the HANDOVER is observed: the composition adopts a
+     * threshold into `src/lib/logger.ts`, and the only way to see that it landed is to emit against
+     * it.
+     */
+    function survivesThreshold(level: 'debug' | 'info'): boolean {
+      const lines: string[] = [];
+      logger.withSink((line) => lines.push(line))[level]('threshold probe');
+      return lines.length > 0;
+    }
+
+    it('★★★ ADOPTS THE CONFIGURED LEVEL, so a deployment can actually see debug lines', async () => {
+      // The reason the handover exists at all. Nothing in the subtree reads `LOG_LEVEL` from the
+      // environment any more, so without this adoption a deployment could set the variable and change
+      // nothing whatsoever.
+      const { lines } = captureLogLines();
+
+      expect(survivesThreshold('debug')).toBe(false);
+
+      await makeRoot({ env: { LOG_LEVEL: 'debug' } });
+
+      expect(survivesThreshold('debug')).toBe(true);
+      // And a correctly configured level is not announced. The suppression set is keyed by
+      // CLASSIFIER, so this cannot be masked by another case having announced a coerced one - a build
+      // that started announcing `configured` would key separately and would still emit here.
+      expect(lines.filter((line) => line.message.includes('LOG_LEVEL'))).toStrictEqual([]);
+    });
+
+    it('leaves the built-in floor in force when the level is unset, and says nothing about it', async () => {
+      const { lines } = captureLogLines();
+
+      await makeRoot();
+
+      expect(survivesThreshold('info')).toBe(true);
+      expect(survivesThreshold('debug')).toBe(false);
+      expect(lines.filter((line) => line.message.includes('LOG_LEVEL'))).toStrictEqual([]);
+    });
+
+    it('adopts a level that raises the floor as readily as one that lowers it', async () => {
+      await makeRoot({ env: { LOG_LEVEL: 'error' } });
+
+      expect(survivesThreshold('info')).toBe(false);
+    });
+
+    it('★★★ ANNOUNCES A MISTYPED LEVEL EXACTLY ONCE, FROM A CLASSIFIER, ECHOING NO PART OF IT', async () => {
+      // ★★★ THE THREE PROPERTIES OF THE REPLACEMENT REPORT, ASSERTED TOGETHER RATHER THAN IN THREE
+      // CASES, BECAUSE THE SUPPRESSION MAKES THEM INSEPARABLE. Splitting them would leave the second
+      // and third cases asserting an absence that the FIRST case's announcement had already
+      // guaranteed - a vacuous pass dressed up as coverage. One case, three compositions, and every
+      // assertion below fails if the behaviour regresses.
+      //
+      // The mistyped value is deliberately shaped like an access key. That shape is what the retired
+      // logger-side report ADMITTED verbatim - it matched `[A-Za-z0-9_.-]{1,32}` - so it is the exact
+      // input the disclosure half has to answer.
+      const planted = 'AKIAPLANTEDNOTALEVEL9';
+      const { lines } = captureLogLines();
+
+      await makeRoot({ env: { LOG_LEVEL: planted } });
+
+      const announcements = lines.filter((line) => line.message.includes('LOG_LEVEL'));
+
+      // 1. IT ANNOUNCES, from a fixed classifier. Both context keys are in the logger's closed
+      //    diagnostic allow-list, so neither is redacted, and both values are members of compile-time
+      //    unions rather than operator-supplied text.
+      expect(announcements).toHaveLength(1);
+      expect(announcements[0]?.level).toBe('warn');
+      expect(announcements[0]?.context).toStrictEqual({
+        logThresholdSource: 'defaulted-unrecognized',
+        thresholdInForce: 'info',
+      });
+      // The recognized vocabulary is named, so the report is actionable without a second lookup.
+      expect(announcements[0]?.message).toContain('debug, info, warn, error');
+
+      // 2. THE SERVICE STILL SERVES, at the default threshold. The coercion is the whole reason this
+      //    key is resolved leniently: a threshold able to abort a cold start would leave a
+      //    misconfigured service unable to explain itself.
+      expect(lines.filter((line) => line.message.includes('Composition root wired'))).toHaveLength(
+        1,
+      );
+      expect(survivesThreshold('info')).toBe(true);
+      expect(survivesThreshold('debug')).toBe(false);
+
+      // 3. NO PART OF THE REJECTED VALUE APPEARS ANYWHERE. Asserted over EVERY captured line rather
+      //    than over the announcement alone, so an edit that threaded the raw token through some
+      //    other line would fail here too.
+      expect(JSON.stringify(lines)).not.toContain(planted);
+      expect(JSON.stringify(lines)).not.toContain('AKIA');
+
+      // 4. AND IT IS ONCE PER PROCESS, not once per composition. A suite builds many; a container
+      //    builds one. Two further coerced compositions - with DIFFERENT values, so a per-value
+      //    suppression would not catch them - add nothing.
+      await makeRoot({ env: { LOG_LEVEL: 'verbose' } });
+      await makeRoot({ env: { LOG_LEVEL: 'trace' } });
+
+      expect(lines.filter((line) => line.message.includes('LOG_LEVEL'))).toHaveLength(1);
     });
   });
 
@@ -4086,8 +5110,9 @@ describe('bootstrapCompositionRoot', () => {
     async function resolveThrough(
       executor: StubExecutor,
       brandName: string,
+      env: Readonly<Record<string, string>> = {},
     ): Promise<{ readonly urlTitle: string | undefined; readonly saved: Brand }> {
-      const scope = await (await makeRoot({ executor })).createRequestScope();
+      const scope = await (await makeRoot({ executor, env })).createRequestScope();
       const payload: { brandName: string; urlTitle?: string } = { brandName };
       const saved = await scope.brandService.saveBrand(
         new Brand({ brandID: 'b-resolving-a-title' }),
@@ -4252,16 +5277,16 @@ describe('bootstrapCompositionRoot', () => {
       // remains, so it is the log that is asserted. `../lib/logger.js` fails closed on any context
       // key it does not recognize as legible, and the generator passes only `rowCount`.
       //
-      // `LOG_LEVEL` is stubbed to `debug` because the family line is emitted at that level and the
-      // default threshold is `info` [src/lib/logger.ts], so without the stub the line is suppressed
-      // and the assertion would pass vacuously - proving nothing about what the line CARRIES. The
-      // module-level `afterEach` restores it via `vi.unstubAllEnvs()`.
-      vi.stubEnv('LOG_LEVEL', 'debug');
-
+      // `LOG_LEVEL` travels in the composition's own ENVIRONMENT rather than being stubbed onto
+      // `process.env`, because `src/lib/logger.ts` reads no environment variable: the threshold is
+      // resolved by `src/lib/config.ts` and adopted by `bootstrapCompositionRoot`. It has to be
+      // `debug` because the family line is emitted at that level and the built-in floor is `info`, so
+      // without it the line is suppressed and the assertion would pass vacuously - proving nothing
+      // about what the line CARRIES.
       const { lines } = captureLogLines();
       const executor = tableWithTitles(['acme-widgets', 'acme-widgets-2']);
 
-      const { urlTitle } = await resolveThrough(executor, 'Acme Widgets');
+      const { urlTitle } = await resolveThrough(executor, 'Acme Widgets', { LOG_LEVEL: 'debug' });
 
       expect(urlTitle).toBe('acme-widgets-3');
 
@@ -4679,9 +5704,12 @@ describe('the framework write collaborators (F13, F14)', () => {
         { roundValueByRoundingRule: (value: Money): Money => value },
       );
 
-      await expect(scope.roundingRuleService.saveRoundingRule(nameless)).rejects.toThrow(
-        /roundingRuleName/,
-      );
+      // ★ THE REFUSAL COMES BACK ON THE ENTITY, not as a throw. `HibachiService.save` returns the
+      // same entity either way [org/Hibachi/HibachiService.cfc:L167]; only the FLUSH is skipped, and
+      // that skip is what this case is really about.
+      const refused = await scope.roundingRuleService.saveRoundingRule(nameless);
+
+      expect(refused.getError('roundingRuleName')).toStrictEqual(['roundingRuleName is required']);
       expect(executor.mutations).toStrictEqual([]);
     });
   });
@@ -4739,15 +5767,21 @@ describe('the framework write collaborators (F13, F14)', () => {
       );
       const scope = await (await makeRoot({ executor })).createRequestScope();
 
-      await expect(
-        scope.brandService.saveBrand(new Brand({ brandID: 'b-colliding' }), {
-          brandName: 'Acme Athletics',
-          urlTitle: 'acme-athletics',
-        }),
-      ).rejects.toThrow(/unique/i);
+      // ★★★ AND THE REFUSAL IS A VALIDATION REFUSAL, ON THE ENTITY - which is the second half of the
+      // sentence this case's own title makes. The probe used to run inside the WRITER and throw
+      // `BrandUrlTitleNotUniqueError`, so a rule declared beside `required` in the same JSON file was
+      // reported by a different mechanism from its sibling. It is now asked during validation, by
+      // `SqlBrandFrameworkWrites.isUrlTitleUnique`, and recorded where every other failed rule is.
+      const refused = await scope.brandService.saveBrand(new Brand({ brandID: 'b-colliding' }), {
+        brandName: 'Acme Athletics',
+        urlTitle: 'acme-athletics',
+      });
 
-      // ★★★ AND NOT ONE STATEMENT WAS WRITTEN. `rejects` alone would also be satisfied by a
-      // writer that inserted the row and then threw on the constraint violation coming back.
+      expect(refused.hasError('urlTitle')).toBe(true);
+      expect(refused.getError('urlTitle')[0]).toMatch(/unique/i);
+
+      // ★★★ AND NOT ONE STATEMENT WAS WRITTEN. An errored entity alone would also be satisfied by a
+      // writer that inserted the row and reported the collision afterwards.
       expect(executor.mutations).toStrictEqual([]);
       expect(executor.statements.some((sql) => sql.includes('SELECT brandID FROM SwBrand'))).toBe(
         true,
@@ -4787,12 +5821,12 @@ describe('the framework write collaborators (F13, F14)', () => {
       // is not an absolute URL, so `isValid("url", ...)` refused it and the DAO was skipped.
       const { scope, executor } = await openWritingScope(1);
 
-      await expect(
-        scope.brandService.saveBrand(new Brand({ brandID: 'b-bad-website' }), {
-          brandName: 'Acme Athletics',
-          brandWebsite: '/relative/path',
-        }),
-      ).rejects.toThrow(/brandWebsite/);
+      const refused = await scope.brandService.saveBrand(new Brand({ brandID: 'b-bad-website' }), {
+        brandName: 'Acme Athletics',
+        brandWebsite: '/relative/path',
+      });
+
+      expect(refused.getError('brandWebsite')).toStrictEqual(['brandWebsite must be a valid URL']);
       expect(executor.mutations).toStrictEqual([]);
     });
   });
@@ -5066,8 +6100,18 @@ describe('the per-SKU feed setting cascade (F10)', () => {
    */
   function feedExecutor(world: FeedWorld): StubExecutor {
     return new StubExecutor((sql: string, params: readonly unknown[]): readonly SqlRow[] => {
-      if (sql.includes('FROM SwSetting')) {
+      // ★ TWO STATEMENTS NOW READ `SwSetting`, AND THEY MUST NOT BE CONFLATED. Tier one reads the
+      // seven GENERAL setting names [see GENERAL_SETTINGS_SQL], and the feed cascade reads the two
+      // per-SKU shipping-weight names. Only the second is this world's business, so the first is
+      // answered with no rows - the ordinary state of an installation with no global override. The
+      // discriminator is the placeholder count spelled with its closing paren: `IN (?, ?)` cannot
+      // match the seven-placeholder list.
+      if (sql.includes(PER_SKU_SETTINGS_PREDICATE)) {
         return world.settings ?? [];
+      }
+
+      if (sql.includes('FROM SwSetting')) {
+        return [];
       }
 
       if (sql.includes('SELECT productTypeID, productTypeIDPath')) {
@@ -5088,16 +6132,19 @@ describe('the per-SKU feed setting cascade (F10)', () => {
   }
 
   /** Generates the feed through the composed graph and answers the document. */
-  async function feedFrom(world: FeedWorld): Promise<string> {
+  async function feedFrom(
+    world: FeedWorld,
+    env: Readonly<Record<string, string>> = {},
+  ): Promise<string> {
     const executor = feedExecutor(world);
     const root = await makeRoot({
-      env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST },
+      env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST, ...env },
       executor,
     });
     const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
     const port = requirePresent(scope.productFeedPort, 'the product feed port');
 
-    return await port.generateProductFeed();
+    return await port.generateProductFeed(requirePresent(scope.feedCriteria, 'the feed criteria'));
   }
 
   /** The emitted `<g:shipping_weight>` bodies, in document order. */
@@ -5324,9 +6371,13 @@ describe('the per-SKU feed setting cascade (F10)', () => {
     });
     const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
 
-    await requirePresent(scope.productFeedPort, 'the product feed port').generateProductFeed();
+    await requirePresent(scope.productFeedPort, 'the product feed port').generateProductFeed(
+      requirePresent(scope.feedCriteria, 'the feed criteria'),
+    );
 
-    const settingReads = executor.reads.filter((read) => read.sql.includes('FROM SwSetting'));
+    const settingReads = executor.reads.filter((read) =>
+      read.sql.includes(PER_SKU_SETTINGS_PREDICATE),
+    );
     const pathReads = executor.reads.filter((read) =>
       read.sql.includes('SELECT productTypeID, productTypeIDPath'),
     );
@@ -5354,9 +6405,13 @@ describe('the per-SKU feed setting cascade (F10)', () => {
     });
     const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
 
-    await requirePresent(scope.productFeedPort, 'the product feed port').generateProductFeed();
+    await requirePresent(scope.productFeedPort, 'the product feed port').generateProductFeed(
+      requirePresent(scope.feedCriteria, 'the feed criteria'),
+    );
 
-    const settingRead = executor.reads.find((read) => read.sql.includes('FROM SwSetting'));
+    const settingRead = executor.reads.find((read) =>
+      read.sql.includes(PER_SKU_SETTINGS_PREDICATE),
+    );
 
     expect(settingRead?.params).toStrictEqual(['skushippingweight', 'skushippingweightunitcode']);
     expect(settingRead?.sql).toContain('WHERE LOWER(settingName) IN (?, ?)');
@@ -5385,7 +6440,7 @@ describe('the per-SKU feed setting cascade (F10)', () => {
     const document = await requirePresent(
       scope.productFeedPort,
       'the product feed port',
-    ).generateProductFeed();
+    ).generateProductFeed(requirePresent(scope.feedCriteria, 'the feed criteria'));
 
     expect(
       executor.reads.filter((read) => read.sql.includes('SELECT productTypeID, productTypeIDPath')),
@@ -5411,16 +6466,18 @@ describe('the per-SKU feed setting cascade (F10)', () => {
   it('discloses no setting value and no identifier in what it logs', async () => {
     // The same disclosure property the other bootstrap collaborators hold. `../lib/logger.js` fails
     // closed on any context key it does not recognize as legible, and the resolver passes only the two
-    // counts. `LOG_LEVEL` is stubbed because the line is emitted at `debug` and the default threshold
-    // is `info`, so without the stub the assertion would pass vacuously.
-    vi.stubEnv('LOG_LEVEL', 'debug');
-
+    // counts. `LOG_LEVEL` is supplied in the composition's ENVIRONMENT - not stubbed onto
+    // `process.env`, which the logger does not read - because the line is emitted at `debug` and the
+    // built-in floor is `info`, so without it the assertion would pass vacuously.
     const { lines } = captureLogLines();
 
-    await feedFrom({
-      settings: [weightRow('12', { skuID: 'sku-one' })],
-      paths: { 'pt-leaf': 'pt-leaf' },
-    });
+    await feedFrom(
+      {
+        settings: [weightRow('12', { skuID: 'sku-one' })],
+        paths: { 'pt-leaf': 'pt-leaf' },
+      },
+      { LOG_LEVEL: 'debug' },
+    );
 
     const resolved = lines.filter((line) => line.message.includes('shipping-weight settings'));
 
@@ -5606,11 +6663,15 @@ describe('the runtime guards behind this module type declarations', () => {
     const root = await bootWith(makeExecutor());
     const { scope, adapters } = await root.createInspectableRequestScope({ accountID: 'acct-1' });
 
+    // `root.diagnostics.database` USED TO APPEAR IN THIS LIST and is not withdrawn from the freeze
+    // check by oversight: the member itself is gone, along with `pool`. The three built members that
+    // remain are each frozen individually, so the whole projection is frozen at every depth it has.
     for (const frozen of [
       root,
       root.diagnostics,
-      root.diagnostics.database,
       root.diagnostics.tls,
+      root.diagnostics.feed,
+      root.diagnostics.currency,
       scope,
       scope.currentAccountContext,
       adapters,
@@ -5624,5 +6685,894 @@ describe('the runtime guards behind this module type declarations', () => {
 
     expect(writeToScope).toThrow(TypeError);
     expect(scope.currentAccountContext.accountID).toBe('acct-1');
+  });
+});
+
+// ===========================================================================
+// THE EUROPEAN CENTRAL BANK CURRENCY CONVERTER
+//
+// ★★★ MOVED HERE WITH ITS SUBJECT, NOT REWRITTEN. These cases shipped as
+// `tests/unit/integrations/europeanCentralBankCurrencyConverter.test.ts`, against
+// `src/integrations/europeanCentralBankCurrencyConverter.ts`. Code review recorded that module as a
+// SCOPE violation - the plan's target layout enumerates `src/integrations/` as `integrationInterface.ts`
+// plus the four Google modules, and the scope gate admits "no adapter other than Google" - so the
+// implementation moved into the composition root, which is where the plan puts the ports that have no
+// adapter file. The suite followed it here rather than being deleted or thinned: every case, every
+// citation and every fixture below is the text that shipped, indented one level into a wrapping
+// `describe` so its module-scope constants cannot collide with this file's.
+//
+// The original file header's orientation still applies verbatim:
+// slatwall-ts - characterisation suite for the European Central Bank currency
+// converter
+//
+// WHAT THIS SUITE PINS
+// `src/integrations/europeanCentralBankCurrencyConverter.ts`, the shipped
+// implementation of the `CurrencyConverter` port, against
+// `model/service/CurrencyService.cfc` read line by line. The currency cascade
+// this adapter feeds is one of the three named MUST-PRESERVE areas (AAP 0.6.3),
+// so every assertion below cites the legacy line it holds in place.
+//
+// ******************************************************************************
+// ** THIS COVERAGE IS NET-NEW. IT IS NOT LEGACY PARITY.                       **
+// **                                                                          **
+// ** AAP 0.6.6 records that exactly three legacy test files reach the         **
+// ** in-scope slice - `meta/tests/unit/entity/BrandTest.cfc`,                 **
+// ** `meta/tests/unit/entity/ProductTest.cfc`, and                            **
+// ** `meta/tests/functional/admin/entity/ProductTest.cfc`, the last of which  **
+// ** is an empty stub contributing zero coverage. NONE of them covers         **
+// ** `CurrencyService.cfc`, and `meta/tests/unit/service/` contains only      **
+// ** AccountServiceTest, HibachiServiceTest, PaymentServiceTest and           **
+// ** UtilityRBServiceTest - none in scope.                                    **
+// **                                                                          **
+// ** So there is no legacy assertion to carry forward here and none is        **
+// ** claimed. Every expectation below was derived by READING                  **
+// ** [model/service/CurrencyService.cfc:L57-L101] and then EXECUTING the      **
+// ** ported implementation to record what it answers, which is what makes     **
+// ** this a characterisation suite rather than a specification.               **
+// ******************************************************************************
+//
+// THE FIVE THINGS MOST WORTH GUARDING, AND WHY EACH IS HERE
+// 1. THE SILENT PASS-THROUGH. [L100-L101] returns the amount UNCONVERTED when
+// either code has no reachable rate. Turning that into a rejection looks
+// safer and is not: the cascade awaits each conversion inside the body that
+// builds the price map, so one unlisted currency would fail
+// `getCurrencyDetails()` outright. Turning it into a zero would sell the
+// product for free.
+// 2. THE FALLBACK IS NOT ROUNDED while both converted paths are. Asserted by
+// identity - `toBe(amount)` - which is the strongest available statement:
+// the very instance that went in comes back.
+// 3. NO EQUAL-CODE SHORT-CIRCUIT. [L79-L101] has no `original eq convertTo`
+// test, so a same-code conversion with a known rate divides, multiplies and
+// ROUNDS. `USD -> USD` and `CHF -> CHF` on the same amount therefore answer
+// DIFFERENTLY, and that pair of tests is what proves the guard is presence-
+// based rather than an identity rule.
+// 4. THE GUARD RUNS BEFORE ANY ARITHMETIC. [L86] resolves both halves before
+// [L90] divides, so a zero or malformed SOURCE rate paired with an
+// unreachable target is a pass-through and not a raise.
+// 5. THE `activeFlag` ASYMMETRY. [L60] and [L72] filter on active status;
+// [model/entity/Sku.cfc:L375] does not. An inactive-but-eligible currency
+// must still be priced.
+//
+// EVERY EXPECTED AMOUNT IS A DECIMAL STRING
+// No assertion computes a monetary value with JavaScript arithmetic. Rates and
+// amounts are chosen so the exact result is stated as a literal - `21.70 / 1.0850`
+// is exactly `20`, and `20 * 0.8500` is exactly `17` - so a reader can check
+// the expectation by hand rather than trusting a second implementation written
+// in the test.
+//
+// MONEY IS COMPARED THROUGH `toFixed2()`, NOT `toDecimalString()`
+// `toDecimalString()` renders full precision with TRAILING ZEROS DROPPED, so a
+// converted `17.00` renders as `17`. `toFixed2()` is the two-decimal form and is
+// what the rounding assertions need. `toDecimalString()` is used deliberately
+// in the pass-through tests, where the point is that a third decimal SURVIVED.
+//
+// NO DATABASE, NO NETWORK, NO CLOCK
+// The adapter takes its currency records and its rate table as constructor
+// arguments, so this suite needs no fixture module, no executor double and no
+// environment. That is a property of the design under test, not a convenience:
+// the legacy rate retrieval at [L104-L131] performs a live HTTP GET and memoizes
+// the result on the component, and neither is ported.
+// ===========================================================================
+
+describe('the European Central Bank currency converter, moved into the composition root', () => {
+  // The two shapes the converter's constructor takes. They are declared HERE, structurally, rather
+  // than imported: the composition root keeps its rate-table type, its record projection and its
+  // pass-through observer module-local, because nothing outside that file names them. Only the class
+  // itself is exported, and only so these cases can construct it. Structural typing means these
+  // declarations are checked against the real constructor on every build - a drift in either shape
+  // fails the typecheck gate rather than this suite.
+  type EuropeanCentralBankRateTable = Readonly<Record<string, string>>;
+
+  interface CurrencyRecordProjection {
+    readonly currencyCode: CurrencyCode;
+    readonly activeFlag: CfBooleanInput;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Currency codes
+  // ---------------------------------------------------------------------------
+
+  /** The pivot. Deliberately NOT a key of the rate table - see `ECB_RATES`. */
+  const EUR: CurrencyCode = toCurrencyCode('EUR');
+
+  const USD: CurrencyCode = toCurrencyCode('USD');
+  const GBP: CurrencyCode = toCurrencyCode('GBP');
+  const JPY: CurrencyCode = toCurrencyCode('JPY');
+
+  /** Present as a `SwCurrency` record but ABSENT from every rate table below. */
+  const CHF: CurrencyCode = toCurrencyCode('CHF');
+
+  // ---------------------------------------------------------------------------
+  // Rates, chosen so every expected result is exact
+  // ---------------------------------------------------------------------------
+
+  const USD_RATE = '1.0850';
+  const GBP_RATE = '0.8500';
+  const JPY_RATE = '160.50';
+
+  /**
+   * A European Central Bank reference-rate table in its real shape.
+   *
+   * CFML parity [model/service/CurrencyService.cfc:L118-L119]: the legacy copies
+   * the `currency` and `rate` XML attributes of each `Cube` element, so there is
+   * NO `EUR` KEY - the table is quoted per euro, so the euro has no rate of its
+   * own. Every pivot assertion below therefore also proves that the euro converts
+   * without an entry.
+   */
+  const ECB_RATES: EuropeanCentralBankRateTable = {
+    USD: USD_RATE,
+    GBP: GBP_RATE,
+    JPY: JPY_RATE,
+  };
+
+  // ---------------------------------------------------------------------------
+  // Amounts. Each is exact under the rates above.
+  // ---------------------------------------------------------------------------
+
+  /** 20 EUR. */
+  const TWENTY_EUR = '20.00';
+
+  /** Exactly 20 EUR at `USD_RATE`, because 1.0850 * 20 = 21.70. */
+  const TWENTY_EUR_IN_USD = '21.70';
+
+  /** Exactly 20 EUR at `GBP_RATE`, because 0.8500 * 20 = 17. */
+  const TWENTY_EUR_IN_GBP = '17.00';
+
+  /** Exactly 20 EUR at `JPY_RATE`, because 160.50 * 20 = 3210. */
+  const TWENTY_EUR_IN_JPY = '3210.00';
+
+  /**
+   * A three-decimal amount, which is the whole point of it.
+   *
+   * A sub-cent third decimal is what makes the difference between the rounded
+   * converted paths and the unrounded pass-through OBSERVABLE.
+   */
+  const SUB_CENT_AMOUNT = '19.999';
+
+  /** `SUB_CENT_AMOUNT` after the cent rounding at [L94] / [L96]. */
+  const SUB_CENT_AMOUNT_ROUNDED = '20.00';
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  /** A monetary amount from a decimal string. Never from a JavaScript number. */
+  function money(value: string): Money {
+    return Money.fromDecimalString(value);
+  }
+
+  /** A `SwCurrency` projection row. */
+  function currencyRecord(
+    currencyCode: CurrencyCode,
+    activeFlag: CfBooleanInput,
+  ): CurrencyRecordProjection {
+    return { currencyCode, activeFlag };
+  }
+
+  /** A converter over the real-shaped rate table and no currency records. */
+  function converterWithRates(
+    rates: EuropeanCentralBankRateTable = ECB_RATES,
+  ): EuropeanCentralBankCurrencyConverter {
+    return new EuropeanCentralBankCurrencyConverter([], rates);
+  }
+
+  /** A converter over currency records and no rates - for the listing suites. */
+  function converterWithRecords(
+    records: readonly CurrencyRecordProjection[],
+  ): EuropeanCentralBankCurrencyConverter {
+    return new EuropeanCentralBankCurrencyConverter(records, {});
+  }
+
+  // ===========================================================================
+  describe('EuropeanCentralBankCurrencyConverter - the euro pivot [model/service/CurrencyService.cfc:L87-L97]', () => {
+    it('scales OUT of the euro by the target rate [L96]', async () => {
+      // [L93] is false, so [L96] multiplies `amountInEUR` by the target rate.
+      // 20 * 1.0850 = 21.70, exactly.
+      const converted = await converterWithRates().convertCurrency(money(TWENTY_EUR), EUR, USD);
+
+      expect(converted.toFixed2()).toBe(TWENTY_EUR_IN_USD);
+    });
+
+    it('scales INTO the euro by dividing by the source rate [L90, L94]', async () => {
+      // [L87] is false so [L90] divides; [L93] is true so [L94] returns without a
+      // second scaling. 21.70 / 1.0850 = 20, exactly.
+      const converted = await converterWithRates().convertCurrency(
+        money(TWENTY_EUR_IN_USD),
+        USD,
+        EUR,
+      );
+
+      expect(converted.toFixed2()).toBe(TWENTY_EUR);
+    });
+
+    it('pivots between two non-euro currencies, dividing then multiplying [L90, L96]', async () => {
+      // Both scalings run: 21.70 / 1.0850 = 20, then 20 * 0.8500 = 17.
+      const converted = await converterWithRates().convertCurrency(
+        money(TWENTY_EUR_IN_USD),
+        USD,
+        GBP,
+      );
+
+      expect(converted.toFixed2()).toBe(TWENTY_EUR_IN_GBP);
+    });
+
+    it('handles a rate far from unity in both directions', async () => {
+      // A three-figure rate is the case where a float implementation would start to
+      // drift. 20 * 160.50 = 3210, and 3210 / 160.50 = 20.
+      const converter = converterWithRates();
+
+      expect((await converter.convertCurrency(money(TWENTY_EUR), EUR, JPY)).toFixed2()).toBe(
+        TWENTY_EUR_IN_JPY,
+      );
+      expect((await converter.convertCurrency(money(TWENTY_EUR_IN_JPY), JPY, EUR)).toFixed2()).toBe(
+        TWENTY_EUR,
+      );
+      expect((await converter.convertCurrency(money(TWENTY_EUR_IN_JPY), JPY, USD)).toFixed2()).toBe(
+        TWENTY_EUR_IN_USD,
+      );
+    });
+
+    it('★ pivots through the euro even though the rate table carries no EUR key', async () => {
+      // CFML parity [model/service/CurrencyService.cfc:L86]: each half of the guard
+      // is `structKeyExists(cbRates, code) || code eq "EUR"`, and the pivot test is
+      // the half that answers for the euro. The real table has no `EUR` entry, so an
+      // implementation that only consulted the table would refuse every euro
+      // conversion - which is to say, all of them.
+      const converter = converterWithRates();
+
+      expect(structKeyPresent(ECB_RATES, 'EUR')).toBe(false);
+      expect((await converter.convertCurrency(money(TWENTY_EUR), EUR, USD)).toFixed2()).toBe(
+        TWENTY_EUR_IN_USD,
+      );
+      expect((await converter.convertCurrency(money(TWENTY_EUR_IN_USD), USD, EUR)).toFixed2()).toBe(
+        TWENTY_EUR,
+      );
+    });
+
+    it('★ converts euro to euro through the no-scaling path, and still rounds [L88, L94]', async () => {
+      // [L87] takes the assignment branch and [L93] takes the early return, so
+      // NEITHER rate is consulted - yet [L94] still rounds. A same-currency
+      // conversion is therefore not the identity.
+      const converted = await converterWithRates().convertCurrency(
+        money(SUB_CENT_AMOUNT),
+        EUR,
+        EUR,
+      );
+
+      expect(converted.toFixed2()).toBe(SUB_CENT_AMOUNT_ROUNDED);
+    });
+  });
+
+  // ===========================================================================
+  describe('EuropeanCentralBankCurrencyConverter - the silent pass-through [model/service/CurrencyService.cfc:L100-L101]', () => {
+    it('★★ returns the very amount it received when the TARGET has no rate', async () => {
+      // `toBe` rather than a value comparison: the instance is returned untouched,
+      // which is the strongest form of "unconverted" available.
+      const amount = money(SUB_CENT_AMOUNT);
+      const answered = await converterWithRates().convertCurrency(amount, EUR, CHF);
+
+      expect(answered).toBe(amount);
+    });
+
+    it('★★ returns the very amount it received when the SOURCE has no rate', async () => {
+      const amount = money(SUB_CENT_AMOUNT);
+      const answered = await converterWithRates().convertCurrency(amount, CHF, EUR);
+
+      expect(answered).toBe(amount);
+    });
+
+    it('★★ returns the very amount it received when NEITHER side has a rate', async () => {
+      const amount = money(SUB_CENT_AMOUNT);
+      const answered = await converterWithRates().convertCurrency(amount, CHF, USD);
+
+      expect(answered).toBe(amount);
+
+      const bothUnlisted = await converterWithRates().convertCurrency(amount, CHF, CHF);
+
+      expect(bothUnlisted).toBe(amount);
+    });
+
+    it('★★ does NOT round the pass-through, while every converted path does', async () => {
+      // THE ASYMMETRY AT [L101] vs [L94]/[L96], stated as one assertion pair.
+      // [L101] hands back `arguments.amount` verbatim; both return paths round.
+      const converter = converterWithRates();
+      const amount = money(SUB_CENT_AMOUNT);
+
+      const passedThrough = await converter.convertCurrency(amount, CHF, CHF);
+      const converted = await converter.convertCurrency(amount, EUR, EUR);
+
+      expect(passedThrough.toDecimalString()).toBe(SUB_CENT_AMOUNT);
+      expect(converted.toFixed2()).toBe(SUB_CENT_AMOUNT_ROUNDED);
+    });
+
+    it('★★★ REFUSES rather than answering at par when the rate table is EMPTY', async () => {
+      // ★★★ THIS CASE ASSERTED THE OPPOSITE UNTIL THIS REVISION, and it was reading the legacy one
+      // line short. Its reasoning was: "[L127-L128] the retrieval's `catch` IS EMPTY, so a failed
+      // fetch leaves the table as it was - possibly never populated at all", and it concluded that
+      // an empty table "must degrade to par rather than to a failure". Read the NEXT line. After
+      // the `catch`, [L130] is `return variables.europeanCentralBankRates;` - and on a cold start
+      // that variable was NEVER ASSIGNED, which CFML refuses at runtime. The legacy RAISES when it
+      // has no table at all; it prices at par only when the table it HAS does not quote a code
+      // [L100-L101].
+      //
+      // The distinction is money. Code review recorded that with no rates configured every
+      // cross-currency conversion passed through 1:1 in production, publishing base-currency
+      // numerals as foreign-currency prices - invisibly, and for every eligible currency at once.
+      // Refusing surfaces the misconfiguration; the par answer for an UNLISTED code, which is the
+      // must-preserve behaviour, is asserted by the two cases above and below.
+      const converter = converterWithRates({});
+      const amount = money(TWENTY_EUR);
+
+      await expect(converter.convertCurrency(amount, EUR, USD)).rejects.toThrow(
+        /No European Central Bank reference-rate table is available/u,
+      );
+      await expect(converter.convertCurrency(amount, USD, EUR)).rejects.toThrow(
+        /No European Central Bank reference-rate table is available/u,
+      );
+      await expect(converter.convertCurrency(amount, USD, GBP)).rejects.toThrow(
+        /so USD cannot be converted to GBP/u,
+      );
+    });
+
+    it('★★ answers at par for an UNLISTED code when the table is NON-EMPTY, which is [L100-L101]', async () => {
+      // The must-preserve pass-through, isolated from the emptiness case above. `CHF` is a
+      // `SwCurrency` record and is deliberately absent from every rate table in this suite, so the
+      // guard [L86] fails on the target alone while the source resolves normally.
+      const converter = converterWithRates();
+      const amount = money(TWENTY_EUR);
+
+      // Returned as RECEIVED - the same instance, unrounded - which is what makes the
+      // pass-through distinguishable from a conversion that happens to be 1:1.
+      expect(await converter.convertCurrency(amount, EUR, CHF)).toBe(amount);
+      expect(await converter.convertCurrency(amount, CHF, USD)).toBe(amount);
+    });
+
+    it('★ still converts euro to euro with an empty table, because the pivot needs no rate', async () => {
+      const converter = converterWithRates({});
+      const amount = money(SUB_CENT_AMOUNT);
+      const converted = await converter.convertCurrency(amount, EUR, EUR);
+
+      expect(converted).not.toBe(amount);
+      expect(converted.toFixed2()).toBe(SUB_CENT_AMOUNT_ROUNDED);
+    });
+  });
+
+  // ===========================================================================
+  describe('EuropeanCentralBankCurrencyConverter - there is no equal-code short-circuit', () => {
+    it('★★ USD to USD with a known rate divides, multiplies and ROUNDS [L90, L96]', async () => {
+      // CFML parity [model/service/CurrencyService.cfc:L79-L101]: there is no
+      // `original eq convertTo` test anywhere in the legacy body. So the same code
+      // on both sides still takes the full arithmetic path, and a sub-cent amount
+      // comes back rounded rather than intact.
+      const amount = money(SUB_CENT_AMOUNT);
+      const answered = await converterWithRates().convertCurrency(amount, USD, USD);
+
+      expect(answered).not.toBe(amount);
+      expect(answered.toFixed2()).toBe(SUB_CENT_AMOUNT_ROUNDED);
+    });
+
+    it('★★ CHF to CHF with NO rate answers differently, which is what proves the guard', async () => {
+      // Same amount, same-code pair, OPPOSITE answer - and the only difference is
+      // whether the code has a rate. An identity short-circuit would make these two
+      // tests agree, so this pair is the one that would catch it.
+      const amount = money(SUB_CENT_AMOUNT);
+      const answered = await converterWithRates().convertCurrency(amount, CHF, CHF);
+
+      expect(answered).toBe(amount);
+      expect(answered.toDecimalString()).toBe(SUB_CENT_AMOUNT);
+    });
+  });
+
+  // ===========================================================================
+  describe('EuropeanCentralBankCurrencyConverter - the guard runs before any arithmetic [model/service/CurrencyService.cfc:L86]', () => {
+    it('★★ a ZERO source rate with an unreachable target is a pass-through, not a division error', async () => {
+      // THE ORDERING TEST. [L86] tests both halves before [L90] divides, so the
+      // legacy never divides here. An implementation that divided first and checked
+      // the target afterwards would raise instead - and would agree with this one on
+      // every other input, which is exactly why this case is pinned.
+      const converter = converterWithRates({ USD: '0' });
+      const amount = money(SUB_CENT_AMOUNT);
+
+      const answered = await converter.convertCurrency(amount, USD, CHF);
+
+      expect(answered).toBe(amount);
+    });
+
+    it('★★ a MALFORMED source rate with an unreachable target is also a pass-through', async () => {
+      // The guard is PRESENCE-based, exactly as `structKeyExists` is: it never looks
+      // at the value. So a corrupt rate that is never consulted is harmless.
+      const converter = converterWithRates({ USD: 'not-a-number' });
+      const amount = money(SUB_CENT_AMOUNT);
+
+      expect(await converter.convertCurrency(amount, USD, CHF)).toBe(amount);
+    });
+
+    it('a zero source rate DOES fail once the target is reachable, as CFML division did', async () => {
+      // Not a pass-through: this is malformed data, and swallowing it would turn a
+      // corrupt rate table into silently wrong prices. Rejecting rather than
+      // throwing synchronously is the promise contract the port declares.
+      const converter = converterWithRates({ USD: '0' });
+
+      await expect(converter.convertCurrency(money(TWENTY_EUR), USD, EUR)).rejects.toThrow(
+        /zero divisor/,
+      );
+    });
+
+    it('a malformed rate fails once it is CONSULTED, in either position', async () => {
+      const converter = converterWithRates({ USD: 'not-a-number' });
+
+      await expect(converter.convertCurrency(money(TWENTY_EUR), EUR, USD)).rejects.toThrow(
+        /plain decimal numeral/,
+      );
+      await expect(converter.convertCurrency(money(TWENTY_EUR), USD, EUR)).rejects.toThrow(
+        /plain decimal numeral/,
+      );
+    });
+
+    it('★ a ZERO TARGET rate is legitimate arithmetic and answers zero, not a failure', async () => {
+      // [L96] multiplies by the target rate, and multiplying by zero is defined.
+      // The asymmetry with the source position is the division, not the value.
+      const converted = await converterWithRates({ USD: '0' }).convertCurrency(
+        money(TWENTY_EUR),
+        EUR,
+        USD,
+      );
+
+      expect(converted.toFixed2()).toBe('0.00');
+    });
+  });
+
+  // ===========================================================================
+  describe('EuropeanCentralBankCurrencyConverter - cent rounding [model/service/CurrencyService.cfc:L94, L96]', () => {
+    it('rounds half AWAY FROM ZERO, which is what CFML round() does', async () => {
+      // 1.00 * 1.005 = 1.005 exactly, which sits on the half cent. Half-up takes it
+      // to 1.01; a half-to-even implementation would answer 1.00.
+      const converted = await converterWithRates({ USD: '1.005' }).convertCurrency(
+        money('1.00'),
+        EUR,
+        USD,
+      );
+
+      expect(converted.toFixed2()).toBe('1.01');
+    });
+
+    it('normalises a value that rounds to zero from below, as round(-0.1)/100 does', async () => {
+      const converted = await converterWithRates().convertCurrency(money('-0.001'), EUR, EUR);
+
+      expect(converted.toFixed2()).toBe('0.00');
+      expect(converted.equals(Money.zero)).toBe(true);
+    });
+
+    it('leaves the amount handed in untouched - Money is immutable', async () => {
+      const amount = money(TWENTY_EUR);
+
+      await converterWithRates().convertCurrency(amount, EUR, JPY);
+
+      expect(amount.toFixed2()).toBe(TWENTY_EUR);
+    });
+  });
+
+  // ===========================================================================
+  describe('EuropeanCentralBankCurrencyConverter.getAllActiveCurrencyIDList [model/service/CurrencyService.cfc:L57-L67]', () => {
+    it('answers only the active codes, in record order', async () => {
+      // [L60] filters `activeFlag` to 1 and [L63-L65] appends each surviving record
+      // in the order the query returned it. There is no `ORDER BY`, so record order
+      // is the contract.
+      const converter = converterWithRecords([
+        currencyRecord(JPY, true),
+        currencyRecord(USD, false),
+        currencyRecord(EUR, true),
+      ]);
+
+      expect(await converter.getAllActiveCurrencyIDList()).toStrictEqual([JPY, EUR]);
+    });
+
+    it('treats an ABSENT flag as inactive, matching the `activeFlag = 1` predicate', async () => {
+      // [model/entity/Currency.cfc:L53] declares `ormtype="boolean"` with no
+      // default, so the column can hydrate as SQL NULL, and SQL NULL fails `= 1`.
+      const converter = converterWithRecords([
+        currencyRecord(USD, null),
+        currencyRecord(GBP, undefined),
+        currencyRecord(EUR, true),
+      ]);
+
+      expect(await converter.getAllActiveCurrencyIDList()).toStrictEqual([EUR]);
+    });
+
+    it('reads the CFML boolean literals a persisted flag can carry, in any casing', async () => {
+      const active = converterWithRecords([
+        currencyRecord(USD, '1'),
+        currencyRecord(GBP, 'TRUE'),
+        currencyRecord(JPY, 'Yes'),
+        currencyRecord(EUR, 1),
+      ]);
+
+      expect(await active.getAllActiveCurrencyIDList()).toStrictEqual([USD, GBP, JPY, EUR]);
+
+      const inactive = converterWithRecords([
+        currencyRecord(USD, '0'),
+        currencyRecord(GBP, 'False'),
+        currencyRecord(JPY, 'no'),
+        currencyRecord(EUR, ''),
+      ]);
+
+      expect(await inactive.getAllActiveCurrencyIDList()).toStrictEqual([]);
+    });
+
+    it('answers an empty array for an empty record set', async () => {
+      expect(await converterWithRecords([]).getAllActiveCurrencyIDList()).toStrictEqual([]);
+    });
+
+    it('hands back a FRESH array each call, so a caller cannot reach the internal state', async () => {
+      const converter = converterWithRecords([currencyRecord(USD, true)]);
+
+      const first = await converter.getAllActiveCurrencyIDList();
+      first.push(GBP);
+
+      expect(await converter.getAllActiveCurrencyIDList()).toStrictEqual([USD]);
+    });
+
+    it('★ refuses a flag that carries no boolean meaning, at CONSTRUCTION', async () => {
+      // A `tinyint` column cannot hold `'maybe'`, so this is a schema surprise
+      // rather than a data variation, and failing fast at the boundary beats
+      // surfacing it from a listing call several layers away. Asserted on the
+      // constructor, which is where the resolution happens.
+      expect(() => converterWithRecords([currencyRecord(USD, 'maybe')])).toThrow(
+        CfmlBooleanConversionError,
+      );
+
+      // And the well-formed neighbour still constructs, so the refusal is about the
+      // value and not about the shape.
+      await expect(
+        converterWithRecords([currencyRecord(USD, true)]).getAllActiveCurrencyIDList(),
+      ).resolves.toStrictEqual([USD]);
+    });
+  });
+
+  // ===========================================================================
+  describe('EuropeanCentralBankCurrencyConverter.getCurrenciesByCurrencyCodeList [model/entity/Sku.cfc:L371-L375]', () => {
+    it('★★ applies NO active filter, so an inactive-but-eligible currency is still returned', async () => {
+      // ★ THE ASYMMETRY, AND THE SINGLE MOST CONSEQUENTIAL ASSERTION IN THIS FILE.
+      // [model/entity/Sku.cfc:L375] narrows the currency list with
+      // `addInFilter('currencyCode', setting('skuEligibleCurrencies'))` and NOTHING
+      // ELSE - there is no `activeFlag` clause on the cascade's path, unlike
+      // [model/service/CurrencyService.cfc:L60] and [L72]. Adding one here is how an
+      // inactive-but-eligible currency silently stops being priced.
+      const converter = converterWithRecords([
+        currencyRecord(USD, true),
+        currencyRecord(GBP, false),
+        currencyRecord(JPY, null),
+      ]);
+
+      expect(await converter.getCurrenciesByCurrencyCodeList(`${USD},${GBP},${JPY}`)).toStrictEqual(
+        [USD, GBP, JPY],
+      );
+
+      // The contrast that makes the point: the SAME records, the other method.
+      expect(await converter.getAllActiveCurrencyIDList()).toStrictEqual([USD]);
+    });
+
+    it('★ omits a listed code that has no currency record at all', async () => {
+      // The legacy narrows a smart list over the Currency ENTITY, so it answers with
+      // RECORDS - not with the codes the setting happened to name. A code present in
+      // `skuEligibleCurrencies` but absent from `SwCurrency` yields no record, the
+      // cascade never seeds an entry for it at [model/entity/Sku.cfc:L381], and
+      // `getPriceByCurrencyCode` answers `undefined` for it.
+      const converter = converterWithRecords([currencyRecord(USD, true)]);
+
+      expect(await converter.getCurrenciesByCurrencyCodeList(`${USD},${CHF}`)).toStrictEqual([USD]);
+    });
+
+    it('★ answers in RECORD order, not in the order the list names them', async () => {
+      // An `IN` predicate does not reorder a table, and the cascade seeds one outer
+      // key per returned record, so record order becomes the key order of the
+      // currency-details map.
+      const converter = converterWithRecords([
+        currencyRecord(USD, true),
+        currencyRecord(GBP, true),
+        currencyRecord(JPY, true),
+      ]);
+
+      expect(await converter.getCurrenciesByCurrencyCodeList(`${JPY},${USD},${GBP}`)).toStrictEqual(
+        [USD, GBP, JPY],
+      );
+    });
+
+    it('matches case-insensitively, as the IN predicate does against a ci collation', async () => {
+      const converter = converterWithRecords([
+        currencyRecord(USD, true),
+        currencyRecord(GBP, true),
+      ]);
+
+      expect(await converter.getCurrenciesByCurrencyCodeList('usd,gbp')).toStrictEqual([USD, GBP]);
+    });
+
+    it('omits every record for an empty list, which is the gate-shut shape', async () => {
+      // [model/entity/Sku.cfc:L373]'s eligibility gate never opens for an empty
+      // setting, so this call would not be reached with one - but answering nothing
+      // is the only consistent reading if it ever were.
+      const converter = converterWithRecords([currencyRecord(USD, true)]);
+
+      expect(await converter.getCurrenciesByCurrencyCodeList('')).toStrictEqual([]);
+    });
+
+    it('omits a record the list does not name', async () => {
+      const converter = converterWithRecords([
+        currencyRecord(USD, true),
+        currencyRecord(GBP, true),
+      ]);
+
+      expect(await converter.getCurrenciesByCurrencyCodeList(GBP)).toStrictEqual([GBP]);
+    });
+
+    it('hands back a FRESH array each call', async () => {
+      const converter = converterWithRecords([currencyRecord(USD, true)]);
+
+      const first = await converter.getCurrenciesByCurrencyCodeList(USD);
+      first.length = 0;
+
+      expect(await converter.getCurrenciesByCurrencyCodeList(USD)).toStrictEqual([USD]);
+    });
+  });
+
+  // ===========================================================================
+  describe('EuropeanCentralBankCurrencyConverter - case-insensitive currency codes', () => {
+    it('matches the euro pivot case-insensitively, as CFML `eq` does [L87, L93]', async () => {
+      const converter = converterWithRates();
+
+      expect(
+        (await converter.convertCurrency(money(TWENTY_EUR), toCurrencyCode('eur'), USD)).toFixed2(),
+      ).toBe(TWENTY_EUR_IN_USD);
+      expect(
+        (
+          await converter.convertCurrency(money(TWENTY_EUR_IN_USD), USD, toCurrencyCode('eur'))
+        ).toFixed2(),
+      ).toBe(TWENTY_EUR);
+    });
+
+    it('finds a rate for a lower-cased code, as CFML struct keys are case-insensitive [L86]', async () => {
+      const converted = await converterWithRates().convertCurrency(
+        money(TWENTY_EUR_IN_USD),
+        toCurrencyCode('usd'),
+        EUR,
+      );
+
+      expect(converted.toFixed2()).toBe(TWENTY_EUR);
+    });
+
+    it('finds a lower-cased TABLE KEY from an upper-cased code', async () => {
+      // The table is built from XML attributes, so its casing is the source's, not
+      // this port's. Both directions of the mismatch have to work.
+      const converted = await converterWithRates({ usd: USD_RATE }).convertCurrency(
+        money(TWENTY_EUR),
+        EUR,
+        USD,
+      );
+
+      expect(converted.toFixed2()).toBe(TWENTY_EUR_IN_USD);
+    });
+  });
+
+  // ===========================================================================
+  describe('EuropeanCentralBankCurrencyConverter - construction, isolation and surface', () => {
+    it('satisfies the CurrencyConverter port', () => {
+      // Compile-time as much as run-time: the annotation is the assertion, and it
+      // fails the typecheck gate rather than this suite if the surface drifts.
+      const port: CurrencyConverter = converterWithRates();
+
+      expect(typeof port.getAllActiveCurrencyIDList).toBe('function');
+      expect(typeof port.getCurrenciesByCurrencyCodeList).toBe('function');
+      expect(typeof port.convertCurrency).toBe('function');
+    });
+
+    it('★ snapshots the currency records, so a later mutation cannot reach in', async () => {
+      // A caller keeps ownership of its own array. Reading it live would let a
+      // mutation between two calls change which currencies get priced.
+      const records: CurrencyRecordProjection[] = [currencyRecord(USD, true)];
+      const converter = new EuropeanCentralBankCurrencyConverter(records, ECB_RATES);
+
+      records.push(currencyRecord(GBP, true));
+      records.length = 0;
+
+      expect(await converter.getAllActiveCurrencyIDList()).toStrictEqual([USD]);
+    });
+
+    it('★ snapshots the rate table, so a later mutation cannot change a price', async () => {
+      const rates: Record<string, string> = { USD: USD_RATE };
+      const converter = new EuropeanCentralBankCurrencyConverter([], rates);
+
+      rates.USD = '99.0000';
+      delete rates.USD;
+
+      expect((await converter.convertCurrency(money(TWENTY_EUR), EUR, USD)).toFixed2()).toBe(
+        TWENTY_EUR_IN_USD,
+      );
+    });
+
+    it('★ shares no state between two instances', async () => {
+      // The correctness property behind the instance scoping: two converters built
+      // from different rate tables must never agree by accident. This is what makes
+      // one instance per request safe and a module-level memo unsafe.
+      const cheap = converterWithRates({ USD: '1.0000' });
+      const dear = converterWithRates({ USD: '2.0000' });
+
+      expect((await cheap.convertCurrency(money(TWENTY_EUR), EUR, USD)).toFixed2()).toBe('20.00');
+      expect((await dear.convertCurrency(money(TWENTY_EUR), EUR, USD)).toFixed2()).toBe('40.00');
+    });
+
+    it('★ exposes no cache control and no state accessor', () => {
+      // The port has no `refreshRates` and no `clearCache`, and neither does this
+      // class: a cache it does not own is a cache it cannot mismanage. Pinning the
+      // prototype is what catches an accidental widening of the surface.
+      //
+      // `resolveScaling` is `private` in TypeScript, which is a compile-time
+      // guarantee and not a runtime one, so it appears here. It is not part of the
+      // port and no consumer can name it.
+      const names = Object.getOwnPropertyNames(
+        Object.getPrototypeOf(converterWithRates()) as object,
+      ).sort();
+
+      expect(names).toStrictEqual([
+        'constructor',
+        'convertCurrency',
+        'getAllActiveCurrencyIDList',
+        'getCurrenciesByCurrencyCodeList',
+        'resolveScaling',
+      ]);
+    });
+  });
+
+  /**
+   * Whether a plain object carries a key, without the case-insensitive matching the
+   * production lookup applies.
+   *
+   * Declared here rather than imported so that the `EUR`-absence assertion says
+   * something about the FIXTURE, in plain JavaScript terms, instead of restating
+   * the very lookup it is meant to constrain.
+   */
+  function structKeyPresent(struct: Readonly<Record<string, string>>, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(struct, key);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The batch-write collaborator: ONE unit of work for a repriced SKU set (F3)
+// ---------------------------------------------------------------------------
+
+describe('the SKU batch-write collaborator the root supplies to ProductService (F3)', () => {
+  // ★★★ WHAT THIS BLOCK IS FOR, AND WHY IT CANNOT LIVE IN THE SERVICE SUITE.
+  // `tests/unit/services/productService.test.ts` proves the SERVICE hands its whole repriced set to
+  // ONE collaborator call, against a double. It cannot prove what the REAL collaborator does with
+  // that call, because the transaction is the composition root's - `SkuRepository` is locked at seven
+  // members and refuses a bulk save, and a port member naming a `PreparedStatementExecutor` would put
+  // a `src/repositories/**` type on a `src/domain/**` interface, which the layer-boundary rule
+  // refuses. So the root supplies the capability and this block asserts the root's half: exactly one
+  // transaction, every write inside it, and none at all for an empty set.
+  //
+  // CFML parity [model/service/ProductService.cfc:L216-L233]: the legacy method persists nothing
+  // itself - `HibachiService.process()` [org/Hibachi/HibachiService.cfc:L84-L129] never saves - and
+  // [L232] handed back MANAGED entities whose Hibernate session flushed every dirtied SKU as ONE unit
+  // inside the request's `cftransaction`. One transaction here is that flush, written down.
+
+  /** A product carrying `count` SKUs, all hydrated off the shared fixtures. */
+  function productWithSkus(count: number): Product {
+    const product = makeProductFixture({
+      idPrefix: 'batch-',
+      productID: 'prod-batch-0001',
+      productCode: 'BATCH',
+    });
+
+    for (let index = 1; index <= count; index += 1) {
+      const skuID = `sku-batch-${String(index).padStart(4, '0')}`;
+      product.addSku(makeSkuFixture({ idPrefix: `${skuID}-`, skuID, product }));
+    }
+
+    return product;
+  }
+
+  /**
+   * A root whose every write reports one matched row, so an UPDATE path runs to completion.
+   *
+   * The adapters refuse a zero-count mutation - `affectedRows` reports rows MATCHED under mysql2's
+   * default `FOUND_ROWS` flag, so a `0` means the row the caller believes it holds is gone - which is
+   * why `1` is passed rather than left at the stub's default.
+   */
+  async function rootOverWritableExecutor(): Promise<{
+    readonly scope: RequestScope;
+    readonly executor: StubExecutor;
+  }> {
+    const executor = new StubExecutor(() => [], 1);
+    const root = await makeRoot({ executor });
+    const scope = await root.createRequestScope();
+
+    return { scope, executor };
+  }
+
+  it('★★★ opens EXACTLY ONE transaction for a whole repriced set, never one per SKU', async () => {
+    const { scope, executor } = await rootOverWritableExecutor();
+    const product = productWithSkus(4);
+
+    const answered = await scope.productService.processProduct_updateSkus(product, {
+      updatePriceFlag: 1,
+      price: '8.40',
+      updateListPriceFlag: 0,
+    });
+
+    // ONE unit of work, not four. This is the assertion the defect turned on: with one unit per SKU,
+    // a PERMANENT failure on the third left the first two durably repriced and every retry
+    // reproduced that identical split, because idempotency by key makes a retry SAFE without making
+    // an unreachable write SUCCEED.
+    expect(executor.transactionsOpened).toBe(1);
+
+    // AND THE ADAPTER'S OWN PER-SKU TRANSACTIONS JOINED IT rather than opening units of their own,
+    // which is what makes the count above trustworthy: there were MORE `transaction` calls than
+    // units begun, and they nested, exactly as the real executor documents. Asserted as a relation
+    // rather than as a fixed pair so it cannot be broken by an unrelated adapter gaining or losing
+    // a wrapper.
+    expect(executor.transactionCalls).toBeGreaterThan(executor.transactionsOpened);
+    expect(executor.maximumTransactionDepth).toBeGreaterThan(1);
+
+    // EVERY SKU WAS ACTUALLY WRITTEN INSIDE IT, so this is not passing because nothing happened.
+    // Four SKUs mean at least four `SwSku` updates; the adapter also reconciles each SKU's
+    // `SwSkuOption` membership, so the count is asserted as a floor on the SKU updates rather than
+    // as an exact total.
+    const skuUpdates = executor.mutations.filter((mutation) => mutation.sql.includes('SwSku'));
+
+    expect(skuUpdates.length).toBeGreaterThanOrEqual(4);
+
+    // [L232] the argument product comes back.
+    expect(answered).toBe(product);
+  });
+
+  it('opens NO transaction and issues NO write when both flags are falsy', async () => {
+    const { scope, executor } = await rootOverWritableExecutor();
+    const product = productWithSkus(3);
+    const mutationsBefore = executor.mutations.length;
+
+    await scope.productService.processProduct_updateSkus(product, {
+      updatePriceFlag: 0,
+      updateListPriceFlag: 0,
+    });
+
+    // The empty-set guard is the ROOT's, which is why it is asserted here: the service asks
+    // unconditionally, and the collaborator returns before reaching the executor. A Hibernate
+    // session that dirtied no entity opened no transaction either.
+    expect(executor.transactionsOpened).toBe(0);
+    expect(executor.mutations).toHaveLength(mutationsBefore);
+  });
+
+  it('opens NO transaction for a product carrying no SKUs at all', async () => {
+    const { scope, executor } = await rootOverWritableExecutor();
+    const skuless = productWithSkus(0);
+
+    await scope.productService.processProduct_updateSkus(skuless, {
+      updatePriceFlag: 1,
+      price: '2.00',
+      updateListPriceFlag: 0,
+    });
+
+    // The flags ask for work, but there is no SKU to do it to, so the write set is empty and the
+    // guard still holds.
+    expect(executor.transactionsOpened).toBe(0);
   });
 });

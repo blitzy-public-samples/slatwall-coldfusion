@@ -30,20 +30,27 @@
 // JUDGMENT CALL: the method surface is RESHAPED, and this records the provenance.
 //   LEGACY  `public void function product(required struct rc)`
 //           [integrationServices/google/controllers/feed.cfc:L58]
-//   TARGET  `async generateProductFeed(): Promise<string>`
+//   TARGET  `async generateProductFeed(criteria: FeedCriteria): Promise<string>`
 //   The legacy method RETURNED `void` AND PRODUCED ITS RESULT BY MUTATING `rc`: it
 //   assigned a SKU selection onto the FW/1 request context at [.../feed.cfc:L63] and
 //   let the framework resolve a view that read that key back at [.../product.cfm:L8],
 //   so the document string existed nowhere in that control flow. The target RETURNS
 //   THE DOCUMENT, and that inversion is the reshaping.
 //
-// VERIFIED ON DISK, WHERE THE SHIPPED SYMBOLS DIFFER FROM EXPECTATION
-//     constructor(repository, feedHost, now, renderFeed = renderGoogleProductFeed)
-//     async generateProductFeed(): Promise<string>
-//   1. HOST AND INSTANT ARE CONSTRUCTOR PARAMETERS, NOT METHOD PARAMETERS, so every
-//      forwarding assertion below checks what the CONSTRUCTOR was given.
-//      `ProductFeedPort` declares the capability with no parameters, matching exactly.
-//   2. THE RENDERER IS A DEFAULTED FOURTH PARAMETER, defaulting to the real
+// VERIFIED ON DISK
+//     constructor(repository, renderFeed = renderGoogleProductFeed)
+//     async generateProductFeed(criteria: FeedCriteria): Promise<string>
+//   1. HOST AND INSTANT ARE MEMBERS OF THE METHOD ARGUMENT, NOT CONSTRUCTOR PARAMETERS,
+//      so every forwarding assertion below checks what the CRITERIA carried.
+//      QUOTE-THEN-REVISE: this entry used to read "HOST AND INSTANT ARE CONSTRUCTOR
+//      PARAMETERS, NOT METHOD PARAMETERS, so every forwarding assertion below checks what
+//      the CONSTRUCTOR was given. `ProductFeedPort` declares the capability with no
+//      parameters, matching exactly." AAP 0.4.2 freezes the ported method as
+//      `generateProductFeed(criteria: FeedCriteria)` and records the reshaping in that exact
+//      form; AAP 0.9.2 makes each row a parity gate and admits no fourth reshaping, so the
+//      zero-parameter form was one. `ProductFeedPort` declares the one parameter and this
+//      class matches it.
+//   2. THE RENDERER IS A DEFAULTED SECOND PARAMETER, defaulting to the real
 //      `renderGoogleProductFeed`. This suite ALWAYS injects a double: the default
 //      would make every case a document-shape assertion another suite owns.
 //   3. THE ROW SOURCE IS TYPED `GoogleProductFeedRowSource`, a one-method narrowing,
@@ -112,7 +119,10 @@ import type {
 } from '../../../../src/integrations/google/googleFeedService.js';
 import { renderGoogleProductFeed } from '../../../../src/integrations/google/rssFeedRenderer.js';
 import type { GoogleProductFeedRow } from '../../../../src/integrations/google/googleFeedRepository.js';
-import type { ProductFeedPort } from '../../../../src/domain/ports/productFeedPort.js';
+import type {
+  FeedCriteria,
+  ProductFeedPort,
+} from '../../../../src/domain/ports/productFeedPort.js';
 // NOTHING FROM `src/lib/config.js`. An intervening revision imported a `FeedUrlScheme` type from
 // there for a constructor argument that no longer exists; the subject holds no configuration edge.
 
@@ -325,6 +335,19 @@ interface RecordedRendererCall {
 interface FeedServiceHarness {
   readonly service: GoogleFeedService;
 
+  /**
+   * The one argument every case passes to `generateProductFeed`.
+   *
+   * ★★★ AAP 0.4.2 MAKES THE HOST AND THE INSTANT A METHOD ARGUMENT, NOT CONSTRUCTOR STATE.
+   * QUOTE-THEN-REVISE: the harness used to hand both to `new GoogleFeedService(...)` and every case
+   * then called `generateProductFeed()` with no argument. The mapping table freezes the ported
+   * signature as `generateProductFeed(criteria: FeedCriteria)` and AAP 0.9.2 gates on that row, so the
+   * pair is assembled here, ONCE, from the same two `FeedServiceHarnessOptions` members as before, and
+   * every case passes this value. What each case observes is unchanged: the same host and the same
+   * instant still arrive at the renderer.
+   */
+  readonly criteria: FeedCriteria;
+
   /** Every collaborator entry, in the order the subject reached it. */
   readonly callLog: readonly string[];
 
@@ -350,16 +373,19 @@ interface FeedServiceHarnessOptions {
   readonly render?: (call: RecordedRendererCall) => string;
 
   /**
-   * The host given to the constructor. Defaults to {@link FEED_HOST}.
+   * The host placed on {@link FeedServiceHarness.criteria}. Defaults to {@link FEED_HOST}.
    *
-   * ★ A PLAIN `string`, WHICH IS THE SHIPPED CONSTRUCTOR'S OWN PARAMETER TYPE. This was
+   * QUOTE-THEN-REVISE: this used to read "The host given to the constructor". It is now a member of
+   * the method argument, per AAP 0.4.2; the option itself is unchanged.
+   *
+   * ★ A PLAIN `string`, WHICH IS THE SHIPPED CONTRACT'S OWN MEMBER TYPE. This was
    * briefly a branded `TrustedFeedHost`, which meant a case could not hand the subject a
    * value the withdrawn allow-list had not minted - and therefore could not probe what the
    * subject does with an arbitrary host at all. The type is the contract's again.
    */
   readonly feedHost?: string;
 
-  /** The instant given to the constructor. Defaults to {@link FEED_INSTANT}. */
+  /** The instant placed on {@link FeedServiceHarness.criteria}. Defaults to {@link FEED_INSTANT}. */
   readonly now?: Date;
 }
 
@@ -420,14 +446,19 @@ function makeFeedServiceHarness(options: FeedServiceHarnessOptions): FeedService
     return render(call);
   };
 
-  const service = new GoogleFeedService(
-    repository,
-    options.feedHost ?? FEED_HOST,
-    options.now ?? FEED_INSTANT,
-    renderFeed,
-  );
+  // TWO ARGUMENTS, WHICH IS THE WHOLE CONSTRUCTOR: the row source and the renderer seam. The host and
+  // the instant are no longer constructor state, so an instance carries nothing request-scoped and the
+  // three-instance cases below can share one shape without sharing an origin.
+  const service = new GoogleFeedService(repository, renderFeed);
 
-  return { service, callLog, rowSourceCallArguments, rendererCalls };
+  // FROZEN, because the subject must forward what it was handed rather than adjust it: a frozen
+  // criteria makes any in-place substitution a run-time failure instead of a silent pass.
+  const criteria: FeedCriteria = Object.freeze({
+    feedHost: options.feedHost ?? FEED_HOST,
+    now: options.now ?? FEED_INSTANT,
+  });
+
+  return { service, criteria, callLog, rowSourceCallArguments, rendererCalls };
 }
 
 /**
@@ -458,8 +489,8 @@ function soleRendererCall(harness: FeedServiceHarness): RecordedRendererCall {
  * Deliberately NOT `async`: it forwards the subject's promise instead of awaiting and re-wrapping
  * it, which keeps the returned promise the subject's own.
  */
-function generateThroughPort(port: ProductFeedPort): Promise<string> {
-  return port.generateProductFeed();
+function generateThroughPort(port: ProductFeedPort, criteria: FeedCriteria): Promise<string> {
+  return port.generateProductFeed(criteria);
 }
 
 // ---------------------------------------------------------------------------
@@ -479,7 +510,7 @@ describe('GoogleFeedService - the declared contract', () => {
     // return type.
     const port: ProductFeedPort = harness.service;
 
-    await expect(generateThroughPort(port)).resolves.toBe(RENDERED_FEED_SENTINEL);
+    await expect(generateThroughPort(port, harness.criteria)).resolves.toBe(RENDERED_FEED_SENTINEL);
     expect(harness.callLog).toEqual(READ_THEN_RENDER);
   });
 
@@ -488,7 +519,9 @@ describe('GoogleFeedService - the declared contract', () => {
 
     // Passing the instance where only the port is declared is the same proof from the caller's
     // side, and is how the composition root hands the subject on.
-    await expect(generateThroughPort(harness.service)).resolves.toBe(RENDERED_FEED_SENTINEL);
+    await expect(generateThroughPort(harness.service, harness.criteria)).resolves.toBe(
+      RENDERED_FEED_SENTINEL,
+    );
   });
 
   it('implements a port that declares exactly one capability', () => {
@@ -502,23 +535,32 @@ describe('GoogleFeedService - the declared contract', () => {
     expect(exactlyOneCapability).toBe('generateProductFeed');
   });
 
-  it('declares that capability with no parameters at all', () => {
+  it('declares that capability with exactly ONE parameter, the criteria (F26)', () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([]) });
 
-    // Bound so the reference carries its receiver rather than dangling. A bound function reports
-    // the arity of what it wraps, less any pre-applied argument, so zero is the shipped parameter
-    // count, matching the port and the legacy action.
-    const boundGenerate: () => Promise<string> = harness.service.generateProductFeed.bind(
-      harness.service,
-    );
+    // ★★★ QUOTE-THEN-REVISE. This case used to read "declares that capability with no parameters at
+    // all" and assert `boundGenerate.length` was 0, with the comment "zero is the shipped parameter
+    // count, matching the port and the legacy action". AAP 0.4.2 freezes the ported method as
+    // `generateProductFeed(criteria: FeedCriteria)`, records that reshaping in that exact form, and
+    // AAP 0.9.2 admits no fourth reshaping - so the zero-parameter arity was the divergence, not the
+    // contract. ONE is now the shipped count, and it is asserted rather than assumed.
+    //
+    // Bound so the reference carries its receiver rather than dangling. A bound function reports the
+    // arity of what it wraps, less any pre-applied argument, and nothing is pre-applied here.
+    const boundGenerate: (criteria: FeedCriteria) => Promise<string> =
+      harness.service.generateProductFeed.bind(harness.service);
 
-    expect(boundGenerate.length).toBe(0);
+    expect(boundGenerate.length).toBe(1);
+
+    // AND IT IS ONE, NOT TWO. A second parameter would mean a selection surface had been added
+    // alongside the criteria, which the four invariant filters forbid.
+    expect(harness.service.generateProductFeed.length).toBe(1);
   });
 
   it('returns a promise of the document, keeping the read on the async boundary', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([]) });
 
-    const pending = harness.service.generateProductFeed();
+    const pending = harness.service.generateProductFeed(harness.criteria);
 
     // Asynchronous because it READS: a method is asynchronous in this migration if and only if its
     // legacy body reached the data store. This one did.
@@ -542,7 +584,7 @@ describe('GoogleFeedService - the step sequence', () => {
       read: () => Promise.resolve([makeFeedRow()]),
     });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(harness.callLog).toEqual([ROW_SOURCE_STEP, RENDERER_STEP]);
   });
@@ -550,7 +592,7 @@ describe('GoogleFeedService - the step sequence', () => {
   it('keeps that order when the feed has no qualifying rows', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([]) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(harness.callLog).toEqual(READ_THEN_RENDER);
   });
@@ -560,7 +602,7 @@ describe('GoogleFeedService - the step sequence', () => {
       read: () => Promise.resolve([makeFeedRow(), makeFeedRow({ skuID: 'fake-sku-id-2' })]),
     });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(harness.callLog).toEqual(READ_THEN_RENDER);
     expect(harness.rowSourceCallArguments).toHaveLength(1);
@@ -577,7 +619,7 @@ describe('GoogleFeedService - the step sequence', () => {
     const rows: FeedRows = [makeFeedRow()];
     const harness = makeFeedServiceHarness({ read: () => heldRead });
 
-    const pending = harness.service.generateProductFeed();
+    const pending = harness.service.generateProductFeed(harness.criteria);
 
     // The row source was entered synchronously, an async body running to its first await, and the
     // renderer has NOT been reached: a subject that rendered without awaiting would already have
@@ -607,7 +649,7 @@ describe('GoogleFeedService - what each collaborator receives', () => {
   it('invokes the row source with no arguments', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([makeFeedRow()]) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     // One call, and its argument list is empty: the shipped query declares no parameter, and the
     // subject invents none to pass it.
@@ -618,7 +660,7 @@ describe('GoogleFeedService - what each collaborator receives', () => {
     const rows: FeedRows = [makeFeedRow(), makeFeedRow({ skuID: 'fake-sku-id-2' })];
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve(rows) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     const call = soleRendererCall(harness);
     expect(call.rows).toBe(rows);
@@ -632,7 +674,7 @@ describe('GoogleFeedService - what each collaborator receives', () => {
       feedHost: PADDED_FEED_HOST,
     });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     // ★ THIS CASE BRIEFLY ASSERTED THE OPPOSITE OF ITS OWN TITLE. It minted a host
     // through an allow-list factory, asserted that the factory had trimmed and lower-cased
@@ -654,7 +696,7 @@ describe('GoogleFeedService - what each collaborator receives', () => {
       feedHost: MIXED_CASE_FEED_HOST,
     });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     // Casing is the second way a field initialiser quietly normalises, and it is separable
     // from padding: a subject could trim without lower-casing, or lower-case without
@@ -673,7 +715,7 @@ describe('GoogleFeedService - what each collaborator receives', () => {
       now: ownInstant,
     });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(soleRendererCall(harness).now).toBe(ownInstant);
     expect(ownInstant.toISOString()).toBe(FEED_INSTANT_ISO);
@@ -682,8 +724,8 @@ describe('GoogleFeedService - what each collaborator receives', () => {
   it('holds an instant rather than reading a clock, so two generations agree', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([makeFeedRow()]) });
 
-    await harness.service.generateProductFeed();
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(harness.rendererCalls).toHaveLength(2);
     const instants = harness.rendererCalls.map((call) => call.now);
@@ -702,7 +744,7 @@ describe('GoogleFeedService - the document comes back untouched', () => {
   it('resolves to the renderer string verbatim, whitespace and all', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([makeFeedRow()]) });
 
-    const document = await harness.service.generateProductFeed();
+    const document = await harness.service.generateProductFeed(harness.criteria);
 
     // Exact equality against a sentinel that opens and closes with whitespace: no trim, no wrapper,
     // no envelope, no re-encoding, no compression and no pretty-printing.
@@ -714,7 +756,7 @@ describe('GoogleFeedService - the document comes back untouched', () => {
   it('does not escape or re-encode the characters the renderer already emitted', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([makeFeedRow()]) });
 
-    const document = await harness.service.generateProductFeed();
+    const document = await harness.service.generateProductFeed(harness.criteria);
 
     expect(document).toContain('&');
     expect(document).toContain('<not escaped>');
@@ -730,13 +772,15 @@ describe('GoogleFeedService - the document comes back untouched', () => {
       render: () => ALTERNATE_FEED_SENTINEL,
     });
 
-    await expect(harness.service.generateProductFeed()).resolves.toBe(ALTERNATE_FEED_SENTINEL);
+    await expect(harness.service.generateProductFeed(harness.criteria)).resolves.toBe(
+      ALTERNATE_FEED_SENTINEL,
+    );
   });
 
   it('contributes no endpoint, host or namespace of its own to the document', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([makeFeedRow()]) });
 
-    const document = await harness.service.generateProductFeed();
+    const document = await harness.service.generateProductFeed(harness.criteria);
 
     // The double renderer emits no Google reference at all, so any occurrence here could only have
     // been added by the subject. There is none: the ported adapter makes no live call, holds no
@@ -757,7 +801,7 @@ describe('GoogleFeedService - a feed with no qualifying rows', () => {
   it('still invokes the renderer when the read yields nothing', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([]) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(harness.callLog).toEqual(READ_THEN_RENDER);
     expect(harness.rendererCalls).toHaveLength(1);
@@ -767,7 +811,7 @@ describe('GoogleFeedService - a feed with no qualifying rows', () => {
     const emptyRows: FeedRows = [];
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve(emptyRows) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     const call = soleRendererCall(harness);
     expect(call.rows).toBe(emptyRows);
@@ -777,7 +821,7 @@ describe('GoogleFeedService - a feed with no qualifying rows', () => {
   it('returns the rendered document rather than short-circuiting to an empty string', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([]) });
 
-    const document = await harness.service.generateProductFeed();
+    const document = await harness.service.generateProductFeed(harness.criteria);
 
     expect(document).toBe(RENDERED_FEED_SENTINEL);
     expect(document).not.toBe('');
@@ -786,7 +830,7 @@ describe('GoogleFeedService - a feed with no qualifying rows', () => {
   it('forwards the host and the instant on the empty path exactly as on the populated one', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([]) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     const call = soleRendererCall(harness);
     expect(call.feedHost).toBe(FEED_HOST);
@@ -807,7 +851,9 @@ describe('GoogleFeedService - failure propagates in both directions', () => {
       read: () => Promise.reject(new Error(ROW_SOURCE_FAILURE_MESSAGE)),
     });
 
-    await expect(harness.service.generateProductFeed()).rejects.toThrow(ROW_SOURCE_FAILURE_MESSAGE);
+    await expect(harness.service.generateProductFeed(harness.criteria)).rejects.toThrow(
+      ROW_SOURCE_FAILURE_MESSAGE,
+    );
   });
 
   it('propagates the very same failure object, unwrapped and un-rethrown', async () => {
@@ -816,7 +862,7 @@ describe('GoogleFeedService - failure propagates in both directions', () => {
 
     // Identity, not merely message equality: the subject adds no failure mode of its own, so the
     // layer owning the request maps the original.
-    await expect(harness.service.generateProductFeed()).rejects.toBe(failure);
+    await expect(harness.service.generateProductFeed(harness.criteria)).rejects.toBe(failure);
   });
 
   it('never reaches the renderer when the read fails', async () => {
@@ -824,7 +870,9 @@ describe('GoogleFeedService - failure propagates in both directions', () => {
       read: () => Promise.reject(new Error(ROW_SOURCE_FAILURE_MESSAGE)),
     });
 
-    await expect(harness.service.generateProductFeed()).rejects.toThrow(ROW_SOURCE_FAILURE_MESSAGE);
+    await expect(harness.service.generateProductFeed(harness.criteria)).rejects.toThrow(
+      ROW_SOURCE_FAILURE_MESSAGE,
+    );
 
     // The log stops at the read. Rendering a feed whose rows never arrived would publish an empty
     // catalog as though it were the truth.
@@ -840,7 +888,9 @@ describe('GoogleFeedService - failure propagates in both directions', () => {
       },
     });
 
-    await expect(harness.service.generateProductFeed()).rejects.toThrow(RENDERER_FAILURE_MESSAGE);
+    await expect(harness.service.generateProductFeed(harness.criteria)).rejects.toThrow(
+      RENDERER_FAILURE_MESSAGE,
+    );
   });
 
   it('reaches the renderer before that failure, so the read had already completed', async () => {
@@ -851,7 +901,9 @@ describe('GoogleFeedService - failure propagates in both directions', () => {
       },
     });
 
-    await expect(harness.service.generateProductFeed()).rejects.toThrow(RENDERER_FAILURE_MESSAGE);
+    await expect(harness.service.generateProductFeed(harness.criteria)).rejects.toThrow(
+      RENDERER_FAILURE_MESSAGE,
+    );
 
     expect(harness.callLog).toEqual(READ_THEN_RENDER);
   });
@@ -862,8 +914,8 @@ describe('GoogleFeedService - failure propagates in both directions', () => {
     });
 
     // A rejection, never a resolved empty string and never a placeholder document.
-    await expect(harness.service.generateProductFeed()).rejects.toThrow(Error);
-    await expect(harness.service.generateProductFeed()).rejects.not.toBe('');
+    await expect(harness.service.generateProductFeed(harness.criteria)).rejects.toThrow(Error);
+    await expect(harness.service.generateProductFeed(harness.criteria)).rejects.not.toBe('');
   });
 
   it('recovers on a later generation once the read succeeds, holding no failed state', async () => {
@@ -878,8 +930,12 @@ describe('GoogleFeedService - failure propagates in both directions', () => {
       },
     });
 
-    await expect(harness.service.generateProductFeed()).rejects.toThrow(ROW_SOURCE_FAILURE_MESSAGE);
-    await expect(harness.service.generateProductFeed()).resolves.toBe(RENDERED_FEED_SENTINEL);
+    await expect(harness.service.generateProductFeed(harness.criteria)).rejects.toThrow(
+      ROW_SOURCE_FAILURE_MESSAGE,
+    );
+    await expect(harness.service.generateProductFeed(harness.criteria)).resolves.toBe(
+      RENDERED_FEED_SENTINEL,
+    );
 
     expect(harness.callLog).toEqual([ROW_SOURCE_STEP, ROW_SOURCE_STEP, RENDERER_STEP]);
     expect(readAttempts).toBe(2);
@@ -903,8 +959,12 @@ describe('GoogleFeedService - constructor injection and no hidden state', () => 
       render: () => ALTERNATE_FEED_SENTINEL,
     });
 
-    await expect(first.service.generateProductFeed()).resolves.toBe(RENDERED_FEED_SENTINEL);
-    await expect(second.service.generateProductFeed()).resolves.toBe(ALTERNATE_FEED_SENTINEL);
+    await expect(first.service.generateProductFeed(first.criteria)).resolves.toBe(
+      RENDERED_FEED_SENTINEL,
+    );
+    await expect(second.service.generateProductFeed(second.criteria)).resolves.toBe(
+      ALTERNATE_FEED_SENTINEL,
+    );
 
     // Each instance reached only its own collaborators. A module-level row source or renderer would
     // have crossed here.
@@ -917,9 +977,9 @@ describe('GoogleFeedService - constructor injection and no hidden state', () => 
   it('reads and renders again on every generation, memoising nothing', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([makeFeedRow()]) });
 
-    await harness.service.generateProductFeed();
-    await harness.service.generateProductFeed();
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
+    await harness.service.generateProductFeed(harness.criteria);
+    await harness.service.generateProductFeed(harness.criteria);
 
     // Three generations, three reads, three renders, strictly alternating. A lazy memo on either
     // collaborator or on the document would collapse this log.
@@ -946,8 +1006,8 @@ describe('GoogleFeedService - constructor injection and no hidden state', () => 
       },
     });
 
-    await harness.service.generateProductFeed();
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(harness.rendererCalls).toHaveLength(2);
     const forwarded = harness.rendererCalls.map((call) => call.rows);
@@ -961,8 +1021,12 @@ describe('GoogleFeedService - constructor injection and no hidden state', () => 
       read: () => Promise.reject(new Error(ROW_SOURCE_FAILURE_MESSAGE)),
     });
 
-    await expect(failing.service.generateProductFeed()).rejects.toThrow(ROW_SOURCE_FAILURE_MESSAGE);
-    await expect(healthy.service.generateProductFeed()).resolves.toBe(RENDERED_FEED_SENTINEL);
+    await expect(failing.service.generateProductFeed(failing.criteria)).rejects.toThrow(
+      ROW_SOURCE_FAILURE_MESSAGE,
+    );
+    await expect(healthy.service.generateProductFeed(healthy.criteria)).resolves.toBe(
+      RENDERED_FEED_SENTINEL,
+    );
 
     expect(failing.callLog).toEqual([ROW_SOURCE_STEP]);
     expect(healthy.callLog).toEqual(READ_THEN_RENDER);
@@ -972,7 +1036,7 @@ describe('GoogleFeedService - constructor injection and no hidden state', () => 
     const rows: FeedRows = [makeFeedRow({ skuID: 'fake-sku-id-injected' })];
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve(rows) });
 
-    const document = await harness.service.generateProductFeed();
+    const document = await harness.service.generateProductFeed(harness.criteria);
 
     // Both observable effects trace back to an injected double: the rows the renderer saw came from
     // the double row source, and the document is the one the double renderer returned. Had the
@@ -1056,7 +1120,7 @@ describe('GoogleFeedService - nothing else happens', () => {
     ];
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve(rows) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     const call = soleRendererCall(harness);
     expect(call.rows).toBe(rows);
@@ -1074,7 +1138,7 @@ describe('GoogleFeedService - nothing else happens', () => {
     const suppliedOrder = rows.map((row) => row.skuID);
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve(rows) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(soleRendererCall(harness).rows.map((row) => row.skuID)).toEqual(suppliedOrder);
 
@@ -1088,7 +1152,7 @@ describe('GoogleFeedService - nothing else happens', () => {
     const rows: FeedRows = [firstRow, secondRow];
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve(rows) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     const call = soleRendererCall(harness);
 
@@ -1107,7 +1171,7 @@ describe('GoogleFeedService - nothing else happens', () => {
     const rows: FeedRows = [makeFeedRow()];
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve(rows) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     const call = soleRendererCall(harness);
     const [forwardedRow] = call.rows;
@@ -1129,7 +1193,7 @@ describe('GoogleFeedService - nothing else happens', () => {
     ];
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve(rows) });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(soleRendererCall(harness).rows.map((row) => row.skuID)).toEqual([
       'fake-sku-id-1',
@@ -1340,14 +1404,17 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
   });
 
   it('★ takes the host as a plain string and performs no check on it', async () => {
-    // The compile-time half. A plain string literal is assignable to the constructor's second
-    // parameter, which a branded type would reject outright - so the parameter type is
-    // asserted by the compiler and this line stops compiling if the brand comes back.
-    const plainStringIsAssignable: ConstructorParameters<typeof GoogleFeedService>[1] =
-      UNTRUSTED_WELL_FORMED_HOST;
+    // The compile-time half. A plain string literal is assignable to the criteria's `feedHost`,
+    // which a branded type would reject outright - so the member type is asserted by the compiler
+    // and this line stops compiling if the brand comes back.
+    //
+    // QUOTE-THEN-REVISE: this used to read the CONSTRUCTOR's second parameter,
+    // `ConstructorParameters<typeof GoogleFeedService>[1]`. The host is a member of the AAP 0.4.2
+    // method argument now, so the type under test moved with it; the claim is unchanged.
+    const plainStringIsAssignable: FeedCriteria['feedHost'] = UNTRUSTED_WELL_FORMED_HOST;
     expect(plainStringIsAssignable).toBe(UNTRUSTED_WELL_FORMED_HOST);
 
-    // The runtime half. A value the RENDERER refuses is accepted by the CONSTRUCTOR without
+    // The runtime half. A value the RENDERER refuses is accepted by the SUBJECT without
     // complaint, which is the positive statement that no origin policy survives in here.
     expect(() =>
       makeFeedServiceHarness({
@@ -1361,7 +1428,7 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
       feedHost: SCHEME_AND_PATH_HOST,
     });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     // Forwarded byte for byte, scheme and path intact: nothing here parses, strips or repairs.
     expect(soleRendererCall(harness).feedHost).toBe(SCHEME_AND_PATH_HOST);
@@ -1414,7 +1481,7 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
       feedHost: UNTRUSTED_WELL_FORMED_HOST,
     });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     expect(soleRendererCall(harness).feedHost).toBe(UNTRUSTED_WELL_FORMED_HOST);
     expect(() =>
@@ -1447,7 +1514,7 @@ describe('GoogleFeedService - the scheme is not held, forwarded or chosen (S-09 
       read: (): Promise<FeedRows> => Promise.resolve([]),
     });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     const call = soleRendererCall(harness);
 
@@ -1462,50 +1529,49 @@ describe('GoogleFeedService - the scheme is not held, forwarded or chosen (S-09 
       read: (): Promise<FeedRows> => Promise.resolve([]),
     });
 
-    await harness.service.generateProductFeed();
+    await harness.service.generateProductFeed(harness.criteria);
 
     const call = soleRendererCall(harness);
 
-    // `FEED_HOST` IS THE PLAIN LITERAL, and it is what the harness constructs with. This read
+    // `FEED_HOST` IS THE PLAIN LITERAL, and it is what the harness puts on the criteria. This read
     // `FEED_HOST_TEXT` while a branded `TrustedFeedHost` constant stood beside a raw-text
     // companion; the brand, its mint and the companion were all withdrawn with the constructor
     // guard, so there is one constant again and it is this one.
     expect(call.feedHost).toBe(FEED_HOST);
 
-    // And the scheme is nowhere on the instance either, so it cannot be forwarded by accident.
+    // And the scheme is nowhere on the criteria either, so it cannot be forwarded by accident.
     expect(Object.keys(call)).not.toContain('feedScheme');
+    expect(Object.keys(harness.criteria)).toStrictEqual(['feedHost', 'now']);
   });
 
-  it('★ will not COMPILE with a scheme, which is what stops the argument creeping back', () => {
-    // THE TYPE-LEVEL HALF OF THE REVERSAL. The earlier revision asserted the mirror image - that
-    // omitting the scheme would not compile - so this case has flipped rather than disappeared.
+  it('★ will not COMPILE with a scheme, which is what stops the member creeping back', () => {
+    // THE TYPE-LEVEL HALF OF THE REVERSAL, moved with its subject. The earlier revision put the
+    // `@ts-expect-error` on a positional CONSTRUCTOR argument, because the scheme had briefly been
+    // one. AAP 0.4.2 makes the per-request values a `FeedCriteria` argument, so a scheme could only
+    // creep back as a MEMBER of that type - and that is what this case now refuses.
     // `@ts-expect-error` fails the build if the error stops being reported, so it cannot rot into a
     // no-op the way a commented-out assertion would.
-    //
-    // The directive sits on the SCHEME ARGUMENT rather than on the call expression, because that
-    // is where the compiler reports it: with a fourth positional argument present, `'https'` lands
-    // in the `now: Date` slot and the mismatch is attributed to the argument.
-    expect(
-      () =>
-        new GoogleFeedService(
-          { fetchProductFeedRows: (): Promise<FeedRows> => Promise.resolve([]) },
-          FEED_HOST,
-          // @ts-expect-error - there is no scheme parameter; the renderer owns a frozen literal.
-          'https',
-          FEED_INSTANT,
-        ),
-    ).not.toThrow();
+    const criteriaWithScheme: FeedCriteria = {
+      feedHost: FEED_HOST,
+      now: FEED_INSTANT,
+      // @ts-expect-error - `FeedCriteria` declares no scheme; the renderer owns a frozen literal.
+      feedScheme: 'https',
+    };
+
+    // And the excess member cannot reach the renderer even when a caller forces it past the
+    // compiler: the subject reads exactly two members off the criteria.
+    expect(Object.keys(criteriaWithScheme)).not.toStrictEqual(['feedHost', 'now']);
   });
 
-  it('★ constructs from THREE arguments, leaving the renderer to its default', () => {
-    // The positive half: the shipped constructor is `(repository, feedHost, now, renderFeed?)`, so
-    // a three-argument construction is complete and the class contract block's `@example` - which
-    // shows exactly that - is correct again. It was correct, then wrong, and is correct once more.
-    const service = new GoogleFeedService(
-      { fetchProductFeedRows: (): Promise<FeedRows> => Promise.resolve([]) },
-      FEED_HOST,
-      FEED_INSTANT,
-    );
+  it('★ constructs from ONE argument, leaving the renderer to its default', () => {
+    // ★★★ QUOTE-THEN-REVISE. This case used to read "constructs from THREE arguments" and reason
+    // that "the shipped constructor is `(repository, feedHost, now, renderFeed?)`, so a
+    // three-argument construction is complete". Under AAP 0.4.2 the host and the instant are the
+    // METHOD argument, so the constructor is `(repository, renderFeed?)` and ONE argument is
+    // complete - which is what the class contract block's `@example` now shows.
+    const service = new GoogleFeedService({
+      fetchProductFeedRows: (): Promise<FeedRows> => Promise.resolve([]),
+    });
 
     expect(service).toBeInstanceOf(GoogleFeedService);
 

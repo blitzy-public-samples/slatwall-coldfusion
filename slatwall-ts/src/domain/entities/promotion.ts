@@ -76,7 +76,7 @@
 // here: no clock parameter, no date parameter on any method, no date-related import.
 //
 // Every method keeps its exact legacy arity - the project permits exactly one entity-layer
-// signature widening and it is spent on `PromotionPeriod.isCurrent(now: Date)`, so the children's
+// signature widening and it is spent on `PromotionPeriod.isCurrent(now?: Date)`, so the children's
 // `getCurrentFlag()` is called with NO argument. Nothing private becomes public. Defects are
 // reproduced, never repaired: a method that throws at runtime today throws here too.
 

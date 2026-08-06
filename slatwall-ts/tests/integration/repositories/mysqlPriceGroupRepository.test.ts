@@ -896,11 +896,24 @@ function expectedSelectPriceGroupsByIDSql(identifierCount: number): string {
   ].join('\n');
 }
 
-const EXPECTED_SELECT_CHILD_PRICE_GROUPS_SQL = [
-  'SELECT ' + EXPECTED_PRICE_GROUP_SELECT_LIST,
-  'FROM SwPriceGroup pg',
-  'WHERE pg.parentPriceGroupID = ?',
-].join('\n');
+/**
+ * The direct-children read, transcribed for a SET of parent keys.
+ *
+ * QUOTE-THEN-REVISE. A constant `EXPECTED_SELECT_CHILD_PRICE_GROUPS_SQL` stood here ending
+ * `WHERE pg.parentPriceGroupID = ?`, transcribing an adapter constant that bound ONE parent per
+ * statement. F37 replaced that constant with a builder, because after batching nothing binds one
+ * parent, and a single parent now emits `IN (?)`. The transcription follows the adapter rather than
+ * the adapter being kept in two shapes to keep one string literal true.
+ *
+ * @param parentCount how many parent keys the statement binds.
+ */
+function expectedSelectChildPriceGroupsSql(parentCount: number): string {
+  return [
+    'SELECT ' + EXPECTED_PRICE_GROUP_SELECT_LIST,
+    'FROM SwPriceGroup pg',
+    'WHERE pg.parentPriceGroupID IN (' + new Array<string>(parentCount).fill('?').join(', ') + ')',
+  ].join('\n');
+}
 
 /**
  * The eleven rate columns plus the eight joined rounding-rule columns.
@@ -1804,7 +1817,8 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
       EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL_FOR_ONE_ID,
     );
     expect(statementAt(executor.calls, 2).params).toStrictEqual([CANNED_PRICE_GROUP_ID]);
-    expect(statementAt(executor.calls, 9).sql).toBe(EXPECTED_SELECT_CHILD_PRICE_GROUPS_SQL);
+    expect(statementAt(executor.calls, 9).sql).toBe(expectedSelectChildPriceGroupsSql(1));
+    expect(statementAt(executor.calls, 9).params).toStrictEqual([CANNED_PRICE_GROUP_ID]);
   });
 
   it('treats a non-MySQL dialect as a hard error, never a silently wrong statement', () => {
@@ -3096,12 +3110,20 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
     }
   });
 
-  it('walks the parent chain hop by hop and reads children for the subject only', async () => {
+  it('walks a chain of STALE paths hop by hop, and reads children for the subject only', async () => {
     // The walk is BOUNDED and its shape is asserted rather than assumed: three row reads
     // climbing the chain, ONE rate read keyed on all three identifiers, and ONE children read -
     // for the price group that was actually asked for. Ancestors get no children read, because
     // nothing traverses an ancestor's siblings and fetching them would be the unbounded
     // graph walk this shape exists to prevent.
+    //
+    // QUOTE-THEN-REVISE ON THE TITLE ALONE: it read "walks the parent chain hop by hop", which after
+    // F37 describes only HALF of what this adapter does and exactly what THIS FIXTURE forces. Every
+    // row here carries `priceGroupIDPath` equal to its OWN identifier and nothing else - a STALE path,
+    // which is what `priceGroupRow()` defaults to - so no seed path names an ancestor, the batched
+    // prefetch has no candidate to ask for and issues no statement, and each hop takes its own read.
+    // That is the fallback arm, and pinning it here is deliberate: the sibling case below pins the
+    // batched arm on a well-maintained path, and between them both arms are covered.
     const { repository, executor } = makeSubject([
       [priceGroupRow({ parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID })],
       [
@@ -3152,13 +3174,93 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
     ]);
 
     const childSelects = executor.calls.filter(
-      (statement) => statement.sql === EXPECTED_SELECT_CHILD_PRICE_GROUPS_SQL,
+      (statement) => statement.sql === expectedSelectChildPriceGroupsSql(1),
     );
 
     expect(childSelects).toHaveLength(1);
     expect(elementAt(childSelects, 0, 'the children read').params).toStrictEqual([
       CANNED_PRICE_GROUP_ID,
     ]);
+
+    // And no batched path read among them: with every path naming only its own row there is nothing
+    // to prefetch, so the candidate set is empty and the statement is not issued at all.
+    expect(
+      executor.calls.filter((statement) => statement.sql === expectedSelectPriceGroupsByIDSql(1)),
+    ).toHaveLength(0);
+  });
+
+  it('★★★ reads a whole maintained chain in ONE statement instead of one per hop (F37)', async () => {
+    // THE BATCHED ARM. The seed's `priceGroupIDPath` is MAINTAINED - it names the root, the parent
+    // and itself, which is what `composeInsertedPriceGroupIDPath` writes and what
+    // [model/entity/PriceGroup.cfc:L206, L211] maintains - so both ancestors are named by the one
+    // path the seed row already carries, and both arrive in a single keyed read.
+    //
+    // The prefetch result deliberately arrives ROOT-FIRST, disagreeing with the walk order, so what
+    // builds the chain has to be the stored PARENT POINTERS rather than the order the server answered
+    // in. The seed's own identifier is NOT among the bound keys: its row is already in hand.
+    const { repository, executor } = makeSubject([
+      [
+        priceGroupRow({
+          parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+          priceGroupIDPath: [
+            CANNED_ROOT_PRICE_GROUP_ID,
+            CANNED_PARENT_PRICE_GROUP_ID,
+            CANNED_PRICE_GROUP_ID,
+          ].join(','),
+        }),
+      ],
+      [
+        priceGroupRow({
+          priceGroupID: CANNED_ROOT_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_ROOT_PRICE_GROUP_ID,
+          parentPriceGroupID: null,
+        }),
+        priceGroupRow({
+          priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+          priceGroupIDPath: [CANNED_ROOT_PRICE_GROUP_ID, CANNED_PARENT_PRICE_GROUP_ID].join(','),
+          parentPriceGroupID: CANNED_ROOT_PRICE_GROUP_ID,
+        }),
+      ],
+      // The keyed rate read, matching nothing.
+      NO_ROWS,
+      // The children read, for the subject only.
+      NO_ROWS,
+    ]);
+
+    const priceGroup = requirePriceGroup(
+      await repository.getPriceGroup(CANNED_PRICE_GROUP_ID),
+      'the leaf of a maintained two-deep chain',
+    );
+
+    // FOUR statements where the stale-path fixture above needs FIVE, and the difference is exactly the
+    // hop that no longer needs its own read. The count no longer grows with the depth of the chain.
+    expect(executor.calls).toHaveLength(4);
+    expect(statementAt(executor.calls, 0).params).toStrictEqual([CANNED_PRICE_GROUP_ID]);
+    expect(statementAt(executor.calls, 1).sql).toBe(expectedSelectPriceGroupsByIDSql(2));
+    expect(statementAt(executor.calls, 1).params).toStrictEqual([
+      CANNED_ROOT_PRICE_GROUP_ID,
+      CANNED_PARENT_PRICE_GROUP_ID,
+    ]);
+
+    // The rate read still covers all three, keyed in the order the walk reached them, which proves
+    // the prefetched rows joined the collection pass exactly as per-hop reads did.
+    expect(statementAt(executor.calls, 2).sql).toBe(
+      EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL_FOR_THREE_IDS,
+    );
+    expect(statementAt(executor.calls, 2).params).toStrictEqual([
+      CANNED_PRICE_GROUP_ID,
+      CANNED_PARENT_PRICE_GROUP_ID,
+      CANNED_ROOT_PRICE_GROUP_ID,
+    ]);
+    expect(statementAt(executor.calls, 3).sql).toBe(expectedSelectChildPriceGroupsSql(1));
+
+    // And the SAME graph the per-hop walk produced: leaf, parent, root, root parentless.
+    const parent = requirePriceGroup(priceGroup.getParentPriceGroup(), 'the parent');
+    const root = requirePriceGroup(parent.getParentPriceGroup(), 'the root');
+
+    expect(parent.getPriceGroupID()).toBe(CANNED_PARENT_PRICE_GROUP_ID);
+    expect(root.getPriceGroupID()).toBe(CANNED_ROOT_PRICE_GROUP_ID);
+    expect(root.getParentPriceGroup()).toBeUndefined();
   });
 
   it('materializes an ancestor shared by two results as ONE instance', async () => {
@@ -3350,6 +3452,40 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
         'u',
       ),
     );
+  });
+
+  it('★ detects a cycle whose pointers differ only in CASE, instead of climbing it forever', async () => {
+    // ★★★ THE WORST OUTCOME IN THIS FILE, AND IT WAS REACHABLE. `parentPriceGroupID = ?` runs under
+    // MySQL's default collation, so a stored parent link of `PGFX-...-PARENT` in one case resolves
+    // the row whose own `priceGroupID` column carries the other case. The chain-scoped guard was a
+    // `Set` keyed by the RAW identifier, and a `Set` compares case-SENSITIVELY - so the repeat was
+    // not recognised, the walk read the same two rows again, and again, and the request span until
+    // the platform killed it, holding a pooled connection the whole time. Folding both the chain
+    // set and the collected map with `cfFoldKey` restores the CFML struct identity the ORM-backed
+    // traversal had, and the loop is named rather than run.
+    const mixedCaseParentID = CANNED_PARENT_PRICE_GROUP_ID.toUpperCase();
+
+    const { repository, executor } = makeSubject([
+      // The seed points at its parent in UPPER case.
+      [priceGroupRow({ parentPriceGroupID: mixedCaseParentID })],
+      // The row that comes back carries the stored (lower) casing and points back at the seed,
+      // again in a different case than the seed's own column.
+      [
+        priceGroupRow({
+          priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_PARENT_PRICE_GROUP_ID,
+          parentPriceGroupID: CANNED_PRICE_GROUP_ID.toUpperCase(),
+        }),
+      ],
+    ]);
+
+    await expect(repository.getPriceGroup(CANNED_PRICE_GROUP_ID)).rejects.toThrow(
+      /pointers form a cycle/u,
+    );
+
+    // Bounded, and bounded at exactly the same two reads the same-case cycle costs: the guard fires
+    // on the first repeat rather than after an unbounded number of them.
+    expect(executor.calls).toHaveLength(2);
   });
 
   it('treats the same row reached from two chains as a shared instance, never as a cycle', async () => {
@@ -3889,8 +4025,10 @@ describe('getPriceGroupsByID - one statement for a key set, never one per key', 
 
     await batched.adapter.getPriceGroupsByID([CANNED_PRICE_GROUP_ID, SECOND_PRICE_GROUP_ID]);
 
-    // Filtered on the BY-KEY predicate, not on the table: `SELECT_CHILD_PRICE_GROUPS_SQL` reads the
-    // same table by `parentPriceGroupID` and is not a by-key read.
+    // Filtered on the BY-KEY predicate, not on the table: the children read reaches the same table by
+    // `parentPriceGroupID` and is not a by-key read. The batched ancestry prefetch IS a by-key read
+    // and would be counted here - it is absent because every seed in this fixture is a leaf whose
+    // stored path names nothing but itself, so there is no ancestor to prefetch.
     const batchedSeedReads = batched.executor.calls.filter((statement) =>
       statement.sql.includes('WHERE pg.priceGroupID'),
     );
@@ -3918,10 +4056,33 @@ describe('getPriceGroupsByID - one statement for a key set, never one per key', 
     expect(serialSeedReads).toHaveLength(2);
     expect(serial.executor.calls).toHaveLength(LEAF_PRICE_GROUP_STATEMENT_COUNT * 2);
 
-    // Four rather than six: one seed read, one shared rate read, and one child read per seed. The
-    // child read stays per-seed because the shared hydrator has always issued it that way - the
-    // singular form does too - and narrowing THAT is not what this finding is about.
-    expect(batched.executor.calls).toHaveLength(4);
+    // TWO rather than six: one seed read and one shared rate read.
+    //
+    // QUOTE-THEN-REVISE. This assertion expected FOUR and was annotated: "Four rather than six: one
+    // seed read, one shared rate read, and one child read per seed. The child read stays per-seed
+    // because the shared hydrator has always issued it that way - the singular form does too - and
+    // narrowing THAT is not what this finding is about." It is what THIS finding is about. F37 names
+    // both halves - one query per ancestor, and an unnecessary child query per seed - so the two
+    // child reads are gone twice over: the hydrator now asks for every seed's children in ONE
+    // statement, and this method does not ask at all, because none of its three consumers reads
+    // `getChildPriceGroups()`. The count is still pinned exactly; it is pinned to the smaller number.
+    expect(batched.executor.calls).toHaveLength(2);
+    expect(
+      batched.executor.calls.filter((statement) =>
+        statement.sql.includes('WHERE pg.parentPriceGroupID'),
+      ),
+    ).toHaveLength(0);
+
+    // ★ AND THE PORT READS ARE UNCHANGED, which is the safety argument for the line above. The serial
+    // comparison ran through `getPriceGroup`, a PORT method, and each of its three statements
+    // included that group's children - so every entity reachable through `PriceGroupRepository` still
+    // arrives carrying the collection the delete rule at
+    // [model/service/PriceGroupService.cfc:L463-L467] reads.
+    expect(
+      serial.executor.calls.filter((statement) =>
+        statement.sql.includes('WHERE pg.parentPriceGroupID'),
+      ),
+    ).toHaveLength(2);
   });
 
   it('keys the answer by CASE-FOLDED identifier, so a caller spelling need not match the row', async () => {

@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/services/priceGroupService.ts              ported PriceGroupService
 //   tests/traceability/legacyTestMap.ts            structural coverage map
@@ -47,7 +45,7 @@
 //
 //   `hb_serviceName="priceGroupService"` resolves to
 //   `model/service/PriceGroupService.cfc`, which IS in scope as
-//   `src/services/priceGroupService.ts` (planned). That makes PriceGroup unusual among
+//   `src/services/priceGroupService.ts`. That makes PriceGroup unusual among
 //   its path-bearing siblings: [model/entity/ProductType.cfc:L49] declares
 //   `hb_serviceName="productService"` and [model/entity/Category.cfc:L49]
 //   declares `hb_serviceName="contentService"`, so both point at a
@@ -166,14 +164,14 @@
 //   and the two calls on undeclared members - `getAmountRepresentation()` and
 //   `clearAmounts()`) are every one of them in
 //   `model/service/PriceGroupService.cfc`
-//   and belong to `src/services/priceGroupService.ts` (planned).
+//   and belong to `src/services/priceGroupService.ts`.
 //   `tsconfig.build.json` sets `removeComments: false` and Prettier does not
 //   reflow comments, so these annotations survive into the emitted output. They
 //   are part of the deliverable's auditability, not decoration.
 //
 // BUDGET AUDIT FOR THIS FILE
 //   ZERO signature widenings - the single entity-layer widening in this folder
-//   is `PromotionPeriod.isCurrent(now: Date)`, and nothing here is widened.
+//   is `PromotionPeriod.isCurrent(now?: Date)`, and nothing here is widened.
 //   ZERO deliberate divergences - the port's three all sit in `sku.ts` and
 //   `product.ts`. ZERO signature reshapings. ZERO visibility widenings. ZERO
 //   numbered defects owned. No invented non-functional requirement appears in
@@ -219,8 +217,8 @@
 //   `meta/tests/unit/entity/ProductTest.cfc`, and
 //   `meta/tests/functional/admin/entity/ProductTest.cfc` is an empty stub that
 //   is never counted as coverage. The future suite
-//   `tests/unit/domain/entities/priceGroup.test.ts` (planned) must therefore be labelled
-//   NET-NEW and never presented as parity; `tests/traceability/legacyTestMap.ts` (planned)
+//   `tests/unit/domain/entities/priceGroup.test.ts` must therefore be labelled
+//   NET-NEW and never presented as parity; `tests/traceability/legacyTestMap.ts`
 //   fails the suite if this module has no test. That suite is authored
 //   separately - this file states the obligation and does not discharge it.
 //   Nothing here needs a seam for it: every method is synchronous and total
@@ -229,6 +227,7 @@
 // ---------------------------------------------------------------------------
 
 import { buildIdPathList, resolveIdPath } from '../valueObjects/materializedIdPath.js';
+import { cfEquals } from '../../lib/cfml/struct.js';
 import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import type { PriceGroupRate } from './priceGroupRate.js';
@@ -1070,7 +1069,14 @@ export class PriceGroup {
       // [model/entity/PriceGroup.cfc:L97] `len(options[i]['value']) && options[i]['value'] ==
       // getPriceGroupID()`. `cfLen` first and short-circuiting - see the doc block on why the length
       // test cannot be dropped for an unsaved price group.
-      if (!removed && cfLen(option.value) > 0 && option.value === this.priceGroupID) {
+      //
+      // ★ THE IDENTITY TEST IS `cfEquals`, BECAUSE CFML `==` ON STRINGS IS CASE-INSENSITIVE.
+      // With `===`, a stored option value spelled in another case than the entity's own identifier
+      // column failed to match, THIS price group was left in its own parent-option list, and the
+      // admin form then offered a group as its own parent - the one outcome [L96-L101] exists to
+      // prevent. The length test stays FIRST and stays `cfLen`, so an unsaved group with an empty
+      // identifier never reaches the comparison.
+      if (!removed && cfLen(option.value) > 0 && cfEquals(option.value, this.priceGroupID)) {
         // [model/entity/PriceGroup.cfc:L98-L99] `arrayDeleteAt(options, i); break;` - skip this row
         // and stop testing. `removed` reproduces the `break` without abandoning the copy.
         removed = true;
@@ -1595,9 +1601,17 @@ export class PriceGroup {
   //
   // Neither route hand-rolls comma-delimited path walking. Both delegate to
   // `src/domain/valueObjects/materializedIdPath.js`, which owns the six properties of the legacy walk
-  // - root-first, self-last, comma-delimited, includes self, never empty, and a cyclic or unbounded
-  // parent chain refused by a throw rather than followed forever - and the
-  // `isNull` decision that Route A turns on.
+  // - root-first, self-last, comma-delimited, includes self, never empty, and a cycling parent chain
+  // FOLLOWED FOREVER exactly as the source follows it - and the `isNull` decision that Route A turns
+  // on.
+  //
+  // ★★★ THE SIXTH PROPERTY WAS STATED BACKWARDS HERE, AND THE INVERSION IS A REVIEW FINDING. It read
+  // "a cyclic or unbounded parent chain refused by a throw rather than followed forever". The opposite
+  // is the case: the guard that once did that was removed in full, so the sixth reproduced property is
+  // that the walk does NOT terminate on a cycle - matching
+  // [org/Hibachi/HibachiEntity.cfc:L314-L321], which carries neither a visited set nor a bound. See
+  // the residual-risk note on the memoized accessor below; the exposure is real and lives upstream in
+  // the adapters, not here.
 
   /**
    * This price group's materialized ancestor path, computed and memoized on first
@@ -1809,14 +1823,25 @@ export class PriceGroup {
    * exactly that accessor, and `getParentPriceGroup` is the association the legacy
    * string named.
    *
-   * A CYCLIC OR UNBOUNDED PARENT CHAIN IS REFUSED, not followed - the single
-   * documented divergence from the legacy walk at
-   * [org/Hibachi/HibachiEntity.cfc:L314-L321], which carries neither a visited set
-   * nor a bound. The refusal is a THROW and never a truncation, for exactly the
-   * reason the earlier note here gave for wanting no guard at all: a shortened path
-   * would quietly change which price-group rate wins, and that is a price. Throwing
-   * produces no path, so nothing wrong is ever persisted or compared. The value
-   * object owns the guard and sets out the full reasoning at its own walk; this
+   * ★★★ THIS NOTE ASSERTED A REFUSAL AND A DIVERGENCE, AND BOTH ARE GONE. IT IS A REVIEW
+   * FINDING. It read "A CYCLIC OR UNBOUNDED PARENT CHAIN IS REFUSED, not followed - the
+   * single documented divergence from the legacy walk", and went on to describe a throw
+   * that "produces no path, so nothing wrong is ever persisted or compared". The guard it
+   * described - a visited set plus a depth backstop - was removed in full, so there is no
+   * refusal, no throw, and no divergence spent here. The migration's three deliberate
+   * divergences are spent elsewhere entirely, and this method owns none of them.
+   *
+   * WHAT HAPPENS INSTEAD, AND THE RESIDUAL RISK. A cycling `parentPriceGroup` chain is
+   * FOLLOWED FOREVER, reproducing [org/Hibachi/HibachiEntity.cfc:L314-L321], which carries
+   * neither a visited set nor a bound. The concern the old note raised is still correct as
+   * far as it goes - a shortened path would quietly change which price-group rate wins, and
+   * that is a price - which is precisely why the walk truncates nothing. But not truncating
+   * is achieved by reproducing the source, not by refusing: the loop is a `do/while` that
+   * never yields, so on a cyclic chain it holds the invocation's single-threaded event loop
+   * until the platform timeout, and a retry repeats it. That exposure is unmitigated in this
+   * layer and is bounded only upstream, where the MySQL adapters refuse to return a cyclic
+   * row set; `setParentPriceGroup` itself accepts a cycle exactly as the source does. The
+   * value object sets out the full reasoning for removing the guard at its own walk; this
    * method only delegates.
    */
   private buildPriceGroupIDPathList(): string {

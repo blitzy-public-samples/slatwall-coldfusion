@@ -122,8 +122,13 @@
 //   * NO `external` array. Every runtime dependency is inlined so each artifact is self-contained;
 //     see Option C. `mysql2`, `decimal.js` and `zod` are bundled, never externalised.
 //   * NO `define`. Configuration is environment-driven and the runtime injects environment
-//     variables natively. `src/lib/config.ts` is the one module that reads them, and baking a host,
-//     database name, user or credential into a build artifact is exactly what that design prevents.
+//     variables natively, so baking a host, database name, user or credential into a build artifact
+//     is exactly what that design prevents. `src/lib/config.ts` owns SEVENTEEN of the nineteen keys
+//     in the committed contract and is the only module that validates one; `src/lib/logger.ts` reads
+//     `LOG_LEVEL` for itself, and `TEST_LIVE_DATABASE` is read by `tests/setup.ts`, which never
+//     reaches an artifact. All three are named because "one module reads the environment" would be
+//     a claim this build cannot make good on - and the property that actually matters here is that
+//     NO value is resolved at BUILD time, whichever module reads it at run time.
 //   * NO `banner`. See Option B.
 //   * NO plugin. The dependency set is fixed at exact pinned versions, and a plugin package would
 //     breach that standard for no behavioural gain.
@@ -304,12 +309,19 @@ function buildOptions(entryPoints) {
     sourcesContent: true,
 
     // MINIFICATION IS OFF, DELIBERATELY - BUT IT IS NOT WHAT CARRIES THE ANNOTATIONS, AND THIS BLOCK
-    // USED TO CLAIM THAT IT WAS. Measured on this exact entrypoint set: 130 `LEGACY-DEFECT` markers
-    // exist in the modules bundled into one artifact and 56 survive in the artifact text. esbuild
-    // preserves a comment only where its printer happens to emit one and drops the rest - the option
-    // that governs comment retention is `legalComments`, and an ordinary `//` annotation is not a
-    // legal comment. So `minify: false` and `legalComments: 'inline'` together do NOT carry the audit
-    // trail into the artifact; `sourcesContent: true` above is what actually does.
+    // USED TO CLAIM THAT IT WAS. esbuild preserves a comment only where its printer happens to emit
+    // one and drops the rest; the option that governs comment retention is `legalComments`, and an
+    // ordinary `//` annotation is not a legal comment. So `minify: false` and
+    // `legalComments: 'inline'` together do NOT carry the audit trail into the artifact;
+    // `sourcesContent: true` above is what actually does. Only a MINORITY of this port's markers
+    // reach the artifact TEXT, while the map recovers them all.
+    //
+    // NO COUNT IS FROZEN IN THIS COMMENT, AND THAT IS THE SECOND CORRECTION THIS BLOCK CARRIES.
+    // It previously pinned a specific pair of integers, which decayed as soon as a module was added
+    // to an entrypoint's import graph - the same silent-decay failure the prose claim itself had.
+    // `assertAnnotationsRecoverable` below reports the recovered count PER ARTIFACT on every build
+    // and fails the build at zero, so the current numbers are always in the build log and never
+    // here.
     //
     // What minification off does buy is worth keeping on its own terms: the artifact stays readable
     // beside its map, and NO identifier-renaming transform is enabled - not minification, not name
@@ -476,7 +488,18 @@ function archiveEntrySources(artifact) {
  * one end-of-central-directory record, no ZIP64 extensions, no encryption, no comment and no extra
  * fields. The format is fixed and small, the inputs are a handful of files this build just produced,
  * and the alternative was either a host-global executable (finding 1 above) or a new dependency
- * outside the pinned set (AAP 0.8.3 pins all fourteen exactly).
+ * outside the pinned set.
+ *
+ * THE PINNED SET IS THIRTEEN PACKAGES - three runtime and ten development, every one an exact version
+ * triple - and that count is DERIVED FROM `package.json` rather than quoted from prose. An earlier
+ * revision of this comment said "AAP 0.8.3 pins all fourteen exactly", which repeated a number the
+ * plan states without matching the number it enumerates: AAP 0.5.1's table lists thirteen packages
+ * beside a Node runtime baseline of 20.20.2, so the fourteenth pin is the RUNTIME, not a package.
+ * `README.md` reconciles it in exactly those terms - "thirteen direct pins, and counting the Node
+ * runtime itself, the fourteen pins this port is held to" - and
+ * `tests/traceability/legacyTestMap.ts` declines to write either number down, asserting instead that
+ * every specifier in the manifest is exact. Adding a dependency is forbidden either way; what changes
+ * here is only that the claim is now checkable against the file it describes.
  *
  * Each entry is deflated, and STORED UNCOMPRESSED when deflating would not make it smaller - which is
  * what a conforming writer does and what keeps a tiny entry from growing.
@@ -643,11 +666,15 @@ function readSourceMapFor(artifact) {
  * ARTIFACT SET. Writes nothing; every path it touches was produced by the build immediately above.
  *
  * WHY A BUILD-TIME PROOF AND NOT A COMMENT. This file previously asserted in prose that
- * `minify: false` plus `legalComments: 'inline'` kept the annotations in the artifact, and the claim
- * was wrong: esbuild retains a comment only where its printer emits one, so of the 130
- * `LEGACY-DEFECT` markers in the modules bundled into one artifact, 56 survived. A claim about an
- * emitted artifact that nothing checks is a claim that decays silently, which is exactly what
- * happened, so the property is now measured on every build instead of being described.
+ * `minify: false` plus `legalComments: 'inline'` kept the annotations in the artifact. That was
+ * wrong twice over, and both errors are recorded because they have the same cause. First the
+ * MECHANISM was wrong: esbuild retains a comment only where its printer emits one, so most markers
+ * never reach the artifact text and it is `sourcesContent: true` that carries them. Then the
+ * CORRECTION was frozen as a pair of integers measured on one entrypoint set at one moment - which
+ * decayed the moment a module joined an import graph, exactly as the original claim had. A number
+ * about an emitted artifact that nothing re-measures is a number that goes stale in silence. So this
+ * function measures it on every build and PRINTS the per-artifact count, and no count is written
+ * down anywhere in this file.
  *
  * The check is deliberately per artifact rather than across the set. Each artifact is independently
  * deployable, so "the audit trail is somewhere in `dist/`" is not the property that matters - the

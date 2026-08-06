@@ -2054,23 +2054,34 @@ describe('ProductType - the declarative validation contract (B8)', () => {
       }
     });
 
-    it('ships no validation surface on the entity itself', () => {
+    it('ships no validation ENFORCEMENT on the entity, but does carry the error REGISTER', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // Enforcement belongs to the service tier. An entity that validated itself would need the
-      // uniqueness query for `urlTitle`, and a domain object reaching a repository is precisely
-      // what the ESLint layer boundary makes impossible.
-      for (const absent of [
-        'validate',
-        'hasErrors',
-        'getErrors',
-        'setErrors',
-        'getValidations',
-        'getValidationProperties',
-      ]) {
+      // ENFORCEMENT belongs to the service tier, and that part is unchanged. An entity that validated
+      // itself would need the uniqueness query for `urlTitle`, and a domain object reaching a
+      // repository is precisely what the ESLint layer boundary makes impossible.
+      for (const absent of ['validate', 'setErrors', 'getValidations', 'getValidationProperties']) {
         expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain(absent);
       }
       expect(Reflect.get(subject, 'validate')).toBeUndefined();
+
+      // ★★★ THE REGISTER IS A DIFFERENT THING FROM ENFORCEMENT, AND THIS CASE USED TO CONFLATE THEM.
+      // `hasErrors` and `getErrors` were in the list above. They are not validators - they are the
+      // five-member channel [org/Hibachi/HibachiTransient.cfc:L30-L64] through which
+      // `HibachiService.save` DELIVERS a refusal: it validates, skips the flush when `hasErrors()`,
+      // and returns THE SAME ENTITY either way [org/Hibachi/HibachiService.cfc:L151-L167]. With no
+      // register the ported `saveProductType` had nowhere to put a refused rule and threw instead,
+      // which is the divergence code review recorded. The service still decides WHICH rules fail; the
+      // entity only carries the answer.
+      expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('getErrors');
+      expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('hasErrors');
+      expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('hasError');
+      expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('getError');
+      expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('addError');
+
+      // A bare product type carries none, so the register asserts nothing on its own.
+      expect(subject.hasErrors()).toBe(false);
+      expect(subject.getErrors()).toStrictEqual({});
     });
 
     it('contributes none of the five declaratively-invoked entity validators', () => {
@@ -2183,6 +2194,45 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       // entity's perspective, and never defaulted - an absent one is `undefined`.
       expect(withRemote.getRemoteID()).toBe('legacy-erp-4471');
       expect(withoutRemote.getRemoteID()).toBeUndefined();
+    });
+
+    it('exposes productTypeDescription the same way, carrying a value of the full declared width', () => {
+      // ★★★ THIS COLUMN HAD NO BEHAVIOURAL COVERAGE AT ALL, which a code review measured: nothing in
+      // this suite named it and the repository suite hydrated it as `null` in every row, so a
+      // hydration that dropped it or an accessor wired to the wrong field would have passed
+      // everywhere. It is a real persisted column [model/entity/ProductType.cfc:L58] declared
+      // `length="4000"`, and the Google feed reads it - `len(productType.getProductTypeDescription())`
+      // decides whether the feed emits a description at all - so an accessor that answered
+      // `undefined` for a populated row would silently strip descriptions from the product feed.
+      const described = new ProductType({
+        productTypeID: 'pt-1',
+        productTypeDescription: 'Screen-printed apparel, decorated to order.',
+      });
+      const undescribed = new ProductType({ productTypeID: 'pt-2' });
+
+      expect(described.getProductTypeDescription()).toBe(
+        'Screen-printed apparel, decorated to order.',
+      );
+      expect(undescribed.getProductTypeDescription()).toBeUndefined();
+
+      // AT THE DECLARED WIDTH, because 4,000 characters is what the column accepts and nothing here
+      // truncates: the entity is a faithful carrier, and any length policy belongs to the schema.
+      const atDeclaredWidth = 'D'.repeat(4000);
+      const wide = new ProductType({
+        productTypeID: 'pt-3',
+        productTypeDescription: atDeclaredWidth,
+      });
+
+      expect(wide.getProductTypeDescription()).toBe(atDeclaredWidth);
+      expect(wide.getProductTypeDescription()).toHaveLength(4000);
+
+      // The EMPTY STRING is a third, distinct state - a persisted-but-blank description - and it is
+      // preserved rather than folded into absence, because `len(...)` in the feed reader
+      // distinguishes them and so must this accessor.
+      const blank = new ProductType({ productTypeID: 'pt-4', productTypeDescription: '' });
+
+      expect(blank.getProductTypeDescription()).toBe('');
+      expect(blank.getProductTypeDescription()).not.toBeUndefined();
     });
   });
 
@@ -2885,5 +2935,329 @@ describe('ProductType - a cyclic parent chain is accepted, per legacy parity (B1
 
     expect(reparented.getParentProductType()).toBe(newRoot);
     expect(reparented.getProductTypeIDPath()).toBe('pt-new-root,pt-movable-probe');
+  });
+  // =========================================================================
+  // THE SAVE-REFUSAL CHANNEL - addError / hasErrors / getErrors
+  //
+  // NET-NEW COVERAGE (AAP 0.6.6), and the sibling of the block on
+  // `tests/unit/domain/entities/product.test.ts`. The members reproduce the framework base class this
+  // port does not carry [org/Hibachi/HibachiEntity.cfc:L134, L151 over
+  // org/Hibachi/HibachiErrors.cfc:L14-L60], because `ProductService.saveProductType` answers a REFUSED
+  // save by returning this entity with its failed rules on it - the protocol
+  // [org/Hibachi/HibachiService.cfc:L153-L167] states and a code review required restored - and because
+  // [model/service/ProductService.cfc:L306] reads `hasErrors()` off it before inheriting a parent's
+  // products.
+  // =========================================================================
+
+  it('reports NO errors on a freshly constructed product type', () => {
+    const productType = new ProductType({ productTypeID: 'pt-clean-probe' });
+
+    expect(productType.hasErrors()).toBe(false);
+    expect(productType.getErrors()).toStrictEqual({});
+  });
+
+  it('records failed rules per property, appending a second message under one key', () => {
+    const productType = new ProductType({ productTypeID: 'pt-refused-probe' });
+
+    productType.addError('productTypeName', 'productTypeName is required');
+    productType.addError('urlTitle', 'urlTitle is required');
+    productType.addError('urlTitle', 'urlTitle must be unique');
+
+    expect(productType.hasErrors()).toBe(true);
+    expect(productType.getErrors()).toStrictEqual({
+      productTypeName: ['productTypeName is required'],
+      urlTitle: ['urlTitle is required', 'urlTitle must be unique'],
+    });
+  });
+
+  it('folds the error name like a CFML struct key and hands back a snapshot', () => {
+    const productType = new ProductType({ productTypeID: 'pt-fold-probe' });
+
+    productType.addError('urlTitle', 'urlTitle is required');
+    productType.addError('URLTitle', 'urlTitle must be unique');
+
+    expect(Object.keys(productType.getErrors())).toStrictEqual(['urlTitle']);
+
+    const messages = productType.getErrors()['urlTitle'];
+
+    // ★ FROZEN, SO THE WRITE IS REFUSED RATHER THAN ABSORBED. `getErrors()` freezes the projection
+    // and each message array, which is strictly stronger than handing back a mutable copy: this case
+    // asserts the write throws AND that the register is unchanged, where pushing onto a throwaway
+    // array would have proved only the second half.
+    expect(() => {
+      (messages as string[]).push('injected by a caller');
+    }).toThrow(TypeError);
+    expect(Object.isFrozen(messages)).toBe(true);
+
+    expect(productType.getErrors()['urlTitle']).toStrictEqual([
+      'urlTitle is required',
+      'urlTitle must be unique',
+    ]);
+  });
+
+  it('is PER INSTANCE, so a refused product type does not mark its parent', () => {
+    const parent = new ProductType({ productTypeID: 'pt-parent-probe' });
+    const child = new ProductType({ productTypeID: 'pt-child-probe', parentProductType: parent });
+
+    child.addError('productTypeName', 'productTypeName is required');
+
+    expect(child.hasErrors()).toBe(true);
+    expect(parent.hasErrors()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B11. The EXACT SOURCE SPELLINGS of the child-product-type helpers (F43)
+// ---------------------------------------------------------------------------
+
+describe('ProductType - the source-spelled child helpers, lowercase c (B11)', () => {
+  // ★★★ WHY THESE TWO NAMES EXIST AND WHY A TEST IS OWED THEM.
+  // [model/entity/ProductType.cfc:L167] declares `addchildProductType` and [L170]
+  // `removechildProductType`, both with a LOWERCASE `c` and both with a capital-C
+  // `ChildProductType` argument. CFML dispatches method names case-insensitively, so those were ONE
+  // member each there and a caller could write either casing. TypeScript members are
+  // CASE-SENSITIVE, so publishing only the normalised camelCase form silently withdraws a name the
+  // source publishes: `productType.addchildProductType(child)` would stop compiling. AAP 0.9.2
+  // requires legacy method names to be carried verbatim, and a name that cannot be called has not
+  // been carried - so both spellings ship, the camelCase one carrying the implementation.
+  //
+  // WHAT THESE CASES MUST PROVE, and it is more than presence: that the alias is an ALIAS. Two
+  // independent implementations of the same delegation would be a real hazard - they could drift
+  // under a later edit and a caller's choice of casing would start to matter. Every case below
+  // therefore asserts the OBSERVABLE EFFECT rather than the name.
+
+  it('publishes BOTH spellings of each helper, all four callable', () => {
+    expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('addChildProductType');
+    expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('addchildProductType');
+    expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('removeChildProductType');
+    expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('removechildProductType');
+
+    const subject = new ProductType({ productTypeID: 'pt-spelling-surface' });
+
+    for (const member of [
+      'addChildProductType',
+      'addchildProductType',
+      'removeChildProductType',
+      'removechildProductType',
+    ] as const) {
+      expect(typeof subject[member]).toBe('function');
+    }
+  });
+
+  it('★★ the source-spelled add reaches the SAME single implementation as the camelCase one', () => {
+    // CFML parity [model/entity/ProductType.cfc:L167-L169]: the whole body is
+    // `arguments.ChildProductType.setParentProductType( this )`, so the observable effect is the
+    // child's parent assignment plus the guarded append onto the parent's LIVE children array
+    // [L150, L152]. Both spellings must produce exactly that, and produce it once.
+    const viaSourceSpelling = new ProductType({ productTypeID: 'pt-parent-lowercase' });
+    const childA = new ProductType({ productTypeID: 'pt-child-lowercase' });
+
+    viaSourceSpelling.addchildProductType(childA);
+
+    expect(childA.getParentProductType()).toBe(viaSourceSpelling);
+    expect(viaSourceSpelling.getChildProductTypes()).toEqual([childA]);
+    // APPENDED ONCE, not twice: a second implementation delegating in parallel would double it.
+    expect(viaSourceSpelling.getChildProductTypes()).toHaveLength(1);
+
+    // The camelCase spelling on a separate graph, so the two are compared rather than shared.
+    const viaCanonical = new ProductType({ productTypeID: 'pt-parent-camelcase' });
+    const childB = new ProductType({ productTypeID: 'pt-child-camelcase' });
+
+    viaCanonical.addChildProductType(childB);
+
+    expect(childB.getParentProductType()).toBe(viaCanonical);
+    expect(viaCanonical.getChildProductTypes()).toEqual([childB]);
+
+    // ★ THE MATERIALIZED PATH AGREES, which is the strongest single statement available here: the
+    // path is rebuilt from the live parent chain, so an alias that assigned a different parent - or
+    // none - would show up as a different string rather than as a missing member.
+    expect(childA.getProductTypeIDPath()).toBe('pt-parent-lowercase,pt-child-lowercase');
+    expect(childB.getProductTypeIDPath()).toBe('pt-parent-camelcase,pt-child-camelcase');
+  });
+
+  it('★★ the source-spelled remove reaches the SAME single implementation as the camelCase one', () => {
+    // CFML parity [model/entity/ProductType.cfc:L170-L172]: the body is
+    // `arguments.ChildProductType.removeParentProductType( this )`, which splices the child out of
+    // the parent's live array [L159-L161] and then clears the child's own `parentProductType` [L162].
+    const parent = new ProductType({ productTypeID: 'pt-remove-parent' });
+    const first = new ProductType({ productTypeID: 'pt-remove-first' });
+    const second = new ProductType({ productTypeID: 'pt-remove-second' });
+
+    parent.addchildProductType(first);
+    parent.addChildProductType(second);
+    expect(parent.getChildProductTypes()).toEqual([first, second]);
+
+    // Source spelling removes the first child and NOTHING else.
+    parent.removechildProductType(first);
+
+    expect(parent.getChildProductTypes()).toEqual([second]);
+    expect(first.getParentProductType()).toBeUndefined();
+    expect(second.getParentProductType()).toBe(parent);
+
+    // camelCase spelling removes the remaining one, leaving the collection empty.
+    parent.removeChildProductType(second);
+
+    expect(parent.getChildProductTypes()).toEqual([]);
+    expect(second.getParentProductType()).toBeUndefined();
+  });
+
+  it('★ the two spellings are interchangeable in either order, add with one and remove with the other', () => {
+    // The property that matters to a source-spelled caller mixing the two: CFML could not tell them
+    // apart, so neither may the target. Adding through one name and removing through the other must
+    // work, in both directions.
+    const parent = new ProductType({ productTypeID: 'pt-mixed-parent' });
+    const child = new ProductType({ productTypeID: 'pt-mixed-child' });
+
+    parent.addchildProductType(child);
+    parent.removeChildProductType(child);
+
+    expect(parent.getChildProductTypes()).toEqual([]);
+    expect(child.getParentProductType()).toBeUndefined();
+
+    parent.addChildProductType(child);
+    parent.removechildProductType(child);
+
+    expect(parent.getChildProductTypes()).toEqual([]);
+    expect(child.getParentProductType()).toBeUndefined();
+  });
+
+  it('★ carries the source-spelled ADD guard, so re-adding a held child does not duplicate it', () => {
+    // CFML parity [model/entity/ProductType.cfc:L151]: the append is guarded by
+    // `isNew() or !arguments.parentProductType.hasChildProductType( this )`, and the alias inherits
+    // that guard because it inherits the implementation. A SAVED child - one carrying an identifier,
+    // so `isNew()` is false - therefore takes the containment branch.
+    //
+    // The unsaved short-circuit is NOT re-asserted here; it belongs to the B10 setter cases, and
+    // duplicating it would state the same legacy behaviour twice under a different name.
+    const parent = new ProductType({ productTypeID: 'pt-guard-parent' });
+    const child = new ProductType({ productTypeID: 'pt-guard-child' });
+
+    parent.addchildProductType(child);
+    parent.addchildProductType(child);
+    parent.addChildProductType(child);
+
+    expect(parent.getChildProductTypes()).toEqual([child]);
+  });
+
+  it('★ publishes NO source-spelled variant for any other helper, because no other one needs it', () => {
+    // The lowercase-`c` inconsistency is the source's own and is confined to these two declarations:
+    // every other helper in [model/entity/ProductType.cfc] is already camelCase, including
+    // `setParentProductType` [L149], `removeParentProductType` [L155], `addPromotionReward` [L175]
+    // and `removePromotionReward` [L178]. Inventing lowercase aliases for them would publish names
+    // the source never had, which is the opposite failure to the one F43 records.
+    for (const invented of [
+      'setparentProductType',
+      'removeparentProductType',
+      'addpromotionReward',
+      'removepromotionReward',
+      'addpriceGroupRate',
+      'removepriceGroupRate',
+      'addattributeSet',
+      'removeattributeSet',
+    ]) {
+      expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain(invented);
+    }
+
+    // And exactly TWO members in the whole prototype carry a lowercase letter immediately after the
+    // `add`/`remove` prefix, so no third has crept in.
+    const sourceSpelledHelpers = PRODUCT_TYPE_PROTOTYPE_MEMBERS.filter((member) =>
+      /^(?:add|remove)[a-z]/.test(member),
+    );
+
+    expect(sourceSpelledHelpers.sort()).toEqual(['addchildProductType', 'removechildProductType']);
+  });
+});
+
+// ===========================================================================
+// The description column that carried no case of its own
+// ===========================================================================
+//
+// ★★★ ADDED BECAUSE A MECHANICAL METHOD INVENTORY FOUND IT UNNAMED. A code review reported that the
+// traceability map "proves module-to-suite presence, not every public method"; deriving the inventory
+// from source rather than curating it reduced the real gap on this entity to exactly one name,
+// `getProductTypeDescription`. It is a persisted column this port reads, so it owes an assertion.
+// Gate `A24` now fails if any public method of a ported entity goes unnamed again.
+
+describe('ProductType: the description column', () => {
+  it('reads productTypeDescription, and reports absence as undefined rather than as an empty string', () => {
+    // [model/entity/ProductType.cfc:L58] declares `length="4000"` and the column is nullable, so
+    // `undefined` is the honest absent value. Coercing it to `''` would make an unset description
+    // indistinguishable from one an operator deliberately cleared.
+    expect(
+      new ProductType({
+        productTypeID: 'pt-described',
+        productTypeDescription: 'Screen-printed apparel, blank goods excluded.',
+      }).getProductTypeDescription(),
+    ).toBe('Screen-printed apparel, blank goods excluded.');
+
+    expect(
+      new ProductType({ productTypeID: 'pt-bare' }).getProductTypeDescription(),
+    ).toBeUndefined();
+  });
+
+  it('★★ preserves the description verbatim, applying no trimming or length ceiling of its own', () => {
+    // The 4000-character ceiling is the SCHEMA's, enforced where the row is written; the accessor
+    // narrows nothing. A reader that trimmed here would change what a round-trip returns.
+    const padded = '  leading and trailing space is part of the value  ';
+
+    expect(
+      new ProductType({
+        productTypeID: 'pt-padded',
+        productTypeDescription: padded,
+      }).getProductTypeDescription(),
+    ).toBe(padded);
+  });
+});
+
+// ===========================================================================
+// The error register, invoked directly on this entity
+// ===========================================================================
+//
+// ★★★ ADDED BECAUSE A MECHANICAL INVENTORY FOUND THESE MEMBERS NAMED BUT NEVER CALLED HERE. A code
+// review reported that "nine public methods have no invocation in any test AST", which is a sharper
+// question than whether a name appears somewhere: a method mentioned only in a comment is a method
+// nothing exercises. The register's behaviour WAS covered - through the service suites, where a refused
+// save is observed - but not at the entity that declares it, so the per-entity contract rested on
+// another tier's assertions. Gate `A24` now requires an actual invocation.
+//
+// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees and
+// that the save-refusal semantics depend on: a MISS yields an empty array rather than undefined,
+// messages ACCUMULATE under one name rather than replacing, and lookup is CASE-INSENSITIVE while the
+// key remembers the case it was FIRST written with.
+
+describe('ProductType: the inherited error register', () => {
+  it('returns an empty array for a name that was never recorded, never undefined', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent name
+    // has to be safe to iterate - `undefined` here would turn a clean validation pass into a crash.
+    const subject = new ProductType({ productTypeID: 'pt-errors-1' });
+
+    expect(subject.getError('noSuchRule')).toStrictEqual([]);
+    expect(subject.hasErrors()).toBe(false);
+    expect(subject.getErrors()).toStrictEqual({});
+  });
+
+  it('★★ accumulates messages under one name instead of replacing them', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after the
+    // first, which is how a partially invalid entity comes to look like a singly invalid one.
+    const subject = new ProductType({ productTypeID: 'pt-errors-1' });
+
+    subject.addError('urlTitle', 'is required');
+    subject.addError('urlTitle', 'must be unique');
+
+    expect(subject.getError('urlTitle')).toStrictEqual(['is required', 'must be unique']);
+    expect(subject.hasErrors()).toBe(true);
+  });
+
+  it('★★ looks a name up case-insensitively, and keeps the case it was first written with', () => {
+    // CFML struct keys are case-insensitive, so `getError('URLTITLE')` must find what `addError`
+    // recorded as `urlTitle` - while [org/Hibachi/HibachiErrors.cfc:L14-L31] REMEMBERS the first
+    // spelling, so the published key is the one the first write used.
+    const subject = new ProductType({ productTypeID: 'pt-errors-1' });
+
+    subject.addError('urlTitle', 'first');
+    subject.addError('URLTITLE', 'second');
+
+    expect(subject.getError('UrlTitle')).toStrictEqual(['first', 'second']);
+    expect(Object.keys(subject.getErrors())).toStrictEqual(['urlTitle']);
   });
 });

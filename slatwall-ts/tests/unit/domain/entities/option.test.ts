@@ -88,6 +88,7 @@ import { Option } from '../../../../src/domain/entities/option.js';
 import { ENTITY_CODE_PATTERN, OptionGroup } from '../../../../src/domain/entities/optionGroup.js';
 import { PromotionQualifier } from '../../../../src/domain/entities/promotionQualifier.js';
 import { PromotionReward } from '../../../../src/domain/entities/promotionReward.js';
+import { makeSkuFixture } from '../../../fixtures/skuFixtures.js';
 
 /**
  * The already-resolved assets image base that `getImageDirectory` concatenates onto.
@@ -1039,7 +1040,7 @@ describe('the five many-to-many-inverse collections and their abbreviated link t
     expect(subject.hasPromotionQualifierExclusion(heldQualifier)).toBe(false);
   });
 
-  it('exposes addSku and removeSku, whose delegation is pinned by sku.test.ts', () => {
+  it('declares addSku and removeSku, whose ROUND TRIP is asserted in the block below', () => {
     // CFML parity [model/entity/Option.cfc:L110-L115], verified verbatim:
     //
     //   public void function addSku(required any sku)    { arguments.sku.addOption( this ); }
@@ -1049,12 +1050,16 @@ describe('the five many-to-many-inverse collections and their abbreviated link t
     // side: `Sku` declares the `options` many-to-many with `singularname="option"`
     // [model/entity/Sku.cfc:L76] and hand-writes neither accessor.
     //
-    // THE BEHAVIOURAL ASSERTION IS DELIBERATELY NOT MADE HERE, and the reason is the import
-    // boundary. `src/domain/entities/sku.ts` is outside this suite's permitted surface, and `Sku`
-    // is a class with private fields - NOMINALLY typed, so no structural stand-in can satisfy the
-    // parameter. Reaching outside the surface or laundering a double through an unsafe cast is
-    // worse than stating the boundary; `sku.test.ts` owns the delegation. What IS assertable is
-    // that both members exist and are callable.
+    // ★★★ THIS CASE USED TO BE THE ONLY COVERAGE, AND ITS STATED REASON WAS WRONG TWICE OVER. It read:
+    // "THE BEHAVIOURAL ASSERTION IS DELIBERATELY NOT MADE HERE ... `src/domain/entities/sku.ts` is
+    // outside this suite's permitted surface ... `sku.test.ts` owns the delegation."
+    //
+    // A code review measured both halves as false. There is no permitted surface: `eslint.config.mjs`
+    // restricts imports for `src/domain/**` only and says nothing about `tests/**`, and this suite
+    // already imports three sibling entity classes. And `sku.test.ts` does NOT own the delegation - it
+    // calls `Sku.addOption` and `Sku.removeOption` directly, which is the far side, so nothing anywhere
+    // called `Option.addSku`. An inverted pair, or a delegation that pushed onto a local array instead
+    // of reaching the owning side, would have passed. `makeSkuFixture` builds the real far side.
     const subject = anOption({});
 
     expect(typeof subject.addSku).toBe('function');
@@ -1069,6 +1074,91 @@ describe('the five many-to-many-inverse collections and their abbreviated link t
     expect(prototypeMembers()).not.toContain('removeOption');
     expect(prototypeMembers()).not.toContain('addExcludedOption');
     expect(prototypeMembers()).not.toContain('removeExcludedOption');
+  });
+});
+
+describe('addSku and removeSku, as round trips through the OWNING side', () => {
+  /**
+   * A group is required, not optional: `getOptionsByOptionGroupIDStruct` reaches
+   * `Sku.requireOptionGroup(option, 'L516')`, so an option with no group cannot be keyed - and it is
+   * that struct which proves the delegation went through `Sku.addOption` rather than past it.
+   */
+  const anOptionInAGroup = (optionID: string, optionGroupID = 'og-1'): Option =>
+    anOption({
+      optionID,
+      optionName: `Option ${optionID}`,
+      optionGroup: aGroup({ optionGroupID }),
+    });
+
+  it('★★ addSku puts this option on the SKU, and removeSku takes it off again', () => {
+    const sku = makeSkuFixture({ skuID: 'sku-1', options: [] });
+    const option = anOptionInAGroup('option-1');
+
+    expect(sku.getOptions()).toHaveLength(0);
+
+    option.addSku(sku);
+
+    // The owning side holds the array [model/entity/Sku.cfc:L76], so this is where the link appears.
+    expect(sku.getOptions()).toEqual([option]);
+    expect(sku.hasOption(option)).toBe(true);
+
+    option.removeSku(sku);
+
+    expect(sku.getOptions()).toHaveLength(0);
+    expect(sku.hasOption(option)).toBe(false);
+  });
+
+  it('★★ and it goes THROUGH Sku.addOption, so the option memos are invalidated with it', () => {
+    // The property that separates a real delegation from an array push: `Sku.addOption` invalidates
+    // the four option-derived memos, so a struct read BEFORE the link and one AFTER it must differ.
+    // A delegation that mutated the array directly would leave the first read cached and the option
+    // invisible to every accessor that reads through it.
+    const sku = makeSkuFixture({ skuID: 'sku-1', options: [] });
+    const option = anOptionInAGroup('option-1', 'og-size');
+
+    expect(sku.getOptionsByOptionGroupIDStruct()).toEqual({});
+
+    option.addSku(sku);
+
+    expect(sku.getOptionsByOptionGroupIDStruct()).toEqual({ 'og-size': option });
+
+    option.removeSku(sku);
+
+    expect(sku.getOptionsByOptionGroupIDStruct()).toEqual({});
+  });
+
+  it('★★ a second addSku adds nothing more, because the owning side is guarded by hasOption', () => {
+    const sku = makeSkuFixture({ skuID: 'sku-1', options: [] });
+    const option = anOptionInAGroup('option-1');
+
+    option.addSku(sku);
+    option.addSku(sku);
+
+    // `if(isNew() or !hasOption(option))` on the far side, so a saved SKU cannot acquire a duplicate
+    // `SwSkuOption` row through this path.
+    expect(sku.getOptions()).toHaveLength(1);
+  });
+
+  it('★ removeSku matches by optionID, so a RE-HYDRATED option removes the held one', () => {
+    // Two instances describing the same row are the same association member, which is the shape a
+    // repository read produces: `Sku.removeOption` compares `optionID` rather than identity.
+    const held = anOptionInAGroup('option-1');
+    const sku = makeSkuFixture({ skuID: 'sku-1', options: [held] });
+
+    anOptionInAGroup('option-1').removeSku(sku);
+
+    expect(sku.getOptions()).toHaveLength(0);
+  });
+
+  it('removing an option the SKU never held leaves it untouched rather than throwing', () => {
+    const held = anOptionInAGroup('option-1');
+    const sku = makeSkuFixture({ skuID: 'sku-1', options: [held] });
+
+    expect(() => {
+      anOptionInAGroup('option-2').removeSku(sku);
+    }).not.toThrow();
+
+    expect(sku.getOptions()).toEqual([held]);
   });
 });
 

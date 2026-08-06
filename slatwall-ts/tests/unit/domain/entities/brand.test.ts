@@ -296,11 +296,29 @@ describe('LEGACY-EXTENDED: the four cases Brand inherits or overrides', () => {
     // asserted `isNew()` and `!len(getPrimaryIDValue())`.
   });
 
-  it('validate_as_save_for_a_new_instance_doesnt_pass - not portable to this tier', () => {
+  it('validate_as_save_for_a_new_instance_doesnt_pass - the DISPATCHER is not portable, the REGISTER is', () => {
+    // ★★★ QUOTE-THEN-REVISE. This case asserted the ABSENCE of all four members, on the reading that
+    // the whole validation affordance was unportable. Half of that was right and half was a defect
+    // code review recorded: `validate` IS the unportable half - metadata-driven dispatch over
+    // `model/validation/*.json` through `HibachiValidationService`, replaced by the rules
+    // `src/services/brandService.ts` transcribes - but the ERROR REGISTER
+    // [org/Hibachi/HibachiTransient.cfc:L30-L64] is five small members with no framework behind them,
+    // and `HibachiService.save` [org/Hibachi/HibachiService.cfc:L151-L167] carries a refused save's
+    // rules on the entity through exactly those members. Without them `saveBrand` had no way to report
+    // a refusal and threw instead, which broke the return contract of
+    // [model/service/BrandService.cfc:L76].
     expect(prototypeMembers()).not.toContain('validate');
-    expect(prototypeMembers()).not.toContain('hasErrors');
-    expect(prototypeMembers()).not.toContain('hasError');
-    expect(prototypeMembers()).not.toContain('getErrors');
+    expect(prototypeMembers()).toContain('hasErrors');
+    expect(prototypeMembers()).toContain('hasError');
+    expect(prototypeMembers()).toContain('getErrors');
+    expect(prototypeMembers()).toContain('getError');
+    expect(prototypeMembers()).toContain('addError');
+
+    // ★ AND A BARE ENTITY CARRIES NO ERROR, which is the legacy case's actual subject: the CFML test
+    // asserted that a NEW brand does not PASS validation, not that it arrives pre-flagged. Errors
+    // appear only once something records them.
+    expect(new Brand().hasErrors()).toBe(false);
+    expect(new Brand().getErrors()).toStrictEqual({});
 
     const bare = new Brand();
 
@@ -770,45 +788,21 @@ describe('NET-NEW: every remove* helper removes - the inversion cross-check verd
 
 describe('NET-NEW: the six many-to-many-inverse link tables, preserved verbatim', () => {
   /**
-   * The `linktable` values from [model/entity/Brand.cfc:L66-L71], verbatim.
+   * The six `linktable` values live at [model/entity/Brand.cfc:L66-L71], and the requirement is
+   * that EVERY ABBREVIATION SURVIVES: `Promo` is not `Promotion`, `Qual` is not `Qualifier`, `Excl`
+   * is not `Exclusion`. These are physical table names in a live schema this port keeps reading and
+   * writing unchanged (AAP 0.8.1), so "tidying" one would be a migration.
    *
-   * EVERY ABBREVIATION IS PRESERVED AND NONE IS EVER EXPANDED. `Promo` is not `Promotion`, `Qual`
-   * is not `Qualifier`, and `Excl` is not `Exclusion`. These are physical table names in a live
-   * schema that this port continues to read and write unchanged, so "tidying" one would be a
-   * migration.
+   * That claim is NOT asserted here. Restating the six literals in this file and comparing them
+   * with themselves would prove only that a test-owned array holds what it was written to hold - it
+   * cannot notice a target module misspelling a table. The contract is checked where the shipped
+   * text can actually be read: tests/traceability/legacyTestMap.ts, block A20, derives all 53
+   * in-scope `linktable` declarations from the frozen legacy entities and holds `src/` to them,
+   * including the four of Brand's six that reach real SQL and the two that stay commentary.
+   *
+   * What this block does assert is the part that lives on THIS class: which collections the entity
+   * materializes, and which it deliberately does not.
    */
-  const LINK_TABLES = [
-    'SwPromoRewardBrand',
-    'SwPromoRewardExclBrand',
-    'SwPromoQualBrand',
-    'SwPromoQualExclBrand',
-    'SwVendorBrand',
-    'SwPhysicalBrand',
-  ] as const;
-
-  it('names exactly six link tables, one per many-to-many-inverse collection', () => {
-    // SIX, not four and not eight. Eight is the total bidirectional PAIR count on the component;
-    // two of those pairs - `attributeValues` at L60 and `products` at L61 - are one-to-many and
-    // have no link table at all.
-    expect(LINK_TABLES).toHaveLength(6);
-    expect(new Set(LINK_TABLES).size).toBe(6);
-  });
-
-  it('preserves each abbreviated table name exactly as the schema spells it', () => {
-    expect(LINK_TABLES[0]).toBe('SwPromoRewardBrand');
-    expect(LINK_TABLES[1]).toBe('SwPromoRewardExclBrand');
-    expect(LINK_TABLES[2]).toBe('SwPromoQualBrand');
-    expect(LINK_TABLES[3]).toBe('SwPromoQualExclBrand');
-    expect(LINK_TABLES[4]).toBe('SwVendorBrand');
-    expect(LINK_TABLES[5]).toBe('SwPhysicalBrand');
-
-    for (const table of LINK_TABLES) {
-      expect(table.startsWith('Sw')).toBe(true);
-      expect(table).not.toContain('Promotion');
-      expect(table).not.toContain('Qualifier');
-      expect(table).not.toContain('Exclusion');
-    }
-  });
 
   it('materializes four of the six collections and, correctly, not the other two', () => {
     // CFML parity [model/entity/Brand.cfc:L70-L71]: `vendors` and `physicals` point at
@@ -839,14 +833,11 @@ describe('NET-NEW: the six many-to-many-inverse link tables, preserved verbatim'
     // Neither has any expression in the target: all four materialized collections are modelled
     // uniformly, and since every field is `readonly` with no setter published, the L70 gap cannot
     // be exercised through this class at all.
-    const TYPE_ARRAY_PRESENT = ['L60', 'L61', 'L67', 'L69', 'L71'] as const;
-    const TYPE_ARRAY_OMITTED = ['L66', 'L68', 'L70'] as const;
-    const POPULATE_DISABLED = ['L66', 'L67', 'L68', 'L69', 'L71'] as const;
-
-    expect(TYPE_ARRAY_PRESENT).toHaveLength(5);
-    expect(TYPE_ARRAY_OMITTED).toEqual(['L66', 'L68', 'L70']);
-    expect(POPULATE_DISABLED).not.toContain('L70');
-
+    // The line numbers above are the record of what the legacy declares; they are NOT restated as
+    // arrays and compared with themselves, because that would assert only that this file can hold
+    // its own literals. What is checkable from here is the target's side of the claim: all four
+    // materialized collections behave identically, and the L70 mass-assignment gap has nowhere to
+    // exist because NO setter is published at all.
     const subject = new Brand({ brandID: 'brand-1' });
 
     expect(Array.isArray(subject.getPromotionRewards())).toBe(true);
@@ -1099,8 +1090,14 @@ describe('NET-NEW: the attributeValues EAV path and its two helpers are DROPPED'
   });
 
   it('exposes fourteen bidirectional helpers - sixteen legacy methods minus the two dropped', () => {
+    // ★ `addError` IS EXCLUDED BY NAME, not by prefix. It begins with `add` and is emphatically not a
+    // bidirectional association helper - it is the error register's writer
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64]. Filtering on the prefix alone would have counted it
+    // as a fifteenth helper and made this case a statement about spelling rather than about
+    // associations.
     const helpers = prototypeMembers().filter(
-      (member: string) => member.startsWith('add') || member.startsWith('remove'),
+      (member: string) =>
+        member !== 'addError' && (member.startsWith('add') || member.startsWith('remove')),
     );
 
     expect(helpers).toHaveLength(14);
@@ -1342,8 +1339,11 @@ describe('NET-NEW: the framework dynamic-dispatch surface is documented, not rep
       'getPrimaryIDValue',
       'getPrimaryIDPropertyName',
       'populate',
+      // `validate` YES, `hasErrors` NO LONGER - see the LEGACY-EXTENDED case above for the full
+      // record. The dispatcher is not ported; the five-member error register it wrote into is,
+      // because `HibachiService.save` [org/Hibachi/HibachiService.cfc:L151-L167] delivers a refused
+      // save through it and `saveBrand` inherits that contract.
       'validate',
-      'hasErrors',
       'setSuperUserFlag',
     ]) {
       expect(prototypeMembers()).not.toContain(absent);
@@ -1360,9 +1360,16 @@ describe('NET-NEW: the framework dynamic-dispatch surface is documented, not rep
     // and then, inside a guard at L181, issues the IDENTICAL call with the IDENTICAL argument at
     // L182. CFML parity [org/Hibachi/HibachiEntity.cfc:L605]: the base class calls
     // `writeDump(getErrors())` on a failed ORM flush, writing raw entity state to the response.
-    for (const absent of ['getAttributeByAttributeCode', 'logHibachi', 'writeDump', 'getErrors']) {
+    for (const absent of ['getAttributeByAttributeCode', 'logHibachi', 'writeDump']) {
       expect(prototypeMembers()).not.toContain(absent);
     }
+
+    // ★ `getErrors` USED TO BE IN THAT LIST, AND IT NO LONGER BELONGS THERE. What this case is about
+    // is the DEBUG DUMP - `writeDump(getErrors())` [org/Hibachi/HibachiEntity.cfc:L605] writing raw
+    // entity state into the HTTP response - not about the register the dump happened to read. The
+    // register is ported [org/Hibachi/HibachiTransient.cfc:L30-L32]; the dump is not, and the
+    // distinction is asserted rather than blurred.
+    expect(prototypeMembers()).toContain('getErrors');
   });
 
   it('injects no collaborator port - Brand has ZERO legacy getService() sites', () => {
@@ -1382,14 +1389,24 @@ describe('NET-NEW: the framework dynamic-dispatch surface is documented, not rep
 // --- NET-NEW: the published surface is exactly the ported CFML surface ------
 
 /**
- * The 36 public members of the shipped class, in declaration order.
+ * The 41 public members of the shipped class, in declaration order.
  *
- * Sixteen accessors, `isNew()`, five containment probes and fourteen bidirectional helpers. These
- * are the ported CFML member names with ACRONYM CASING NORMALISED to the property spelling, not
- * verbatim spellings: the legacy code calls `getURLTitle()` [model/service/BrandService.cfc:L68]
- * whereas this class exposes `getUrlTitle()`. CFML method names are case-insensitive, so both forms
- * resolved to one generated accessor there; TypeScript is case-sensitive, so exactly one spelling
- * can exist here.
+ * Sixteen accessors, `isNew()`, five containment probes, fourteen bidirectional helpers and the
+ * five-member error register. These are the ported CFML member names with ACRONYM CASING NORMALISED to
+ * the property spelling, not verbatim spellings: the legacy code calls `getURLTitle()`
+ * [model/service/BrandService.cfc:L68] whereas this class exposes `getUrlTitle()`. CFML method names
+ * are case-insensitive, so both forms resolved to one generated accessor there; TypeScript is
+ * case-sensitive, so exactly one spelling can exist here.
+ *
+ * ★★ THE FIVE-MEMBER REGISTER WAS ADDED IN ONE REVISION AND THE REASON IS RECORDED HERE. This surface
+ * used to be 36, and the five absences were asserted deliberately - the LEGACY-EXTENDED case above
+ * carries the full argument. Briefly: `HibachiService.save`
+ * [org/Hibachi/HibachiService.cfc:L151-L167] delivers a refused save by leaving its rules ON THE
+ * ENTITY, skipping the flush and returning that same entity, and `saveBrand`
+ * [model/service/BrandService.cfc:L76] inherits exactly that. With no register the ported service
+ * had nowhere to put a refusal and threw instead, which is the divergence code review recorded. The
+ * five are [org/Hibachi/HibachiTransient.cfc:L30-L64] verbatim; the `validate` DISPATCHER that wrote
+ * into them is still not ported.
  */
 const INTENDED_PUBLIC_SURFACE = [
   'getBrandID',
@@ -1428,6 +1445,15 @@ const INTENDED_PUBLIC_SURFACE = [
   'removeVendor',
   'addPhysical',
   'removePhysical',
+
+  // The error register [org/Hibachi/HibachiTransient.cfc:L30-L64]. Listed last because it is the one
+  // group that is NOT a `Brand.cfc` member - it is inherited framework behaviour the ported save
+  // contract depends on.
+  'getErrors',
+  'hasErrors',
+  'hasError',
+  'getError',
+  'addError',
 ] as const;
 
 const INTERNAL_PROTOTYPE_MEMBERS = ['constructor'] as const;
@@ -1441,13 +1467,13 @@ describe('NET-NEW: the published surface is exactly the ported CFML surface', ()
     }
   });
 
-  it('exposes exactly 36 public members and not one more', () => {
+  it('exposes exactly 41 public members and not one more', () => {
     const surface = new Set<string>([...INTENDED_PUBLIC_SURFACE, ...INTERNAL_PROTOTYPE_MEMBERS]);
     const unexpected = prototypeMembers().filter((member: string) => !surface.has(member));
 
-    expect(INTENDED_PUBLIC_SURFACE).toHaveLength(36);
+    expect(INTENDED_PUBLIC_SURFACE).toHaveLength(41);
     expect(unexpected).toEqual([]);
-    expect(prototypeMembers()).toHaveLength(37);
+    expect(prototypeMembers()).toHaveLength(42);
   });
 
   it('carries the ported CFML member names, with acronym casing normalised', () => {
@@ -1458,10 +1484,17 @@ describe('NET-NEW: the published surface is exactly the ported CFML surface', ()
     expect(prototypeMembers()).not.toContain('urlTitle');
   });
 
-  it('splits the surface exactly 16 / 1 / 5 / 14', () => {
-    const accessors = INTENDED_PUBLIC_SURFACE.filter((member: string) => member.startsWith('get'));
-    const probes = INTENDED_PUBLIC_SURFACE.filter((member: string) => member.startsWith('has'));
-    const helpers = INTENDED_PUBLIC_SURFACE.filter(
+  it('splits the surface exactly 16 / 1 / 5 / 14 / 5', () => {
+    // ★ THE REGISTER IS PARTITIONED OUT FIRST, BY NAME AND NOT BY PREFIX. Its five members would
+    // otherwise scatter across all three prefix groups - `getErrors`/`getError` read as accessors,
+    // `hasErrors`/`hasError` as containment probes and `addError` as a bidirectional helper - which
+    // would make every count below a statement about spelling rather than about the CFML surface.
+    const register = new Set(['getErrors', 'hasErrors', 'hasError', 'getError', 'addError']);
+    const cfmlSurface = INTENDED_PUBLIC_SURFACE.filter((member: string) => !register.has(member));
+
+    const accessors = cfmlSurface.filter((member: string) => member.startsWith('get'));
+    const probes = cfmlSurface.filter((member: string) => member.startsWith('has'));
+    const helpers = cfmlSurface.filter(
       (member: string) => member.startsWith('add') || member.startsWith('remove'),
     );
 
@@ -1470,6 +1503,9 @@ describe('NET-NEW: the published surface is exactly the ported CFML surface', ()
     expect(helpers).toHaveLength(14);
     expect(INTENDED_PUBLIC_SURFACE).toContain('isNew');
     expect(accessors.length + probes.length + helpers.length + 1).toBe(36);
+
+    // And the register accounts for exactly the remainder, so the 41 is fully attributed.
+    expect(INTENDED_PUBLIC_SURFACE).toHaveLength(36 + register.size);
   });
 
   it('the four promotion containment probes are present, and why they are not invoked here', () => {
@@ -1494,18 +1530,67 @@ describe('NET-NEW: the published surface is exactly the ported CFML surface', ()
     // `SlatwallBrand`, both preserved verbatim - schema continuity is binding and the property
     // metadata IS the contract. `hb_permission="this"` is the literal four-character string `this`,
     // NOT a resolved path; the same literal appears at [model/entity/Category.cfc:L49].
-    const TABLE_NAME = 'SwBrand';
-    const ENTITY_NAME = 'SlatwallBrand';
-    const PERMISSION_LITERAL = 'this';
-    const SERVICE_NAME = 'brandService';
-
-    expect(TABLE_NAME).toBe('SwBrand');
-    expect(ENTITY_NAME).toBe('SlatwallBrand');
-    expect(PERMISSION_LITERAL).toHaveLength(4);
-    expect(SERVICE_NAME).toBe('brandService');
-
+    //
+    // `SwBrand` and `SlatwallBrand` are NOT restated here as local constants and compared with
+    // themselves; tests/traceability/legacyTestMap.ts block A20 derives both from the frozen
+    // `table=` / `entityname=` attributes and holds the shipped source to them, for all 18
+    // entities. `hb_permission` and `hb_serviceName` have no target expression at all, which is
+    // itself the assertion below: not one of the four metadata accessors is published.
     for (const absent of ['getTableName', 'getEntityName', 'getPermission', 'getServiceName']) {
       expect(prototypeMembers()).not.toContain(absent);
     }
+  });
+});
+
+// ===========================================================================
+// The error register, invoked directly on this entity
+// ===========================================================================
+//
+// ★★★ ADDED BECAUSE A MECHANICAL INVENTORY FOUND THESE MEMBERS NAMED BUT NEVER CALLED HERE. A code
+// review reported that "nine public methods have no invocation in any test AST", which is a sharper
+// question than whether a name appears somewhere: a method mentioned only in a comment is a method
+// nothing exercises. The register's behaviour WAS covered - through the service suites, where a refused
+// save is observed - but not at the entity that declares it, so the per-entity contract rested on
+// another tier's assertions. Gate `A24` now requires an actual invocation.
+//
+// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees and
+// that the save-refusal semantics depend on: a MISS yields an empty array rather than undefined,
+// messages ACCUMULATE under one name rather than replacing, and lookup is CASE-INSENSITIVE while the
+// key remembers the case it was FIRST written with.
+
+describe('Brand: the inherited error register', () => {
+  it('returns an empty array for a name that was never recorded, never undefined', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent name
+    // has to be safe to iterate - `undefined` here would turn a clean validation pass into a crash.
+    const subject = new Brand({ brandID: 'brand-errors-1' });
+
+    expect(subject.getError('noSuchRule')).toStrictEqual([]);
+    expect(subject.hasErrors()).toBe(false);
+    expect(subject.getErrors()).toStrictEqual({});
+  });
+
+  it('★★ accumulates messages under one name instead of replacing them', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after the
+    // first, which is how a partially invalid entity comes to look like a singly invalid one.
+    const subject = new Brand({ brandID: 'brand-errors-1' });
+
+    subject.addError('urlTitle', 'is required');
+    subject.addError('urlTitle', 'must be unique');
+
+    expect(subject.getError('urlTitle')).toStrictEqual(['is required', 'must be unique']);
+    expect(subject.hasErrors()).toBe(true);
+  });
+
+  it('★★ looks a name up case-insensitively, and keeps the case it was first written with', () => {
+    // CFML struct keys are case-insensitive, so `getError('URLTITLE')` must find what `addError`
+    // recorded as `urlTitle` - while [org/Hibachi/HibachiErrors.cfc:L14-L31] REMEMBERS the first
+    // spelling, so the published key is the one the first write used.
+    const subject = new Brand({ brandID: 'brand-errors-1' });
+
+    subject.addError('urlTitle', 'first');
+    subject.addError('URLTITLE', 'second');
+
+    expect(subject.getError('UrlTitle')).toStrictEqual(['first', 'second']);
+    expect(Object.keys(subject.getErrors())).toStrictEqual(['urlTitle']);
   });
 });

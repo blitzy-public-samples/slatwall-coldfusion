@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/domain/entities/sku.ts  Sku entity
 // ---------------------------------------------------------------------------
@@ -595,7 +593,7 @@ export function getByCurrencyCode<TEntry>(
 //
 //   1. The currency-details map that {@link getByCurrencyCode} is shaped for
 //      is built by `getCurrencyDetails()` at [model/entity/Sku.cfc:L367-L433],
-//      which belongs to `src/domain/entities/sku.ts` (planned). Two properties of that
+//      which belongs to `src/domain/entities/sku.ts`. Two properties of that
 //      cascade are the entity's to preserve, not this module's: the
 //      eligibility gate at [model/entity/Sku.cfc:L373], where an empty
 //      `skuEligibleCurrencies` setting leaves the map `{}` so that every

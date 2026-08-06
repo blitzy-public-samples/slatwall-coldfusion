@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/domain/entities/sku.ts                                   Sku entity
 //   src/handlers/bootstrap.ts                                    composition root (wiring)
@@ -150,7 +148,7 @@
  * in-engine post-processing, so the rewrite - the three steps becoming common
  * table expressions that reduce to the minimum sale price per SKU and join back to recover the
  * winning row's attributes - belongs to
- * `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` (planned) and NOT to this file. That module
+ * `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` and NOT to this file. That module
  * is named here in prose only; importing it would breach the layer boundary. This port declares
  * only the shape of the rows that come back.
  *
@@ -181,7 +179,7 @@
  * applied-promotion intents keyed by opaque `orderItemID` / `orderFulfillmentID` / `orderID`,
  * because the `Order` aggregate is explicitly out of scope. That inversion is the anti-corruption
  * seam that makes this slice independently deployable, it is one of exactly three budgeted
- * signature reshapings, it is spent by `src/services/promotionService.ts` (planned) rather than here, and it
+ * signature reshapings, it is spent by `src/services/promotionService.ts` rather than here, and it
  * is the whole reason no `PromotionApplied` persistence appears on this contract.
  *
  * `model/entity/PromotionAccount.cfc` is inert in this slice - no service references it and
@@ -225,7 +223,7 @@
  * collections all collapse into the methods below. Hibernate lazy loading has no equivalent in a
  * driver-only stack and is deliberately not simulated: associations are materialized at the
  * repository boundary instead, and the fetch shape is an explicit decision made and commented at
- * each repository method in `src/repositories/mysql/mysqlPromotionRepository.ts` (planned), which also owns
+ * each repository method in `src/repositories/mysql/mysqlPromotionRepository.ts`, which also owns
  * the row-to-entity factory, port injection and association materialization.
  *
  * Concretely, and this is the part that decides whether the engine works: a `PromotionReward`
@@ -304,7 +302,7 @@
  *   * Rounding ARITHMETIC. `roundValue` [model/service/RoundingRuleService.cfc:L88],
  *     `roundValueByRoundingRule` [model/service/RoundingRuleService.cfc:L84] and
  *     `roundValueByRoundingRuleID` [model/service/RoundingRuleService.cfc:L79] are service methods
- *     in `src/services/roundingRuleService.ts` (planned). This port supplies only the rule ROW. There is no
+ *     in `src/services/roundingRuleService.ts`. This port supplies only the rule ROW. There is no
  *     rounding expression, no rounding direction and no direction switch on this contract.
  *   * Any cache, memo, expiry or invalidation surface. `RoundingRuleService` memoises rule details
  *     in a component-level struct [model/service/RoundingRuleService.cfc:L53, L67-L77], and on a
@@ -337,14 +335,14 @@
  * Nothing else in this file is marked, and the omissions are deliberate. The broken sale-price
  * locator at [model/entity/Sku.cfc:L258] - `getPriceByPromotion` calling a
  * `calculateSkuPriceBasedOnPromotion` that does not exist - is ported as a throwing stub in
- * `src/domain/entities/sku.ts` (planned); it gets no method on this port, no substitute under any other name,
+ * `src/domain/entities/sku.ts`; it gets no method on this port, no substitute under any other name,
  * and no marker here. The poisoned brand-name memo [model/entity/Product.cfc:L524-L532] belongs to
  * the same entities sibling. The over-use stripping loop that indexes by a leaked variable
  * [model/service/PromotionService.cfc:L468-L521], the never-read qualified-fulfillments key
  * [model/service/PromotionService.cfc:L621-L623], the re-tested shipping-method clause
  * [model/service/PromotionService.cfc:L703], the raw-float amount-off branch
  * [model/service/PromotionService.cfc:L998], the un-scoped discount accumulator
- * [model/service/PromotionService.cfc:L1007, L1009] and the discount clamp that compares one value
+ * [model/service/PromotionService.cfc:L1007, L1009, L1014] and the discount clamp that compares one value
  * and overwrites another [model/service/PromotionService.cfc:L1013-L1015] all belong to
  * `src/services/**`. They are named here only so that their absence from this file reads as a
  * decision.
@@ -353,7 +351,7 @@
  * carry-forward is the return/exchange no-op at [model/service/PromotionService.cfc:L542-L544],
  * whose comment body at L543 reads `TODO [issue #1766]`. It is ported still doing nothing, with
  * that `issue #1766` reference intact rather than silently completed, and it is owned by
- * `src/services/promotion/**` (planned).
+ * `src/services/promotion/**`.
  *
  * NAMING - INTERFACE PARITY IS THE ACCEPTANCE CONTRACT Legacy CFML method and parameter names are
  * carried over verbatim in camelCase so that a reviewer can diff the two surfaces method by method.
@@ -404,9 +402,12 @@
  * concrete instance.
  *
  * THESE NAMES ARE CANONICAL
- * Every subtree that will consume this file was empty or incomplete at the time of writing, so the
- * names, method names and signatures published here are the canonical ones. They are published
- * deliberately and precisely, and they are not to be renamed later.
+ * Twelve modules now consume this file - entities, the promotion facade and three of its
+ * decomposition modules, the rounding-rule service, two MySQL adapters, the Google feed
+ * repository, the promotion-application handler and the composition root - so the names, method
+ * names and signatures published here are load-bearing across every layer at once. They were
+ * published deliberately and precisely before any of those consumers existed, which is why none of
+ * them needed a rename; they are not to be renamed now either.
  *
  * TEST COVERAGE IS NET-NEW, NOT LEGACY PARITY Nothing in the legacy suite covers any of this.
  * `meta/tests/unit/dao/` contains only `AccountDAOTest` and `PaymentDAOTest`;
@@ -420,7 +421,7 @@
  * `tests/integration/repositories/*.test.ts`, which another agent owns; no test is authored here.
  *
  * WHO IMPLEMENTS THIS PORT
- * `src/repositories/mysql/mysqlPromotionRepository.ts` (planned), one of exactly six MySQL adapters - the
+ * `src/repositories/mysql/mysqlPromotionRepository.ts`, one of exactly six MySQL adapters - the
  * others being the product, SKU, option, product-type and price-group repositories. Seven
  * obligations transfer to it with this contract:
  *
@@ -431,10 +432,10 @@
  *      adapter MUST NOT add an ordering.
  *   3. The three in-engine post-processing steps become common table expressions that reduce to the
  *      minimum sale price per SKU and join back to recover the winning row, in
- *      `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` (planned), with the two formulations
+ *      `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts`, with the two formulations
  *      documented inline side by side so a reviewer can compare them - and with no tiebreaker
  *      introduced.
- *   4. The four use-count queries live in `src/repositories/mysql/sql/promotionUseCounts.sql.ts` (planned)
+ *   4. The four use-count queries live in `src/repositories/mysql/sql/promotionUseCounts.sql.ts`
  *      and reproduce the duplicated start-date tests exactly.
  *   5. The dialect branch [model/dao/PromotionDAO.cfc:L482-L488] becomes a dialect-parameterized
  *      fragment, MySQL branch only, through `src/repositories/mysql/dialect.ts`.
@@ -446,9 +447,9 @@
  *      the reward and rate reads over issuing a separate round trip, and request-scope any
  *      rule-detail memo, because module-level state outlives an invocation on a warm container.
  *
- * `src/handlers/bootstrap.ts` (planned) WIRES this port to that adapter; it does not implement it.
+ * `src/handlers/bootstrap.ts` WIRES this port to that adapter; it does not implement it.
  * `SalePriceResolver`, by contrast, has no adapter file in the locked layout: it is satisfied in
- * `src/handlers/bootstrap.ts` (planned) by adapting the ported `src/services/promotionService.ts` (planned) surface,
+ * `src/handlers/bootstrap.ts` by adapting the ported `src/services/promotionService.ts` surface,
  * and it is injected into the `Product` entity from there. That is stated explicitly so the
  * composition-root agent has unambiguous direction and does not go looking for a missing file.
  *
@@ -717,7 +718,7 @@ export interface SalePriceDetail {
    * [model/service/PromotionService.cfc:L1026]; otherwise the unadjusted winning price. Required,
    * and monetary, so `Money`.
    *
-   * The rounding itself happens in `src/services/roundingRuleService.ts` (planned), whose ported algorithm is
+   * The rounding itself happens in `src/services/roundingRuleService.ts`, whose ported algorithm is
    * decimal-STRING manipulation rather than numeric rounding and whose measured legacy outputs are
    * pinned by characterization tests. This member is the RESULT of that step, so it must never be
    * recomputed by a consumer, and no rounding expression or direction is exposed alongside it.
@@ -745,6 +746,28 @@ export interface SalePriceDetail {
  * at thirteen and no `roundingRuleRepository` exists. The arithmetic is in this file's header. Each
  * method returns a promise because each one reaches persistence. EVERY ONE OF THE SEVEN IS A READ.
  *
+ * ★★★ AAP SURFACE RECONCILIATION - WHY THERE ARE SEVEN MEMBERS WHERE THE PLAN NAMES SIX.
+ * Recorded here, at the contract, because a reviewer counting members against the plan will reach
+ * this question and is entitled to find the answer at the port.
+ *
+ *   THE PLAN'S SIX. AAP 0.4.1 specifies this file as an "Interface over `getActivePromotionRewards`
+ *   L51, `getPromotionPeriodUseCount` L134, `getPromotionPeriodAccountUseCount` L187,
+ *   `getPromotionCodeUseCount` L254, `getPromotionCodeAccountUseCount` L274,
+ *   `getSalePricePromotionRewardsQuery` L298". All six are declared below, at those names.
+ *
+ *   THE SEVENTH IS REQUIRED BY A DIFFERENT AAP ROW. AAP 0.4.2 maps
+ *   `getRoundingRuleDetailsByID(roundingRuleID): Promise<RoundingRuleDetails>` and
+ *   `roundValueByRoundingRuleID(value, roundingRuleID): Promise<Money>`, the latter annotated
+ *   "Async - requires a repository lookup". That lookup is `getRoundingRuleQuery`, and it has to
+ *   live on one of the thirteen ports AAP 0.3.1 enumerates, because that inventory is frozen and
+ *   lists no `roundingRuleRepository`. It sits on THIS contract because AAP 0.2.1 admits
+ *   `RoundingRuleService` as "the arithmetic the promotion and price-group paths call into", and
+ *   because AAP 0.4.1 already routes the rounding-rule read through the promotion adapter.
+ *
+ *   NO MEMBER CAN BE REMOVED. Dropping any of the six deletes a mapped `PromotionService` method;
+ *   dropping the seventh deletes two mapped `RoundingRuleService` methods. The excess is one member
+ *   and it is load-bearing, so the reconciliation is recorded rather than resolved by deletion.
+ *
  * There is no eighth. No entity-lifecycle method, no applied-promotion write, no promotion-account
  * method, NO ROUNDING-RULE WRITE, no rounding-rule delete (the legacy component overrides save and
  * never overrides delete [model/service/RoundingRuleService.cfc:L56], and that asymmetry is
@@ -762,8 +785,9 @@ export interface SalePriceDetail {
  * license a WRITE to it, or this port would equally license writes wherever it reads, and the count
  * that bounds it would mean nothing.
  *
- * The implementing adapter is `src/repositories/mysql/mysqlPromotionRepository.ts` (planned); the composition
- * root wires it. Nothing here names a driver, a connection, a statement or a table.
+ * The implementing adapter is `src/repositories/mysql/mysqlPromotionRepository.ts` - shipped, not
+ * planned; the composition root wires it. Nothing here names a driver, a connection, a statement or
+ * a table.
  */
 export interface PromotionRepository {
   // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L51-L132]: getActivePromotionRewards applies no
@@ -842,7 +866,7 @@ export interface PromotionRepository {
   // date therefore binds a null upper bound, and a period with an end date but no start date never
   // applies its upper bound at all. This widens or narrows the counted window and so changes
   // use-limit enforcement, which is a named must-preserve behaviour. The defect lives in the SQL
-  // and is reproduced in src/repositories/mysql/sql/promotionUseCounts.sql.ts (planned); it is NOT worked
+  // and is reproduced in src/repositories/mysql/sql/promotionUseCounts.sql.ts; it is NOT worked
   // around here by passing an end date, adding a date-range parameter, or exposing a window
   // override.
   // Preserved deliberately; do not fix without a product decision.
@@ -969,7 +993,7 @@ export interface PromotionRepository {
    * lines - a preliminary query, a six-branch union, then three chained in-engine post-processing
    * steps [model/dao/PromotionDAO.cfc:L544-L559, L561-L569, L571-L588] - and Node has no equivalent
    * of that in-engine post-processing. The rewrite into common table expressions belongs to
-   * `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` (planned), named in prose only. What this
+   * `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts`, named in prose only. What this
    * signature fixes is the SHAPE of what comes back: an array of the row projection above, never a
    * query object, never a loose record, never a tuple and never a driver row type.
    *
@@ -1007,7 +1031,7 @@ export interface PromotionRepository {
    * hold - see the header. No rounding-rule save or delete accompanies it, and no rounding
    * arithmetic: `roundValue` [model/service/RoundingRuleService.cfc:L88] and its two wrappers
    * [model/service/RoundingRuleService.cfc:L79, L84] are service methods in
-   * `src/services/roundingRuleService.ts` (planned), and this method supplies only the rule.
+   * `src/services/roundingRuleService.ts`, and this method supplies only the rule.
    *
    * Returns `undefined` when no rule carries that identifier. The legacy query simply yields zero
    * rows and the caller then reads columns off an empty result

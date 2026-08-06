@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring order
-// "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/handlers/bootstrap.ts                composition root (wiring)
 //   src/services/optionService.ts            the consumer of this adapter
@@ -261,7 +259,7 @@ class OptionProjectionError extends Error {
 // (confirmed: ER_PARSE_ERROR) and which `sqlPlaceholderList` refuses by design; and
 // short-circuiting to an early `[]`, which would silently convert the `NOT IN`
 // method's "all rows" outcome into "no rows". The sibling
-// `mysqlPriceGroupRepository.ts` (planned) faces the mirror-image situation - there
+// `mysqlPriceGroupRepository.ts` faces the mirror-image situation - there
 // the legacy DOES guard, so an early `[]` IS the faithful behaviour - and the two
 // must not be cross-applied.
 //
@@ -487,7 +485,7 @@ function readTextColumn(row: SqlRow, columnName: string): string {
 // ormtype="integer" sortContext="optionGroup"` at [model/entity/Option.cfc:L58]
 // carries option-group-scoped sort semantics, and option-group sort order is
 // separately load-bearing for the SKU odometer ordering that
-// `mysqlSkuRepository.ts` (planned) owns through
+// `mysqlSkuRepository.ts` owns through
 // [model/dao/SkuDAO.cfc:L172]. That is a SIBLING of this ordering, not the same
 // ordering: `OptionDAO` sorts by NAME and never reads `sortOrder` at all. The
 // odometer expression is deliberately not imported or imitated here.
@@ -644,7 +642,7 @@ function toOptionGroupSelectOption(row: SqlRow): SelectOption {
  *
  * @example
  * ```ts
- * // Wired once in the composition root, `src/handlers/bootstrap.ts` (planned).
+ * // Wired once in the composition root, `src/handlers/bootstrap.ts`.
  * const repository = new MysqlOptionRepository(getPreparedStatementExecutor());
  * const unused = await repository.getUnusedProductOptions(productID, 'g1,g2');
  * // -> [{ name: 'Colour - Red', value: 'o3' }, { name: 'Size - Large', value: 'o1' }]
@@ -659,7 +657,7 @@ export class MysqlOptionRepository implements OptionRepository {
    * It is what makes the emitted statement text and the bound parameter array
    * assertable WITH NO LIVE DATABASE - a suite can implement the three-method interface
    * outright, record each `sql` string and each `params` array and return canned rows,
-   * which is how `tests/integration/repositories` (planned) verifies statement shape
+   * which is how `tests/integration/repositories` verifies statement shape
    * and binding. It also keeps the one sanctioned module-scope pool in
    * `src/repositories/mysql/connection.ts` from leaking into this file: nothing here
    * imports a pool, builds one, or reads an environment variable, and the single

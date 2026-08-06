@@ -709,20 +709,15 @@ describe('PromotionService', () => {
   // §0  Traceability
   // ===============================================================================================
 
-  describe('traceability - this suite is net-new', () => {
-    it('has no legacy antecedent, and the fixture graph records the same finding', () => {
-      const graph = makePromotionFixtures({ idPrefix: 'trace-' });
-
-      // C8. `meta/tests/` carries no PromotionServiceTest of any kind, so every assertion in this
-      // file is net-new rather than an extension of legacy coverage.
-      expect(graph.legacyTestCoverageExists).toBe(false);
-
-      // LEGACY-NOTE [model/service/PromotionService.cfc:L541-L544]: the ticket reference carried
-      // forward by §5 comes from a SOURCE COMMENT, not from a legacy test. The fixture graph
-      // publishes it so both facts are asserted in one place.
-      expect(graph.preservedReturnExchangeNoOpTicket).toBe('issue_1766');
-    });
-  });
+  // TRACEABILITY: `meta/tests/` carries no PromotionServiceTest of any kind, so every assertion in
+  // this file is net-new. That is NOT asserted here against a fixture-authored boolean - a flag the
+  // fixture module writes and this file reads can only agree with itself.
+  // tests/traceability/legacyTestMap.ts owns it: `legacyExtendedSuites` names the ONLY two suites
+  // that extend legacy coverage, block A7 pins the list to exactly those two, and block A14
+  // accounts for every suite on disk. The deferred `issue_1766` TODO is likewise registered there
+  // as a preserved TODO and checked against `src/services/promotionService.ts`, not against a
+  // ticket string this suite's fixtures declare. What §5 below asserts is the BEHAVIOUR the TODO
+  // defers: a return or exchange order produces no intent at all.
 
   // ===============================================================================================
   // §1  ★★★ THE GOLDEN PIPELINE, DRIVEN END TO END
@@ -2743,7 +2738,6 @@ describe('PromotionService', () => {
       // no NEGATIVE promotion, which is exactly the future behaviour the TODO defers.
       expect(returnIntents).toStrictEqual([]);
       expect(returnCapture.reachesReturnExchangeNoOp).toBe(true);
-      expect(returnCapture.preservedReturnExchangeNoOpTicket).toBe('issue_1766');
     });
 
     it('issue_1766: an EXCHANGE order satisfies BOTH sequential gates and still gets no negative promotion', async () => {

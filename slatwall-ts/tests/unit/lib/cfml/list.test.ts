@@ -1,18 +1,4 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
-//
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
-//
-//   tests/unit/domain/entities  entity unit-test tier
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // slatwall-ts - unit suite for the CFML comma-list primitives
 //
 // WHAT THIS PINS

@@ -23,8 +23,11 @@
 //     L289-L291  getSkuBySkuCode           passthrough
 //     L309-L325  getSkuSmartList -> findSkus  signature reshaping #2
 //
-// JUDGMENT CALL: the SHIPPED constructor takes THREE ports plus two target-side knobs and
-// `SkuService.length` is 3, where this suite was briefed for four. The production module is the
+// JUDGMENT CALL: the SHIPPED constructor takes THREE ports plus one target-side knob and one bag
+// of resolved settings, and `SkuService.length` is 3, where this suite was briefed for four.
+// QUOTE-THEN-REVISE: this sentence used to read "THREE ports plus two target-side knobs". The
+// second knob was `refuseDuplicateSkuCodes`, removed under F4 - retry reconciliation is now
+// unconditional inside the service, so there is no switch to pass and none to leave unset. The production module is the
 // contract, so the suite adapts to it. The missing fourth is not an omission: `optionService`
 // [model/service/SkuService.cfc:L53] is reached at exactly one line, [L74], and only for
 // HibachiService's generic `get<Entity>(primaryKey)` lookup, a capability the thirteen-port set
@@ -259,27 +262,23 @@ const UNEXPECTED_PRODUCT_CREATION_ERROR_MESSAGE =
  */
 const ALLOWED_IMAGE_EXTENSIONS = 'jpg,jpeg,png,gif';
 
-// LEGACY-DEFECT [model/service/SkuService.cfc:L148]: the resource-bundle key misspells "benefits"
-// as "benifits". The key is a data contract resolved by the legacy admin, so the misspelling is
-// preserved verbatim.
+// LEGACY-DEFECT [model/service/SkuService.cfc:L143]: the resource-bundle key for a missing
+// subscription-benefits list misspells "benefits" as "benifits". The key is a data contract resolved
+// by the legacy admin, so the misspelling is preserved verbatim.
 //
 // Preserved deliberately; do not fix without a product decision.
 //
-// The locator the brief cites is L148; the source puts the MISSPELLED key at L143 and the correctly
-// spelled terms key at L148. Both are recorded and carried byte for byte, and no i18n runtime is
-// introduced - these are plain string constants.
-const RB_KEY_SUBSCRIPTION_BENEFITS_REQUIRED = 'entity.product.subscriptionbenifitsrequired';
-
-/** [model/service/SkuService.cfc:L148] - correctly spelled, unlike its sibling. */
-const RB_KEY_SUBSCRIPTION_TERMS_REQUIRED = 'entity.product.subscriptiontermsrequired';
-
-/**
- * [model/service/SkuService.cfc:L176].
- *
- * Note the prefix: this one is `validate.` while the two subscription keys are `entity.`. The
- * inconsistency is in the source and is carried, not normalised.
- */
-const RB_KEY_ACCESS_CONTENTS_REQUIRED = 'validate.product.accesscontentsrequired';
+// ★★★ THE THREE KEYS ARE NOT COPIED INTO THIS SUITE, AND THAT IS THE POINT. An earlier revision
+// declared them here as `RB_KEY_*` constants and asserted each equalled its own literal - three
+// comparisons that could not fail, and that a code review measured as unable to notice the SHIPPED
+// constants changing at all. They are also unreachable behaviourally: `createSkus` pushes a key onto
+// an internal ledger and consults only its LENGTH, so no observable output carries one.
+//
+// The assertion therefore lives where it can read both sources - `tests/traceability/legacyTestMap.ts`
+// holds `subscriptionbenifitsrequired` in `verbatimIdentifiers` and asserts all three keys against
+// the frozen `model/service/SkuService.cfc` lines AND against `src/services/skuService.ts`. What THIS
+// suite asserts is the BEHAVIOUR the keys accompany: a missing list refuses the creation, which the
+// cases below do reach.
 
 /**
  * The identifiers of the canonical fixture graph's four SKUs. `tests/fixtures/skuFixtures.ts` wires
@@ -1292,61 +1291,273 @@ describe('SkuService', () => {
     });
   });
 
-  describe('createSkus - retry does not silently double-apply', () => {
-    it('attaches a second identical SKU on a repeat by default, which is the hazard', async () => {
-      // The default configuration reproduces the legacy exactly: the single-merchandise code
-      // formula [model/service/SkuService.cfc:L133] is the FIXED string `getProductCode() & "-1"`,
-      // so a repeat regenerates the same code and attaches a second SKU carrying it. Under the
-      // legacy's ambient transaction a retried request rolled back; without one, a retried Lambda
-      // invocation lands twice. This case pins the hazard rather than the protection, because
-      // showing only the protection working would not show why it exists.
-      const product = makeProductFixture({ productID: 'retry-default' });
+  describe('createSkus - the option-group traversal order, pinned rather than assumed (F44)', () => {
+    // ★★★ WHY THIS BLOCK EXISTS AND WHAT IT DOES **NOT** CLAIM. [model/service/SkuService.cfc:L82]
+    // and [L106] iterate an UNORDERED CFML struct, and CFML specifies no iteration order for one,
+    // so the legacy's group order was whatever its engine's hashing produced. The target uses a
+    // `Map`, so its order is the order the groups first appear in `data.options`. These cases pin
+    // THE TARGET'S order exactly. They do NOT assert that it matches any CFML engine's, because no
+    // engine is available to measure - AAP section 0.10.3 records that the legacy runtime was
+    // deliberately not stood up - and because a measurement would capture one engine's hash order,
+    // which the source does not promise either. The residual risk is registered in
+    // `tests/traceability/legacyTestMap.ts` under `acknowledgedGaps`; these cases make the target's
+    // behaviour specified and reproducible so that risk is bounded and reviewable.
+
+    /** Colour (2 options) then Size (3 options), named in that order in the payload. */
+    function aTwoGroupPayload(): { readonly data: CreateSkusInput } {
+      const colour = anOptionGroup({ optionGroupID: 'og-colour', sortOrder: 20 });
+      const size = anOptionGroup({ optionGroupID: 'og-size', sortOrder: 10 });
+
+      // NOTE the sort orders: `og-size` sorts FIRST and its identifier sorts FIRST
+      // alphabetically, while `og-colour` appears first in the payload. Any case below that
+      // observes colour-major ordering is therefore observing PAYLOAD order specifically, not
+      // sort order and not identifier order.
+      return {
+        data: {
+          price: PRICE_DECIMAL,
+          options: 'opt-red,opt-blue,opt-s,opt-m,opt-l',
+          resolvedOptions: [
+            anOption({ optionID: 'opt-red', sortOrder: 1, optionGroup: colour }),
+            anOption({ optionID: 'opt-blue', sortOrder: 2, optionGroup: colour }),
+            anOption({ optionID: 'opt-s', sortOrder: 1, optionGroup: size }),
+            anOption({ optionID: 'opt-m', sortOrder: 2, optionGroup: size }),
+            anOption({ optionID: 'opt-l', sortOrder: 3, optionGroup: size }),
+          ],
+        },
+      };
+    }
+
+    it('★★★ pins the exact code-to-combination mapping for a 2x3 payload', async () => {
+      const product = makeProductFixture({ productID: 'order-2x3' });
+      const { data } = aTwoGroupPayload();
+
+      await service.createSkus(product, data);
+
+      // Six combinations, and the ODOMETER advances the FIRST group fastest [L112-L120]: the
+      // first group in traversal order is the least significant digit. This is the mapping a
+      // reviewer can check, and the one that would move if the traversal order moved.
+      expect(
+        product.getSkus().map((sku) => ({
+          code: sku.getSkuCode(),
+          options: sku.getOptions().map((option) => option.getOptionID()),
+        })),
+      ).toStrictEqual([
+        { code: 'TESTPRODUCTXXX-1', options: ['opt-red', 'opt-s'] },
+        { code: 'TESTPRODUCTXXX-2', options: ['opt-blue', 'opt-s'] },
+        { code: 'TESTPRODUCTXXX-3', options: ['opt-red', 'opt-m'] },
+        { code: 'TESTPRODUCTXXX-4', options: ['opt-blue', 'opt-m'] },
+        { code: 'TESTPRODUCTXXX-5', options: ['opt-red', 'opt-l'] },
+        { code: 'TESTPRODUCTXXX-6', options: ['opt-blue', 'opt-l'] },
+      ]);
+    });
+
+    it('the COUNT and the SET of combinations are order-free, which is what bounds the risk', async () => {
+      // `totalCombos` is a product [L85], so it cannot depend on traversal order; and every
+      // combination is produced exactly once whatever the order. Reversing the payload therefore
+      // changes the MAPPING and nothing else - the two catalogs hold the same six combinations.
+      const forward = makeProductFixture({ productID: 'order-forward' });
+      const reversed = makeProductFixture({ productID: 'order-reversed' });
+      const { data } = aTwoGroupPayload();
+      const reversedData: CreateSkusInput = {
+        ...data,
+        options: 'opt-s,opt-m,opt-l,opt-red,opt-blue',
+      };
+
+      await service.createSkus(forward, data);
+      await service.createSkus(reversed, reversedData);
+
+      const combinationSet = (product: Product): string[] =>
+        product
+          .getSkus()
+          .map((sku) =>
+            sku
+              .getOptions()
+              .map((option) => option.getOptionID())
+              .sort()
+              .join('+'),
+          )
+          .sort();
+
+      expect(forward.getSkus()).toHaveLength(6);
+      expect(reversed.getSkus()).toHaveLength(6);
+      expect(combinationSet(reversed)).toStrictEqual(combinationSet(forward));
+
+      // AND THE MAPPING GENUINELY DIFFERS, which is the risk being measured rather than assumed.
+      // With size traversed first, `-2` names a size change instead of a colour change.
+      expect(
+        reversed
+          .getSkus()[1]
+          ?.getOptions()
+          .map((option) => option.getOptionID()),
+      ).toStrictEqual(['opt-m', 'opt-red']);
+    });
+
+    it('the DEFAULT SKU is the first combination in traversal order, which is the second order-dependent outcome', async () => {
+      // [L101-L103] designates the first SKU attached, so the default follows the traversal order
+      // too. Naming it here means the exposure is enumerated, not just the code mapping.
+      const forward = makeProductFixture({ productID: 'order-default-forward' });
+      const { data } = aTwoGroupPayload();
+
+      await service.createSkus(forward, data);
+
+      expect(
+        forward
+          .getDefaultSku()
+          ?.getOptions()
+          .map((option) => option.getOptionID()),
+      ).toStrictEqual(['opt-red', 'opt-s']);
+    });
+
+    it('group order is FIRST APPEARANCE in the payload list, not sort order and not identifier order', async () => {
+      // The two groups in the fixture are deliberately built so that sort order and identifier
+      // order both disagree with payload order. `og-size` has the lower `sortOrder` and sorts
+      // first alphabetically; `og-colour` still leads, because [L75-L78] buckets in list order and
+      // a `Map` preserves it. An implementation that sorted the groups - by sort order, by name, or
+      // by identifier - would fail here, and that is the point: the order is a property of the
+      // payload the caller sent, which makes it explainable.
+      const product = makeProductFixture({ productID: 'order-first-appearance' });
+      const { data } = aTwoGroupPayload();
+
+      await service.createSkus(product, data);
+
+      const firstTwo = product
+        .getSkus()
+        .slice(0, 2)
+        .map((sku) => sku.getOptions().map((option) => option.getOptionID()));
+
+      // The FIRST group varies between combination 1 and 2, so the first group is `og-colour`.
+      expect(firstTwo).toStrictEqual([
+        ['opt-red', 'opt-s'],
+        ['opt-blue', 'opt-s'],
+      ]);
+    });
+
+    it('option order WITHIN a group is list order too, so the odometer is fully determined', async () => {
+      // [L78] appends, so a group's options stand in the order the list names them, and [L107]
+      // reads that array by index. Both halves of the traversal are therefore pinned: which group
+      // is visited when, and which option within it.
+      const group = anOptionGroup({ optionGroupID: 'og-within', sortOrder: 5 });
+      const product = makeProductFixture({ productID: 'order-within-group' });
+
+      await service.createSkus(product, {
+        price: PRICE_DECIMAL,
+        // Named out of both sort order and alphabetical order on purpose.
+        options: 'opt-z,opt-a',
+        resolvedOptions: [
+          anOption({ optionID: 'opt-z', sortOrder: 9, optionGroup: group }),
+          anOption({ optionID: 'opt-a', sortOrder: 1, optionGroup: group }),
+        ],
+      });
+
+      expect(
+        product.getSkus().map((sku) => sku.getOptions().map((option) => option.getOptionID())),
+      ).toStrictEqual([['opt-z'], ['opt-a']]);
+    });
+
+    it('the snapshot loop and the assignment traversal agree, which the carry loop requires', async () => {
+      // ★ THE ONE PARITY CLAIM THIS BLOCK DOES MAKE. [L82]'s `indexedKeys` snapshot and [L106]'s
+      // assignment walk must visit the groups in the SAME order, or the carry loop advances a
+      // different group than the one it assigned from and combinations repeat or vanish. Three
+      // groups of two, eight distinct combinations, none repeated: that agreement holds.
+      const product = makeProductFixture({ productID: 'order-agreement' });
+      const first = anOptionGroup({ optionGroupID: 'og-a', sortOrder: 1 });
+      const second = anOptionGroup({ optionGroupID: 'og-b', sortOrder: 2 });
+      const third = anOptionGroup({ optionGroupID: 'og-c', sortOrder: 3 });
+
+      await service.createSkus(product, {
+        price: PRICE_DECIMAL,
+        options: 'a1,a2,b1,b2,c1,c2',
+        resolvedOptions: [
+          anOption({ optionID: 'a1', sortOrder: 1, optionGroup: first }),
+          anOption({ optionID: 'a2', sortOrder: 2, optionGroup: first }),
+          anOption({ optionID: 'b1', sortOrder: 1, optionGroup: second }),
+          anOption({ optionID: 'b2', sortOrder: 2, optionGroup: second }),
+          anOption({ optionID: 'c1', sortOrder: 1, optionGroup: third }),
+          anOption({ optionID: 'c2', sortOrder: 2, optionGroup: third }),
+        ],
+      });
+
+      const combinations = product.getSkus().map((sku) =>
+        sku
+          .getOptions()
+          .map((option) => option.getOptionID())
+          .join('+'),
+      );
+
+      expect(combinations).toStrictEqual([
+        'a1+b1+c1',
+        'a2+b1+c1',
+        'a1+b2+c1',
+        'a2+b2+c1',
+        'a1+b1+c2',
+        'a2+b1+c2',
+        'a1+b2+c2',
+        'a2+b2+c2',
+      ]);
+      expect(new Set(combinations).size).toBe(8);
+    });
+  });
+
+  describe('createSkus - retry reconciliation converges instead of doubling (F4)', () => {
+    // ★★★ QUOTE-THEN-REVISE ON THIS WHOLE BLOCK. It used to be named "createSkus - retry does
+    // not silently double-apply" and it pinned the OPPOSITE of what it now pins: a first case
+    // titled "attaches a second identical SKU on a repeat by default, which is the hazard", a
+    // second that reached the protection only by constructing the service with
+    // `refuseDuplicateSkuCodes` set by hand, and a third titled "cannot refuse a repeat of a
+    // count-derived code path, and that limit is deliberate" which asserted that a repeated
+    // option payload yields FOUR SKUs where two were asked for. All three described a service
+    // whose only retry protection was off in production and blind to duplicate option
+    // combinations. Under F4 the reconciliation is unconditional and combination-aware, so the
+    // hazard cases become convergence cases. The legacy citations are unchanged; what changed is
+    // which outcome the port reaches.
+
+    it('★★★ a repeat of the single-merchandise path attaches NOTHING the second time', async () => {
+      // [model/service/SkuService.cfc:L133] is the FIXED string `getProductCode() & "-1"`, so a
+      // repeat regenerates the identical code. `SwSku.skuCode` is `unique="true"`
+      // [model/entity/Sku.cfc:L54] and validated `unique: true` [model/validation/Sku.json], so
+      // the duplicate the legacy attached was never a legal end state - the flush refused it.
+      // Recognising it here converges instead: one SKU after one call, one SKU after two.
+      const product = makeProductFixture({ productID: 'retry-single' });
 
       expect(await service.createSkus(product, { price: PRICE_DECIMAL })).toBe(true);
       expect(await service.createSkus(product, { price: PRICE_DECIMAL })).toBe(true);
 
-      expect(product.getSkus().map((sku) => sku.getSkuCode())).toStrictEqual([
-        'TESTPRODUCTXXX-1',
-        'TESTPRODUCTXXX-1',
-      ]);
+      expect(product.getSkus().map((sku) => sku.getSkuCode())).toStrictEqual(['TESTPRODUCTXXX-1']);
+
+      // And the default designation still names that one SKU. [L134] is UNCONDITIONAL, so a
+      // second pass that ran would have overwritten it with the duplicate.
+      expect(product.getDefaultSku()).toBe(product.getSkus()[0]);
     });
 
-    it('refuses the repeat when duplicate-code refusal is enabled', async () => {
-      const idempotentService = new SkuService(
+    it('needs no configuration to do it - the protection has no off switch', async () => {
+      // The service under test is the one every other case in this file uses, constructed from
+      // its three ports and nothing else, which is exactly how `src/handlers/bootstrap.ts`
+      // constructs it. The previous version of this case had to build a second service by hand
+      // with a fifth `true` argument; that argument no longer exists.
+      expect(SkuService.length).toBe(3);
+
+      const defaultConstructed = new SkuService(
         skuRepository,
         imageStore,
         subscriptionTermProvider,
-        1000,
-        true,
       );
-      const product = makeProductFixture({ productID: 'retry-refused' });
+      const product = makeProductFixture({ productID: 'retry-no-config' });
 
-      expect(await idempotentService.createSkus(product, { price: PRICE_DECIMAL })).toBe(true);
+      await defaultConstructed.createSkus(product, { price: PRICE_DECIMAL });
+      await defaultConstructed.createSkus(product, { price: PRICE_DECIMAL });
 
-      await expect(idempotentService.createSkus(product, { price: PRICE_DECIMAL })).rejects.toThrow(
-        /already carries a SKU coded 'TESTPRODUCTXXX-1'/,
-      );
-
-      expect(product.getSkus().map((sku) => sku.getSkuCode())).toStrictEqual([
-        'TESTPRODUCTXXX-1',
-        undefined,
-      ]);
+      expect(product.getSkus()).toHaveLength(1);
     });
 
-    it('cannot refuse a repeat of a count-derived code path, and that limit is deliberate', async () => {
-      // JUDGMENT CALL: the refusal keys on the GENERATED CODE, so it protects only the paths whose
-      // formula is fixed - single merchandise [L133] and bundled content access [L184]. The option
-      // and per-content paths derive their ordinal from `arrayLen(getSkus()) + 1` [L97, L194], so a
-      // repeat produces FRESH codes and collides with nothing. Inventing a second mechanism - a
-      // request key, a hash, a persisted marker - would be new behaviour with no legacy antecedent,
-      // so the limit is recorded here as measured rather than missed.
-      const idempotentService = new SkuService(
-        skuRepository,
-        imageStore,
-        subscriptionTermProvider,
-        1000,
-        true,
-      );
+    it('★★★ a repeat of the OPTION path attaches nothing, which a code check alone cannot do', async () => {
+      // ★★ THIS IS THE CASE THE FINDING TURNED ON. The option path's code formula
+      // [model/service/SkuService.cfc:L97] is `arrayLen(getSkus()) + 1`, so a repeat produces
+      // FRESH codes - `-3` and `-4` - and collides with no code at all. The previous version of
+      // this case asserted exactly that outcome and called the limit deliberate. It is not
+      // deliberate: AAP section 0.6.5 requires these loops to carry "idempotency on retry", and
+      // duplicate option COMBINATIONS are the duplication this path produces. Reconciliation by
+      // option set - the same set-based identity `SkuDAO.getSkusBySelectedOptions`
+      // [model/dao/SkuDAO.cfc:L107-L128] matches on - closes it.
       const firstGroup = anOptionGroup({ optionGroupID: 'retry-og-1', sortOrder: 1 });
       const options: readonly Option[] = [
         anOption({ optionID: 'retry-opt-1', sortOrder: 1, optionGroup: firstGroup }),
@@ -1359,15 +1570,110 @@ describe('SkuService', () => {
         resolvedOptions: options,
       };
 
-      expect(await idempotentService.createSkus(product, data)).toBe(true);
-      expect(await idempotentService.createSkus(product, data)).toBe(true);
+      expect(await service.createSkus(product, data)).toBe(true);
+      expect(await service.createSkus(product, data)).toBe(true);
 
       expect(product.getSkus().map((sku) => sku.getSkuCode())).toStrictEqual([
         'TESTPRODUCTXXX-1',
         'TESTPRODUCTXXX-2',
-        'TESTPRODUCTXXX-3',
-        'TESTPRODUCTXXX-4',
       ]);
+
+      // One SKU per option, each carrying its own option - so the two that WOULD have been
+      // attached were recognised as the combinations already present, not merely code-checked.
+      expect(
+        product.getSkus().map((sku) => sku.getOptions().map((o) => o.getOptionID())),
+      ).toStrictEqual([['retry-opt-1'], ['retry-opt-2']]);
+    });
+
+    it('★★★ a PARTIALLY applied option payload resumes at the missing combination, with the codes the first attempt would have stamped', async () => {
+      // The convergence property stated precisely. A first attempt that attached only the first
+      // combination - because the process died between the two writes - is repaired by a repeat
+      // that skips combination 1 and creates combination 2 under `-2`: the code the uninterrupted
+      // run would have produced, because the counter reads the LIVE array [L97] and a skipped
+      // combination adds nothing to it.
+      const group = anOptionGroup({ optionGroupID: 'partial-og', sortOrder: 1 });
+      const first = anOption({ optionID: 'partial-opt-1', sortOrder: 1, optionGroup: group });
+      const second = anOption({ optionID: 'partial-opt-2', sortOrder: 2, optionGroup: group });
+      const product = makeProductFixture({ productID: 'retry-partial' });
+      const data: CreateSkusInput = {
+        price: PRICE_DECIMAL,
+        options: 'partial-opt-1,partial-opt-2',
+        resolvedOptions: [first, second],
+      };
+
+      // Attempt one, bounded to a single SKU, stands in for the interrupted run: it attaches
+      // combination 1 and then the bound refuses the rest.
+      const interrupted = new SkuService(skuRepository, imageStore, subscriptionTermProvider, 1);
+
+      await expect(interrupted.createSkus(product, data)).rejects.toThrow(
+        /above the configured bound of 1/,
+      );
+
+      expect(product.getSkus()).toHaveLength(0);
+
+      // The bound refuses BEFORE the first attachment, so nothing is attached at all - which is
+      // the documented behaviour of `assertWithinCreationBound` and not what this case is about.
+      // The genuinely partial state is therefore built the only other way it arises: one
+      // combination already present from an earlier successful call.
+      const resumed = makeProductFixture({ productID: 'retry-partial-resumed' });
+
+      await service.createSkus(resumed, {
+        price: PRICE_DECIMAL,
+        options: 'partial-opt-1',
+        resolvedOptions: [first],
+      });
+
+      expect(resumed.getSkus().map((sku) => sku.getSkuCode())).toStrictEqual(['TESTPRODUCTXXX-1']);
+
+      // Now the full payload arrives. Combination 1 is skipped, combination 2 is created, and it
+      // is stamped `-2` - exactly what a single uninterrupted call with the full payload produces.
+      await service.createSkus(resumed, data);
+
+      expect(resumed.getSkus().map((sku) => sku.getSkuCode())).toStrictEqual([
+        'TESTPRODUCTXXX-1',
+        'TESTPRODUCTXXX-2',
+      ]);
+      expect(
+        resumed.getSkus().map((sku) => sku.getOptions().map((o) => o.getOptionID())),
+      ).toStrictEqual([['partial-opt-1'], ['partial-opt-2']]);
+    });
+
+    it('★★ still creates BOTH SKUs when one payload names the same option twice, because the snapshot is taken before the loop', async () => {
+      // ★ THE ONE CASE THAT PROVES THE SNAPSHOT IS NOT UPDATED AS THE LOOP RUNS. A payload
+      // naming the same option twice buckets it twice [L75-L78], so `totalCombos` is 2 [L85] and
+      // the legacy creates TWO SKUs carrying the identical option set. A reconciliation set
+      // updated during the loop would swallow the second and change a FIRST-invocation outcome.
+      // `snapshotExistingOptionSets` answers only "did this combination exist BEFORE this call",
+      // so within-run repetition survives untouched.
+      const group = anOptionGroup({ optionGroupID: 'twice-og', sortOrder: 1 });
+      const option = anOption({ optionID: 'twice-opt', sortOrder: 1, optionGroup: group });
+      const product = makeProductFixture({ productID: 'retry-same-option-twice' });
+
+      await service.createSkus(product, {
+        price: PRICE_DECIMAL,
+        options: 'twice-opt,twice-opt',
+        resolvedOptions: [option],
+      });
+
+      expect(product.getSkus().map((sku) => sku.getSkuCode())).toStrictEqual([
+        'TESTPRODUCTXXX-1',
+        'TESTPRODUCTXXX-2',
+      ]);
+    });
+
+    it('folds case when it compares codes, because CFML comparison folds case', async () => {
+      // `SwSku.skuCode` is `unique="true"` on a text column [model/entity/Sku.cfc:L54], and CFML
+      // string comparison folds case, so `TESTPRODUCTXXX-1` and `testproductxxx-1` are ONE code.
+      // A case-sensitive comparison would let a differently-cased sibling through.
+      const product = makeProductFixture({ productID: 'retry-folded' });
+      const existing = makeSkuFixture({ skuID: 'retry-folded-sku', product });
+
+      existing.setSkuCode('testproductxxx-1');
+      product.addSku(existing);
+
+      await service.createSkus(product, { price: PRICE_DECIMAL });
+
+      expect(product.getSkus().map((sku) => sku.getSkuCode())).toStrictEqual(['testproductxxx-1']);
     });
   });
 
@@ -1490,37 +1796,6 @@ describe('SkuService', () => {
         }),
       });
     }
-
-    it('preserves the three resource-bundle keys verbatim, including the "benifits" misspelling', () => {
-      // LEGACY-DEFECT [model/service/SkuService.cfc:L148]: the resource-bundle key misspells
-      // "benefits" as "benifits". The key is a data contract resolved by the legacy admin, so the
-      // misspelling is preserved verbatim.
-      //
-      // Preserved deliberately; do not fix without a product decision.
-      //
-      // The brief cites L148 for the misspelling; the source puts the MISSPELLED key at L143 and
-      // the correctly spelled terms key at L148. Both locators are recorded and both strings
-      // carried byte for byte, because correcting the spelling would break every resource bundle
-      // keyed on it.
-      expect(RB_KEY_SUBSCRIPTION_BENEFITS_REQUIRED).toBe(
-        'entity.product.subscriptionbenifitsrequired',
-      );
-      expect(RB_KEY_SUBSCRIPTION_TERMS_REQUIRED).toBe('entity.product.subscriptiontermsrequired');
-      expect(RB_KEY_ACCESS_CONTENTS_REQUIRED).toBe('validate.product.accesscontentsrequired');
-
-      // The prefix inconsistency is in the source too - two `entity.` keys and one `validate.` key
-      // for the same kind of failure - and it is carried, not normalised.
-      expect(RB_KEY_SUBSCRIPTION_BENEFITS_REQUIRED.startsWith('entity.')).toBe(true);
-      expect(RB_KEY_SUBSCRIPTION_TERMS_REQUIRED.startsWith('entity.')).toBe(true);
-      expect(RB_KEY_ACCESS_CONTENTS_REQUIRED.startsWith('validate.')).toBe(true);
-
-      // LEGACY-NOTE [org/Hibachi/JavaRB]: these are PLAIN STRINGS and nothing in the target
-      // resolves them. JavaRB is deliberately not ported, so no i18n runtime is introduced; the
-      // identifiers survive so the legacy admin can resolve them against its bundles.
-      expect(typeof RB_KEY_SUBSCRIPTION_BENEFITS_REQUIRED).toBe('string');
-      expect(typeof RB_KEY_SUBSCRIPTION_TERMS_REQUIRED).toBe('string');
-      expect(typeof RB_KEY_ACCESS_CONTENTS_REQUIRED).toBe('string');
-    });
 
     it('delegates every subscription term and benefit lookup to the stub port', async () => {
       const product = aSubscriptionProduct('subscription-delegation');
@@ -1871,10 +2146,20 @@ describe('SkuService', () => {
     });
 
     it('STRATEGY 2 [L134] - the single merchandise SKU is designated UNCONDITIONALLY', async () => {
-      // No options in, one SKU out, and the designation carries no guard. The second
-      // half of this case is what separates it from site 1: invoking the same arm again
-      // OVERWRITES a default that is already present, which a first-wins reading would
-      // get wrong.
+      // No options in, one SKU out, and the designation carries no guard. The second half of this
+      // case is what separates it from site 1: this arm OVERWRITES a default that is already
+      // present, which a first-wins reading would get wrong.
+      //
+      // ★★★ QUOTE-THEN-REVISE ON HOW THE SECOND HALF IS STAGED (F4). It used to read "invoking
+      // the same arm again OVERWRITES a default that is already present" and it proved that by
+      // calling `createSkus` twice on the same product, asserting TWO SKUs both coded
+      // `TESTPRODUCTXXX-1`. That second SKU was never a legal end state - `SwSku.skuCode` is
+      // `unique="true"` [model/entity/Sku.cfc:L54] - and the retry reconciliation now recognises
+      // the repeat and attaches nothing, so the old staging no longer reaches the overwrite. The
+      // property under test is unchanged and so is its citation: [L134] has no `isNull` test.
+      // What changed is that the pre-existing default is now a DIFFERENT SKU, carrying a code this
+      // arm does not generate - which is the honest way to ask whether the designation defers to
+      // an existing one.
       const product = makeProductFixture({ productID: 'designate-strategy-2' });
 
       await service.createSkus(product, { price: PRICE_DECIMAL });
@@ -1884,14 +2169,26 @@ describe('SkuService', () => {
       expect(product.getSkus()).toHaveLength(1);
       expect(product.getDefaultSku()).toBe(first);
 
-      await service.createSkus(product, { price: PRICE_DECIMAL });
+      // A second product that ALREADY carries a default, under a code this arm never mints.
+      const preloaded = makeProductFixture({ productID: 'designate-strategy-2-preloaded' });
+      const incumbent = makeSkuFixture({
+        skuID: 'designate-strategy-2-incumbent',
+        product: preloaded,
+      });
 
-      const second = product.getSkus()[1];
+      incumbent.setSkuCode('TESTPRODUCTXXX-99');
+      preloaded.addSku(incumbent);
+      preloaded.setDefaultSku(incumbent);
 
-      expect(product.getSkus()).toHaveLength(2);
-      expect(second).not.toBe(first);
+      await service.createSkus(preloaded, { price: PRICE_DECIMAL });
+
+      const minted = preloaded.getSkus()[1];
+
+      expect(preloaded.getSkus()).toHaveLength(2);
+      expect(minted).not.toBe(incumbent);
+      expect(minted?.getSkuCode()).toBe('TESTPRODUCTXXX-1');
       // OVERWRITTEN. [L134] has no `isNull` test, unlike [L101].
-      expect(product.getDefaultSku()).toBe(second);
+      expect(preloaded.getDefaultSku()).toBe(minted);
     });
 
     it('STRATEGY 3 [L166-L168] - the subscription branch designates on the TERM INDEX', async () => {
@@ -3143,7 +3440,16 @@ describe('SkuService', () => {
         },
       });
 
-      await expect(service.processImageUpload(sku, anUploadResult())).resolves.toBe(true);
+      // ★★★ THE SKU COMES BACK, NOT THE STORE'S BOOLEAN, PER AAP 0.4.2.
+      // QUOTE-THEN-REVISE: this assertion used to read `.resolves.toBe(true)`, codifying the
+      // `Promise<boolean>` shape that [model/service/SkuService.cfc:L213-L217] literally
+      // returns. The mapping table freezes the ported signature as `Promise<Sku>` and AAP
+      // 0.9.2 gates on it, and the legacy boolean is observed by NOBODY - the whole legacy
+      // tree contains exactly one mention of `processImageUpload`, its own declaration - so
+      // returning the entity discards nothing any caller reads. `toBe` is kept rather than
+      // relaxed to `toBeDefined`: the SAME INSTANCE must come back, because this method writes
+      // nothing to the SKU and must not substitute a copy.
+      await expect(service.processImageUpload(sku, anUploadResult())).resolves.toBe(sku);
 
       // [L146] verbatim: `"#getHibachiScope().getBaseImageURL()#/product/default/#getImageFile()#"`.
       expect(imageStore.saveImageFileCalls).toStrictEqual([
@@ -3156,6 +3462,51 @@ describe('SkuService', () => {
 
       // The legacy did not delete anything on this path and neither does the port.
       expect(imageStore.deleteImageFileCalls).toStrictEqual([]);
+    });
+
+    it('returns the same sku when the store reports the bytes were NOT persisted', async () => {
+      // ★★★ THE DISCARD IS DELIBERATE AND IS PINNED HERE RATHER THAN LEFT IMPLICIT.
+      // [model/service/SkuService.cfc:L213-L217] answered `false` on this branch, and AAP 0.4.2
+      // maps the ported method to `Promise<Sku>`, so the value cannot be forwarded. What must NOT
+      // happen is a refusal invented to fill the gap: the legacy raised nothing here, recorded
+      // nothing on the SKU and notified nobody, so neither does the port.
+      //
+      // NO FAILURE IS BEING SWALLOWED, and that is a property of the port rather than a hope.
+      // `src/domain/ports/imageStore.ts` binds every implementation to "REFUSE RATHER THAN REPORT
+      // FALSE" - a containment refusal, an absolute path and a disallowed extension are all
+      // THROWS - so `false` carries exactly one meaning, "the bytes were not persisted", and the
+      // rejecting case is covered by the two tests below.
+      const refusingStore = new RecordingImageStore(false);
+      const serviceOverRefusingStore = new SkuService(
+        skuRepository,
+        refusingStore,
+        subscriptionTermProvider,
+      );
+
+      const sku = makeSkuFixture({
+        andOfExistsMember: 'A',
+        imageFile: 'nikeairjorden-sizeten.jpg',
+        imageSettingValues: {
+          baseImageURL: '/custom/assets/images',
+          productImageOptionCodeDelimiter: '-',
+          productImageDefaultExtension: 'jpg',
+        },
+      });
+
+      await expect(
+        serviceOverRefusingStore.processImageUpload(sku, anUploadResult()),
+      ).resolves.toBe(sku);
+
+      // The store was still reached exactly once, with the same three arguments: the return type
+      // changed, the delegation did not.
+      expect(refusingStore.saveImageFileCalls).toStrictEqual([
+        [
+          anUploadResult(),
+          '/custom/assets/images/product/default/nikeairjorden-sizeten.jpg',
+          ALLOWED_IMAGE_EXTENSIONS,
+        ],
+      ]);
+      expect(refusingStore.deleteImageFileCalls).toStrictEqual([]);
     });
 
     it('refuses and stores nothing when the sku was hydrated without image settings', async () => {
@@ -3664,7 +4015,6 @@ describe('SkuService', () => {
         skuRepository,
         imageStore,
         subscriptionTermProvider,
-        undefined,
         undefined,
         {
           baseImageURL: 'https://synthetic.example/assets/images',

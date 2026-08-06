@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/handlers/bootstrap.ts                        composition root (wiring)
 //   src/repositories/mysql/mysqlOptionRepository.ts  MySQL option adapter
@@ -45,7 +43,7 @@
 //   The Smart List Overrides banner being EMPTY is load-bearing for scope: no
 //   smart-list rename happens in this file and none may be added. The project's
 //   two smart-list replacements belong to `src/services/productService.ts`
-//   (planned) and `src/services/skuService.ts` (planned), because
+//   and `src/services/skuService.ts`, because
 //   [model/service/ProductService.cfc:L342] and [model/service/SkuService.cfc:L309]
 //   declare `getProductSmartList` / `getSkuSmartList` outright. This component
 //   declares neither, so `findOptions`, `getOptionSmartList` and any
@@ -54,8 +52,8 @@
 // ★ THIS FILE ESTABLISHES THE DEAD-DI/1-INJECTION-OMISSION PATTERN
 //   Exactly FOUR dead DI/1 injections exist in the in-scope slice, and this file
 //   carries the first one to be annotated. The annotation on the constructor
-//   below is the reusable template: `src/services/skuService.ts` (planned) has
-//   one dead injection to omit and `src/services/productService.ts` (planned)
+//   below is the reusable template: `src/services/skuService.ts` has
+//   one dead injection to omit and `src/services/productService.ts`
 //   has two, and each should repeat that exact form. The shape of the annotation
 //   matters as much as the omission, because an omission that is not recorded
 //   reads as an oversight.
@@ -100,7 +98,7 @@
 //   violation. It is a layer violation. The two `<cfquery>` bodies at
 //   [model/dao/OptionDAO.cfc:L51-L92] and [model/dao/OptionDAO.cfc:L94-L117] are
 //   the SQL source of truth for `src/repositories/mysql/mysqlOptionRepository.ts`
-//   (planned) and for nothing else. Both bind their list parameter with
+//   and for nothing else. Both bind their list parameter with
 //   `cfqueryparam ... list="true"` - [model/dao/OptionDAO.cfc:L68] and
 //   [model/dao/OptionDAO.cfc:L107] - and the adapter, not this service, owns
 //   reproducing that binding one parameter per parsed element.
@@ -124,7 +122,7 @@
 //   `src/handlers/**` or `src/integrations/**`. There are also zero intra-folder
 //   imports between the service modules; every collaborator arrives as a
 //   constructor parameter and the graph is assembled once in
-//   `src/handlers/bootstrap.ts` (planned).
+//   `src/handlers/bootstrap.ts`.
 //
 // NO AMBIENT SCOPE, NO SERVICE LOCATOR, NO CACHE
 //   Three sweeps of the 99-line component, each returning nothing:
@@ -140,7 +138,7 @@
 //       memo and no cache, so this class holds none. Module-level mutable state
 //       would survive between unrelated invocations on a warm Lambda container and
 //       is unsafe; the single sanctioned exception in the subtree is the MySQL
-//       connection pool in `src/repositories/mysql/connection.ts` (planned).
+//       connection pool in `src/repositories/mysql/connection.ts`.
 //
 //   The class below consequently holds no mutable state of any kind. One instance
 //   constructed in the composition root can serve every invocation, and every
@@ -202,7 +200,7 @@ import type { OptionRepository, SelectOption } from '../domain/ports/optionRepos
  * extends to option GROUPS as well as options.
  *
  * ONE COLLABORATOR, injected. Instances hold no mutable state of any kind, so a
- * single instance constructed in `src/handlers/bootstrap.ts` (planned) can serve
+ * single instance constructed in `src/handlers/bootstrap.ts` can serve
  * every invocation, and each method is deterministic given its arguments and the
  * injected port.
  */
@@ -236,15 +234,15 @@ export class OptionService {
   // resolved and injected, so an edge that no code used stayed invisible; naming
   // collaborators as constructor parameters is what makes an unused one apparent instead.
   //
-  // CONSEQUENCE FOR THE COMPOSITION ROOT: `src/handlers/bootstrap.ts` (planned) must NOT
+  // CONSEQUENCE FOR THE COMPOSITION ROOT: `src/handlers/bootstrap.ts` must NOT
   // wire a product service into this constructor. Doing so would reintroduce the dead
   // edge and, because `productService` declares eight collaborators of its own
   // [model/service/ProductService.cfc:L52-L60], would pull that whole subgraph into the
   // wiring required to build an option select list - a dependency this component does not
   // have.
   //
-  // THIS IS THE TEMPLATE. `src/services/skuService.ts` (planned) has one dead injection
-  // to omit and `src/services/productService.ts` (planned) has two; each should repeat
+  // THIS IS THE TEMPLATE. `src/services/skuService.ts` has one dead injection
+  // to omit and `src/services/productService.ts` has two; each should repeat
   // this form - cite the declaring line, state that the sweep found no reference, state
   // that the omission is deliberate, and state that the composition root must not wire
   // it. An omission that is not recorded reads as an oversight.
@@ -264,7 +262,7 @@ export class OptionService {
    *   constructor parameter typed to a PORT INTERFACE rather than to a concrete
    *   adapter, so a test supplies a stub without a database and no service locator or
    *   container package is involved. Wired once, explicitly, in
-   *   `src/handlers/bootstrap.ts` (planned).
+   *   `src/handlers/bootstrap.ts`.
    */
   constructor(private readonly optionRepository: OptionRepository) {}
 
@@ -434,6 +432,41 @@ export class OptionService {
   // both queries project a label and an identifier - and it is why this file imports no
   // `OptionGroup` type at all. The `readonly` on both returns is likewise the port's own,
   // carried through unchanged rather than relaxed.
+  //
+  // ★★★ RE-EXAMINED AND UPHELD UNDER AAP-INTERNAL PRECEDENCE (F26). A code review raised the two
+  // element types as an interface-parity divergence, so the question was reopened from the source
+  // rather than from this note, and two further pieces of evidence settled it:
+  //
+  //   1. THE COMPOSITION THEORY IS REFUTED BY THE DISPLAY FORMATS. If these methods were entity
+  //      sources feeding `getOptionsForSelect`, `Option[]` would be the coherent element type. They
+  //      are not: `getOptionsForSelect` [model/service/OptionService.cfc:L55-L62] emits
+  //      `{name = getOptionName(), value = getOptionID()}` with NO group prefix, whereas
+  //      [model/dao/OptionDAO.cfc:L88] composes `"<optionGroupName> - <optionName>"`. The two
+  //      formats differ, so the DAO's label is produced nowhere else and returning entities would
+  //      DESTROY it - a behaviour loss, not a type change.
+  //   2. THE REAL CONSUMERS TAKE THE TUPLES DIRECTLY. `valueOptions="#rc.product.getUnusedProductOptions()#"`
+  //      [admin/views/entity/preprocessproduct_addoption.cfm:L60] and
+  //      `valueOptions="#rc.product.getUnusedProductOptionGroups()#"`
+  //      [admin/views/entity/preprocessproduct_addoptiongroup.cfm:L60], reached through the memoized
+  //      entity wrappers [model/entity/Product.cfc:L635-L646]. A select control reads `name`/`value`
+  //      pairs; it has no use for an entity.
+  //
+  // AND THE PLAN'S OWN TEXT AGREES WITH THE SOURCE HERE. AAP 0.4.2's mapping-table PREAMBLE states
+  // the typing rule directly - the legacy `any` becomes the concrete entity or view type, and
+  // "`struct` returns become named interfaces" - and the legacy return is an array OF STRUCTS, so
+  // that rule yields `SelectOption[]`. The ADJACENT row in the very same table, for
+  // `getOptionsForSelect`, itself uses `SelectOption[]`. The two `Option[]` / `OptionGroup[]` cells
+  // therefore contradict the table's own preamble and its own neighbouring row, while AAP 0.8.1
+  // ("Preserve Exactly") and the 0.9.3 behaviour gates bind. Where AAP clauses conflict, the
+  // behaviour-preserving reading governs, and this divergence is recorded in the project's
+  // divergence ledger rather than left as an unexplained mismatch.
+  //
+  // WHAT THE PLAN DOES REQUIRE AND WHAT IS HONOURED: "the comma-list parameter is retained as a
+  // string for signature parity and parsed internally". Both signatures keep the `string`, and the
+  // parsing happens INSIDE the implementation - `../repositories/mysql/mysqlOptionRepository.ts`
+  // tokenizes it with the sanctioned `listToArray` helper and renders exactly one placeholder per
+  // element, so every identifier is BOUND rather than interpolated. That is the same division of
+  // labour the legacy had, where the DAO owned the split.
   // ===========================================================================
 
   /**
@@ -459,9 +492,12 @@ export class OptionService {
    * @param productID - The product whose SKUs are checked for options already in use.
    *   Bound as a parameter by the adapter, at [model/dao/OptionDAO.cfc:L78] in the source.
    * @param existingOptionGroupIDList - A CFML comma-delimited list of option group
-   *   identifiers to search within. It stays a `string` here and is NOT parsed: signature
-   *   parity requires the string, and splitting it is the adapter's job, exactly as it was
-   *   the DAO's. That is why this file imports no list helper.
+   *   identifiers to search within. It stays a `string` here and is not parsed IN THIS FILE:
+   *   AAP 0.4.2 requires the string for signature parity and requires it to be "parsed
+   *   internally", and the adapter IS internal - splitting it is the adapter's job, exactly
+   *   as it was the DAO's. That is why this file imports no list helper. The split itself
+   *   uses the sanctioned `listToArray` helper and binds one placeholder per element, so no
+   *   identifier is ever interpolated into SQL.
    * @returns The select rows the query produced, ordered by option group name then option
    *   name. Possibly empty - see the validation note above.
    */
@@ -496,8 +532,8 @@ export class OptionService {
    * ASYNC BECAUSE THE LEGACY BODY REACHES THE DATA STORE.
    *
    * @param existingOptionGroupIDList - A CFML comma-delimited list of option group
-   *   identifiers to EXCLUDE. Stays a `string` and is not parsed here, for the same reason
-   *   as above.
+   *   identifiers to EXCLUDE. Stays a `string` and is parsed by the adapter rather than here,
+   *   for the same reason as above.
    * @returns The select rows the query produced, ordered by option group name. Possibly
    *   empty - see the validation note above.
    */

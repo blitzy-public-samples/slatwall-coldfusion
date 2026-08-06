@@ -219,6 +219,17 @@ const ACCOUNT_ID = 'account-9f13c7';
  */
 const PLANTED_INTERNAL_DETAIL = 'PLANTED-INTERNAL-DETAIL-6d20f4b91c3e';
 
+/**
+ * A caller-authored ANCESTOR key, deliberately named like a credential.
+ *
+ * It exists for one purpose: proving that a refusal which names an offending member does not repeat the
+ * member names the caller chose to wrap it in. A security review found (MAJOR, CWE-209/CWE-532) that the
+ * prototype-key refusal published the whole dotted location, ancestors included, so a body such as
+ * `{"api_token_value":{"__proto__":{}}}` had this class of name echoed into a 400 and persisted in the
+ * logs.
+ */
+const PLANTED_ANCESTOR_KEY = 'planted_api_token_value_4c17ea';
+
 /** The secondary eligible currency the SKU fixture generates rows for. */
 const SECONDARY_CURRENCY_CODE = 'EUR';
 
@@ -1292,7 +1303,7 @@ describe('the request contract, and what it refuses (concern 1)', () => {
     }
   });
 
-  it('★★ refuses a `__proto__` own key with a member path, at the root and nested alike (QA-I3)', async () => {
+  it('★★ refuses a `__proto__` own key at the root and nested alike, naming ONLY that key (QA-I3)', async () => {
     // ★★ THE ONE UNRECOGNIZED KEY `z.strictObject` DOES NOT REFUSE. This endpoint is where QA testing
     // submitted it, and measured both halves: zod ACCEPTS an own `__proto__` and silently drops it at
     // every nesting level, while rejecting a `constructor` key in the same position - and
@@ -1303,31 +1314,52 @@ describe('the request contract, and what it refuses (concern 1)', () => {
     // invokes the prototype SETTER and creates no own property, so a literal fixture would contain
     // nothing to detect and this case would pass against a guard that did nothing. `JSON.parse` - which
     // is what the handler runs on the body API Gateway delivers - makes it an own data property.
-    const bodies: readonly { readonly body: string; readonly path: string }[] = [
-      {
-        body: '{"operation":"calculateSkuPriceBasedOnPriceGroup","__proto__":{"p":1}}',
-        path: '__proto__',
-      },
-      {
-        body: '{"operation":"calculateSkuPriceBasedOnPriceGroup","sku":{"skuID":"s-1","__proto__":{"p":1}}}',
-        path: 'sku.__proto__',
-      },
+    //
+    // ★★★ THE NESTED CASE NO LONGER EXPECTS `sku.__proto__`, AND THAT REVISION IS THE POINT. It used
+    // to, and a security review found (MAJOR, CWE-209/CWE-532) that the ancestor segment of such a path
+    // is a member name THE CALLER CHOSE, reaching both this body and the log stream. The third fixture
+    // below is the proof: its ancestor is named like a credential, and the refusal must not repeat it.
+    const bodies: readonly string[] = [
+      '{"operation":"calculateSkuPriceBasedOnPriceGroup","__proto__":{"p":1}}',
+      '{"operation":"calculateSkuPriceBasedOnPriceGroup","sku":{"skuID":"s-1","__proto__":{"p":1}}}',
+      `{"operation":"calculateSkuPriceBasedOnPriceGroup","${PLANTED_ANCESTOR_KEY}":{"__proto__":{"p":1}}}`,
     ];
 
-    for (const { body, path } of bodies) {
+    for (const body of bodies) {
       const response = await handler(makeProxyEvent({ body }), makeLambdaContext());
       const envelope = readErrorEnvelope(response);
 
       expect(response.statusCode).toBe(400);
       expect(envelope.category).toBe('invalidRequest');
       expect(envelope.message).toBe(INVALID_BODY_MESSAGES.unusableRequestInput);
-      // The path names the KEY the caller sent. No value is echoed - the invariant every refusal on
-      // this endpoint holds to.
-      expect(envelope.raw).toContain(path);
+      // ONE fixed issue, whatever the depth: the offending key, which is the only member name involved
+      // that the caller did not choose. No ancestor, no value, no depth.
+      expect(envelope.raw).toContain('"path":"__proto__"');
+      expect(envelope.raw).not.toContain('sku.__proto__');
+      expect(envelope.raw).not.toContain(PLANTED_ANCESTOR_KEY);
     }
 
     // The finding's own central observation, re-asserted rather than taken on trust.
     expect(Object.prototype).not.toHaveProperty('p');
+  });
+
+  it('★★★ persists NO caller-authored ancestor key on the log stream either (CWE-532)', async () => {
+    // The body arm above proves the response says nothing; this proves the same of the diagnostic. The
+    // refusal is logged by `errorMapper.invalidRequestResponse`, which used to copy every published
+    // path into a `fieldPaths` member and therefore re-published the caller's key names on the stream.
+    const capture = captureLogStream();
+
+    const response = await handler(
+      makeProxyEvent({
+        body: `{"operation":"calculateSkuPriceBasedOnPriceGroup","${PLANTED_ANCESTOR_KEY}":{"__proto__":{"p":1}}}`,
+      }),
+      makeLambdaContext(),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(capture.text()).not.toContain(PLANTED_ANCESTOR_KEY);
+    expect(capture.text()).not.toContain('fieldPaths');
+    expect(capture.text()).toContain('invalidRequestReason');
   });
 
   it('refuses an operation outside the closed union, publishing paths and never values', async () => {
@@ -4095,16 +4127,15 @@ describe('response shaping (concern 3)', () => {
     // `no-store` is not a performance decision and carries no target of any kind: a resolved price is
     // account-scoped, so a shared cache must not be permitted to serve one account's price to another.
     //
-    // ★ `x-content-type-options: nosniff` IS THE THIRD, ADDED FOR QA-I4 - the shared builder already
-    // declares the content type explicitly, and this is the half of that statement which says a
-    // recipient must not sniff past it. The set is still asserted EXACTLY, so a fourth invented
-    // header still fails this case.
+    // ★ AND THERE IS NO THIRD. `x-content-type-options: nosniff` briefly joined the shared builder's
+    // set and a code review withdrew it: the ported system had no such HTTP semantic and the AAP
+    // prescribes none, so emitting it invented a non-functional requirement (0.8.1). The set is
+    // asserted EXACTLY, which is what keeps every invented header - that one included - out.
     const response = await handler(makeProxyEvent(), makeLambdaContext());
 
     expect(response.headers).toStrictEqual({
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
-      'x-content-type-options': 'nosniff',
     });
   });
 
@@ -4170,8 +4201,8 @@ describe('response shaping (concern 3)', () => {
     const served = jsonSuccessResponse(REQUEST_ID, route.capability, route.action, document);
 
     expect(served.statusCode).toBe(200);
-    // The SAME header set a mapped failure carries, including the account-scoped `no-store` and the
-    // `nosniff` added for QA-I4.
+    // The SAME header set a mapped failure carries: the JSON content type and the account-scoped
+    // `no-store`, and nothing invented alongside them.
     expect(served.headers).toStrictEqual(REQUIRED_SUCCESS_RESPONSE_HEADERS);
 
     const body: SuccessResponseBody<PriceResolutionResultDocument> = JSON.parse(
@@ -4680,11 +4711,31 @@ describe('isolation between invocations (A2)', () => {
  * contract.
  */
 const ENTRYPOINT_ENVIRONMENT: EnvironmentSource = Object.freeze({
-  DB_HOST: 'unused-by-this-suite.invalid',
+  // An IP literal, which is exactly the case `verify-ca` below exists to serve: `verify-identity`
+  // refuses an address (F47), because a certificate binds to host NAMES and an address would reduce
+  // the mode to a chain-only check while still calling itself verified.
+  DB_HOST: '127.0.0.1',
   DB_USER: 'unused-by-this-suite',
   DB_PASSWORD: 'unused-by-this-suite',
-  DB_TLS_MODE: 'disabled',
+  // `verify-ca`, not `disabled`: the executor is injected so no pool is built, and `disabled` would
+  // be a cleartext claim this fixture does not need to make (CWE-319).
+  DB_TLS_MODE: 'verify-ca',
+  // Required BY `verify-ca` (F47): that mode omits the host-name check, so the pinned anchor is the
+  // only thing left binding the connection to the intended server, and the contract refuses the mode
+  // without one. Never dialled - the injected executor answers every statement - so this is a
+  // syntactically valid PEM and nothing more.
+  DB_TLS_CA: '-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0aWZpY2F0ZS1ib2R5\n-----END CERTIFICATE-----',
   DB_DIALECT: 'mySql',
+  // ★ A REFERENCE-RATE TABLE IS CONFIGURED, BECAUSE ONE OF THE THIRTEEN OPERATIONS CONVERTS.
+  // `convertCurrency` with no table at all now REFUSES rather than answering at par: an absent
+  // table is the legacy's own cold-start failure state [model/service/CurrencyService.cfc:L104-L131],
+  // not its pass-through state [L100-L101]. A suite proving the ENTRYPOINT reaches the dispatcher
+  // must therefore configure the deployment the way a deployment is configured; the refusal itself
+  // is pinned where it belongs, in `tests/unit/handlers/bootstrap.test.ts`.
+  ECB_REFERENCE_RATES: 'USD=1.0850,GBP=0.8520,JPY=163.41',
+  // Required whenever the table is set, so its age can be assessed. A fixed instant keeps the
+  // suite deterministic; staleness reporting is pinned in the bootstrap suite, not here.
+  ECB_RATES_RETRIEVED_AT: '2026-08-04T00:00:00Z',
 });
 
 /**
@@ -5030,12 +5081,10 @@ describe('the Lambda entrypoint, through its dependency seam (F3)', () => {
     ).toHaveLength(1);
     expect(envelope.operation).toBe('calculateSkuPriceBasedOnAccount');
     expect(envelope.result['outcome']).toBe('price');
-    // The response is shaped by the three frozen headers and nothing else - the third being the
-    // `nosniff` added for QA-I4.
+    // The response is shaped by the two frozen headers and nothing else.
     expect(response.headers).toStrictEqual({
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
-      'x-content-type-options': 'nosniff',
     });
     // A parseable instant, and the CONTEXT's correlation identifier rather than the event's.
     expect(Number.isNaN(Date.parse(envelope.resolvedAt))).toBe(false);

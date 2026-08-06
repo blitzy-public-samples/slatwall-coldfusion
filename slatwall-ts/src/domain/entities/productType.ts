@@ -40,10 +40,27 @@
 // containment check, and model/dao/PromotionDAO.cfc:L482-L488 concatenates it in dialect-specific
 // SQL. A truncated or mis-ordered path silently changes which promotions apply - it changes money.
 // That is why every path operation here delegates to
-// `src/domain/valueObjects/materializedIdPath.ts` instead of being re-derived. That module is also
-// where the ONE deliberate divergence on this path lives: a cyclic or unbounded parent chain is
-// REFUSED there by a throw, producing no path, precisely because a truncated path would change
-// money. Nothing about the ordering, the delimiter or the contents of a well-founded path changed.
+// `src/domain/valueObjects/materializedIdPath.ts` instead of being re-derived. Nothing about the
+// ordering, the delimiter or the contents of a well-founded path changed.
+//
+// ★★★ THIS PARAGRAPH CLAIMED A GUARD THAT NO LONGER EXISTS, AND THE STALE CLAIM IS A REVIEW FINDING.
+// It read that the shared module "is also where the ONE deliberate divergence on this path lives: a
+// cyclic or unbounded parent chain is REFUSED there by a throw, producing no path". That was true of
+// an earlier revision and is FALSE NOW. The guard - a visited set plus a depth backstop - was removed
+// in full, for the three reasons that module records at its own `buildIdPathList` heading: the module
+// reproduces the legacy walk and adds nothing to it, a self-declared fourth divergence does not fit a
+// budget closed at three, and the one place that genuinely had to decide termination is the MySQL
+// adapters' recursive ancestry reads, not the domain walk.
+//
+// WHAT ACTUALLY HAPPENS, AND THE RESIDUAL RISK, STATED PLAINLY. The walk reproduces
+// [org/Hibachi/HibachiEntity.cfc:L314-L321], which carries neither a visited set nor an iteration
+// bound. A cycling `parentProductType` chain therefore does not terminate - in the legacy engine or
+// here. Because the walk is a `do/while` that never yields, it holds the invocation's single-threaded
+// event loop until the platform timeout, and a retry repeats it; one malformed row can thus deny this
+// capability repeatedly. That is a real exposure and it is NOT mitigated in this layer. It is bounded
+// in practice only by the writers: `setParentProductType` accepts a cycle exactly as the source does,
+// so the protection that exists is upstream in the MySQL adapters, which refuse to hand back a cyclic
+// row set. Closing it in the domain is a product decision, not something this port makes silently.
 //
 // THE `extends` CHAIN IS THREE LEVELS DEEP, NOT TWO. `extends="HibachiEntity"` on L49 is
 // UNQUALIFIED, so it resolves to the local model/entity/HibachiEntity.cfc (274 lines), which
@@ -127,6 +144,7 @@
 // ---------------------------------------------------------------------------
 
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
+import { cfFoldKey } from '../../lib/cfml/struct.js';
 import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { ProductTypeRepository } from '../ports/productTypeRepository.js';
 import {
@@ -202,10 +220,10 @@ export class ProductType {
    * is held rather than coerced at construction. It is resolved through `cfBoolean()` at the
    * accessor - see {@link ProductType.getActiveFlag}.
    */
-  private readonly activeFlag: CfBooleanInput;
+  private activeFlag: CfBooleanInput;
 
   /** [model/entity/ProductType.cfc:L55] `ormtype="boolean"`, also with NO `default=`. */
-  private readonly publishedFlag: CfBooleanInput;
+  private publishedFlag: CfBooleanInput;
 
   /**
    * [model/entity/ProductType.cfc:L56] `ormtype="string" unique="true"` with
@@ -225,10 +243,10 @@ export class ProductType {
   private urlTitle: string | undefined;
 
   /** [model/entity/ProductType.cfc:L57] `ormtype="string"`, nullable - no `notNull="true"`. */
-  private readonly productTypeName: string | undefined;
+  private productTypeName: string | undefined;
 
   /** [model/entity/ProductType.cfc:L58] `ormtype="string" length="4000"`. */
-  private readonly productTypeDescription: string | undefined;
+  private productTypeDescription: string | undefined;
 
   /**
    * [model/entity/ProductType.cfc:L59] `ormtype="string"`.
@@ -241,7 +259,7 @@ export class ProductType {
    * which means any product type carrying a system code is undeletable. That is a SERVICE-TIER
    * constraint and is deliberately not enforced on this class.
    */
-  private readonly systemCode: string | undefined;
+  private systemCode: string | undefined;
 
   /**
    * [model/entity/ProductType.cfc:L62] `cfc="ProductType" fieldtype="many-to-one"
@@ -530,6 +548,53 @@ export class ProductType {
     this.urlTitle = urlTitle;
   }
 
+  // ===========================================================================
+  // THE REMAINING ORM-GENERATED SCALAR SETTERS - THE `populate` TARGETS
+  // ===========================================================================
+  //
+  // ★★★ WHY THEY ARE AUTHORED. `saveProductType` reaches persistence through
+  // `super.save(arguments.productType, arguments.data)` [model/service/ProductService.cfc:L303],
+  // whose first step is `arguments.entity.populate(arguments.data)`
+  // [org/Hibachi/HibachiService.cfc:L145] - and populate copies EVERY matching key onto the entity by
+  // reflection over ORM metadata, BEFORE `validate` [L150] reads it. Code review measured what a
+  // one-setter port did instead: `productTypeName` arrived in the payload, was never written, and the
+  // `required` rule of [model/validation/ProductType.json] judged the STALE entity - so a valid
+  // payload could not repair a nameless product type, and an empty payload validated against stale
+  // state which the save then wrote.
+  //
+  // ★★ ONE SETTER PER SCALAR COLUMN, AND NOTHING ELSE. This is not a general `populate`; reproducing
+  // metadata-driven dispatch is the framework machinery T1/T3 remove. Association population -
+  // `data.parentProductType` resolved into an entity reference through the ORM's own loaders - is NOT
+  // reproduced, for the same reason `src/services/productService.ts` records for `Product`: it would
+  // put entity loading by identifier inside a service tier through a locator no in-scope port
+  // publishes. `productTypeIDPath` already has its own setter above, and it is MAINTAINED rather than
+  // populated.
+
+  /** [model/entity/ProductType.cfc:L57] The ORM-generated `setProductTypeName()`. Populate target. */
+  setProductTypeName(productTypeName: string): void {
+    this.productTypeName = productTypeName;
+  }
+
+  /** [model/entity/ProductType.cfc:L58] The ORM-generated `setProductTypeDescription()`. */
+  setProductTypeDescription(productTypeDescription: string): void {
+    this.productTypeDescription = productTypeDescription;
+  }
+
+  /** [model/entity/ProductType.cfc:L59] The ORM-generated `setSystemCode()`. */
+  setSystemCode(systemCode: string): void {
+    this.systemCode = systemCode;
+  }
+
+  /** [model/entity/ProductType.cfc:L53] The ORM-generated `setActiveFlag()`. */
+  setActiveFlag(activeFlag: boolean): void {
+    this.activeFlag = activeFlag;
+  }
+
+  /** [model/entity/ProductType.cfc:L54] The ORM-generated `setPublishedFlag()`. */
+  setPublishedFlag(publishedFlag: boolean): void {
+    this.publishedFlag = publishedFlag;
+  }
+
   /**
    * [model/entity/ProductType.cfc:L57]
    *
@@ -606,6 +671,88 @@ export class ProductType {
    */
   isNew(): boolean {
     return this.productTypeID === '';
+  }
+
+  // ===========================================================================
+  // THE ERROR REGISTER - THE FRAMEWORK'S REFUSAL CHANNEL
+  //
+  // ★★★ THE FULL REASONING IS RECORDED ONCE, ON `src/domain/entities/product.ts`, and is not
+  // restated here. In one paragraph: `HibachiService.save`
+  // [org/Hibachi/HibachiService.cfc:L133-L169] populates, validates, and writes ONLY when
+  // `!arguments.entity.hasErrors()` [L153] - RETURNING THE ENTITY EITHER WAY [L167]. It never throws
+  // for a validation refusal, so the legacy refusal channel IS the entity and a caller inspects it.
+  // Without these members the ported service had nowhere to put a refusal and threw instead, which
+  // code review recorded as a behaviour defect: a legacy caller inspecting `hasErrors()` is sent
+  // into an exception path it has no handler for, losing both the populated entity and the reasons.
+  //
+  // PORTED SHAPE: `getErrors()` [org/Hibachi/HibachiTransient.cfc:L30-L32] is a STRUCT keyed by error
+  // name whose values are ARRAYS of messages; `hasErrors()` [L47-L53] is `structCount(...)`;
+  // `hasError(name)` [L57-L59] is `structKeyExists`; `addError(name, message)` [L61-L64] APPENDS, so
+  // two messages under one name accumulate. Keys are matched without regard to case, because a CFML
+  // struct key is. The register is transient instance state: never a column, never read by a
+  // repository, never populated by hydration.
+  // ===========================================================================
+
+  /**
+   * The accumulated errors, keyed by FOLDED error name and carrying each name's ORIGINAL spelling.
+   *
+   * ★ TWO PIECES OF STATE PER ENTRY, BECAUSE A CFML STRUCT CARRIES BOTH. `variables.errors[errorName]`
+   * [org/Hibachi/HibachiErrors.cfc:L15-L19] LOOKS UP case-insensitively but REMEMBERS the case of the
+   * key as first written, so a second `addError('URLTITLE', ...)` appends to the entry created by
+   * `addError('urlTitle', ...)` and `getErrors()` still reports it as `urlTitle`. Folding the stored
+   * key alone would have lower-cased every property identifier a caller reads back.
+   *
+   * Mutable; `addError` is the only writer.
+   */
+  private readonly errors = new Map<
+    string,
+    { readonly name: string; readonly messages: string[] }
+  >();
+
+  /** Every error, keyed by error name [org/Hibachi/HibachiTransient.cfc:L30-L32]. Frozen projection. */
+  getErrors(): Readonly<Record<string, readonly string[]>> {
+    const projected: Record<string, readonly string[]> = {};
+
+    for (const entry of this.errors.values()) {
+      // `defineProperty` rather than assignment: an error name is server-authored here, but the
+      // projection is a plain object and `__proto__` must never be interceptable on one.
+      Object.defineProperty(projected, entry.name, {
+        value: Object.freeze([...entry.messages]),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+
+    return Object.freeze(projected);
+  }
+
+  /** Whether this entity carries any error [org/Hibachi/HibachiTransient.cfc:L47-L53]. */
+  hasErrors(): boolean {
+    return this.errors.size > 0;
+  }
+
+  /** Whether one named error is present [org/Hibachi/HibachiTransient.cfc:L57-L59]. */
+  hasError(errorName: string): boolean {
+    return this.errors.has(cfFoldKey(errorName));
+  }
+
+  /** The messages under one name, or an EMPTY ARRAY [org/Hibachi/HibachiTransient.cfc:L34-L43]. */
+  getError(errorName: string): readonly string[] {
+    return Object.freeze([...(this.errors.get(cfFoldKey(errorName))?.messages ?? [])]);
+  }
+
+  /** Record one error; messages ACCUMULATE [org/Hibachi/HibachiTransient.cfc:L61-L64]. */
+  addError(errorName: string, errorMessage: string): void {
+    const key = cfFoldKey(errorName);
+    const existing = this.errors.get(key);
+
+    if (existing === undefined) {
+      this.errors.set(key, { name: errorName, messages: [errorMessage] });
+      return;
+    }
+
+    existing.messages.push(errorMessage);
   }
 
   /**
@@ -1373,11 +1520,48 @@ export class ProductType {
    * removechildProductType with a lowercase 'c', and with a capital-C 'ChildProductType' argument.
    * CFML method names are case-insensitive, so both spellings dispatch identically; the ORM-canonical
    * form implied by singularname="childProductType" (L65) and the sibling convention at
-   * model/entity/Category.cfc:L93 is camelCase. Normalised here; this is an internal naming
-   * inconsistency, not a data contract.
+   * model/entity/Category.cfc:L93 is camelCase. This camelCase form is therefore the CANONICAL one
+   * and carries the implementation.
+   *
+   * ★★★ QUOTE-THEN-REVISE: THE SOURCE SPELLING IS ALSO PUBLISHED, AS AN ALIAS (F43). This note used
+   * to end "Normalised here; this is an internal naming inconsistency, not a data contract." The
+   * second clause is right and the first was not sufficient. TypeScript member names are
+   * CASE-SENSITIVE where CFML's are not, so normalising ALONE deleted a name the source publishes:
+   * `productType.addchildProductType(child)` compiles in CFML and does not compile against a target
+   * that ships only the camelCase form. AAP 0.9.2 requires that "legacy method names are carried
+   * verbatim", and a name that cannot be called has not been carried. Both spellings are therefore
+   * published - see {@link ProductType.addchildProductType} - so no source-spelled caller is broken
+   * and the canonical form is still the one this file and the rest of the target use.
    */
   addChildProductType(childProductType: ProductType): void {
     childProductType.setParentProductType(this);
+  }
+
+  /**
+   * THE EXACT SOURCE SPELLING of {@link ProductType.addChildProductType}, lowercase `c`
+   * [model/entity/ProductType.cfc:L167].
+   *
+   * ★ AN ALIAS, NOT A SECOND IMPLEMENTATION, and that distinction is the whole design. The body is a
+   * single delegation, so the two names cannot diverge in behaviour, cannot drift apart under a later
+   * edit, and cannot be reasoned about separately: there is exactly one guarded append and one
+   * near-side assignment in this entity, reached through {@link ProductType.setParentProductType}.
+   *
+   * ★ WHY IT EXISTS AT ALL, since CFML would not have needed it. CFML dispatches method names
+   * case-insensitively, so `addchildProductType` and `addChildProductType` were ONE member there;
+   * TypeScript members are case-sensitive, so they are two here and shipping only one silently
+   * withdraws a callable name. AAP 0.9.2 gates on legacy names being carried verbatim, so the source
+   * spelling is published rather than corrected away.
+   *
+   * ★ THE PARAMETER NAME IS NOT ALSO SOURCE-SPELLED. The source argument is capital-C
+   * `ChildProductType` [L167], which would read as a type rather than a value in TypeScript; AAP
+   * 0.4.2 binds METHOD names, not parameter names, and the sibling record on
+   * `PromotionReward.processImageUpload`'s capitalised `Sku` parameter settles the same question the
+   * same way.
+   *
+   * @param childProductType the product type to adopt.
+   */
+  addchildProductType(childProductType: ProductType): void {
+    this.addChildProductType(childProductType);
   }
 
   /**
@@ -1395,6 +1579,20 @@ export class ProductType {
    */
   removeChildProductType(childProductType: ProductType): void {
     childProductType.removeParentProductType(this);
+  }
+
+  /**
+   * THE EXACT SOURCE SPELLING of {@link ProductType.removeChildProductType}, lowercase `c`
+   * [model/entity/ProductType.cfc:L170].
+   *
+   * An alias on exactly the terms recorded on {@link ProductType.addchildProductType}: one
+   * delegation, no second implementation, published because TypeScript member names are
+   * case-sensitive where CFML's are not and AAP 0.9.2 requires the legacy name to remain callable.
+   *
+   * @param childProductType the product type to release.
+   */
+  removechildProductType(childProductType: ProductType): void {
+    this.removeChildProductType(childProductType);
   }
 
   /**
@@ -1624,14 +1822,19 @@ export class ProductType {
    * place comma-list path construction lives for all of `productTypeIDPath`, `priceGroupIDPath` and
    * `categoryIDPath`. Path walking and path building are NEVER hand-rolled at a call site.
    *
-   * THE WALK REFUSES A CYCLIC OR UNBOUNDED PARENT CHAIN - the single documented divergence from the
-   * legacy builder, and it lives in the shared value object rather than here. A product type whose
-   * `parentProductType` chain loops climbs forever in the legacy; this port throws instead, producing
-   * NO path, so the malformed hierarchy surfaces as a refusal rather than pinning the invocation until
-   * the Lambda timeout on every retry. Nothing else about the walk changes: the ordering, the
-   * delimiter and the contents of any well-founded path are identical, because the guard is a
-   * visited-identity test that a well-founded chain never trips. The reasoning, and why no
-   * preserve-exactly mandate covers it, is set out in full on `buildIdPathList()`.
+   * THE WALK FOLLOWS A CYCLIC OR UNBOUNDED PARENT CHAIN RATHER THAN REFUSING IT, because that is what
+   * the legacy builder does: [org/Hibachi/HibachiEntity.cfc:L314-L321] carries neither a visited set
+   * nor an iteration bound. This paragraph once described the opposite, presenting a refusal
+   * as "the single documented divergence from the legacy builder" - and the claim outlived the code it
+   * described. The guard was removed from `buildIdPathList()` in full: the migration's
+   * deliberate-divergence budget is closed at three, none of them is spent in this folder, and a
+   * self-declared fourth does not create room for itself. Nothing about the ordering, the delimiter or
+   * the contents of a well-founded path is affected either way; the shared value object sets out the
+   * full reasoning at its own walk, and this method only delegates.
+   *
+   * Termination for the one place that genuinely had to decide it - the hand-written recursive
+   * ancestry reads in `src/repositories/mysql/mysqlProductTypeRepository.ts`, which replace
+   * Hibernate's lazy traversal - lives there, as a fetch-shape decision under transformation rule T3.
    *
    * Return type is `string`, matching the CFML declaration. It can legitimately be the EMPTY STRING -
    * a stored empty column returns it, and that is the value {@link ProductType.getBaseProductType}
@@ -1773,15 +1976,22 @@ export class ProductType {
    * RECURSIVE UP THE PARENT CHAIN, and LEGACY-NOTE: an unbounded parent chain - or a cycle - recurses
    * without limit and exhausts the stack. NO depth guard, NO cycle detector and NO memo is added.
    *
-   * WHY THIS IS TREATED DIFFERENTLY FROM THE PATH WALK, which now DOES refuse a cycle. The two
-   * failure modes are not the same failure mode. The path walk's is an infinite `do/while`: it never
-   * yields, so it holds the invocation's single-threaded event loop until the platform timeout and the
-   * platform then retries, which turns one malformed row into a repeating denial of the capability.
-   * This one raises `RangeError: Maximum call stack size exceeded` within milliseconds, self-limits,
+   * ★★★ THIS COMPARISON RESTED ON A FALSE PREMISE, AND CORRECTING IT MAKES THE POINT SHARPER RATHER
+   * THAN WEAKER. It read "WHY THIS IS TREATED DIFFERENTLY FROM THE PATH WALK, which now DOES refuse a
+   * cycle". The path walk does NOT refuse a cycle; its guard was removed in full, and the shared
+   * module says so at its own heading. So the two are no longer treated differently at all - NEITHER
+   * guards, and both reproduce the source's silence.
+   *
+   * THE TWO FAILURE MODES ARE STILL NOT THE SAME FAILURE MODE, AND THAT IS THE PART WORTH KEEPING.
+   * The path walk's is an infinite `do/while`: it never yields, so it holds the invocation's
+   * single-threaded event loop until the platform timeout, and the platform then retries - which turns
+   * one malformed row into a repeating denial of the capability. That is the more serious of the two
+   * and it is unmitigated here; the path walk's own note records it as residual risk. This method
+   * instead raises `RangeError: Maximum call stack size exceeded` within milliseconds, self-limits,
    * returns control to the caller and is mapped to an error response like any other thrown value. It
-   * is a crash on malformed data, not a resource-exhaustion vector, so the legacy behaviour is kept
-   * and the source's silence on the matter is respected. If it is ever to change, that is a product
-   * decision about this method, not a consequence of the path walk's.
+   * is a crash on malformed data rather than a resource-exhaustion vector. Both keep the legacy
+   * behaviour and respect the source's silence; if either is ever to change, that is a product
+   * decision, and the path walk is the one with the stronger case for it.
    *
    * RETURN TYPE IS `string | undefined`, NOT `string`. CFML declares `returntype="string"`, but
    * `getProductTypeName()` reads a NULLABLE column [L57] - model/validation/ProductType.json requires

@@ -424,7 +424,9 @@ export class PromotionPeriod {
    *
    * Injecting it is what lets `isExpired()` [L83] and `getCurrentFlag()` [L137] keep their
    * zero-argument legacy signatures verbatim while staying deterministically testable, confining
-   * the single widening this file spends to `isCurrent`. Nothing here calls `Date.now()`.
+   * the single widening this file spends to `isCurrent`. It is also what `isCurrent()` reads when
+   * its optional instant is omitted, so the zero-argument legacy call form is served by this
+   * collaborator rather than by an ambient clock. Nothing here calls `Date.now()`.
    */
   private readonly now: () => Date;
 
@@ -729,29 +731,58 @@ export class PromotionPeriod {
    * [L95], `getCurrentPromotionCodeFlag` [L109] and `PromotionCode.getCurrentFlag`
    * [model/entity/PromotionCode.cfc:L85].
    *
-   * THE PARAMETER IS REQUIRED, NOT OPTIONAL, AND THAT IS THE POINT OF THE WIDENING. AAP 0.4.2
-   * specifies `isCurrent(now: Date)`, "signature widened by one parameter so the UTC policy is
-   * explicit and the method is deterministically testable". Defaulting it to the injected clock
-   * would defeat both purposes: a no-argument call reads a clock the caller cannot see, which is
-   * the ambient-state coupling AAP transformation rule T6 exists to remove, and it makes the
-   * determinism opt-in when these boundaries genuinely need pinning - the start bound is INCLUSIVE,
-   * the end bound is EXCLUSIVE, and the end bound DISAGREES with `getCurrentFlag()`. Dropping the
-   * zero-argument call form costs nothing: `isCurrent()` has no legacy caller.
+   * THE PARAMETER IS OPTIONAL, AND THE DEFAULT IS THE INJECTED CLOCK - NEVER AN AMBIENT ONE. An
+   * earlier revision made it REQUIRED and argued the case at length; a review of the delivered
+   * surface reversed that, and the reversal is recorded here rather than quietly applied, because
+   * both directions have a real argument and only one of them satisfies every obligation at once:
+   *
+   *   * AAP 0.4.2's two stated purposes survive intact. It specifies "signature widened by one
+   *     parameter so the UTC policy is explicit and the method is deterministically testable" - and
+   *     a caller that passes an instant gets exactly that, which is what every suite here does. An
+   *     optional parameter widens the signature by one parameter just as a required one does.
+   *   * INTERFACE PARITY IS THE ACCEPTANCE CONTRACT (AAP 0.8.1), and the legacy signature is
+   *     `public boolean function isCurrent()` with no arguments. Requiring an argument removed the
+   *     legacy call form from the ported surface, so a reviewer diffing the two surfaces method by
+   *     method found a method that could no longer be called the way the source calls it. Keeping
+   *     the zero-argument form callable costs nothing and restores that parity.
+   *   * TRANSFORMATION RULE T6 IS NOT WEAKENED, because the default is `this.now()` - a collaborator
+   *     handed to the constructor by the code that built this entity - and not `Date.now()`, not a
+   *     module clock and not a request scope reached through an accessor. That is the same source
+   *     `isExpired()` [L83] and `getCurrentFlag()` [L137] read, and those two keep their
+   *     zero-argument legacy signatures for precisely this reason. Nothing here reads an ambient
+   *     clock, with or without an argument.
+   *
+   * WHAT DOES NOT CHANGE: the widening BUDGET. This is still the sole spend of the project's
+   * entity-layer signature-widening budget, and it is still EXHAUSTED here - no further widening may
+   * be spent anywhere in `src/domain/entities/**`. `Promotion.getCurrentFlag`
+   * [model/entity/Promotion.cfc:L83], `getCurrentPromotionPeriodFlag` [L95],
+   * `getCurrentPromotionCodeFlag` [L109] and `PromotionCode.getCurrentFlag`
+   * [model/entity/PromotionCode.cfc:L85] all keep their zero-argument signatures unchanged.
+   *
+   * WHAT A CALLER SHOULD STILL DO: pass the instant. These boundaries genuinely need pinning - the
+   * start bound is INCLUSIVE, the end bound is EXCLUSIVE, and the end bound DISAGREES with
+   * `getCurrentFlag()` - so every suite in this project supplies one explicitly, and a caller that
+   * wants a reproducible answer must too. The default exists for parity with the legacy call form,
+   * not as the recommended way to ask the question.
    *
    * The comparison is on `getTime()`, epoch milliseconds and therefore timezone independent, and
    * the instant is captured once and reused for both comparisons, reproducing
    *   `var currentDateTime = now();`
    * at L79 - which matters because `getCurrentFlag()` does not.
    *
-   * @param now The instant to evaluate against. Required, with no default, so the caller always
-   *   states which instant it means.
+   * @param now The instant to evaluate against. Optional: omitted, the entity's injected clock is
+   *   read ONCE, which is what the legacy zero-argument form did at
+   *   [model/entity/PromotionPeriod.cfc:L79]. Supply it to make the answer reproducible.
    * @throws Error when either bound is `undefined`, reproducing the L80 defect above.
    */
-  isCurrent(now: Date): boolean {
+  isCurrent(now?: Date): boolean {
     // Bound to a local named after the legacy local: `var currentDateTime = now();` at L79 captures
-    // the instant ONCE and reuses it for both comparisons, which the parameter reproduces for free.
-    // Contrast `getCurrentFlag()` below, which performs TWO separate textual `now()` reads at L140.
-    const currentDateTime: Date = now;
+    // the instant ONCE and reuses it for both comparisons - which an argument reproduces for free,
+    // and which the `??` below preserves on the defaulted path because the clock is read exactly
+    // once here rather than at each comparison. Contrast `getCurrentFlag()` below, which performs
+    // TWO separate textual `now()` reads at L140; that difference is a preserved legacy trait and
+    // must not be normalised away by routing either method through the other.
+    const currentDateTime: Date = now ?? this.now();
 
     const startDateTime: Date | undefined = this.startDateTime;
     const endDateTime: Date | undefined = this.endDateTime;

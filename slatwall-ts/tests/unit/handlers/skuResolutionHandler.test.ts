@@ -440,6 +440,16 @@ const unreachableOptionLoading: ProductServiceCollaborators[7] = {
   getOption: unreachable('OptionLoadingCollaborator.getOption'),
 };
 
+/**
+ * The ninth `ProductService` collaborator, refused like the rest.
+ *
+ * It commits a repriced SKU set as ONE unit of work (F3) and this route reprices nothing, so reaching
+ * it would mean the SKU-resolution handler had grown a write path it must not have.
+ */
+const unreachableSkuBatchWrite: ProductServiceCollaborators[8] = {
+  saveMutatedSkus: unreachable('SkuBatchWriteCollaborator.saveMutatedSkus'),
+};
+
 // ===========================================================================
 // SECTION 5 - THE RECORDED CALL LOG AND THE SCRIPTED ANSWERS
 // ===========================================================================
@@ -575,6 +585,7 @@ class RecordingProductService extends ProductService {
       unreachableSubscriptionTermProvider,
       unreachableSkuCreation,
       unreachableOptionLoading,
+      unreachableSkuBatchWrite,
     );
   }
 
@@ -868,6 +879,10 @@ function createScopeDouble(script: ServiceScript, calls: RecordedCall[]): Reques
 
     get productFeedPort(): RequestScope['productFeedPort'] {
       throw new Error('RequestScope.productFeedPort was read; the feed is a different capability.');
+    },
+    // The AAP 0.4.2 argument of `generateProductFeed`, published beside the port it is passed to.
+    get feedCriteria(): RequestScope['feedCriteria'] {
+      throw new Error('RequestScope.feedCriteria was read; the feed is a different capability.');
     },
 
     getSalePriceDetailsForProductSkus: unreachable(
@@ -1404,34 +1419,33 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(populated.calls[0]?.args).toEqual(['', PRODUCT_ID]);
     });
 
-    it('\u2605\u2605\u2605 REFUSES an absent skuCode with 400 instead of forwarding it into a 500 (QA-I1)', async () => {
-      // \u2605\u2605\u2605 THIS ASSERTION IS INVERTED, AND THE INVERSION IS THE FIX. It used to read
-      // `toBe(200)` and assert `args` of `[undefined]`, under the comment: "`SkuService
-      // .getSkuBySkuCode(skuCode?)` is the authoritative contract. The repository may reproduce the
-      // legacy required-argument raise, but this transport must not narrow the service signature by
-      // manufacturing a boundary-only requiredness rule."
+    it('\u2605\u2605\u2605 FORWARDS an absent skuCode as absence, because the mapped surface declares it optional', async () => {
+      // \u2605\u2605\u2605 THIS ASSERTION HAS BEEN RESTORED, AND THE FULL ROUND TRIP IS RECORDED HERE SO
+      // NOBODY REPEATS IT. Its original form asserted exactly what it asserts again now, under the
+      // reasoning: "`SkuService.getSkuBySkuCode(skuCode?)` is the authoritative contract. The
+      // repository may reproduce the legacy required-argument raise, but this transport must not narrow
+      // the service signature by manufacturing a boundary-only requiredness rule."
       //
-      // QA testing exercised what that produced END TO END, which the old case could not see because
-      // its harness stubs the service: the omission reached the real `SkuService`, hit the reproduced
-      // raise from [model/dao/SkuDAO.cfc:L102], and came back to the caller as an opaque **500**. A
-      // well-formed HTTP request must not be able to do that - the caller cannot tell a mistake it can
-      // fix from a fault it cannot, and every such request inflates the 5xx rate operators alarm on.
+      // It was then INVERTED to require a 400, because QA testing exercised an omission end to end and
+      // saw it come back as an opaque 500 - a response a caller cannot act on, and one that inflates the
+      // 5xx rate operators alarm on. That observation is real and the motivation was sound.
       //
-      // \u2605 THE SERVICE SIGNATURE IS NOT NARROWED, WHICH IS WHY THE OLD REASONING STILL DESERVES
-      // ANSWERING RATHER THAN DELETING. `SkuService.getSkuBySkuCode(skuCode?: string)` still declares
-      // the parameter optional and still raises on absence for every IN-PROCESS caller; that parity is
-      // the acceptance contract and the service suite still pins it. What changed is only that a
-      // ROUTED caller's omission is answered HERE, so the raise is unreachable from HTTP rather than
-      // reachable and mishandled. A transport refusing a request that cannot be served is the
-      // boundary doing its job, not the boundary inventing a rule.
+      // \u2605\u2605 A CODE REVIEW REVERSED THE INVERSION, AND THAT RULING GOVERNS. The legacy declares
+      // `string skuCode` with NO `required` attribute [model/service/SkuService.cfc:L289] and the AAP's
+      // interface mapping carries that verbatim; making it required at the transport is a signature
+      // reshaping, and AAP 0.9.2 budgets exactly three of those with the requirement that any fourth be
+      // added to the mapping table WITH JUSTIFICATION before it is accepted. This one was not. Improving
+      // the answer a caller gets is a product decision about the SERVICE's contract, taken there and
+      // recorded in the plan - not something a boundary may decide for itself.
+      //
+      // So absence is forwarded as absence, and the service receives exactly what an in-process caller
+      // would give it.
       const missingSkuCode = createHarness();
       const response = await missingSkuCode.invoke(requestFor('getSkuBySkuCode'));
 
-      expect(response.statusCode).toBe(400);
-      expect(fieldPathsOf(response)).toContain('skuCode');
-      // \u2605 AND THE SERVICE WAS NEVER REACHED. The refusal happens before any wiring, so the request
-      // opens no composition root, no request scope and no connection.
-      expect(missingSkuCode.calls).toHaveLength(0);
+      expect(response.statusCode).toBe(200);
+      expect(missingSkuCode.calls).toHaveLength(1);
+      expect(missingSkuCode.calls[0]?.args).toEqual([undefined]);
     });
 
     it('\u2605\u2605 still ADMITS an EMPTY skuCode, because the legacy binds it and matches nothing', async () => {
@@ -1478,18 +1492,17 @@ describe('the SKU resolution Lambda entry point', () => {
         apiGatewayEvent({ query: { operation: 'getSkuBySkuCode', skucode: SERVABLE_SKU_CODE } }),
       );
 
-      // \u2605 THE STATUS IS UNCHANGED AND THE FIELD PATH MOVED, BECAUSE `skuCode` IS NOW REQUIRED
-      // (QA-I1). `validateInvocation` runs ahead of the closed-parameter-set check, so a lower-cased
-      // `skucode` is now caught as the ABSENCE of `skuCode` rather than as the PRESENCE of an
-      // unpublished key. Both are 400, and the new path is the more actionable of the two: it names
-      // the parameter the caller meant to send. The unpublished-key path is still asserted by the case
-      // above, which supplies a VALID `skuCode` alongside its unexpected key and therefore reaches the
-      // closed-set check.
+      // \u2605 THE STATUS IS UNCHANGED AND THE FIELD PATH IS THE CLOSED-SET ONE AGAIN, because `skuCode`
+      // is optional once more (the reshaping that briefly made it required was reversed - see the
+      // forwarding case above). `validateInvocation` runs ahead of the closed-parameter-set check and
+      // now ADMITS this request, so the lower-cased `skucode` is caught where it belongs: as the
+      // PRESENCE of a key this operation does not publish. Still a 400, and still refused rather than
+      // silently dropped.
       //
       // What this case is really about is UNCHANGED and still asserted: the caller's own misspelling is
       // not echoed back, and no correction is guessed at.
       expect(response.statusCode).toBe(400);
-      expect(fieldPathsOf(response)).toContain('skuCode');
+      expect(fieldPathsOf(response)).toContain('queryStringParameters');
       expect(response.body).not.toContain('skucode');
     });
 
@@ -1751,12 +1764,12 @@ describe('the SKU resolution Lambda entry point', () => {
       const response = await createHarness().invoke(servableRequest());
 
       expect(response.statusCode).toBe(200);
-      // ★ AND A THIRD JOINED THEM FOR QA-I4 - `nosniff`, declared once in the shared builder alongside
-      // the content type it qualifies. Still an EXACT set.
+      // ★ A THIRD BRIEFLY JOINED THEM - `nosniff` - and a code review withdrew it as an HTTP semantic
+      // the ported system never had and the AAP never prescribed (0.8.1). Still an EXACT set, which is
+      // what keeps it withdrawn.
       expect(response.headers).toEqual({
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
-        'x-content-type-options': 'nosniff',
       });
     });
 
@@ -2343,7 +2356,6 @@ describe('the SKU resolution Lambda entry point', () => {
         expect(Object.keys(response.headers ?? {}).sort()).toEqual([
           'cache-control',
           'content-type',
-          'x-content-type-options',
         ]);
       }
 
@@ -2779,7 +2791,6 @@ describe('the admission gate (NET-NEW)', () => {
     expect(Object.keys(response.headers ?? {}).map((name) => name.toLowerCase())).toEqual([
       'content-type',
       'cache-control',
-      'x-content-type-options',
     ]);
   });
 

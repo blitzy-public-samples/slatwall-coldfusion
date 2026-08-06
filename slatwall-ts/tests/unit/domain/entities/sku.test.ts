@@ -125,7 +125,7 @@
 //
 //   Exactly THREE deliberate divergences exist across the whole project, and the
 //   domain layer owns only (c) — the unobservable entity-memo carve-out.
-//   (a) is the un-`var`'d `discountAmount` [model/service/PromotionService.cfc:L1007, L1009]
+//   (a) is the un-`var`'d `discountAmount` [model/service/PromotionService.cfc:L1007, L1009, L1014]
 //   and (b) is the `amountOff` raw-float gap [model/service/PromotionService.cfc:L998];
 //   both are sibling-owned by `src/services`. Divergence (c) has three members:
 //   defects 17 and 18, asserted HERE, and defect 19, asserted in
@@ -198,6 +198,8 @@ import { PriceGroup } from '../../../../src/domain/entities/priceGroup.js';
 import { PriceGroupRate } from '../../../../src/domain/entities/priceGroupRate.js';
 import { ProductType } from '../../../../src/domain/entities/productType.js';
 import { Promotion } from '../../../../src/domain/entities/promotion.js';
+import { PromotionQualifier } from '../../../../src/domain/entities/promotionQualifier.js';
+import { PromotionReward } from '../../../../src/domain/entities/promotionReward.js';
 import { Sku } from '../../../../src/domain/entities/sku.js';
 import { SkuCurrency } from '../../../../src/domain/entities/skuCurrency.js';
 import { toCurrencyCode } from '../../../../src/domain/valueObjects/currencyCode.js';
@@ -3996,7 +3998,7 @@ describe('Sku memo isolation — every memo is request-scoped (A2)', () => {
     //   2. `RoundingRuleService.variables.roundingRuleDetails`
     //      [model/service/RoundingRuleService.cfc:L67-L77] — service tier.
     //   3. The un-`var`'d `discountAmount`
-    //      [model/service/PromotionService.cfc:L1007, L1009] — divergence (a),
+    //      [model/service/PromotionService.cfc:L1007, L1009, L1014] — divergence (a),
     //      sibling-owned by `src/services`.
     //   4. Every entity memo, including `variables.currencyDetails`,
     //      `variables.livePrice` and `variables.brandName` — owned here and by
@@ -4368,11 +4370,15 @@ describe('Sku association and structural parity', () => {
     expect(product.getSkus()).toEqual([]);
   });
 
-  it('★ every association comparison is by PRIMARY KEY only', () => {
-    // `hasOption`, `hasSkuCurrency`, `hasPriceGroupRate` and the four promotion
-    // predicates all compare identifiers. A structurally identical collaborator
-    // carrying a different id is a different row; two instances sharing an id are
-    // the same row.
+  it('★ every association comparison is by PRIMARY KEY only — asserted here for hasOption', () => {
+    // ★★★ THE CLAIM WAS WIDER THAN THE EVIDENCE, AND A CODE REVIEW SAID SO. This case used to open
+    // "`hasOption`, `hasSkuCurrency`, `hasPriceGroupRate` and the four promotion predicates all
+    // compare identifiers" and then exercise `hasOption` ALONE - so six of the seven probes were
+    // named but never called. The sentence now describes what this case does, and the other six are
+    // asserted in `the seven association probes` block below, each against a real far side.
+    //
+    // A structurally identical collaborator carrying a different id is a different row; two instances
+    // sharing an id are the same row.
     const sku = makeSkuFixture();
     const mine = requireOption(sku.getOptions(), 0);
     const sameRow = makeOptionDouble(
@@ -4394,6 +4400,148 @@ describe('Sku association and structural parity', () => {
     expect(sameRow).not.toBe(mine);
     expect(sku.hasOption(sameRow)).toBe(true);
     expect(sku.hasOption(foreign)).toBe(false);
+  });
+
+  it('★★ the EIGHT promotion delegations wire and unwire BOTH sides, per family', () => {
+    // ★★★ NONE OF THESE EIGHT WAS EVER CALLED, which a code review measured: the four include/exclude
+    // pairs were covered only by structural claims elsewhere in this file, so an inverted add/remove,
+    // a delegation pointed at the wrong family, or one that pushed onto a local array instead of
+    // reaching the far side would all have passed. Each is a single-line delegation to the OWNING
+    // side [model/entity/Sku.cfc:L672-L701], and each far side mutates BOTH collections
+    // [model/entity/PromotionReward.cfc:L258-L275, PromotionQualifier.cfc:L301-L306].
+    const sku = makeSkuFixture({ skuID: 'sku-1' });
+    const reward = new PromotionReward({ promotionRewardID: 'reward-1' });
+    const excludedReward = new PromotionReward({ promotionRewardID: 'reward-2' });
+    const qualifier = new PromotionQualifier({ promotionQualifierID: 'qualifier-1' });
+    const excludedQualifier = new PromotionQualifier({ promotionQualifierID: 'qualifier-2' });
+
+    sku.addPromotionReward(reward);
+    sku.addPromotionRewardExclusion(excludedReward);
+    sku.addPromotionQualifier(qualifier);
+    sku.addPromotionQualifierExclusion(excludedQualifier);
+
+    // Both sides of all four links, and NO cross-contamination between the include and exclude
+    // collections of either family - `SwPromoRewardSku` versus `SwPromoRewardExclSku` [L82, L83] and
+    // `SwPromoQualSku` versus `SwPromoQualExclSku` [L84, L85] are different tables.
+    expect(sku.getPromotionRewards()).toEqual([reward]);
+    expect(reward.getSkus()).toEqual([sku]);
+    expect(sku.getPromotionRewardExclusions()).toEqual([excludedReward]);
+    expect(excludedReward.getExcludedSkus()).toEqual([sku]);
+    expect(excludedReward.getSkus()).toHaveLength(0);
+
+    expect(sku.getPromotionQualifiers()).toEqual([qualifier]);
+    expect(qualifier.getSkus()).toEqual([sku]);
+    expect(sku.getPromotionQualifierExclusions()).toEqual([excludedQualifier]);
+    expect(excludedQualifier.getExcludedSkus()).toEqual([sku]);
+    expect(excludedQualifier.getSkus()).toHaveLength(0);
+
+    sku.removePromotionReward(reward);
+    sku.removePromotionRewardExclusion(excludedReward);
+    sku.removePromotionQualifier(qualifier);
+    sku.removePromotionQualifierExclusion(excludedQualifier);
+
+    expect(sku.getPromotionRewards()).toHaveLength(0);
+    expect(reward.getSkus()).toHaveLength(0);
+    expect(sku.getPromotionRewardExclusions()).toHaveLength(0);
+    expect(excludedReward.getExcludedSkus()).toHaveLength(0);
+    expect(sku.getPromotionQualifiers()).toHaveLength(0);
+    expect(qualifier.getSkus()).toHaveLength(0);
+    expect(sku.getPromotionQualifierExclusions()).toHaveLength(0);
+    expect(excludedQualifier.getExcludedSkus()).toHaveLength(0);
+  });
+
+  it('★★ a SECOND add is a no-op for a saved sku, and a NEW sku is admitted twice', () => {
+    // Guard `if(sku.isNew() or !hasSku(sku))` on the far side: a saved sku is compared by identifier,
+    // so the link table cannot acquire a duplicate row; an unsaved one short-circuits the guard and IS
+    // appended twice. Both halves are legacy behaviour and both are pinned, so neither an added
+    // `includes` check nor a dropped guard can pass.
+    const saved = makeSkuFixture({ skuID: 'sku-1' });
+    const reward = new PromotionReward({ promotionRewardID: 'reward-1' });
+
+    saved.addPromotionReward(reward);
+    saved.addPromotionReward(reward);
+
+    expect(reward.getSkus()).toHaveLength(1);
+    expect(saved.getPromotionRewards()).toHaveLength(1);
+
+    const draft = makeSkuFixture({ skuID: 'sku-draft', isNew: true });
+    const otherReward = new PromotionReward({ promotionRewardID: 'reward-2' });
+
+    expect(draft.isNew()).toBe(true);
+
+    draft.addPromotionReward(otherReward);
+    draft.addPromotionReward(otherReward);
+
+    expect(otherReward.getSkus()).toHaveLength(2);
+    // The SKU side is guarded by `sku.hasPromotionReward(reward)`, which compares the reward's own
+    // identifier, so it holds one.
+    expect(draft.getPromotionRewards()).toHaveLength(1);
+  });
+
+  it('★★ the seven association probes each compare their OWN collection, by identifier', () => {
+    // The six probes the primary-key case named but never called, plus `hasOption` again for
+    // completeness - each against a real far side, each with a same-key twin and a foreign instance,
+    // and each asserted NOT to answer for a sibling collection.
+    const sku = makeSkuFixture({ skuID: 'sku-1', skuCurrencies: [], priceGroupRates: [] });
+
+    const currency = makeSkuCurrencyDouble(
+      'sku-currency-1',
+      'USD',
+      undefined,
+      undefined,
+      undefined,
+    );
+    const rate = new PriceGroupRate({ priceGroupRateID: 'rate-1' });
+    const reward = new PromotionReward({ promotionRewardID: 'reward-1' });
+    const excludedReward = new PromotionReward({ promotionRewardID: 'reward-2' });
+    const qualifier = new PromotionQualifier({ promotionQualifierID: 'qualifier-1' });
+    const excludedQualifier = new PromotionQualifier({ promotionQualifierID: 'qualifier-2' });
+
+    // Hydration-shaped wiring for the two collections with no add/remove pair on this entity, and
+    // delegation-shaped wiring for the four promotion families.
+    sku.getSkuCurrencies().push(currency);
+    sku.getPriceGroupRates().push(rate);
+    sku.addPromotionReward(reward);
+    sku.addPromotionRewardExclusion(excludedReward);
+    sku.addPromotionQualifier(qualifier);
+    sku.addPromotionQualifierExclusion(excludedQualifier);
+
+    // SAME-KEY TWINS are the same row, because a repository read produces a fresh instance per read.
+    expect(
+      sku.hasSkuCurrency(
+        makeSkuCurrencyDouble('sku-currency-1', 'EUR', undefined, undefined, undefined),
+      ),
+    ).toBe(true);
+    expect(sku.hasPriceGroupRate(new PriceGroupRate({ priceGroupRateID: 'rate-1' }))).toBe(true);
+    expect(sku.hasPromotionReward(new PromotionReward({ promotionRewardID: 'reward-1' }))).toBe(
+      true,
+    );
+    expect(
+      sku.hasPromotionRewardExclusion(new PromotionReward({ promotionRewardID: 'reward-2' })),
+    ).toBe(true);
+    expect(
+      sku.hasPromotionQualifier(new PromotionQualifier({ promotionQualifierID: 'qualifier-1' })),
+    ).toBe(true);
+    expect(
+      sku.hasPromotionQualifierExclusion(
+        new PromotionQualifier({ promotionQualifierID: 'qualifier-2' }),
+      ),
+    ).toBe(true);
+
+    // A DIFFERENT key is a different row.
+    expect(
+      sku.hasSkuCurrency(
+        makeSkuCurrencyDouble('sku-currency-9', 'USD', undefined, undefined, undefined),
+      ),
+    ).toBe(false);
+    expect(sku.hasPriceGroupRate(new PriceGroupRate({ priceGroupRateID: 'rate-9' }))).toBe(false);
+
+    // AND EACH PROBE READS ONE COLLECTION. Crossing the include and exclude members over is the
+    // mistake a shared helper makes, so it is asserted in both directions per family.
+    expect(sku.hasPromotionReward(excludedReward)).toBe(false);
+    expect(sku.hasPromotionRewardExclusion(reward)).toBe(false);
+    expect(sku.hasPromotionQualifier(excludedQualifier)).toBe(false);
+    expect(sku.hasPromotionQualifierExclusion(qualifier)).toBe(false);
   });
 
   it('★ THE LIVE-ARRAY RULE IS ABSOLUTE — association accessors do NOT return defensive copies', () => {
@@ -4464,6 +4612,32 @@ describe('Sku association and structural parity', () => {
 
     // `activeFlag` [L53] DOES carry `default="1"`, unlike most siblings.
     expect(new Sku({ skuID: 'flag-sku' }).getActiveFlag()).toBe(true);
+  });
+
+  it('★★ carries remoteID through hydration, present and absent, as its own persisted column', () => {
+    // ★★★ THIS COLUMN HAD NO NON-NULL BEHAVIOURAL COVERAGE, which a code review measured: every
+    // hand-built double in this suite passes `remoteID: undefined`, and the repository suite
+    // hydrated it as `null` in every row - so nothing anywhere read a populated one. It is the
+    // external-system correlation column [model/entity/Sku.cfc:L90], the one value an ERP or a
+    // legacy Slatwall installation uses to recognise a row it already knows about, so an accessor
+    // wired to the wrong field or a hydration that dropped it would break reconciliation silently
+    // while every test stayed green.
+    const correlated = new Sku({ skuID: 'sku-1', remoteID: 'legacy-erp-SKU-00417' });
+    const uncorrelated = new Sku({ skuID: 'sku-2' });
+
+    expect(correlated.getRemoteID()).toBe('legacy-erp-SKU-00417');
+    expect(uncorrelated.getRemoteID()).toBeUndefined();
+
+    // The fixture's own default is a populated one, so the fixture path is covered too rather than
+    // being assumed equivalent to a hand-built double.
+    expect(makeSkuFixture({ skuID: 'sku-3' }).getRemoteID()).toBe('remote-test-sku');
+
+    // ABSENCE IS EXPLICIT, not defaulted: the column is nullable with no `default` attribute, so an
+    // absent value must stay absent rather than becoming '' or the sku's own identifier.
+    expect(makeSkuFixture({ skuID: 'sku-4', remoteID: undefined }).getRemoteID()).toBeUndefined();
+
+    // And the EMPTY STRING is preserved as the distinct third state a persisted blank produces.
+    expect(new Sku({ skuID: 'sku-5', remoteID: '' }).getRemoteID()).toBe('');
   });
 
   it('★ THE FOUR DEPRECATED METHODS ARE PORTED, because deprecated is not absent (C4)', () => {
@@ -5409,5 +5583,60 @@ describe('Sku.addSkuCurrency / removeSkuCurrency — the inverse pair [model/ent
     // either signature. `any` is refined, never widened — that is not a parity break.
     expect(arityOf(sku, 'addSkuCurrency')).toBe(1);
     expect(arityOf(sku, 'removeSkuCurrency')).toBe(1);
+  });
+});
+
+// ===========================================================================
+// The three audit/remote columns that carried no case of their own
+// ===========================================================================
+//
+// ★★★ ADDED BECAUSE A MECHANICAL METHOD INVENTORY FOUND THEM UNNAMED, and that is the whole point of
+// having one. A code review reported that the traceability map "proves module-to-suite presence, not
+// every public method". Deriving the inventory from source rather than curating it by hand reduced the
+// real gap on this entity to exactly three names - `getRemoteID`, `getCreatedByAccountID` and
+// `getModifiedByAccountID` - every one of which is a persisted column this port reads and therefore
+// owes an assertion, however simple.
+//
+// They are grouped rather than split across three describes because they share one contract: each is a
+// nullable column, each is read and never computed, and two of them are an out-of-scope `Account`
+// association deliberately collapsed to its foreign key so that no account entity enters this slice.
+// Gate `A24` now fails if any public method of a ported entity goes unnamed again.
+
+describe('Sku: the audit and remote-integration columns', () => {
+  it('reads remoteID, and reports its absence as undefined rather than as an empty string', () => {
+    // [model/entity/Sku.cfc:L90]. The column is nullable, so `undefined` is the honest absent value -
+    // coercing it to `''` would make an unset external identifier indistinguishable from a blank one.
+    // Constructed directly rather than through `makeSkuFixture`, which pins these columns to fixed
+    // values so that the AND-of-EXISTS fixtures stay comparable. A case about absence needs to be able
+    // to OMIT a column, which the fixture deliberately does not let it do.
+    expect(new Sku({ skuID: 'remote-1', remoteID: 'erp-sku-40119' }).getRemoteID()).toBe(
+      'erp-sku-40119',
+    );
+    expect(new Sku({ skuID: 'remote-2' }).getRemoteID()).toBeUndefined();
+  });
+
+  it('★★ collapses both audit Account associations to their foreign keys, never to an entity', () => {
+    // [model/entity/Sku.cfc:L94, L96]. `Account` is out of scope, so the association is preserved as an
+    // opaque identifier: the schema contract stays intact and no account behaviour enters this port.
+    const stamped = new Sku({
+      skuID: 'stamped-1',
+      createdByAccountID: 'acct-created-1',
+      modifiedByAccountID: 'acct-modified-2',
+    });
+
+    expect(stamped.getCreatedByAccountID()).toBe('acct-created-1');
+    expect(stamped.getModifiedByAccountID()).toBe('acct-modified-2');
+
+    // Both are plain strings. An accessor that returned an object here would mean an out-of-scope
+    // entity had been hydrated into this slice.
+    expect(typeof stamped.getCreatedByAccountID()).toBe('string');
+    expect(typeof stamped.getModifiedByAccountID()).toBe('string');
+  });
+
+  it('and leaves both audit keys undefined on a row that was never stamped', () => {
+    const unstamped = new Sku({ skuID: 'unstamped-1' });
+
+    expect(unstamped.getCreatedByAccountID()).toBeUndefined();
+    expect(unstamped.getModifiedByAccountID()).toBeUndefined();
   });
 });

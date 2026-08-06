@@ -435,9 +435,11 @@ describe('PriceGroup priceGroupIDPath - route A, the lazy memoized getter', () =
   it('computes a three-element root-first path for a grandchild', () => {
     // The hierarchy is built shallow and ACYCLIC on purpose, which keeps this test about ordering and
     // contents rather than about acyclicity. A cycle is a separate question and is asserted in its own
-    // block below: production REFUSES one now - `setParentPriceGroup` will not close a cycle and the
-    // shared walk will not produce a path from one - the single documented divergence from the
-    // non-ported framework walk, reasoned in full on `buildIdPathList` in
+    // block below, where production ACCEPTS one: `setParentPriceGroup` assigns whatever it is handed,
+    // exactly as [model/entity/PriceGroup.cfc:L110-L115] does, and the shared walk carries no visited
+    // set because [org/Hibachi/HibachiEntity.cfc:L314-L321] carries none either. This comment once
+    // claimed the opposite - a refusal, described as a documented divergence - and outlived the guard
+    // it described; the reasoning for the removal is on `buildIdPathList` in
     // src/domain/valueObjects/materializedIdPath.ts.
     const rootPriceGroup = aPriceGroup({ priceGroupID: 'root' });
     const middlePriceGroup = aPriceGroup({
@@ -1933,11 +1935,19 @@ describe('PriceGroup.getParentPriceGroupOptions', () => {
     ]);
   });
 
-  it('compares by exact string equality, so a differently-cased value is not removed', () => {
-    // CFML parity [model/entity/PriceGroup.cfc:L97]: the legacy `==` on two strings is
-    // case-INsensitive, but `generator="uuid"` [model/entity/PriceGroup.cfc:L52] yields one
-    // canonical casing per row and both operands come from the same column family, so no case
-    // difference can arise in real data.
+  it('compares WITHOUT REGARD TO CASE, exactly as the legacy `==` on two strings does', () => {
+    // ★★ THIS CASE ASSERTED THE OPPOSITE UNTIL THIS REVISION, and its own comment named the
+    // reason it was wrong: "the legacy `==` on two strings is case-INsensitive". It then excused
+    // the divergence on the grounds that `generator="uuid"`
+    // [model/entity/PriceGroup.cfc:L52] yields one canonical casing, so no case difference can
+    // arise. That is an argument about which INPUTS occur, not about what the method does - and
+    // `parentPriceGroupOptionCandidates` is not a uuid column at all: it is the rendered option
+    // list, whose values arrive from `getPropertyOptions` [L95] and travel through form state.
+    //
+    // The consequence of the exact comparison was the single outcome [L96-L101] exists to
+    // prevent: THIS price group left in its own parent-option list, so the admin form offered a
+    // group as its own parent. The first matching row is still the only one removed, so the
+    // duplicate below survives - that half of the legacy contract is unchanged.
     const priceGroup = aPriceGroup({
       priceGroupID: 'abc123',
       parentPriceGroupOptionCandidates: [
@@ -1946,7 +1956,7 @@ describe('PriceGroup.getParentPriceGroupOptions', () => {
       ],
     });
 
-    expect(priceGroup.getParentPriceGroupOptions()).toEqual([{ name: 'Upper', value: 'ABC123' }]);
+    expect(priceGroup.getParentPriceGroupOptions()).toEqual([{ name: 'Exact', value: 'abc123' }]);
   });
 
   it('is TOTAL: an empty candidate list yields an empty result rather than throwing', () => {

@@ -44,11 +44,18 @@
 //   because no ticket governs this module.
 //
 // HOW THE SUBJECT IS DRIVEN
-//   Through the two seams the module exports for exactly this purpose:
-//   `withSink()` redirects emission into an array, and `withLevel()` pins the
-//   threshold so no case depends on the ambient `LOG_LEVEL`. Neither
-//   `process.stdout` nor `process.env` is patched by any case here - which is
-//   also why [tests/setup.ts] deliberately never silences stdout.
+//   Through the seams the module exports for exactly this purpose: `withSink()`
+//   redirects emission into an array, `withLevel()` pins the threshold on one
+//   logger, and `adoptConfiguredThreshold()` moves the process-wide one - the
+//   last of these restored to its default by an `afterEach` in the one block that
+//   uses it. `process.stdout` is patched by no case here, which is also why
+//   [tests/setup.ts] deliberately never silences stdout.
+//
+//   `process.env` IS SET BY TWO CASES, THROUGH `vi.stubEnv`, AND BOTH SET IT TO
+//   PROVE IT IS IGNORED. The module reads no environment variable at all; its
+//   threshold is handed to it by `src/handlers/bootstrap.ts` from the value
+//   `src/lib/config.ts` validated. Those two cases assert exactly that, so they
+//   depend on the variable's IRRELEVANCE rather than on its content.
 //
 // NO USER RULES WERE PROVIDED
 //   The project rules source returns exactly that, and the plan records it
@@ -56,7 +63,7 @@
 //   rule, and the absence is not treated as licence to assert less.
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { LogContext } from '../../../src/lib/logger.js';
 import { logger } from '../../../src/lib/logger.js';
@@ -77,9 +84,23 @@ const UNSAFE_ERROR_NAME = '[unsafe name]';
  */
 const PLANTED_SECRET = 'PLANTED-CREDENTIAL-8f3c2a91b47e';
 
-/** Planted personal data, of the kinds the never-log policy names by key. */
+/**
+ * Planted personal data, of the kinds the never-log policy names by key.
+ *
+ * BOTH VALUES ARE STRUCTURALLY UNASSIGNABLE, which is the point. The address uses the `.test`
+ * top-level domain reserved by RFC 2606 §2, so it can never resolve to a real mailbox.
+ *
+ * The social-security number is invalid in all THREE of its groups at once, so it cannot ever have
+ * been issued to a person: the SSA has never assigned an area number in the 900-999 range, has never
+ * assigned the group number `00`, and has never assigned the serial number `0000`. An SSN that looks
+ * plausible would be a worse fixture, not a better one - planting a number that a real person could
+ * hold makes this file a place personal data lives, and the assertions below do not care whether the
+ * digits are realistic. They care only that the string is long enough to be unmistakable, unique
+ * enough that a substring search cannot collide, and free of regex metacharacters so that neither a
+ * false positive nor a false negative is possible.
+ */
 const PLANTED_EMAIL = 'planted.person@example-customer.test';
-const PLANTED_SSN = '078-05-1120';
+const PLANTED_SSN = '900-00-0000';
 
 /**
  * One emission, in both the form the sink received and the form a consumer
@@ -1034,6 +1055,11 @@ describe('the context surface fails closed for an unauthorized key', () => {
       fieldPaths: ['body/selectedOptions', 'body/productID'],
       publishedIssueCount: 2,
       issueCount: 9,
+      // ★ EMITTED BY `invalidRequestResponse` IN PLACE OF ITS FIELD PATHS, after a security review
+      // (MAJOR, CWE-209/CWE-532) established that the paths that arm published could be assembled from
+      // a caller's own key names. It is in this row set for the same reason every other member is: if
+      // the fail-closed rule redacted it, the one line reporting a refused request would go quiet.
+      fieldIssueCount: 2,
       thrownShape: 'object',
       errorCode: 'ER_ACCESS_DENIED_ERROR',
       invalidRequestReason: 'missingBody',
@@ -2026,60 +2052,46 @@ describe('the redaction record cannot be written through a prototype accessor', 
 });
 
 // ---------------------------------------------------------------------------
-// ★★ An unrecognized LOG_LEVEL is REPORTED rather than silently coerced (QA-I7)
+// ★★ THE THRESHOLD ARRIVES FROM VALIDATED CONFIGURATION, AND NO ENVIRONMENT VARIABLE IS READ HERE
 //
-// QA testing observed that `LOG_LEVEL=bogus` is silently coerced to `info` while every other
-// malformed configuration key fails closed with a `ConfigurationError` from `src/lib/config.ts`.
+// QA testing once observed that `LOG_LEVEL=bogus` was silently coerced to `info` while every other
+// malformed configuration key failed closed with a `ConfigurationError` from `src/lib/config.ts`
+// (QA-I7). The first remedy announced the coercion FROM THIS MODULE, which required this module to
+// read `LOG_LEVEL` out of `process.env` - and a later review found two faults in that arrangement:
 //
-// ⚠ THE OBVIOUS FIX WOULD BE A REGRESSION, AND THESE CASES PIN BOTH HALVES OF WHY. Making this key
-// fail closed too would contradict a structural requirement, not a preference: `config.ts` must abort
-// on an unset or unrecognized dialect, and it REPORTS that abort THROUGH this module. A logger that
-// threw on its own misconfiguration could not report anybody else's. So what was fixed is the
-// SILENCE, and the cases below assert that the service still serves - the fallback is intact, every
-// ordinary line still comes out - while the coercion now announces itself once.
+//   1. It made `src/lib/config.ts` a liar. That module documents itself as the one place this service
+//      reads its process environment, and this one quietly was a second reader.
+//   2. The announcement ECHOED the rejected token. Anything matching `/^[A-Za-z0-9_.-]{1,32}$/` was
+//      published verbatim and retained in a process-global `Set` for the life of the container -
+//      which is exactly the shape of an access key, a short bearer token or a password pasted into
+//      the wrong variable. The shape check was authored as a safeguard and was the vulnerability: it
+//      decided WHETHER to publish an operator secret rather than never publishing one.
 //
-// ★ THIS IS THE ONE BLOCK IN THE FILE THAT PATCHES `process.env`, AND THE HEADER'S CLAIM THAT NO CASE
-// DOES SO IS AMENDED HERE RATHER THAN LEFT STANDING. It has to: the behaviour under test IS the
-// reading of an environment variable, and `withLevel()` - the seam every other case uses - deliberately
-// suppresses the report, because a pinned threshold means `LOG_LEVEL` is not in force and there is
-// nothing to report. Every case restores the previous value in a `finally`, and each uses a DISTINCT
-// bogus value so that the module's once-per-value suppression cannot make one case depend on another
-// having run. That per-value keying is what keeps this block order-independent like the rest.
+// Both are fixed by relocation rather than by removal of the feature. `config.ts` resolves the key
+// LENIENTLY - so a mistyped level still cannot abort a cold start, which was the whole reason the
+// original could not simply fail closed - classifies the outcome into one of three fixed tokens and
+// DISCARDS the raw value; `src/handlers/bootstrap.ts` adopts the resolved threshold into this module
+// and announces a coerced one once per container from that classifier. The cases below assert this
+// module's half: it reads nothing, it accepts a threshold, and there is no longer any path from an
+// environment value to an emitted line.
+//
+// ★ THE HEADER'S CLAIM THAT NO CASE PATCHES `process.env` NOW HOLDS FOR EVERY CASE IN THE FILE,
+// including these. Two cases below DO set the variable - through `vi.stubEnv`, which
+// `vitest.config.ts` unstubs automatically - but they set it in order to prove it is IGNORED, which
+// is the opposite of depending on it. The block that used to mutate `process.env` directly, with a
+// `finally` to restore it and a distinct bogus value per case to work around a process-global
+// suppression set, is gone along with the set.
 // ---------------------------------------------------------------------------
 
-describe('an unrecognized LOG_LEVEL', () => {
+describe('the adopted emission threshold', () => {
   /**
-   * Run `work` with `LOG_LEVEL` set to `value`, or deleted when `value` is `undefined`, and restore
-   * whatever was there before - including its absence.
+   * Restore the module-scope threshold after every case, so no case can depend on - or disturb -
+   * another. `vitest.config.ts` sets `isolate: true`, so an adopted value cannot cross a FILE
+   * boundary; this is the within-file half of the same guarantee.
    */
-  function withLogLevel<T>(value: string | undefined, work: () => T): T {
-    const previous = process.env['LOG_LEVEL'];
-
-    if (value === undefined) {
-      delete process.env['LOG_LEVEL'];
-    } else {
-      process.env['LOG_LEVEL'] = value;
-    }
-
-    try {
-      return work();
-    } finally {
-      if (previous === undefined) {
-        delete process.env['LOG_LEVEL'];
-      } else {
-        process.env['LOG_LEVEL'] = previous;
-      }
-    }
-  }
-
-  /** Emit one `error` entry with NO pinned level, so `LOG_LEVEL` is actually consulted. */
-  function emitUnpinned(level: string | undefined, message = 'operation failed'): string[] {
-    return withLogLevel(level, (): string[] => {
-      const lines: string[] = [];
-      logger.withSink((line) => lines.push(line)).error(message);
-      return lines;
-    });
-  }
+  afterEach(() => {
+    logger.adoptConfiguredThreshold(undefined);
+  });
 
   /** Parse a captured line into the record its consumer sees. */
   function parseLine(line: string): Record<string, unknown> {
@@ -2092,134 +2104,133 @@ describe('an unrecognized LOG_LEVEL', () => {
     return parsed as Record<string, unknown>;
   }
 
-  it('★★★ ANNOUNCES the coercion, and still emits the entry that discovered it', () => {
-    const lines = emitUnpinned('bogus-qa-i7-announce');
+  /** Emit one entry at `level` with NO pinned threshold, so the adopted one is what decides. */
+  function emitUnpinned(level: 'debug' | 'info' | 'warn' | 'error'): string[] {
+    const lines: string[] = [];
+    logger.withSink((line) => lines.push(line))[level]('operation completed');
+    return lines;
+  }
 
-    // Two lines: the report, then the ordinary entry. The report comes FIRST because it is issued
-    // before the severity filter, so it is emitted even when the entry that triggered it is dropped.
-    expect(lines).toHaveLength(2);
+  it('★★★ IGNORES `LOG_LEVEL` IN THE ENVIRONMENT ENTIRELY', () => {
+    // The load-bearing assertion of the whole block. `debug` sits below the `info` floor, so if this
+    // module still read the variable the entry would come out. It must not: the only route from
+    // `LOG_LEVEL` to this module is `src/lib/config.ts` -> `src/handlers/bootstrap.ts` ->
+    // `adoptConfiguredThreshold`, and a bare environment variable travels none of it.
+    vi.stubEnv('LOG_LEVEL', 'debug');
 
-    const report = parseLine(lines[0] ?? '');
-
-    expect(report['level']).toBe('warn');
-    expect(String(report['message'])).toContain('LOG_LEVEL');
-    // The recognized vocabulary is named, so the report is actionable without a second lookup.
-    expect(String(report['message'])).toContain('debug, info, warn, error');
-    expect(report['context']).toStrictEqual({
-      configuredLogLevel: 'bogus-qa-i7-announce',
-      thresholdInForce: 'info',
-    });
-
-    // ★ AND THE SERVICE STILL SERVES. The entry that was being emitted came out unchanged - the
-    // fallback is intact, and reporting the misconfiguration did not become the misconfiguration.
-    expect(parseLine(lines[1] ?? '')['message']).toBe('operation failed');
+    expect(emitUnpinned('debug')).toHaveLength(0);
   });
 
-  it('★★ reports ONCE per process, not once per emission', () => {
-    const lines = withLogLevel('bogus-qa-i7-once', (): string[] => {
-      const captured: string[] = [];
-      const subject = logger.withSink((line) => captured.push(line));
-
-      subject.error('first');
-      subject.error('second');
-      subject.error('third');
-
-      return captured;
-    });
-
-    // Four, not six: one report plus three entries. Resolving the threshold happens on EVERY
-    // emission, so reporting on every emission would bury the stream this is meant to make readable.
-    expect(lines).toHaveLength(4);
-    expect(lines.filter((line) => line.includes('does not recognize'))).toHaveLength(1);
-    expect(lines.slice(1).map((line) => parseLine(line)['message'])).toStrictEqual([
-      'first',
-      'second',
-      'third',
-    ]);
+  it('emits at the built-in floor before anything has been adopted', () => {
+    // A process that fails during configuration resolution logs its own failure BEFORE any threshold
+    // could have been adopted. That path has to work, and it works at `info`.
+    expect(emitUnpinned('info')).toHaveLength(1);
+    expect(emitUnpinned('debug')).toHaveLength(0);
   });
 
-  it('★★ reports even when the emission that discovered it is FILTERED OUT', () => {
-    // `debug` is below the `info` fallback, so this entry is dropped - and the report must not be,
-    // because a misconfiguration discovered by a suppressed line is still a misconfiguration.
-    const lines = withLogLevel('bogus-qa-i7-filtered', (): string[] => {
-      const captured: string[] = [];
-      logger.withSink((line) => captured.push(line)).debug('a filtered entry');
-      return captured;
-    });
+  it('★★ lowers the floor when a `debug` threshold is adopted', () => {
+    logger.adoptConfiguredThreshold('debug');
+
+    expect(emitUnpinned('debug')).toHaveLength(1);
+  });
+
+  it('★★ raises the floor when an `error` threshold is adopted', () => {
+    logger.adoptConfiguredThreshold('error');
+
+    expect(emitUnpinned('warn')).toHaveLength(0);
+    expect(emitUnpinned('error')).toHaveLength(1);
+  });
+
+  it('restores the built-in floor when the adopted threshold is cleared', () => {
+    logger.adoptConfiguredThreshold('debug');
+    expect(emitUnpinned('debug')).toHaveLength(1);
+
+    logger.adoptConfiguredThreshold(undefined);
+
+    expect(emitUnpinned('debug')).toHaveLength(0);
+    expect(emitUnpinned('info')).toHaveLength(1);
+  });
+
+  it('reaches a sibling logger built BEFORE the adoption, because the threshold is resolved per emission', () => {
+    // The composition root adopts once, at the top of composition, while collaborators wired later
+    // hold loggers derived earlier. Resolving per emission rather than at construction is what makes
+    // one adoption apply to all of them.
+    const lines: string[] = [];
+    const subject = logger.withSink((line) => lines.push(line));
+
+    subject.debug('before');
+    logger.adoptConfiguredThreshold('debug');
+    subject.debug('after');
+
+    expect(lines.map((line) => parseLine(line)['message'])).toStrictEqual(['after']);
+  });
+
+  it('★★ is overridden by a PINNED threshold, which is the narrower statement', () => {
+    // `withLevel()` is a statement about ONE logger; an adopted threshold is a statement about the
+    // process. A suite that pins a level must not be at the mercy of whatever a composition adopted
+    // earlier in the same file.
+    logger.adoptConfiguredThreshold('error');
+
+    const lines: string[] = [];
+    logger
+      .withSink((line) => lines.push(line))
+      .withLevel('debug')
+      .debug('pinned wins');
 
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('does not recognize');
-    expect(lines[0]).not.toContain('a filtered entry');
   });
 
-  it('holds the echoed value to a shape, substituting anything that is not a level name', () => {
-    // The value is operator-supplied, and this module holds every value it emits to a policy rather
-    // than trusting its provenance. A newline would forge a second log record; a quote would break the
-    // document; a sentence would put free text on the stream through a diagnostic.
-    const lines = emitUnpinned(`verbose"\n{"level":"error","message":"forged ${PLANTED_SECRET}"}`);
-    const report = parseLine(lines[0] ?? '');
+  it('★★★ EMITS NOTHING AT ALL ABOUT A MISTYPED `LOG_LEVEL`, AND ECHOES NO PART OF IT', () => {
+    // ★★★ THE DISCLOSURE HALF, ASSERTED STRUCTURALLY. The predecessor of this case asserted that a
+    // hostile value was replaced with the literal `unsafeValue` on an emitted report line - which
+    // conceded that a report line existed and that a value-shaped decision governed it. There is no
+    // report line here to inspect, because this module never sees the value: `src/lib/config.ts`
+    // discards it at resolution. The strongest form of "it is not echoed" is that there is nothing
+    // to echo it into.
+    vi.stubEnv('LOG_LEVEL', `verbose"\n{"level":"error","message":"forged ${PLANTED_SECRET}"}`);
 
-    expect(report['context']).toStrictEqual({
-      configuredLogLevel: 'unsafeValue',
-      thresholdInForce: 'info',
-    });
+    const lines: string[] = [];
+    logger.withSink((line) => lines.push(line)).error('operation failed');
+
+    expect(lines).toHaveLength(1);
+    expect(parseLine(lines[0] ?? '')['message']).toBe('operation failed');
     expect(lines[0]).not.toContain(PLANTED_SECRET);
     expect(lines[0]).not.toContain('forged');
+    expect(lines[0]).not.toContain('verbose');
+    expect(lines[0]).not.toContain('LOG_LEVEL');
   });
 
-  it('says NOTHING for a recognized value, whatever its casing or padding', () => {
-    // `parseLogLevel` trims and folds case, so these are all recognized and none is a
-    // misconfiguration. A report here would be a false alarm on a correctly configured service.
-    for (const recognized of ['debug', 'INFO', ' warn ', 'Error']) {
-      const lines = emitUnpinned(recognized, 'operation failed');
+  it('★★ keeps the adoption seam OFF every derived logger and off every injected one', () => {
+    // The seam is declared on `ProcessLogger`, a supertype of `Logger` that only the exported binding
+    // has. Eight modules import a `Logger`; none of them should be able to move the process-wide
+    // threshold, and this asserts the shape that guarantees it rather than trusting the type alone.
+    const derivedFromSink: unknown = logger.withSink(() => undefined);
+    const derivedFromLevel: unknown = logger.withLevel('debug');
 
-      expect(lines.filter((line) => line.includes('does not recognize'))).toHaveLength(0);
-    }
+    expect(logger).toHaveProperty('adoptConfiguredThreshold');
+    expect(derivedFromSink).not.toHaveProperty('adoptConfiguredThreshold');
+    expect(derivedFromLevel).not.toHaveProperty('adoptConfiguredThreshold');
   });
 
-  it('says NOTHING when LOG_LEVEL is absent or blank, because neither is a misconfiguration', () => {
-    // Leaving the variable unset is the documented way to accept the default, and exporting it empty
-    // is how a shell spells the same thing. Only a value that was actually WRITTEN and is not a level
-    // name is reported.
-    for (const quiet of [undefined, '', '   ']) {
-      const lines = emitUnpinned(quiet);
-
-      expect(lines).toHaveLength(1);
-      expect(lines[0]).not.toContain('does not recognize');
-    }
+  it('cannot be reshaped at run time', () => {
+    // Frozen for the same reason the emitting surface is: an exported singleton whose methods could
+    // be replaced is an injection point.
+    expect(Object.isFrozen(logger)).toBe(true);
   });
 
-  it('says nothing when a level was PINNED, because LOG_LEVEL is then not in force', () => {
-    // `withLevel()` overrides the environment entirely, so there is no coercion happening and nothing
-    // to report. This is also what keeps every other case in this file silent.
-    const lines = withLogLevel('bogus-qa-i7-pinned', (): string[] => {
-      const captured: string[] = [];
-      logger
-        .withSink((line) => captured.push(line))
-        .withLevel('debug')
-        .error('operation failed');
-      return captured;
-    });
-
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).not.toContain('does not recognize');
-  });
-
-  it('★★ cannot become the failure it was added to describe, even with a throwing sink', () => {
-    // The report goes through the same guarded emission path an ordinary line does, so a sink that
-    // throws is absorbed rather than propagated. A logger that raised while reporting a
-    // misconfiguration would break exactly the cold start this whole fallback exists to protect.
+  it("does not throw when the adopted threshold is set through a throwing sink's logger", () => {
+    // Adoption is a plain assignment and touches no sink, so a broken sink cannot make configuring
+    // the threshold fail. Asserted because the emission path deliberately absorbs sink failures, and
+    // this path must not be the one place a failure escapes.
     const failing = vi.fn((): never => {
       throw new Error('the sink is broken');
     });
 
-    expect(() =>
-      withLogLevel('bogus-qa-i7-throwing', () => {
-        logger.withSink(failing).error('operation failed');
-      }),
-    ).not.toThrow();
+    expect(() => {
+      logger.adoptConfiguredThreshold('debug');
+      logger.withSink(failing).debug('operation failed');
+    }).not.toThrow();
 
-    // Both the report and the entry were attempted.
-    expect(failing).toHaveBeenCalledTimes(2);
+    expect(failing).toHaveBeenCalledTimes(1);
   });
 });

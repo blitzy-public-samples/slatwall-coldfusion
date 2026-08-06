@@ -22,8 +22,9 @@
 // `tests/unit/domain/entities/product.test.ts` extend a legacy suite, and
 // `meta/tests/functional/admin/entity/ProductTest.cfc` is an empty stub
 // contributing zero coverage to anybody. No lineage is claimed here. The claim is
-// also ASSERTED rather than merely written down - the first test reads the
-// promotion fixture graph's own `legacyTestCoverageExists` flag.
+// also ASSERTED rather than merely written down - `legacyExtendedSuites` in
+// tests/traceability/legacyTestMap.ts names the only two suites that extend legacy
+// coverage, and blocks A7 and A14 hold that list to the suites on disk.
 //
 // ---------------------------------------------------------------------------
 // THE SUBJECT - ONE CLASS HOSTING THREE PORTED CFML FUNCTIONS
@@ -65,7 +66,7 @@
 // `findSkus`) and the feed adapter's `generateProductFeed`.
 //
 // SIGNATURE WIDENINGS: none here, and none remain. The single project-wide slot
-// is already spent on `isCurrent(now: Date)` in
+// is already spent on `isCurrent(now?: Date)` in
 // `src/domain/entities/promotionPeriod.ts`. Nothing below widens a signature,
 // not even to inject a clock - the period entity's own predicates are not the
 // subject of this suite and are owned by
@@ -208,7 +209,6 @@ import { OrderItemMembership } from '../../../../src/services/promotion/orderIte
 import { PromotionPeriodQualificationEvaluator } from '../../../../src/services/promotion/promotionPeriodQualification.js';
 import { QualifierQualificationEvaluator } from '../../../../src/services/promotion/qualifierQualification.js';
 import { makeOrderViewFixture } from '../../../fixtures/orderViewFixtures.js';
-import { makePromotionFixtures } from '../../../fixtures/promotionFixtures.js';
 
 import type { RewardMatchingType } from '../../../../src/domain/entities/promotionQualifier.js';
 import type { Sku } from '../../../../src/domain/entities/sku.js';
@@ -752,15 +752,12 @@ describe('PromotionPeriodQualificationEvaluator', () => {
     order = makeOrderViewFixture({ now: new Date(NOW_UTC) });
   });
 
-  describe('traceability - this suite is net-new', () => {
-    it('has no legacy antecedent, and the fixture graph records the same finding', () => {
-      // Asserted rather than merely written in the banner: a suite that presented
-      // net-new coverage as parity would fail the traceability gate.
-      expect(makePromotionFixtures({ now: new Date(NOW_UTC) }).legacyTestCoverageExists).toBe(
-        false,
-      );
-    });
-  });
+  // TRACEABILITY: that this suite is NET-NEW - no legacy antecedent under `meta/tests/` - is not
+  // asserted here against a fixture-authored boolean, which could only ever agree with itself.
+  // tests/traceability/legacyTestMap.ts owns the provenance: `legacyExtendedSuites` names the ONLY
+  // two suites that carry a legacy assertion forward, block A7 asserts that the list is exactly
+  // those two, and block A14 accounts for every suite on disk. A suite presenting net-new coverage
+  // as parity therefore fails the ledger, not a self-agreeing flag.
 
   describe('the shipped surface, and widenings #1, #3 and #4 of exactly five', () => {
     it('takes exactly three constructor collaborators, all replacing DI/1 properties', () => {

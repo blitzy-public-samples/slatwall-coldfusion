@@ -7,6 +7,14 @@
 // connect, append to or flush, and no import of any kind: no third-party module, no Node built-in,
 // no sibling.
 //
+// ★ ONE BUILT-IN IMPORT BRIEFLY STOOD HERE and is gone with the machinery that needed it. A security
+// review removed the raw `LOG_LEVEL` echo, and an interim form kept a per-value suppression record
+// keyed by a `node:crypto` digest; the threshold classifier now arrives PRE-RESOLVED from
+// `./config.ts` through `src/handlers/bootstrap.ts`, so there is no external value left to dedup and
+// no digest to take. The zero-import property this line originally recorded is restored, and it
+// matters: `./config.ts` reports its own fatal misconfiguration THROUGH this module, so a sibling
+// import here could close a cycle and make a cold-start abort unreportable.
+//
 // GUARANTEE 1 - EMISSION NEVER THROWS, AND NEITHER DOES THE STREAM BEHIND IT. Every path from
 // `debug`/`info`/`warn`/`error` to the write is total: serialization is guarded, and so is the sink
 // invocation, so a caller-supplied sink that throws or a `process.stdout.write` that fails
@@ -94,8 +102,8 @@ export interface Logger {
   /** A failure. Emitted on stdout like every other level. */
   error(message: string, context?: LogContext): void;
   /**
-   * A sibling logger with the threshold pinned, bypassing `LOG_LEVEL`. Exists so every filtering
-   * branch is deterministically drivable.
+   * A sibling logger with the threshold pinned, taking precedence over the adopted one. Exists so
+   * every filtering branch is deterministically drivable.
    */
   withLevel(level: LogLevel): Logger;
   /**
@@ -106,12 +114,41 @@ export interface Logger {
 }
 
 /**
- * One of the two environment variables this module reads. It reads no other, and in particular it
- * reads nothing about a datasource.
+ * The process-wide logger: everything a {@link Logger} does, plus the one seam by which validated
+ * configuration reaches this module.
+ *
+ * ★ THIS TYPE EXISTS SO THAT THE SEAM IS NARROW. `./config.ts` owns `LOG_LEVEL` and this file
+ * imports nothing, so the resolved threshold has to be handed over by whoever holds both - which is
+ * `src/handlers/bootstrap.ts`, and only it. Declaring the setter on a SUPERTYPE of `Logger`, rather
+ * than on `Logger` itself, means the exported binding carries it while every logger derived from it
+ * and every injected-logger parameter in the subtree does not. That is what keeps a process-wide
+ * mutator out of the hands of the eight modules that log.
  */
-const LOG_LEVEL_ENV_VAR = 'LOG_LEVEL';
+export interface ProcessLogger extends Logger {
+  /**
+   * Adopt the emission threshold resolved by `./config.ts`, for the remaining life of the process.
+   *
+   * Called once, by the composition root, immediately after it resolves configuration and before it
+   * wires anything that logs. Idempotent, total, and deliberately without a return value: there is
+   * nothing to report, because there is nothing this can reject - the argument is already a member
+   * of the closed union, having been validated and case-folded by configuration.
+   *
+   * @param level the validated threshold, or `undefined` to restore {@link DEFAULT_LOG_LEVEL}. The
+   *   `undefined` case is what a test uses to leave no residue behind it, and what a composition
+   *   root would use if it were ever torn down; it is not a way to express "use the default level"
+   *   in configuration, which is spelled by leaving `LOG_LEVEL` unset.
+   */
+  adoptConfiguredThreshold(level: LogLevel | undefined): void;
+}
 
-/** Threshold applied when `LOG_LEVEL` is unset or unrecognized. */
+/**
+ * Threshold applied until a configured one is adopted, and whenever the adopted one is cleared.
+ *
+ * Deliberately a literal rather than a read of `LOG_LEVEL`: this module reads NO environment
+ * variable - see the threshold-resolution section - and this value is the floor that keeps a process
+ * loggable before `src/handlers/bootstrap.ts` has resolved configuration at all. It must stay equal
+ * to `DEFAULT_LOG_THRESHOLD` in `./config.ts`, which documents the same obligation from its side.
+ */
 const DEFAULT_LOG_LEVEL: LogLevel = 'info';
 
 /**
@@ -533,28 +570,40 @@ const LEGIBLE_DIAGNOSTIC_KEYS: ReadonlySet<string> = new Set([
   'thrownat',
   'publishedissuecount',
   'issuecount',
-  // ★★ THIS MODULE'S OWN TWO, ADDED FOR QA-I7, AND EACH ADMITTED ON THE TEST THIS SET APPLIES TO
-  // EVERYTHING ELSE - that its VALUE CANNOT BE CUSTOMER DATA BY NATURE.
+  // ★ `fieldissuecount` IS WHAT `invalidRequestResponse` EMITS IN PLACE OF ITS FIELD PATHS. A security
+  // review found (MAJOR, CWE-209/CWE-532) that the paths that arm published could be assembled from a
+  // CALLER's own key names, so the paths were withdrawn from the line and a count took their place. A
+  // count is a number: it cannot carry submitted material, which is the same ground the two counts
+  // above are admitted on. `fieldpaths` STAYS admitted because the schema-validation arm still emits
+  // it, and every path THAT arm produces is read from a validator issue's schema-authored `path`.
+  'fieldissuecount',
+  // ★★ THE TWO THAT REPORT THIS MODULE'S OWN THRESHOLD, ADDED FOR QA-I7 AND SINCE NARROWED. Both
+  // are admitted on the test this set applies to everything else - that the VALUE CANNOT BE CUSTOMER
+  // DATA BY NATURE - and both are now CLOSED LITERALS from compile-time unions:
   //
-  //   * `thresholdinforce` is a CLOSED LITERAL from the compile-time `LogLevel` union - one of
-  //     `debug`, `info`, `warn`, `error` - which is the same ground the capability handlers' closed
-  //     literals below are admitted on.
-  //   * `configuredloglevel` needs the sharper argument, because its value ORIGINATES OUTSIDE this
-  //     process. It is admitted because THIS MODULE POLICES THE VALUE BEFORE IT IS WRITTEN: the only
-  //     two things that ever appear under it are a token matching `[A-Za-z0-9_.-]{1,32}` or the
-  //     literal `unsafeValue` - see `reportUnrecognizedLogLevel`. That shape admits no whitespace,
-  //     quote, separator or newline, so it cannot carry a name, an address, a credential, a monetary
-  //     amount, a document or a statement, and it cannot forge a second log record.
+  //   * `thresholdinforce` is one of `debug`, `info`, `warn`, `error`, from the `LogLevel` union
+  //     here, which is the same ground the capability handlers' closed literals below are admitted
+  //     on.
+  //   * `logthresholdsource` is one of `configured`, `defaulted-unset`, `defaulted-unrecognized`,
+  //     from the `LogThresholdSource` union in `./config.ts`. It is emitted by
+  //     `src/handlers/bootstrap.ts` when a mistyped `LOG_LEVEL` was coerced.
   //
-  //     ⚠ AND THAT IS PRECISELY WHY IT IS NOT THE SAME CASE AS `idempotencykey`, WHICH THIS SET
-  //     REFUSES. An idempotency key is a caller-chosen FREE string with no shape at all; this is an
-  //     OPERATOR-set configuration value, reduced to a classifier before it reaches the record. The
-  //     distinction is the shape policy, not the provenance, and without that policy this name would
-  //     belong under rule 5 with the rest.
+  //   ⚠ IT REPLACES `configuredloglevel`, WHICH IS REMOVED, AND THE REMOVAL IS THE WHOLE POINT.
+  //     That name carried a value that ORIGINATED OUTSIDE this process, and it was admitted on the
+  //     argument that this module policed the value's SHAPE before writing it: "the only two things
+  //     that ever appear under it are a token matching `[A-Za-z0-9_.-]{1,32}` or the literal
+  //     `unsafeValue`". A review found the shape argument backwards - that pattern is also the shape
+  //     of an access key, a short bearer token and a password, so the policy decided WHETHER to
+  //     publish an operator-supplied secret rather than never publishing one. The echo is gone (see
+  //     the QA-I7 section), so under this block's standing rule - a name nothing in `src/` emits does
+  //     not belong in an allow-list that describes what this service logs - the name goes with it.
+  //     A classifier drawn from a closed union is not the same case: there is no external value left
+  //     to police.
   //
-  //   * `thrownat` above joined them on the same terms: a stack frame's function name, code-authored
-  //     and held to the same classifier shape by `src/handlers/errorMapper.ts` before it is emitted.
-  'configuredloglevel',
+  //   * `thrownat` above is admitted on the closed-shape terms too: a stack frame's function name,
+  //     code-authored and held to a classifier shape by `src/handlers/errorMapper.ts` before it is
+  //     emitted.
+  'logthresholdsource',
   'thresholdinforce',
   // ★★★ THE CAPABILITY HANDLERS' OWN DIAGNOSTICS, ADMITTED AFTER A MEASURED
   // FAILURE. Security review (finding F7) found that the five Lambda entrypoints
@@ -1952,164 +2001,92 @@ function redactPlainObject(
 // hard at startup when the database dialect is unset or unrecognized, reproducing the conditional
 // chain at config/configORM.cfm:L4-L7 that has no `<cfelse>` and whose failure path ends in an
 // outright abort. A logger that depended on configuration could not report a configuration failure,
-// so keeping the two mutually independent leaves `config.ts` free to log its own fatal error. The
-// asymmetry therefore runs the other way here, deliberately: an unset or unrecognized `LOG_LEVEL`
-// MUST NOT throw but falls back to `info`, because logging must never be the thing that breaks a
-// cold start.
+// so keeping the two mutually independent leaves `config.ts` free to log its own fatal error.
 //
-// The threshold is resolved lazily on every call and is NOT cached at module scope: a cache would
-// be captured once per container and frozen for its whole life, and would make a test suite
-// order-dependent on whichever suite imported this module first. `withLevel()` is the explicit
-// override, so a test pins the threshold rather than mutating the process environment.
+// ★★ AND THIS MODULE READS NO ENVIRONMENT VARIABLE EITHER - NOT ONE. It used to read `LOG_LEVEL`
+// out of `process.env` directly, on every emission, which made the subtree's documented
+// single-configuration-authority guarantee false: `config.ts` declared itself the one reader of the
+// process environment while this file quietly was a second. Two things follow from removing that
+// read, and both are deliberate:
+//
+//   * The threshold now ARRIVES. `config.ts` resolves, case-folds and classifies `LOG_LEVEL` with
+//     every other variable, and `src/handlers/bootstrap.ts` - the one module that holds both - hands
+//     the validated value to `logger.adoptConfiguredThreshold()` while it wires the composition
+//     root. That preserves the independence in the direction that matters (this file still depends
+//     on nothing) without keeping a second reader of the environment.
+//   * The LENIENCY MOVED WITH IT, AND IS UNCHANGED IN EFFECT. An unset, blank or unrecognized
+//     `LOG_LEVEL` still resolves to `info` and still cannot abort anything, because logging must
+//     never be the thing that breaks a cold start. `config.ts` records WHICH of those three
+//     happened, and the composition root announces a mistyped value once - from a fixed classifier,
+//     never by echoing the value, which is what this file used to do.
+//
+// THE ADOPTED THRESHOLD IS MODULE-SCOPE STATE, AND THAT IS A CHANGE FROM THE PER-CALL ENVIRONMENT
+// READ IT REPLACES. The earlier text warned against caching the threshold at module scope on the
+// ground that a cache "would be captured once per container and frozen for its whole life, and would
+// make a test suite order-dependent on whichever suite imported this module first". Being fixed for
+// the life of a container is now the CORRECT behaviour rather than a hazard - process configuration
+// does not change while the process runs, which is the same reasoning `config.ts` memoizes on - and
+// the test-order concern is answered structurally instead of by avoidance: `vitest.config.ts` sets
+// `isolate: true`, so each test file gets its own module registry and no adopted value crosses a
+// file boundary, and within a file `adoptConfiguredThreshold(undefined)` restores the default. This
+// is not the legacy component-cache hazard of AAP 0.6.5 either: nothing here is derived from a
+// request, so there is no request's data to leak into the next one.
+//
+// `withLevel()` remains the per-logger override, and it takes precedence over the adopted value, so
+// a suite can pin a threshold on ONE logger without touching process-wide state at all.
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a raw environment value into a level, case-insensitively. Returns `undefined` for anything
- * unrecognized - including the empty string - so the caller applies the default.
+ * The threshold adopted from validated configuration, or `undefined` before the composition root
+ * has adopted one.
+ *
+ * Written by exactly one function - {@link ProcessLogger.adoptConfiguredThreshold} - and read by
+ * exactly one - {@link resolveThreshold}. `undefined` is a real state rather than a placeholder: a
+ * process that fails during configuration resolution logs its own failure BEFORE any threshold has
+ * been adopted, and it logs at {@link DEFAULT_LOG_LEVEL}.
  */
-function parseLogLevel(raw: string | undefined): LogLevel | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  switch (raw.trim().toLowerCase()) {
-    case 'debug':
-      return 'debug';
-    case 'info':
-      return 'info';
-    case 'warn':
-      return 'warn';
-    case 'error':
-      return 'error';
-    default:
-      return undefined;
-  }
-}
+let adoptedThreshold: LogLevel | undefined;
 
 /**
- * The threshold in force for one emission: the pinned override if there is one, otherwise
- * `LOG_LEVEL`, otherwise the default. `process.env` is an index signature, so the read is
- *   `string | undefined`
- * under `noUncheckedIndexedAccess`; both cases are handled explicitly.
+ * The threshold in force for one emission, in strict precedence order: a level pinned on this
+ * logger through `withLevel`, then the level adopted from validated configuration, then the
+ * default.
+ *
+ * The pinned level wins because it is the narrower statement - it was made about this logger
+ * specifically - and because a test that pins a threshold must not be at the mercy of whatever the
+ * composition root adopted earlier in the same file.
  */
 function resolveThreshold(pinnedLevel: LogLevel | undefined): LogLevel {
-  if (pinnedLevel !== undefined) {
-    return pinnedLevel;
-  }
-  return parseLogLevel(process.env[LOG_LEVEL_ENV_VAR]) ?? DEFAULT_LOG_LEVEL;
+  return pinnedLevel ?? adoptedThreshold ?? DEFAULT_LOG_LEVEL;
 }
 
 // ---------------------------------------------------------------------------
-// Reporting an unrecognized threshold - QA-I7
+// Reporting an unrecognized threshold - QA-I7, and the disclosure defect its first fix introduced
 //
-// ★★ THE FALLBACK STAYS; ITS SILENCE DOES NOT. QA testing observed that `LOG_LEVEL=bogus` is
-// silently coerced to `info` while every other malformed configuration key fails closed with a
-// `ConfigurationError` from `./config.ts`, and rated the inconsistency cosmetic.
+// ★★ THE FALLBACK STAYS; ITS SILENCE DOES NOT; ITS ECHO IS GONE. QA testing observed that
+// `LOG_LEVEL=bogus` is silently coerced to `info` while every other malformed configuration key
+// fails closed with a `ConfigurationError` from `./config.ts`, and rated the inconsistency cosmetic.
+// Failing this key closed would have been the wrong remedy, for the reason in the section header
+// above - `config.ts` reports its own abort THROUGH this module - so the first fix kept the fallback
+// and announced the coercion from here, in a function that lived at this point in the file.
 //
-// ⚠ THE OBVIOUS FIX IS THE WRONG ONE. Making this key fail closed too would contradict the invariant
-// stated in the section header above, which is not a preference but a structural requirement:
-// `config.ts` must abort on an unset or unrecognized dialect, and it REPORTS that abort through this
-// module. A logger that threw on its own misconfiguration could not report anybody else's - the two
-// are deliberately mutually independent, and `logging must never be the thing that breaks a cold
-// start` is what makes that independence safe. Failing closed here would trade a cosmetic
-// inconsistency for a service that cannot start AND cannot say why.
+// ⚠ THAT ANNOUNCEMENT WAS ITSELF A DISCLOSURE DEFECT, AND IT IS THE REASON THIS SECTION IS NOW
+// EMPTY OF CODE. To make the diagnostic actionable it ECHOED the rejected token, admitting any value
+// matching `/^[A-Za-z0-9_.-]{1,32}$/` verbatim onto the log stream and RETAINING every distinct one
+// in a process-global `Set` for the life of the container. A review observed that the shape it
+// admitted is exactly the shape of the things most likely to be pasted into the wrong variable: an
+// access key, a short bearer token, a password. The pattern was authored as a safety measure and was
+// in fact the vulnerability - it decided WHETHER to publish rather than never publishing.
 //
-// So what is fixed is the SILENCE, not the fallback: the coercion now announces itself once, and the
-// service serves exactly as before.
+// SO THE REPORT MOVED, AND THE VALUE STAYED BEHIND. `./config.ts` classifies the outcome into one of
+// three fixed tokens (`configured`, `defaulted-unset`, `defaulted-unrecognized`) and DISCARDS the
+// raw value at the point of resolution, so no code path from a malformed `LOG_LEVEL` to an emitted
+// line exists any more. `src/handlers/bootstrap.ts` emits the warning once per container from that
+// classifier. Three things are gone from this file as a result and must not be reintroduced here:
+// the echo pattern, the `unsafeValue` substitute it fell back to, and the process-global set of
+// retained values. This module now has exactly one piece of mutable state - the adopted threshold
+// above - and it holds no operator-supplied string at all.
 // ---------------------------------------------------------------------------
-
-/**
- * The shape an echoed `LOG_LEVEL` value must have to be emitted verbatim.
- *
- * The value is OPERATOR-SUPPLIED, and this module holds every value it emits to a policy rather than
- * trusting its provenance. Letters, digits, `_`, `.` and `-` up to 32 characters describe every
- * plausible typo of a level name - `INFO `, `Infos`, `verbose`, `warning` - while admitting no
- * whitespace, quote or punctuation, so a sentence, a path or an injected line break cannot ride along
- * on a diagnostic. Deliberately a local constant: this module imports nothing, which is the property
- * that lets `./config.ts` depend on it.
- */
-const ECHOABLE_LOG_LEVEL_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
-
-/** Substituted for a value that is not shaped like a level name. */
-const UNECHOABLE_LOG_LEVEL = 'unsafeValue';
-
-/**
- * Raw values already reported, so the report is made ONCE PER DISTINCT VALUE PER PROCESS.
- *
- * Keyed by value rather than by a single boolean because `process.env` is mutable: a suite that sets
- * one bad value, asserts the report, then sets another must see the second one too. Bounded in
- * practice by the number of distinct values a process is configured with, which is one outside a test.
- *
- * ★ THIS IS THE MODULE'S ONE PIECE OF MUTABLE STATE, AND IT IS DELIBERATE. The section header above
- * explains why the THRESHOLD is not cached - a per-container cache would freeze one suite's value for
- * every later suite. That reasoning does not apply here, because this set does not decide behaviour:
- * whatever it contains, the threshold resolves identically and every line is emitted identically. All
- * it suppresses is a repeat of one diagnostic, which is the entire point - resolving the threshold
- * happens on EVERY emission, and reporting on every emission would bury the log stream it is trying
- * to make readable.
- */
-const reportedUnrecognizedLevels = new Set<string>();
-
-/**
- * Announce, once, that `LOG_LEVEL` holds a value this module does not recognize.
- *
- * ★ IT DOES NOT GO THROUGH `emit`, AND THAT IS WHAT MAKES IT NON-RECURSIVE. `emit` resolves the
- * threshold, which is where this check is reached from; routing the report back through `emit` would
- * re-enter that path. The line is serialized and handed to the sink directly instead, so the call
- * graph is a straight line with no cycle in it - the suppression set is not what prevents recursion,
- * it only prevents repetition.
- *
- * ★ IT IS NOT LEVEL-FILTERED EITHER. A report about a threshold must not be suppressible by the very
- * threshold it is reporting on. In practice an unrecognized value resolves to `info`, which admits a
- * `warn` anyway - but relying on that coincidence would make the guarantee accidental.
- *
- * ★ IT CANNOT THROW. Serialization is total and the sink invocation is guarded by
- * {@link emitThroughSink}, which is the same pair of properties `emit` relies on. A diagnostic added
- * for observability must not become the failure it was added to describe.
- *
- * @param sink where the line goes - the logger's own sink, so a suite that substituted one sees the
- *   report on it rather than on stdout.
- * @param pinnedLevel the override in force, if any. When a level was pinned through `withLevel`,
- *   `LOG_LEVEL` IS NOT CONSULTED AT ALL, so there is nothing to report and nothing is emitted.
- */
-function reportUnrecognizedLogLevel(sink: LogSink, pinnedLevel: LogLevel | undefined): void {
-  if (pinnedLevel !== undefined) {
-    return;
-  }
-
-  const raw = process.env[LOG_LEVEL_ENV_VAR];
-
-  // An ABSENT or blank value is not a misconfiguration. Leaving the variable unset is the documented
-  // way to accept the default, and exporting it empty is how a shell spells the same thing - so
-  // neither is reported, and only a value that was actually WRITTEN and is not a level name is.
-  if (raw === undefined || raw.trim() === '') {
-    return;
-  }
-
-  if (parseLogLevel(raw) !== undefined) {
-    return;
-  }
-
-  if (reportedUnrecognizedLevels.has(raw)) {
-    return;
-  }
-
-  // Recorded BEFORE the emission, so that even a sink which somehow re-enters this function finds the
-  // value already present and stops. Belt and braces around the non-recursive call graph above.
-  reportedUnrecognizedLevels.add(raw);
-
-  const echoed = ECHOABLE_LOG_LEVEL_PATTERN.test(raw) ? raw : UNECHOABLE_LOG_LEVEL;
-
-  emitThroughSink(
-    sink,
-    serializeEntry(
-      new Date().toISOString(),
-      'warn',
-      `${LOG_LEVEL_ENV_VAR} is set to a value this service does not recognize, so the default ` +
-        `threshold '${DEFAULT_LOG_LEVEL}' is in force; recognized values are debug, info, warn, error`,
-      { configuredLogLevel: echoed, thresholdInForce: DEFAULT_LOG_LEVEL },
-    ),
-  );
-}
 
 /**
  * One emitted record. `context` is optional in the exact sense `exactOptionalPropertyTypes`
@@ -2362,12 +2339,10 @@ function emitThroughSink(sink: LogSink, line: string): void {
  */
 function createLogger(pinnedLevel: LogLevel | undefined, sink: LogSink): Logger {
   const emit = (level: LogLevel, message: string, context: LogContext | undefined): void => {
-    // QA-I7. Announced BEFORE the filter, so an unrecognized `LOG_LEVEL` is reported even when the
-    // emission that discovered it is itself filtered out. At most one line per distinct bad value per
-    // process, and a no-op in the ordinary case where the variable is unset or holds a level name.
-    reportUnrecognizedLogLevel(sink, pinnedLevel);
-
-    // Filtering is one comparison against the ordered severity map.
+    // Filtering is one comparison against the ordered severity map. Nothing precedes it any more:
+    // the QA-I7 announcement that used to run here, before the filter, has moved to
+    // `src/handlers/bootstrap.ts`, which reports the classifier `./config.ts` resolves rather than
+    // the raw value this module used to echo. See the QA-I7 section above.
     if (LEVEL_SEVERITY[level] < LEVEL_SEVERITY[resolveThreshold(pinnedLevel)]) {
       return;
     }
@@ -2404,8 +2379,34 @@ function createLogger(pinnedLevel: LogLevel | undefined, sink: LogSink): Logger 
 }
 
 /**
- * The single exported unit of this module: a ready-to-use logger whose threshold comes from
- * `LOG_LEVEL` on every call and whose lines go to stdout. There is no default export and no barrel
- * file in this subtree.
+ * Build the one process-wide logger: a stdout logger with the adoption seam attached.
+ *
+ * The emitting half is `createLogger`, so there is still exactly one construction path for the four
+ * level methods and the two `with*` siblings. This function only widens the object it returns by the
+ * single method {@link ProcessLogger.adoptConfiguredThreshold}, and freezes the result for the same
+ * reason `createLogger` freezes its own: the emitting surface must not be reshapeable at run time.
  */
-export const logger: Logger = createLogger(undefined, writeLineToStdout);
+function createProcessLogger(): ProcessLogger {
+  const base = createLogger(undefined, writeLineToStdout);
+
+  return Object.freeze({
+    ...base,
+    adoptConfiguredThreshold: (level: LogLevel | undefined): void => {
+      adoptedThreshold = level;
+    },
+  });
+}
+
+/**
+ * The single exported unit of this module: a ready-to-use logger whose lines go to stdout and whose
+ * threshold is the one adopted from validated configuration. There is no default export and no
+ * barrel file in this subtree.
+ *
+ * ITS TYPE IS {@link ProcessLogger}, NOT {@link Logger}, AND THE DIFFERENCE IS THE POINT. Only this
+ * one object carries `adoptConfiguredThreshold`. The siblings `withLevel` and `withSink` return
+ * plain `Logger`s, and every consumer that accepts an injected logger declares the parameter as
+ * `Logger`, so the ability to move the process-wide threshold is reachable from the composition root
+ * - which imports this binding by name - and from nowhere else. A handler holding a `Logger` cannot
+ * see the method, which is what keeps a mutator off the emitting surface that eight modules share.
+ */
+export const logger: ProcessLogger = createProcessLogger();

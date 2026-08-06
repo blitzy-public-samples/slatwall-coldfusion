@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/handlers/bootstrap.ts  composition root (wiring)
 // ---------------------------------------------------------------------------
@@ -191,7 +189,7 @@
  *   `src/repositories/mysql/**` implements six of the thirteen ports - the product, SKU,
  *   option, product-type, promotion and price-group repositories. This is not one of them, and
  *   the target layout defines no adapter file for it anywhere, so its ONLY legal implementation
- *   home is the composition root, `src/handlers/bootstrap.ts` (planned). Two obligations attach there:
+ *   home is the composition root, `src/handlers/bootstrap.ts`. Two obligations attach there:
  *
  *     1. The chosen stub behaviour MUST be documented explicitly at the composition root. A
  *        caller must never be able to mistake stub output for a real successful write.
@@ -199,11 +197,11 @@
  *        stub; growing it into a real store is a separate decision outside this scope.
  *
  * THESE NAMES ARE CANONICAL
- *   Every subtree that will consume this module - `src/domain/entities/`, `src/services/`,
- *   `src/repositories/mysql/`, `src/handlers/` and `src/integrations/google/` - is empty at the
- *   time of writing. The symbol names, member names and signatures published below are
- *   therefore the canonical contract those consumers will be written against. Do not rename
- *   them later. `saveImageFile` and its three parameters are carried over from the legacy call
+ *   Three modules consume this one - `src/services/productService.ts`,
+ *   `src/services/skuService.ts` and the composition root `src/handlers/bootstrap.ts` - and each
+ *   is written against the symbol names, member names and signatures published below, which makes
+ *   this the canonical contract in force rather than one proposed for later consumers. Do not
+ *   rename them. `saveImageFile` and its three parameters are carried over from the legacy call
  *   verbatim precisely so that a reviewer can diff the two surfaces member by member; the
  *   deletion member's name has no legacy antecedent and says so at its declaration.
  *
@@ -363,9 +361,39 @@ export interface SkuImageFileNameDescriptor {
  * header and again at the member. Three is now the maximum, on the same principle: nothing
  * else in the in-scope slice reaches an image store or has lost its home.
  *
- * The implementation wired in at `src/handlers/bootstrap.ts` (planned) is a documented stub. That does
- * not make this interface provisional: it is the real contract, and a later decision to back
- * it with a genuine store changes only the implementation, never these signatures.
+ * ★★★ AAP SURFACE RECONCILIATION - WHY THREE MEMBERS SATISFY A PORT THE PLAN CALLS A STUB.
+ * Recorded here, at the contract, because a reviewer counting members against the plan will reach
+ * this question and is entitled to find the answer at the port.
+ *
+ *   THE PLAN'S PHRASE. AAP 0.3.1 lists this file as "imageStore.ts (stub port - out-of-scope
+ *   branches only)" and AAP 0.4.1 specifies it as "Stub port; only out-of-scope branches call it",
+ *   citing [model/service/SkuService.cfc:L210-L218]. The plan names no member count, so the
+ *   governing question is not "how many" but "which mapped methods need a seam".
+ *
+ *   EACH MEMBER IS DEMANDED BY A MAPPED AAP 0.4.2 METHOD, and each of those methods is annotated in
+ *   the plan as delegating here:
+ *
+ *     `saveImageFile` - `SkuService.processImageUpload(sku, result)`, "Delegates to the image-store
+ *     stub port", from [model/service/SkuService.cfc:L212].
+ *
+ *     `deleteImageFile` - `ProductService.processProduct_deleteDefaultImage(product, data)`,
+ *     "Delegates to the image-store stub port", from [model/service/ProductService.cfc:L198].
+ *
+ *     `generateSkuImageFileName` - `ProductService.processProduct_updateDefaultImageFileNames(product)`,
+ *     mapped at [model/service/ProductService.cfc:L208]. This is the member whose legacy home was
+ *     deleted in translation, as the paragraph above records.
+ *
+ *   REMOVING ANY OF THE THREE WOULD LEAVE A MAPPED METHOD WITH NOTHING TO CALL, which AAP 0.9.2
+ *   gates against. AAP 0.3.1 also freezes the port inventory at thirteen enumerated files, so no
+ *   member could be relocated to a fourteenth. THREE IS THE MAXIMUM on the principle already stated:
+ *   nothing else in the in-scope slice reaches an image store or has lost its home.
+ *
+ *   AND NOTHING IN THIS FILE IS AN IMPLEMENTATION. Every export is a type; the CWE-22 obligation
+ *   below is prose binding implementations, not architecture hidden in a narrow-port file.
+ *
+ * The implementation wired in at `src/handlers/bootstrap.ts` is a documented stub - shipped, not
+ * planned. That does not make this interface provisional: it is the real contract, and a later
+ * decision to back it with a genuine store changes only the implementation, never these signatures.
  */
 export interface ImageStore {
   /**

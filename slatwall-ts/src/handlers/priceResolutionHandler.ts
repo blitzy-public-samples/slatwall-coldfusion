@@ -71,9 +71,11 @@ import type {
   SkuIdentity,
 } from './bootstrap.js';
 import {
+  containsPrototypeMemberKey,
   invalidRequestResponse,
   jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
+  PROTOTYPE_MEMBER_FIELD_ISSUE,
   resolveRequestPrincipal,
   resolveServerRequestId,
   routeDiagnosticLabel,
@@ -88,7 +90,6 @@ import type { CurrentAccountContext } from '../domain/ports/priceGroupRepository
 import { toCurrencyCode } from '../domain/valueObjects/currencyCode.js';
 import { Money } from '../domain/valueObjects/money.js';
 import { cfEquals } from '../lib/cfml/struct.js';
-import { findPrototypeKeyPath } from '../lib/jsonDocumentKeys.js';
 import type { Logger } from '../lib/logger.js';
 import { logger as processLogger } from '../lib/logger.js';
 
@@ -1630,12 +1631,11 @@ const IMPLEMENTED_ROUTE_ACTION: RouteAction = 'resolvePrices';
 export const REQUIRED_SUCCESS_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
-  // ★ THE THIRD, TRACKING `JSON_RESPONSE_HEADERS` (QA-I4). It is listed here for the same reason the
-  // other two are - this constant is the assertion this capability makes about what the shared builder
-  // owes it - but the REASONING for this one belongs to the shared builder rather than to this
-  // capability, and is recorded there: having declared `content-type` explicitly, `nosniff` is the half
-  // of that statement which says a recipient must not second-guess the declaration.
-  'x-content-type-options': 'nosniff',
+  // ★ AND EXACTLY TWO, WHICH IS A CORRECTION. A third briefly tracked `JSON_RESPONSE_HEADERS` here -
+  // `x-content-type-options: nosniff` - because this constant is the assertion this capability makes
+  // about what the shared builder owes it. A code review established that the header is an HTTP
+  // semantic the ported system never had, so the shared builder no longer emits it and this claim no
+  // longer demands it. The reasoning lives with the builder, in `./errorMapper.js`.
 });
 
 /**
@@ -1709,19 +1709,20 @@ function readRequestDocument(event: APIGatewayProxyEvent): RequestDocumentReadin
   // this handler validates against is strict, so an unrecognized member comes back as a 400 naming
   // it - except `__proto__`, which zod accepts and silently drops at every nesting level. QA testing
   // submitted it here and confirmed both halves: admitted, and `Object.prototype` unmodified. The
-  // measurements and the reason the walk is deep and iterative are recorded on
-  // `../lib/jsonDocumentKeys.js`; this is the inconsistency being closed, plus defence in depth
-  // against a future merge-style consumer.
+  // measurements and the reason the walk is deep, iterative and PREDICATE-SHAPED are recorded on
+  // `./errorMapper.js`; this is the inconsistency being closed, plus defence in depth against a future
+  // merge-style consumer.
   //
-  // The reported path is a KEY THE CALLER SENT, never a value - the invariant this handler's whole
-  // error surface holds to.
-  const prototypeKeyPath = findPrototypeKeyPath(parsed);
-
-  if (prototypeKeyPath !== undefined) {
+  // ★★★ AND THE REFUSAL PUBLISHES A FROZEN CONSTANT RATHER THAN A LOCATION. This branch used to report
+  // the offending key's full dotted path, defended on the ground that a key is not a value; a security
+  // review rejected that ground (MAJOR, CWE-209/CWE-532) because every ANCESTOR segment of that path
+  // was a member name the caller chose, and it reached both this 400 and the log stream. What is named
+  // now is the offending key itself, which is a literal of the mapper.
+  if (containsPrototypeMemberKey(parsed)) {
     return {
       decoded: false,
       reason: 'unusableRequestInput',
-      fields: [{ path: prototypeKeyPath, message: 'is not a member this request accepts' }],
+      fields: [PROTOTYPE_MEMBER_FIELD_ISSUE],
     };
   }
 

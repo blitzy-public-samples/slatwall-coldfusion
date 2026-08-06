@@ -306,9 +306,6 @@ interface OrderViewFixtureCapture {
   /** `listFindNoCase("otReturnOrder,otExchangeOrder", systemCode) > 0` - the L542 gate. */
   reachesReturnExchangeNoOp?: boolean;
 
-  /** The ticket the preserved no-op cites, for an `issue_<ticket#>` suite name. */
-  preservedReturnExchangeNoOpTicket?: string;
-
   /** The pre-verified reference figures the golden first item lines up with. */
   referenceCalculation?: ReferenceCalculationRef;
 
@@ -622,7 +619,7 @@ interface OrderViewFixtureOverrides {
 /**
  * The instant this graph is evaluated against, as an explicit UTC literal.
  *
- * `PromotionPeriod.isCurrent(now: Date)` takes its instant as a parameter - the one deliberate
+ * `PromotionPeriod.isCurrent(now?: Date)` takes its instant as a parameter - the one deliberate
  * signature widening in the entity layer - so a fixture never consults the wall clock. The legacy
  * pair calls `now()` independently in `isCurrent()` [model/entity/PromotionPeriod.cfc:L78-L81],
  * start-inclusive and end-exclusive with no `isDate` guard, and in `isExpired()`
@@ -2111,9 +2108,6 @@ function writeCaptureSink(context: {
     listFindNoCase(SALE_OR_EXCHANGE_ORDER_TYPES, context.orderTypeSystemCode) > 0;
   capture.reachesReturnExchangeNoOp =
     listFindNoCase(RETURN_OR_EXCHANGE_ORDER_TYPES, context.orderTypeSystemCode) > 0;
-  capture.preservedReturnExchangeNoOpTicket =
-    context.promotionGraph.preservedReturnExchangeNoOpTicket;
-
   capture.nonSaleOrderItemTypeSystemCode = RETURN_ORDER_ITEM_SYSTEM_CODE;
   capture.referenceCalculation = context.promotionGraph.referenceCalculation;
   capture.now = context.now;

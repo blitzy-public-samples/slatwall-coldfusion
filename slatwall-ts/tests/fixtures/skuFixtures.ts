@@ -117,7 +117,11 @@ import type {
 } from '../../src/domain/entities/sku.js';
 import type { OptionSortTieBreaker } from '../../src/domain/entities/optionGroup.js';
 import type { CurrencyConverter } from '../../src/domain/ports/currencyConverter.js';
-import type { SettingKey, SettingsProvider } from '../../src/domain/ports/settingsProvider.js';
+import type {
+  ProductPresentationSettingKey,
+  SettingKey,
+  SettingsProvider,
+} from '../../src/domain/ports/settingsProvider.js';
 import type { SkuRepository } from '../../src/domain/ports/skuRepository.js';
 import type { CurrencyCode } from '../../src/domain/valueObjects/currencyCode.js';
 import type { CfBooleanInput } from '../../src/lib/cfml/truthiness.js';
@@ -1030,7 +1034,11 @@ function makeFixtureSettingsProvider(
   skuCurrency: string,
   skuEligibleCurrencies: string,
 ): SettingsProvider {
-  const table: Readonly<Record<SettingKey, string>> = {
+  // ★ THE TABLE SPANS BOTH SETTINGS CONTRACTS. `SettingsProvider` is frozen at FOUR keys and the
+  // three product-presentation keys travel on `ProductPresentationSettingsProvider`; the double
+  // implements both, exactly as the composition root does, so a fixture resolves a setting the same
+  // way production does.
+  const table: Readonly<Record<SettingKey | ProductPresentationSettingKey, string>> = {
     globalURLKeyProduct: GLOBAL_URL_KEY_PRODUCT,
     globalURLKeyProductType: GLOBAL_URL_KEY_PRODUCT_TYPE,
     productImageDefaultExtension: PRODUCT_IMAGE_DEFAULT_EXTENSION,
@@ -1041,7 +1049,7 @@ function makeFixtureSettingsProvider(
   };
 
   return {
-    setting(settingName: SettingKey): string {
+    setting(settingName: SettingKey | ProductPresentationSettingKey): string {
       return table[settingName];
     },
   };

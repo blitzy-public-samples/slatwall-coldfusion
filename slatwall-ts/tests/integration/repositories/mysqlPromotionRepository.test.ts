@@ -337,12 +337,20 @@ const UNUSED_PLACEHOLDER = 'unused-by-this-suite';
  * because a memoized load would otherwise leak one case's dialect into the next.
  */
 const REQUIRED_CONFIGURATION: readonly (readonly [string, string])[] = Object.freeze([
-  Object.freeze(['DB_HOST', `${UNUSED_PLACEHOLDER}.invalid`] as const),
+  // A NAMED host, because `DB_TLS_MODE` below is `verify-identity` and `src/lib/config.ts` refuses
+  // that mode against an IP LITERAL (F47) - a certificate binds to names, so an address would reduce
+  // the mode to a chain-only check. `.invalid` never resolves [RFC 2606] and nothing here connects.
+  Object.freeze(['DB_HOST', 'slatwall-database.invalid'] as const),
   Object.freeze(['DB_PORT', PROVENANCE_DATASOURCE_PORT] as const),
   Object.freeze(['DB_NAME', PROVENANCE_DATASOURCE_NAME] as const),
   Object.freeze(['DB_USER', UNUSED_PLACEHOLDER] as const),
   Object.freeze(['DB_PASSWORD', UNUSED_PLACEHOLDER] as const),
-  Object.freeze(['DB_TLS_MODE', 'disabled'] as const),
+  // F48: this fixture paired a non-loopback host with `disabled` transport, which the configuration
+  // contract refuses outright - cleartext is admitted only for a provable loopback destination, in
+  // every environment. The fixture describes a suite that never connects, so the mode is raised to
+  // the recommended `verify-identity`, which the NAMED host above satisfies and which needs no trust
+  // anchor.
+  Object.freeze(['DB_TLS_MODE', 'verify-identity'] as const),
 ]);
 
 const DIALECT_VARIABLE_NAME = 'DB_DIALECT';
@@ -2782,6 +2790,13 @@ describe('salePricePromotionRewards - the gate window and the activeFlag binding
     // carry a product, brand, option or product-type link, but NOT rewards that carry a SKU link, so a
     // SKU-scoped reward is also counted as global and competes for the MIN sale price.
     // Preserved deliberately; do not fix without a product decision.
+    //
+    // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L527-L533]: the four exclusions the branch DOES carry,
+    // named line by line - L527 SwPromoRewardProduct, L529 SwPromoRewardBrand, L531
+    // SwPromoRewardOption, L533 SwPromoRewardProductType - so the missing fifth is auditable against
+    // the source rather than inferred from a count. This is the behavioural owner of the marker
+    // `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` carries for that span.
+    // Preserved deliberately; do not fix without a product decision.
     const { sql } = buildSalePricePromotionRewardsStatement({
       now: EXPLICIT_UTC_INSTANT,
       dialect: STATEMENT_DIALECT,
@@ -2968,10 +2983,17 @@ describe('salePricePromotionRewards - the eliminated dead locals and scope leak'
 
 describe('salePricePromotionRewards - the unanchored LIKE dialect site', () => {
   it('emits the MySQL concat arm exactly, unanchored on both sides', () => {
+    // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L483]: the reward join matches a product-type
+    // identifier against `productTypeIDPath` with an unanchored, delimiter-unaware LIKE, so any
+    // substring occurrence in the path counts as membership.
+    // Preserved deliberately; do not fix without a product decision.
+    //
     // CFML parity [model/dao/PromotionDAO.cfc:L482-L488]: an UNANCHORED substring LIKE over a
     // comma-delimited materialized path. There is no comma anchoring and no FIND_IN_SET, so a
     // productTypeID of "abc" matches a path containing "xxabcyy". That over-matching decides whether a
     // product-type reward applies, and therefore decides money - so it is reproduced, not improved.
+    // This case is the behavioural owner of the marker `src/repositories/mysql/dialect.ts` carries
+    // for the same line, which is where the fragment those two arms are built from lives.
     const { sql } = buildSalePricePromotionRewardsStatement({
       now: EXPLICIT_UTC_INSTANT,
       dialect: STATEMENT_DIALECT,

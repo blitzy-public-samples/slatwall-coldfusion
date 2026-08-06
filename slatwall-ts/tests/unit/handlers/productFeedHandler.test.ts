@@ -116,7 +116,7 @@ import { makeProductFixture } from '../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
-import type { ProductFeedPort } from '../../../src/domain/ports/productFeedPort.js';
+import type { FeedCriteria, ProductFeedPort } from '../../../src/domain/ports/productFeedPort.js';
 import type {
   CompositionRoot,
   InspectableRequestScope,
@@ -252,8 +252,21 @@ function unreachableMember(owner: string, member: string): never {
 class FeedRequestScopeDouble implements RequestScope {
   public readonly productFeedPort: ProductFeedPort | undefined;
 
-  public constructor(productFeedPort: ProductFeedPort | undefined) {
+  /**
+   * The AAP 0.4.2 argument of `generateProductFeed`, published beside the port it is passed to.
+   *
+   * The real root publishes the two under ONE condition - a request that carried no feed host gets
+   * neither - so this double takes them as one pair rather than as two independent members. A double
+   * that could publish a port with no criteria would let a projection bug pass unnoticed.
+   */
+  public readonly feedCriteria: FeedCriteria | undefined;
+
+  public constructor(
+    productFeedPort: ProductFeedPort | undefined,
+    feedCriteria: FeedCriteria | undefined,
+  ) {
     this.productFeedPort = productFeedPort;
+    this.feedCriteria = feedCriteria;
   }
 
   public get now() {
@@ -264,9 +277,10 @@ class FeedRequestScopeDouble implements RequestScope {
     return unreachableMember('RequestScope', 'currentAccountContext');
   }
 
-  // The feed binds no entity from an identifier: `generateProductFeed` takes zero
-  // arguments and the four selection filters are invariants of the ported statement.
-  // Reaching a loader from here would mean the feed had grown a criteria surface.
+  // The feed binds no entity from an identifier: `generateProductFeed`'s one argument carries only
+  // the request's origin authority and instant, and the four selection filters are invariants of
+  // the ported statement. Reaching a loader from here would mean the feed had grown a SELECTION
+  // surface - which is the thing `FeedCriteria` deliberately does not have.
   public get entityLoaders() {
     return unreachableMember('RequestScope', 'entityLoaders');
   }
@@ -385,7 +399,16 @@ class FeedCompositionRootDouble implements CompositionRoot {
       return Promise.reject(this.scopeRejection);
     }
 
-    return Promise.resolve(new FeedRequestScopeDouble(this.resolvePort(received)));
+    // THE PAIR IS DERIVED FROM ONE CONDITION, as the real projection derives it: a request that
+    // carried no feed host gets neither the port nor the criteria. The instant mirrors the root's
+    // own rule - the request's stamp when it carried a usable one, otherwise the root's fallback.
+    const port = this.resolvePort(received);
+    const criteria: FeedCriteria | undefined =
+      received.feedHost === undefined
+        ? undefined
+        : { feedHost: received.feedHost, now: received.now ?? SCOPE_FALLBACK_INSTANT };
+
+    return Promise.resolve(new FeedRequestScopeDouble(port, criteria));
   }
 
   public get diagnostics() {
@@ -409,13 +432,23 @@ class FeedCompositionRootDouble implements CompositionRoot {
  * A feed port that answers with a fixed document and records how it was called.
  *
  * The rest parameter is the mechanical proof of the reshaping.
- * `ProductFeedPort.generateProductFeed` declares no parameters, so a method that accepts any number
- * of them still satisfies the contract - and every recorded count being zero is direct evidence
- * that no narrowing input reaches the port, rather than an inference drawn from the handler's
- * source.
+ * `ProductFeedPort.generateProductFeed(criteria)` declares exactly ONE parameter per AAP 0.4.2, so a
+ * method that accepts any number of them still satisfies the contract - and every recorded count
+ * being ONE is direct evidence that the handler passes the criteria and nothing beside it, rather
+ * than an inference drawn from the handler's source.
+ *
+ * QUOTE-THEN-REVISE: this record used to read "declares no parameters ... every recorded count being
+ * zero is direct evidence that no narrowing input reaches the port". The zero-parameter form was a
+ * divergence from the mapping table, not the contract. The claim it was making is preserved and is
+ * now made DIRECTLY rather than by arity: {@link RecordingProductFeedPort.received} captures each
+ * argument, so a case asserts the criteria carries the origin authority and the instant and NO
+ * selection member - which is a stronger statement than "there is no argument at all".
  */
 class RecordingProductFeedPort implements ProductFeedPort {
   public readonly argumentCounts: number[] = [];
+
+  /** Every argument of every call, in call order, exactly as received. */
+  public readonly received: unknown[][] = [];
 
   private readonly document: string;
 
@@ -425,6 +458,7 @@ class RecordingProductFeedPort implements ProductFeedPort {
 
   public generateProductFeed(...args: readonly unknown[]): Promise<string> {
     this.argumentCounts.push(args.length);
+    this.received.push([...args]);
     return Promise.resolve(this.document);
   }
 }
@@ -1081,8 +1115,10 @@ interface FeedServiceHarness extends FeedHarness {
  * qualifying rows, render them, return the document - and it holds no connection, reads no
  * configuration and performs no I/O of its own. Substituting a double for it would replace the very
  * link this suite needs to observe: that the host the handler captured and the instant it pinned
- * arrive at the renderer through CONSTRUCTION rather than as method arguments. Both of ITS
- * collaborators are hand-written doubles, so nothing outside this file is reached.
+ * arrive at the renderer at all. QUOTE-THEN-REVISE - that sentence used to end "through CONSTRUCTION
+ * rather than as method arguments", which is exactly what AAP 0.4.2 reverses: they now arrive as the
+ * `FeedCriteria` argument, and this suite observes the same end-to-end path through the new seam.
+ * Both of ITS collaborators are hand-written doubles, so nothing outside this file is reached.
  */
 function harnessWithFeedService(
   candidates: readonly CatalogEntry[],
@@ -1094,15 +1130,13 @@ function harnessWithFeedService(
   const harness = harnessWith((input) =>
     input.feedHost === undefined
       ? undefined
-      : new GoogleFeedService(
-          rowSource,
-          input.feedHost,
-          // The scope binds ONE instant per request: the request's own stamp when it carried a
-          // usable one, and otherwise the root's own - which for this double is a fixed literal
-          // rather than a clock read.
-          input.now ?? SCOPE_FALLBACK_INSTANT,
-          renderer.render,
-        ),
+      : // QUOTE-THEN-REVISE: this used to be a FOUR-argument construction,
+        // `(rowSource, input.feedHost, input.now ?? SCOPE_FALLBACK_INSTANT, renderer.render)`,
+        // because the host and the instant were constructor state. AAP 0.4.2 puts both on the
+        // method's `FeedCriteria` argument, so the service is built from collaborators alone and
+        // the pair travels on `RequestScope.feedCriteria` - assembled just above, from the same
+        // input, under the same condition.
+        new GoogleFeedService(rowSource, renderer.render),
   );
 
   return {
@@ -1199,19 +1233,31 @@ describe('the product-feed entrypoint module surface', () => {
 // do. ---------------------------------------------------------------------------
 
 describe('the reshaped port contract', () => {
-  it('invokes the port with no arguments at all', async () => {
+  it('invokes the port with EXACTLY ONE argument, the criteria (F26)', async () => {
+    // QUOTE-THEN-REVISE: this case was "invokes the port with no arguments at all". AAP 0.4.2
+    // freezes the ported method as `generateProductFeed(criteria: FeedCriteria)` and AAP 0.9.2 gates
+    // on that row, so one argument is the contract and zero was the divergence.
     const port = new RecordingProductFeedPort(RENDERED_DOCUMENT);
     const { invoke } = harnessWithPort(port);
 
     const response = await invoke(feedRequestEvent(), lambdaContext());
 
     expect(response.statusCode).toBe(200);
-    expect(port.argumentCounts).toStrictEqual([0]);
+    expect(port.argumentCounts).toStrictEqual([1]);
+
+    // ONE, NOT TWO: a second argument would mean a selection surface had appeared beside the
+    // criteria, which the four invariant filters forbid.
+    expect(port.received.map((args) => args.length)).toStrictEqual([1]);
   });
 
-  it('passes neither the feed host nor the instant as a method argument', async () => {
-    // Both values are request-scoped and both reach the port through CONSTRUCTION, which is the
-    // whole mechanism by which the method stays parameterless.
+  it('passes the feed host and the instant AS the method argument, and nothing else', async () => {
+    // ★★★ QUOTE-THEN-REVISE. This case was "passes neither the feed host nor the instant as a method
+    // argument", reasoning that "both values are request-scoped and both reach the port through
+    // CONSTRUCTION, which is the whole mechanism by which the method stays parameterless". AAP 0.4.2
+    // reverses exactly that: they are the `FeedCriteria` argument. The request-scoped provenance is
+    // unchanged and is still asserted below - the host is the one observed on the request and the
+    // instant is the one the request was pinned to - and what is added is the proof that the criteria
+    // carries THOSE TWO MEMBERS AND NO SELECTION MEMBER.
     const port = new RecordingProductFeedPort(RENDERED_DOCUMENT);
     const { invoke, root } = harnessWithPort(port);
 
@@ -1221,7 +1267,20 @@ describe('the reshaped port contract', () => {
 
     expect(input.feedHost).toBe(FEED_HOST);
     expect(input.now?.toISOString()).toBe(REQUEST_INSTANT_ISO);
-    expect(port.argumentCounts).toStrictEqual([0]);
+    expect(port.argumentCounts).toStrictEqual([1]);
+
+    const [criteria] = port.received.map((args) => args[0] as FeedCriteria);
+    if (criteria === undefined) {
+      throw new Error('expected the recorded criteria to be readable');
+    }
+
+    // The SAME two values, arriving through the argument rather than the constructor.
+    expect(criteria.feedHost).toBe(FEED_HOST);
+    expect(criteria.now.toISOString()).toBe(REQUEST_INSTANT_ISO);
+
+    // AND NOTHING ELSE. No product identifier, page, limit, date window, currency or flag - the key
+    // set is closed at two, so a selection member cannot be added without failing here.
+    expect(Object.keys(criteria).sort()).toStrictEqual(['feedHost', 'now']);
   });
 
   it('ignores every query-string parameter a caller might use to narrow the feed', async () => {
@@ -1280,7 +1339,7 @@ describe('the reshaped port contract', () => {
     await invoke(feedRequestEvent(), lambdaContext());
 
     expect(root.scopeInputs).toHaveLength(1);
-    expect(port.argumentCounts).toStrictEqual([0]);
+    expect(port.argumentCounts).toStrictEqual([1]);
   });
 
   it('takes a fresh scope per invocation and memoizes no document between them', async () => {
@@ -1293,7 +1352,7 @@ describe('the reshaped port contract', () => {
     const second = await invoke(feedRequestEvent(), lambdaContext());
 
     expect(root.scopeInputs).toHaveLength(2);
-    expect(port.argumentCounts).toStrictEqual([0, 0]);
+    expect(port.argumentCounts).toStrictEqual([1, 1]);
     expect(first.body).toBe(RENDERED_DOCUMENT);
     expect(second.body).toBe(RENDERED_DOCUMENT);
   });
@@ -1439,12 +1498,10 @@ describe('the served response', () => {
     const response = await invoke(feedRequestEvent(), lambdaContext());
 
     expect(response.statusCode).toBe(200);
-    // ★ TWO HEADERS NOW: the RSS content type, and the `nosniff` added for QA-I4 that says a recipient
-    // must not sniff past it. See the case below for why that is a declaration rather than an
-    // invented HTTP semantic.
+    // ★ ONE HEADER, AND THE TITLE MEANS IT. `x-content-type-options: nosniff` briefly joined it and a
+    // code review withdrew it - see the case below, which is where the reasoning belongs.
     expect(response.headers).toStrictEqual({
       'content-type': FEED_CONTENT_TYPE,
-      'x-content-type-options': 'nosniff',
     });
   });
 
@@ -1460,16 +1517,16 @@ describe('the served response', () => {
     const response = await invoke(feedRequestEvent(), lambdaContext());
     const headerNames = Object.keys(response.headers ?? {}).map((name) => name.toLowerCase());
 
-    // ★★ `x-content-type-options: nosniff` JOINED THE SET (QA-I4), AND THE LIST BELOW IS WHY THAT IS
-    // NOT A CONTRADICTION OF THIS CASE. Everything enumerated below - `etag`, `last-modified`,
-    // `cache-control`, `vary` and the rest - is an HTTP SEMANTIC THE SOURCE LACKED, and the case exists
-    // to prove none was invented. `nosniff` is not one of those: it adds no caching behaviour, no
-    // negotiation, no conditional request and no state. It is the second half of the `content-type`
-    // this file ALREADY declares - "and do not second-guess it" - so it belongs with the declaration
-    // rather than with the inventions. The exact set is still asserted, so anything ELSE appearing
-    // still fails here.
-    expect(headerNames).toStrictEqual(['content-type', 'x-content-type-options']);
-    expect(response.headers?.['x-content-type-options']).toBe('nosniff');
+    // ★★★ `x-content-type-options: nosniff` BRIEFLY JOINED THE SET, AND THIS CASE IS WHY IT NO LONGER
+    // DOES. The argument for admitting it was that it adds no caching behaviour, no negotiation, no
+    // conditional request and no state - that it is the second half of the `content-type` this file
+    // already declares. A code review rejected that distinction, and the note added alongside the header
+    // had already conceded the decisive fact: neither the source nor the AAP prescribes it. An HTTP
+    // semantic the ported system did not have is an invented non-functional requirement (AAP 0.8.1),
+    // whether or not it is a conventionally sensible one, and a deployment that wants it sets it at the
+    // edge. So the assertion is back to exactly one header, which is what this case was written to say.
+    expect(headerNames).toStrictEqual(['content-type']);
+    expect(response.headers?.['x-content-type-options']).toBeUndefined();
     for (const absent of [
       'etag',
       'last-modified',
@@ -1912,10 +1969,7 @@ describe('the public, unauthenticated endpoint', () => {
     expect(authorized.statusCode).toBe(anonymous.statusCode);
     expect(authorized.body).toBe(anonymous.body);
     expect(authorized.body).not.toContain('Bearer');
-    expect(Object.keys(authorized.headers ?? {})).toStrictEqual([
-      'content-type',
-      'x-content-type-options',
-    ]);
+    expect(Object.keys(authorized.headers ?? {})).toStrictEqual(['content-type']);
   });
 
   it('does not advertise itself as secured', async () => {
@@ -1927,9 +1981,10 @@ describe('the public, unauthenticated endpoint', () => {
 
     expect(headerNames).not.toContain('www-authenticate');
     expect(headerNames).not.toContain('authorization');
-    // The set gained `nosniff` for QA-I4; what this case asserts - that no challenge and no
-    // authorization header is advertised on a PUBLIC endpoint - is unchanged.
-    expect(headerNames).toStrictEqual(['content-type', 'x-content-type-options']);
+    // The set is one header again after a code review withdrew the `nosniff` that briefly joined it;
+    // what this case asserts - that no challenge and no authorization header is advertised on a PUBLIC
+    // endpoint - is unchanged either way.
+    expect(headerNames).toStrictEqual(['content-type']);
   });
 
   it('reaches no network while serving the feed', async () => {
@@ -2042,7 +2097,7 @@ describe('routing to the feed capability', () => {
     );
 
     expect(response.statusCode).toBe(200);
-    expect(port.argumentCounts).toStrictEqual([0]);
+    expect(port.argumentCounts).toStrictEqual([1]);
   });
 
   it('matches the method and the path case-insensitively, per the legacy comparisons', async () => {
@@ -2058,7 +2113,7 @@ describe('routing to the feed capability', () => {
     );
 
     expect(response.statusCode).toBe(200);
-    expect(port.argumentCounts).toStrictEqual([0]);
+    expect(port.argumentCounts).toStrictEqual([1]);
   });
 
   it('logs the requested route, sanitized, and never echoes it into the body', async () => {
@@ -2595,15 +2650,23 @@ describe('closed dispatch, capability-scoped assembly and the whole-feed tradeof
     expect(response.body).toContain('<g:id>sku-499</g:id>');
     expect(response.body.split('<item>')).toHaveLength(items.length + 1);
 
-    // THE PORT WAS ASKED ONCE, WITH NO ARGUMENTS. No page, no offset, no limit and no cursor, because
-    // the port has no parameter to carry one and this handler declares no criteria type.
-    expect(port.argumentCounts).toStrictEqual([0]);
+    // THE PORT WAS ASKED ONCE, WITH NO PAGING ARGUMENT OF ANY KIND. QUOTE-THEN-REVISE: this used to
+    // read "WITH NO ARGUMENTS ... because the port has no parameter to carry one and this handler
+    // declares no criteria type." The port does declare one parameter, `FeedCriteria` per AAP 0.4.2 -
+    // and the substance of the claim is unchanged and is now asserted DIRECTLY: the criteria's key set
+    // is closed at the origin authority and the instant, so there is no page, offset, limit or cursor
+    // for a caller to set.
+    expect(port.argumentCounts).toStrictEqual([1]);
+    for (const args of port.received) {
+      const [criteria] = args as [FeedCriteria];
+      expect(Object.keys(criteria).sort()).toStrictEqual(['feedHost', 'now']);
+    }
 
     // AND NO PAGINATION SEMANTIC IS DECLARED ANYWHERE ON THE RESPONSE. Not as a header, not as a link
     // relation, and not as a body member - the body is the document and nothing wraps it.
     const headerNames = Object.keys(response.headers ?? {}).map((name) => name.toLowerCase());
 
-    expect(headerNames).toStrictEqual(['content-type', 'x-content-type-options']);
+    expect(headerNames).toStrictEqual(['content-type']);
     expect(headerNames).not.toContain('link');
     for (const paging of ['rel="next"', 'nextPageToken', 'nextCursor', 'hasMore', 'totalPages']) {
       expect(response.body).not.toContain(paging);

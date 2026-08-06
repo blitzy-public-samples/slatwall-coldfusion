@@ -267,7 +267,7 @@ import { makePromotionFixtures } from '../../../fixtures/promotionFixtures.js';
 // intent the code does not honour; an accurate absence is preferable to a tidy-looking import. None
 // of them is modified by this work.
 //
-// No test-only dependency is introduced. Nothing outside the fourteen pinned packages is added: no
+// No test-only dependency is introduced. Nothing outside the thirteen pinned packages is added: no
 // alternative test runner, no mocking or stubbing library, no data-generation library, no HTTP
 // interception or HTTP-assertion library, no alternative assertion or builder library, no runner UI
 // package and NO DOM-EMULATION ENVIRONMENT of any kind - this suite needs none of them. Both

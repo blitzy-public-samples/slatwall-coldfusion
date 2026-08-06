@@ -1112,12 +1112,10 @@ describe('stripOverUsedRewardDiscounts - the ported over-use correction loop', (
       expect(recordAt(bucket, 1).discountAmount.toFixed2()).toBe('20.00');
     });
 
-    it('records the reverse direction as a structural fact of the port', () => {
-      // The fixture graph carries this as a boolean so the direction is asserted somewhere other
-      // than in a comment. It exists because reversing the scan is the single easiest way to change
-      // the money without changing a visible figure anywhere in the source.
-      expect(fixtures.overUseStrippingSearchesInReverse).toBe(true);
-    });
+    // The reverse direction is proven by the two behavioural cases above - the smallest matching
+    // discount is the one rewritten and the one deleted - rather than by asserting a boolean the
+    // fixture module authored. Reversing the scan changes the money, and those cases fail when it
+    // is reversed; a self-agreeing flag would not.
   });
 
   describe('the accumulator lookups are UNGUARDED here, unlike the application pass at L529', () => {

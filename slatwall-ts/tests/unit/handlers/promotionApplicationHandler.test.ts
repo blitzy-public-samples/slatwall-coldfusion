@@ -266,6 +266,17 @@ function makeRecorder(): PricingRecorder {
  * PINNED so filtering cannot depend on an ambient variable, and the sink replaces stdout so the
  * console is never globally silenced and never polluted.
  */
+/**
+ * A caller-authored ANCESTOR key, deliberately named like a credential.
+ *
+ * It exists for one purpose: proving that a refusal which names an offending member does not repeat the
+ * member names the caller chose to wrap it in. A security review found (MAJOR, CWE-209/CWE-532) that the
+ * prototype-key refusal published the whole dotted location, ancestors included, so a body such as
+ * `{"api_token_value":{"__proto__":{}}}` had this class of name echoed into a 400 and persisted in the
+ * logs.
+ */
+const PLANTED_ANCESTOR_KEY = 'planted_api_token_value_4c17ea';
+
 interface RecordingLogger {
   readonly logger: Logger;
   /** Raw emitted lines, asserted as text so nothing can leak inside a field nobody inspected. */
@@ -414,6 +425,11 @@ function makeRequestScopeDouble(
     },
     get productFeedPort(): RequestScope['productFeedPort'] {
       return refuse('RequestScope.productFeedPort');
+    },
+    // The AAP 0.4.2 argument of `generateProductFeed`, published beside the port it is passed to.
+    // Refused here for the same reason the port is: the feed is a different capability.
+    get feedCriteria(): RequestScope['feedCriteria'] {
+      return refuse('RequestScope.feedCriteria');
     },
 
     /**
@@ -1993,7 +2009,7 @@ describe('the authenticated admission gate (NET-NEW)', () => {
     expect(result.body).not.toContain('noAuthorizerContext');
     expect(result.body).not.toContain('authoriz');
     expect(errorBodyOf(result)).not.toHaveProperty('fields');
-    expect(headerNames).toEqual(['cache-control', 'content-type', 'x-content-type-options']);
+    expect(headerNames).toEqual(['cache-control', 'content-type']);
     expect(headerNames).not.toContain('www-authenticate');
   });
 });
@@ -2584,12 +2600,14 @@ function expectSafeResponseEnvelope(result: APIGatewayProxyResult): void {
   // `no-store`, because a priced order belongs to one account at one instant and an intermediary
   // caching it would serve one customer's discount to another.
   expect(headers['cache-control']).toBe('no-store');
-  // ★ THE THIRD, ADDED FOR QA-I4: having declared the content type explicitly, the shared builder now
-  // also says a recipient must not sniff past that declaration.
-  expect(headers['x-content-type-options']).toBe('nosniff');
+  // ★ AND NO THIRD. `x-content-type-options: nosniff` briefly joined the shared builder's set and a
+  // code review withdrew it: the ported system had no such HTTP semantic and the AAP prescribes none,
+  // so emitting it invented a non-functional requirement (0.8.1). The exact list below is what keeps
+  // every invented header out, this one included.
+  expect(headers['x-content-type-options']).toBeUndefined();
 
   const headerNames = Object.keys(headers).map((name): string => name.toLowerCase());
-  expect(headerNames).toEqual(['content-type', 'cache-control', 'x-content-type-options']);
+  expect(headerNames).toEqual(['content-type', 'cache-control']);
   for (const forbidden of FORBIDDEN_HEADER_NAMES) {
     expect(headerNames).not.toContain(forbidden);
   }
@@ -2835,27 +2853,34 @@ describe('response shaping and safe error mapping (NET-NEW)', () => {
     // An object literal `{ __proto__: {} }` invokes the prototype SETTER and creates no own property,
     // so a fixture built that way would contain nothing to detect and this case would pass while the
     // guard did nothing. API Gateway delivers text; `JSON.parse` makes it an own data property.
-    const bodies: readonly { readonly body: string; readonly path: string }[] = [
-      {
-        body: '{"operation":"updateOrderAmountsWithPromotions","__proto__":{"p":1}}',
-        path: '__proto__',
-      },
-      {
-        body: '{"operation":"updateOrderAmountsWithPromotions","order":{"orderID":"o-1","__proto__":{"p":1}}}',
-        path: 'order.__proto__',
-      },
+    //
+    // ★★★ THE NESTED ROW NO LONGER EXPECTS `order.__proto__`, AND THAT REVISION IS THE POINT OF THIS
+    // CASE NOW. It used to, and a security review found (MAJOR, CWE-209/CWE-532) that the ancestor
+    // segments of such a path are member names THE CALLER CHOSE, reaching both the 400 body and the log
+    // stream. The third row is the proof: its ancestor is named like a credential, and neither the
+    // response nor the diagnostic may repeat it. What is published instead is one frozen issue naming
+    // the offending key - the only member name involved that the caller did not choose.
+    const bodies: readonly string[] = [
+      '{"operation":"updateOrderAmountsWithPromotions","__proto__":{"p":1}}',
+      '{"operation":"updateOrderAmountsWithPromotions","order":{"orderID":"o-1","__proto__":{"p":1}}}',
+      `{"operation":"updateOrderAmountsWithPromotions","${PLANTED_ANCESTOR_KEY}":{"__proto__":{"p":1}}}`,
     ];
 
-    for (const { body, path } of bodies) {
+    for (const body of bodies) {
       const harness = makeHarness();
       const result = await harness.invoke(makeProxyEvent({ body }));
 
       expectSafeResponseEnvelope(result);
       expect(result.statusCode).toBe(400);
       expect(errorBodyOf(result).category).toBe('invalidRequest');
-      // The path names the KEY the caller sent - never a value, which is the invariant this whole
-      // error surface holds to.
-      expect(fieldPathsOf(result)).toContain(path);
+      // ONE fixed issue, whatever the depth. No ancestor, no value, no depth.
+      expect(fieldPathsOf(result)).toStrictEqual(['__proto__']);
+      expect(result.body).not.toContain(PLANTED_ANCESTOR_KEY);
+      // ★★ AND NOTHING THE CALLER WROTE REACHES THE DIAGNOSTIC EITHER. The refusal is logged by
+      // `errorMapper.invalidRequestResponse`, which used to copy every published path onto the stream
+      // under `fieldPaths`; it now carries a closed reason and a count.
+      expect(harness.emitted.lines.join('\n')).not.toContain(PLANTED_ANCESTOR_KEY);
+      expect(harness.emitted.lines.join('\n')).not.toContain('fieldPaths');
       // ★ AND THE REFUSAL IS TOTAL: no composition root was opened, so nothing was priced and no
       // connection was taken from the pool.
       expect(harness.recorder.log).toEqual([]);

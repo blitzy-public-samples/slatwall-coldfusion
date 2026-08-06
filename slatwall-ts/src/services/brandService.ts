@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/handlers/bootstrap.ts  composition root (wiring)
 // ---------------------------------------------------------------------------
@@ -149,7 +147,7 @@
 //   convention scan over component properties - a scan that carried a first-scan
 //   lock. Here it is one explicit, compile-checked constructor argument typed to
 //   a port interface: no scan, no service locator, no DI container package, and
-//   the whole graph assembled once in src/handlers/bootstrap.ts (planned).
+//   the whole graph assembled once in src/handlers/bootstrap.ts.
 //
 //   ★ THIS IS THE LEANEST SERVICE IN THE SLICE: exactly ONE collaborator, and it
 //   is LIVE - zero dead injections. Verified counts across the slice, for
@@ -481,48 +479,76 @@ export interface BrandFrameworkWrites {
    * unsavedvalue=""`], and both paths acquire audit stamps, so the answer necessarily
    * differs from the input.
    *
-   * MAY REJECT. The `"unique":true` half of the `urlTitle` rule
-   * [model/validation/Brand.json] needs a query, so it is the one save-context rule
-   * this service cannot evaluate itself; the implementation transcribes
-   * `HibachiDAO.isUniqueProperty` [org/Hibachi/HibachiDAO.cfc:L130-L147] and refuses
-   * on a collision.
+   * DOES NOT EVALUATE VALIDATION RULES. Every save-context rule of
+   * [model/validation/Brand.json] - including the `"unique":true` half of the `urlTitle` rule - is
+   * decided by the SERVICE before this is reached, which is the legacy ordering: `validate` runs at
+   * [org/Hibachi/HibachiService.cfc:L151] and the flush only at [L153-L155]. See
+   * {@link BrandFrameworkWrites.isUrlTitleUnique}.
+   *
+   * ★ QUOTE-THEN-REVISE. This used to read "MAY REJECT. The `"unique":true` half of the `urlTitle`
+   * rule needs a query, so it is the one save-context rule this service cannot evaluate itself; the
+   * implementation ... refuses on a collision." The premise - that a rule needing a query cannot be
+   * evaluated by the service - was never true of the legacy, where the VALIDATOR itself queried:
+   * `validate_unique` reaches `HibachiDAO.isUniqueProperty`
+   * [org/Hibachi/HibachiDAO.cfc:L130-L147]. Deciding it in the writer instead turned a validation
+   * failure into a thrown persistence error, which is the class of divergence code review recorded
+   * across this whole tier. The read is now published separately and the rule is decided with the
+   * other two.
    */
   saveBrand(brand: Brand): Promise<Brand>;
+
+  /**
+   * Whether `urlTitle` is free - the query half of `model/validation/Brand.json`'s
+   * `"urlTitle": {"unique":true}` save rule.
+   *
+   * Transcribes `HibachiDAO.isUniqueProperty` [org/Hibachi/HibachiDAO.cfc:L130-L147], whose body
+   * counts rows holding the value while EXCLUDING the entity's own row - which is what lets an
+   * update keep its existing title.
+   *
+   * ★ IT IS A READ ON A WRITE CONTRACT, AND THAT IS DELIBERATE RATHER THAN UNTIDY. The alternative
+   * is a second module-local contract for one method against the same table, resolved by the same
+   * composition-root collaborator; splitting them would give this service two collaborators that
+   * must agree about `SwBrand` instead of one that owns it. The legacy is the same shape: the
+   * validation rule and the flush both reached `HibachiDAO`.
+   *
+   * @param urlTitle - The candidate title, already known to be non-empty by the `required` rule.
+   * @param brandID - The saving brand's identifier, EXCLUDED from the probe. For a new brand this is
+   *   the empty string [model/entity/Brand.cfc:L52, `unsavedvalue=""`], which matches no stored row
+   *   and therefore excludes nothing - exactly the legacy's behaviour for an unsaved entity.
+   * @returns `true` when no OTHER brand holds the title.
+   */
+  isUrlTitleUnique(urlTitle: string, brandID: string): Promise<boolean>;
 }
 
 /**
- * Raised when a brand fails one of `model/validation/Brand.json`'s save-context rules.
+ * One save-context rule of `model/validation/Brand.json` that a brand did not satisfy.
  *
- * ★ WHY A THROW, WHERE THE LEGACY SET AN ERROR FLAG. `HibachiService.save` called
- * `validate(context)` [org/Hibachi/HibachiService.cfc:L151] and then flushed only if
- * `!hasErrors()` [:L155]; on failure it announced a failure event and RETURNED THE
- * ENTITY, errors attached. `hasErrors()` is part of the framework validation service,
- * which is not ported, and no entity in this subtree carries an error collection - so
- * there is no channel for a returned-with-errors entity, and inventing one would be a
- * new framework rather than a port.
+ * ★★★ THIS REPLACES `BrandValidationError`, AND THE REPLACEMENT IS THE FIX. That class was THROWN by
+ * `saveBrand`, on this reasoning: "`hasErrors()` is part of the framework validation service, which is
+ * not ported, and no entity in this subtree carries an error collection - so there is no channel for a
+ * returned-with-errors entity, and inventing one would be a new framework rather than a port."
  *
- * A throw is what the subtree already does with the same situation: `productService.ts`
- * lets `productUpdateSkusSchema.parse(input)` reject. The property that must hold either
- * way, and does, is the one that matters: A FAILING BRAND IS NOT WRITTEN.
+ * The first clause was a true statement about the code AS IT THEN STOOD, and the conclusion drawn from
+ * it was the wrong way round: the missing channel was the defect, not a constraint to design around.
+ * `HibachiService.save` [org/Hibachi/HibachiService.cfc:L151-L167] validates, flushes ONLY on a clean
+ * entity, and RETURNS THE SAME ENTITY EITHER WAY - and `saveBrand` [model/service/BrandService.cfc:L76]
+ * inherits exactly that. So `src/domain/entities/brand.ts` now publishes the four-member register of
+ * [org/Hibachi/HibachiTransient.cfc:L30-L64] - `getErrors`, `hasErrors`, `hasError`, `addError` - which
+ * is a PORT of framework members the slice concretely relies on, not a new framework. Throwing sent
+ * callers into exception flow for an outcome the source treats as an ordinary return value.
  *
- * Names the property and the rule, and NOT the value. A brand name or website is the
- * caller's own commercial data and `src/handlers/errorMapper.ts` may publish this
- * message.
+ * NAMES THE PROPERTY AND THE RULE, AND NEVER THE VALUE. A brand name or website is the caller's own
+ * commercial data; both members are server-authored, which is what keeps them safe for
+ * `src/handlers/errorMapper.ts` to publish. The member names are the legacy's own -
+ * `addError(errorName, errorMessage)` [org/Hibachi/HibachiTransient.cfc:L61] - so the two surfaces read
+ * alike.
  */
-export class BrandValidationError extends Error {
-  public readonly propertyName: string;
+export interface BrandSaveContextError {
+  /** The property the rule is declared on, used as the error name. */
+  readonly propertyIdentifier: string;
 
-  public readonly reason: string;
-
-  constructor(propertyName: string, reason: string) {
-    super(
-      `saveBrand refused: ${propertyName} ${reason} ` +
-        '(model/validation/Brand.json, save context). No row was written.',
-    );
-    this.name = 'BrandValidationError';
-    this.propertyName = propertyName;
-    this.reason = reason;
-  }
+  /** The rule, stated. Server-authored; never carries the submitted value. */
+  readonly errorMessage: string;
 }
 
 /**
@@ -670,12 +696,22 @@ function isValidUrl(value: string): boolean {
  * then validate [:L151]. Validating the pre-populate entity would refuse a save whose
  * payload supplied the missing value.
  *
- * THE `unique` HALF OF THE `urlTitle` RULE IS NOT HERE. It needs a query, so it belongs
- * to {@link BrandFrameworkWrites}, whose implementation transcribes
- * `HibachiDAO.isUniqueProperty` [org/Hibachi/HibachiDAO.cfc:L130-L147]. Splitting one
- * JSON rule across two places is worth stating plainly, and the alternative - giving
- * this service a uniqueness read of its own - would put a second query surface in the
- * service tier for a rule the writer already has to hold anyway.
+ * ★★ ALL THREE RULES ARE DECIDED HERE, INCLUDING THE `unique` HALF OF THE `urlTitle` RULE - which is
+ * why this function is `async` and takes the framework-writes collaborator. It used to be decided in
+ * the WRITER, on the ground that "it needs a query, so it belongs to `BrandFrameworkWrites`... the
+ * alternative - giving this service a uniqueness read of its own - would put a second query surface in
+ * the service tier for a rule the writer already has to hold anyway." Two things were wrong with that.
+ * The legacy VALIDATOR did the query itself, through `HibachiDAO.isUniqueProperty`
+ * [org/Hibachi/HibachiDAO.cfc:L130-L147], so deciding it at flush time inverted the source's own
+ * ordering; and deciding it there made a validation failure arrive as a THROWN persistence error rather
+ * than as an error on the entity. There is still ONE query surface and ONE collaborator - the read is
+ * published on the same contract - so the objection's substance is preserved while its conclusion is
+ * reversed.
+ *
+ * ★ IT COLLECTS RATHER THAN THROWS, AND ACCUMULATES ALL FAILURES. `validate()` recorded every failed
+ * rule via `addError` [org/Hibachi/HibachiTransient.cfc:L61-L64] and the flush then asked
+ * `hasErrors()` once, so a caller learned about every problem at once. Refusing on the first would be
+ * a worse experience than the legacy's.
  *
  * EACH TEST IS THE FRAMEWORK VALIDATOR'S, TRANSCRIBED:
  *   * `required` -> `validate_required` [org/Hibachi/HibachiValidationService.cfc:L233-L239],
@@ -686,20 +722,46 @@ function isValidUrl(value: string): boolean {
  *     || isValid(...)` - so an absent website is valid and only a present, malformed one
  *     is refused.
  */
-function assertBrandSaveContextRules(brand: Brand): void {
+async function collectBrandSaveContextErrors(
+  brand: Brand,
+  frameworkWrites: BrandFrameworkWrites,
+): Promise<BrandSaveContextError[]> {
+  const errors: BrandSaveContextError[] = [];
+
   if (!cfTruthy(cfLen(brand.getBrandName()))) {
-    throw new BrandValidationError('brandName', 'is required');
+    errors.push({ propertyIdentifier: 'brandName', errorMessage: 'brandName is required' });
   }
 
   const brandWebsite = brand.getBrandWebsite();
 
   if (brandWebsite !== undefined && !isValidUrl(brandWebsite)) {
-    throw new BrandValidationError('brandWebsite', 'must be a valid URL');
+    errors.push({
+      propertyIdentifier: 'brandWebsite',
+      errorMessage: 'brandWebsite must be a valid URL',
+    });
   }
 
-  if (!cfTruthy(cfLen(brand.getUrlTitle()))) {
-    throw new BrandValidationError('urlTitle', 'is required');
+  const urlTitle = brand.getUrlTitle();
+
+  if (!cfTruthy(cfLen(urlTitle))) {
+    errors.push({ propertyIdentifier: 'urlTitle', errorMessage: 'urlTitle is required' });
+  } else if (urlTitle !== undefined) {
+    // The `unique` half of the SAME rule, and it runs ONLY when the `required` half passed - which is
+    // the legacy order: `validate_unique` [org/Hibachi/HibachiValidationService.cfc] is one of the
+    // qualifiers declared on `urlTitle`, and probing for an empty candidate would match every row
+    // whose title is null. The `else if` reproduces that gating; the redundant `!== undefined` term
+    // is what `cfTruthy(cfLen(...))` cannot narrow on its own.
+    const unique = await frameworkWrites.isUrlTitleUnique(urlTitle, brand.getBrandID());
+
+    if (!unique) {
+      errors.push({
+        propertyIdentifier: 'urlTitle',
+        errorMessage: 'urlTitle is already held by another brand and must be unique',
+      });
+    }
   }
+
+  return errors;
 }
 
 // ---------------------------------------------------------------------------
@@ -829,8 +891,12 @@ export class BrandService {
    * @returns The PERSISTED brand, which is a different instance from the argument: a new
    *   brand carries the identifier the flush minted [model/entity/Brand.cfc:L52], and
    *   both paths carry the audit stamps the write applied.
-   * @throws {BrandValidationError} When a save-context rule in
-   *   `model/validation/Brand.json` fails. Nothing is written.
+   *
+   *   ON A REFUSAL it is the POPULATED-BUT-UNPERSISTED brand, CARRYING ITS ERRORS - ask
+   *   `hasErrors()` / `getErrors()` [org/Hibachi/HibachiTransient.cfc:L30-L64]. Nothing is written.
+   *   That is `HibachiService.save`'s contract [org/Hibachi/HibachiService.cfc:L167], which
+   *   `saveBrand` inherits at [model/service/BrandService.cfc:L76]. It USED TO THROW
+   *   `BrandValidationError`; see {@link BrandSaveContextError}.
    */
   async saveBrand(brand: Brand, data: BrandSaveInput): Promise<Brand> {
     // LEGACY-NOTE [model/service/BrandService.cfc:L68]: the legacy line reads the
@@ -989,12 +1055,30 @@ export class BrandService {
     // than a mutation, because `Brand` is immutable; the caller's object is untouched.
     const populatedBrand = populateBrandFromSaveInput(brand, data);
 
-    // STEP 2 - VALIDATE [org/Hibachi/HibachiService.cfc:L151], on the POPULATED entity
-    // and before anything is written. The legacy reached the DAO only when
-    // `!hasErrors()` [:L155]; here a failing rule throws, and either way no row is
-    // written. The `"unique":true` half of the `urlTitle` rule needs a query and is
-    // enforced by the writer - see `assertBrandSaveContextRules`.
-    assertBrandSaveContextRules(populatedBrand);
+    // STEP 2 - VALIDATE [org/Hibachi/HibachiService.cfc:L151], on the POPULATED entity and before
+    // anything is written. ALL THREE save-context rules are decided here, including the
+    // `"unique":true` half of the `urlTitle` rule - see `collectBrandSaveContextErrors` for why that
+    // moved out of the writer.
+    const errors = await collectBrandSaveContextErrors(populatedBrand, this.frameworkWrites);
+
+    // ★★★ THE REFUSAL IS RECORDED ON THE ENTITY AND THE ENTITY IS RETURNED, UNPERSISTED. That is
+    // `HibachiService.save`'s own shape: flush only when `!hasErrors()`
+    // [org/Hibachi/HibachiService.cfc:L153-L155], and `return arguments.entity` either way [L167].
+    // This used to throw `BrandValidationError`; see {@link BrandSaveContextError} for the argument
+    // that put the throw here and why it does not hold.
+    //
+    // ★ THE ENTITY CARRYING THE ERRORS IS THE POPULATED ONE, NOT THE CALLER'S ARGUMENT, and that is
+    // the legacy's answer too. `Brand` is immutable in this port, so populate produced a new instance
+    // [step 1]; the legacy populated IN PLACE and then returned that same object, so in both cases
+    // what comes back is the entity AS SUBMITTED - carrying the payload's values and the errors they
+    // failed on. Answering the pristine argument instead would hide what was submitted.
+    if (errors.length > 0) {
+      for (const error of errors) {
+        populatedBrand.addError(error.propertyIdentifier, error.errorMessage);
+      }
+
+      return populatedBrand;
+    }
 
     // STEP 3 - FLUSH [org/Hibachi/HibachiService.cfc:L155], and answer THE PERSISTED ROW
     // rather than the argument. A new brand acquires there the identifier

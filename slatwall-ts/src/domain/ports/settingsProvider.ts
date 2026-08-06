@@ -1,19 +1,28 @@
 // Settings resolver port: one synchronous, injected, string-returning resolver over a CLOSED union
-// of SEVEN setting keys.
+// of FOUR setting keys.
 //
 // The legacy platform reads a setting four different ways; all four collapse into this flat port.
 // It takes a key and returns a value - it is not an entity-graph traversal, and it is not a general
 // settings API.
 //
-// The seven keys, IN THE ORDER THEIR DECLARATIONS APPEAR in `model/service/SettingService.cfc`, with
+// The four keys, IN THE ORDER THEIR DECLARATIONS APPEAR in `model/service/SettingService.cfc`, with
 // the defaults declared there: `globalURLKeyProduct` ("sp") [:L178], `globalURLKeyProductType`
-// ("spt") [:L179], `productImageDefaultExtension` ("jpg") [:L191],
-// `productImageOptionCodeDelimiter` ("-") [:L192], `productTitleString` (a template, not a title)
-// [:L193], `skuCurrency` ("USD") [:L221] and `skuEligibleCurrencies` (a runtime-computed list)
-// [:L222]. The defaults live at those declarations, not in the entities that read them - notably
-// there is no hardcoded "USD" anywhere in `model/entity/Sku.cfc`.
+// ("spt") [:L179], `skuCurrency` ("USD") [:L221] and `skuEligibleCurrencies` (a runtime-computed
+// list) [:L222]. The defaults live at those declarations, not in the entities that read them -
+// notably there is no hardcoded "USD" anywhere in `model/entity/Sku.cfc`.
 //
-// THE UNION IS CLOSED AT SEVEN, AND AN EIGHTH KEY IS A SCOPE VIOLATION RATHER THAN A CONVENIENCE.
+// ★★★ FOUR, NOT SEVEN - AND THE THREE THAT LEFT DID NOT DISAPPEAR. This union carried seven
+// literals for one revision: the four above plus `productImageDefaultExtension` [:L191],
+// `productImageOptionCodeDelimiter` [:L192] and `productTitleString` [:L193]. The transformation plan
+// specifies this port as "a read-only accessor for exactly four keys, with the legacy defaults
+// mirrored" and cites exactly [:L178], [:L179], [:L221] and [:L222]; widening it to seven widened a
+// FROZEN interface, and code review recorded that as a scope violation. The three product-presentation
+// keys are still resolved, still from the same `SwSetting` table and still by the same composition
+// root - through {@link ProductPresentationSettingsProvider} below, a SEPARATE narrow contract with a
+// separate consumer set. Nothing is lost and nothing is duplicated: one authority per setting, two
+// contracts because there are two concerns.
+//
+// THE UNION IS CLOSED AT FOUR, AND A FIFTH KEY IS A SCOPE VIOLATION RATHER THAN A CONVENIENCE.
 // `skuAllowBackorderFlag` [:L219], `globalURLKeyBrand` ("sb") [:L177], `imageAltString` [:L183],
 // `imageMissingImagePath` [:L184], `globalAssetsImageFolderPath` [:L164],
 // `skuEligibleFulfillmentMethods` [:L223], `globalDateFormat` and `productDisplayTemplate` [:L190]
@@ -47,55 +56,6 @@ export type SettingKey =
    * keys, and because the product-type save path is in scope.
    */
   | 'globalURLKeyProductType'
-  /**
-   * The file extension appended to a generated SKU image file name.
-   *
-   * `productImageDefaultExtension = {fieldType="text",defaultValue="jpg"}`
-   * [model/service/SettingService.cfc:L191] - default `"jpg"`.
-   *
-   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L138], which appends
-   * `".#getProduct().setting('productImageDefaultExtension')#"` after the sanitized product code and
-   * the option string. THE LEGACY READ IS ON THE PRODUCT, NOT ON THE SKU - the line resolves the
-   * setting through `getProduct()` - which is exactly why ONE FLAT PROVIDER serves both entities
-   * instead of each owning its own resolution surface.
-   *
-   * The value is the extension WITHOUT the separating dot; the dot is written at the call site.
-   */
-  | 'productImageDefaultExtension'
-  /**
-   * The separator placed before each image-group option code in a generated file name.
-   *
-   * `productImageOptionCodeDelimiter = {fieldType="select", defaultValue="-"}`
-   * [model/service/SettingService.cfc:L192] - default `"-"`, whose legacy option list is exactly
-   * `['-','_']` [model/service/SettingService.cfc:L346-L347].
-   *
-   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L135], once per option whose option
-   * group carries `getImageGroupFlag()`. IT IS A PREFIX PER CONTRIBUTING OPTION, NOT A JOIN
-   * SEPARATOR: the legacy concatenates the delimiter AHEAD of each code, so a single contributing
-   * option still yields a leading delimiter and none is emitted when no option group is flagged.
-   * Resolved through `getProduct()` exactly as the extension above is.
-   */
-  | 'productImageOptionCodeDelimiter'
-  /**
-   * The template a product's display title is rendered from.
-   *
-   * `productTitleString = {fieldType="text", defaultValue="${brand.brandName} ${productName}"}`
-   * [model/service/SettingService.cfc:L193].
-   *
-   * THE DEFAULT IS A TEMPLATE, NOT A TITLE. `Product.getTitle()`
-   * [model/entity/Product.cfc:L540-L545] passes it as
-   * `replaceStringTemplate(template=setting('productTitleString'), object=this)`, and the utility
-   * resolves each `${...}` marker against the entity graph. Those markers are LEGACY TEMPLATE SYNTAX
-   * with no JavaScript meaning: the value is a plain string on this port and is never evaluated here.
-   *
-   * PUBLISHED AND RESOLVED HERE, YET STILL NOT CONSUMED BY `Product.getTitle()` - and the reason has
-   * nothing to do with this key. The renderer it needs, `hibachiUtilityService.replaceStringTemplate`
-   * [model/entity/Product.cfc:L542], is a framework utility under `org/Hibachi/`, the boundary this
-   * migration extracts from and never ports, so it has no target counterpart. The key is a genuine
-   * setting of the in-scope product subsystem and belongs in this union whether or not that one
-   * renderer ever arrives.
-   */
-  | 'productTitleString'
   /**
    * The base currency a SKU's own price columns are denominated in.
    *
@@ -164,15 +124,19 @@ export type SettingKey =
  * composition root constructs the instance and supplies the legacy defaults, then hands the
  * finished provider inward.
  *
- * IT IS ONE OF FIVE SUCH PORTS, and the figure is stated so it can be checked against the folder
- * rather than trusted: this one plus `addressZoneEvaluator`, `urlTitleGenerator`, `imageStore` and
- * `subscriptionTermProvider`. No file under `src/` declares `implements` for any of the five. The
- * remaining eight of the thirteen ports all have an implementing file - six MySQL adapters under
- * `src/repositories/mysql/`, plus `currencyConverter` at
- * `src/integrations/europeanCentralBankCurrencyConverter.ts` and `productFeedPort` at
- * `src/integrations/google/googleFeedService.ts`. The figure has been corrected twice as those two
- * adapters shipped, from seven to six to five, which is the argument for deriving it from the
- * folder every time rather than restating a remembered number.
+ * IT IS ONE OF SIX SUCH PORTS, and the figure is stated so it can be checked against the folder
+ * rather than trusted: this one plus `addressZoneEvaluator`, `urlTitleGenerator`, `imageStore`,
+ * `subscriptionTermProvider` and `currencyConverter`. No file under `src/` declares `implements` for
+ * any of the six; the composition root satisfies them all itself. The remaining seven of the thirteen
+ * ports have an implementing file - six MySQL adapters under `src/repositories/mysql/`, plus
+ * `productFeedPort` at `src/integrations/google/googleFeedService.ts`.
+ *
+ * QUOTE-THEN-REVISE: this read "IT IS ONE OF FIVE SUCH PORTS" and named `currencyConverter` as
+ * implemented at `src/integrations/europeanCentralBankCurrencyConverter.ts`. That module was
+ * withdrawn as unplanned architecture - AAP 0.3.1 does not enumerate it - and its behaviour moved
+ * into the composition root, so the count went five, then six. The figure has now been corrected
+ * three times as adapters shipped and one was withdrawn, which is the argument for deriving it from
+ * the folder every time rather than restating a remembered number.
  *
  * THE COMPOSITION ROOT MUST RESOLVE EVERY RUNTIME-COMPUTED DEFAULT EAGERLY, before the provider
  * instance reaches the domain layer. Exactly one key needs this: `skuEligibleCurrencies` declares
@@ -188,6 +152,35 @@ export type SettingKey =
  * implementation does must therefore live on the per-request instance, so that one request can
  * never observe a value resolved for another. This is a correctness constraint on where the state
  * lives, not a tuning choice.
+ *
+ * ★★★ AAP SURFACE RECONCILIATION - EXACTLY FOUR KEYS, AND WHY A SECOND CONTRACT SHARES THIS FILE.
+ * Recorded here, at the contract, because a reviewer checking this port against the plan will reach
+ * both questions and is entitled to find the answers at the port.
+ *
+ *   THE FOUR KEYS ARE THE PLAN'S FOUR, EXACTLY. AAP 0.3.1 lists this file as "settingsProvider.ts
+ *   (four keys, defaults mirrored from SettingService)" and AAP 0.4.1 as a "Read-only accessor for
+ *   exactly four keys, with the legacy defaults mirrored", citing [model/service/SettingService.cfc:L178,
+ *   L179, L221, L222]. {@link SettingKey} is closed at those four - `skuCurrency`,
+ *   `skuEligibleCurrencies`, `globalURLKeyProduct`, `globalURLKeyProductType` - and a code review
+ *   found it had drifted to seven, which was corrected by narrowing it back rather than by
+ *   re-arguing the number.
+ *
+ *   THE SECOND CONTRACT IN THIS FILE IS THREE PRESENTATION KEYS, AND IT IS A TYPE, NOT ARCHITECTURE.
+ *   {@link ProductPresentationSettingsProvider} carries `productImageDefaultExtension`,
+ *   `productImageOptionCodeDelimiter` and `productTitleString` - the three keys that were removed
+ *   from `SettingKey`, and every one of them is demanded by a mapped AAP 0.4.2 method:
+ *   `processProduct_updateDefaultImageFileNames` needs the extension and the delimiter through
+ *   `Sku.generateImageFileName()` [model/entity/Sku.cfc:L133-L138], and `Product.getTitle()` needs
+ *   the title template [model/service/ProductService.cfc:L269]. Deleting them would leave those
+ *   methods unimplementable, which AAP 0.9.2 gates against.
+ *
+ *   WHY IT IS CO-LOCATED RATHER THAN GIVEN A FILE. AAP 0.3.1 freezes the port inventory at THIRTEEN
+ *   enumerated files and AAP 0.9.5 holds the change set to that inventory, so a fourteenth port file
+ *   is not available. Co-location is therefore the only placement consistent with the frozen layout -
+ *   and it costs nothing at run time: both declarations are INTERFACES, this file emits no runtime
+ *   value at all, and the "one exported unit per file" practice in AAP 0.8.3 is about the emitted
+ *   unit. The composition root implements both contracts on one object, so no second resolution path,
+ *   cache or adapter is introduced anywhere.
  */
 export interface SettingsProvider {
   /**
@@ -237,4 +230,116 @@ export interface SettingsProvider {
    *   configured.
    */
   setting(settingName: SettingKey): string;
+}
+
+// ---------------------------------------------------------------------------
+// The product-presentation settings: a SECOND, SEPARATE narrow contract.
+// ---------------------------------------------------------------------------
+//
+// ★★★ WHY THIS IS NOT THREE MORE MEMBERS OF `SettingKey`. The transformation plan freezes
+// {@link SettingsProvider} at four keys and cites the four declarations it mirrors. These three keys
+// are genuine settings of the in-scope product subsystem - a generated image file name reads two of
+// them [model/entity/Sku.cfc:L135, L138] and `Product.getTitle()` reads the third
+// [model/entity/Product.cfc:L542] - so they are neither out of scope nor inventable. What they are not
+// is part of the FROZEN four-key surface, and a frozen interface that grows by three is no longer
+// frozen. They therefore travel on their own contract, with their own consumer set.
+//
+// ONE AUTHORITY PER SETTING STILL HOLDS, which is the property the seven-key union was protecting.
+// The composition root implements BOTH contracts on one object, so a value the domain sees can still
+// only have come from one resolution, and both resolutions read the same `SwSetting` rows through the
+// same relationship cascade. What changed is which contract publishes which key, not where a key's
+// value comes from.
+//
+// THE CONSUMER SETS ARE GENUINELY DIFFERENT, which is the substantive argument for two contracts
+// rather than one. `SettingsProvider` is injected into ENTITIES that resolve a setting on demand -
+// `Sku.getCurrencyCode()` [model/entity/Sku.cfc:L360-L365], `Product.getProductURL()`
+// [model/entity/Product.cfc:L208]. These three are resolved ONCE at composition time and handed
+// inward as already-resolved values: the two image keys become the image-naming value struct the SKU
+// is constructed with, and the title template is consumed by the product-title renderer. Nothing in
+// `src/domain/**` calls `setting()` for any of them.
+
+export type ProductPresentationSettingKey =
+  /**
+   * The file extension appended to a generated SKU image file name.
+   *
+   * `productImageDefaultExtension = {fieldType="text",defaultValue="jpg"}`
+   * [model/service/SettingService.cfc:L191] - default `"jpg"`.
+   *
+   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L138], which appends
+   * `".#getProduct().setting('productImageDefaultExtension')#"` after the sanitized product code and
+   * the option string. THE LEGACY READ IS ON THE PRODUCT, NOT ON THE SKU - the line resolves the
+   * setting through `getProduct()` - which is exactly why ONE FLAT PROVIDER serves both entities
+   * instead of each owning its own resolution surface.
+   *
+   * The value is the extension WITHOUT the separating dot; the dot is written at the call site.
+   */
+  | 'productImageDefaultExtension'
+  /**
+   * The separator placed before each image-group option code in a generated file name.
+   *
+   * `productImageOptionCodeDelimiter = {fieldType="select", defaultValue="-"}`
+   * [model/service/SettingService.cfc:L192] - default `"-"`, whose legacy option list is exactly
+   * `['-','_']` [model/service/SettingService.cfc:L346-L347].
+   *
+   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L135], once per option whose option
+   * group carries `getImageGroupFlag()`. IT IS A PREFIX PER CONTRIBUTING OPTION, NOT A JOIN
+   * SEPARATOR: the legacy concatenates the delimiter AHEAD of each code, so a single contributing
+   * option still yields a leading delimiter and none is emitted when no option group is flagged.
+   * Resolved through `getProduct()` exactly as the extension above is.
+   */
+  | 'productImageOptionCodeDelimiter'
+  /**
+   * The template a product's display title is rendered from.
+   *
+   * `productTitleString = {fieldType="text", defaultValue="${brand.brandName} ${productName}"}`
+   * [model/service/SettingService.cfc:L193].
+   *
+   * THE DEFAULT IS A TEMPLATE, NOT A TITLE. `Product.getTitle()`
+   * [model/entity/Product.cfc:L540-L545] passes it as
+   * `replaceStringTemplate(template=setting('productTitleString'), object=this)`, and the utility
+   * resolves each `${...}` marker against the entity graph. Those markers are LEGACY TEMPLATE SYNTAX
+   * with no JavaScript meaning: the value is a plain string on this port and is never evaluated here.
+   *
+   * PUBLISHED AND RESOLVED HERE, YET STILL NOT CONSUMED BY `Product.getTitle()` - and the reason has
+   * nothing to do with this key. The renderer it needs, `hibachiUtilityService.replaceStringTemplate`
+   * [model/entity/Product.cfc:L542], is a framework utility under `org/Hibachi/`, the boundary this
+   * migration extracts from and never ports, so it has no target counterpart. The key is a genuine
+   * setting of the in-scope product subsystem and belongs in this union whether or not that one
+   * renderer ever arrives.
+   */
+  | 'productTitleString';
+
+/**
+ * The product-presentation settings resolution surface.
+ *
+ * A SEPARATE CONTRACT FROM {@link SettingsProvider}, for the reasons in the section header above:
+ * that port is frozen at four keys, and these three are resolved once at composition time rather
+ * than on demand from inside an entity.
+ *
+ * IMPLEMENTED IN THE COMPOSITION ROOT, on the same object that implements {@link SettingsProvider},
+ * so a setting still has exactly one resolution and one value. There is no adapter file for it; like
+ * the four other adapter-less ports it is constructed by `src/handlers/bootstrap.ts`.
+ *
+ * REQUEST-SCOPED, NOT MODULE-SCOPED - the same correctness constraint {@link SettingsProvider}
+ * records, for the same reason: the legacy resolver memoizes onto the component
+ * [model/service/SettingService.cfc:L452-L459], which on a warm container would be state shared
+ * between unrelated invocations.
+ */
+export interface ProductPresentationSettingsProvider {
+  /**
+   * Resolve one product-presentation setting to its effective value.
+   *
+   * SYNCHRONOUS AND NEVER `undefined`, on the same terms as `SettingsProvider.setting`: the legacy
+   * resolver always answers, seeding the declared `defaultValue` before any probe runs
+   * [model/service/SettingService.cfc:L481-L486]. An implementation that cannot resolve a configured
+   * value must supply the declared default rather than return nothing.
+   *
+   * NAMED `setting` VERBATIM FROM CFML, exactly as the sibling port's method is, because the legacy
+   * reads are all `setting('<key>')` [model/entity/Sku.cfc:L135, L138; model/entity/Product.cfc:L542].
+   *
+   * @param settingName - one of the three keys in {@link ProductPresentationSettingKey}.
+   * @returns the configured value for this installation, or the default declared in
+   *   `model/service/SettingService.cfc`.
+   */
+  setting(settingName: ProductPresentationSettingKey): string;
 }

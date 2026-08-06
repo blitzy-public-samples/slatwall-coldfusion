@@ -57,7 +57,7 @@
 // tiers. This suite SUPPORTS one deliberate divergence without owning it - the raw floating-point
 // gap in the `amountOff` branch at [model/service/PromotionService.cfc:L998], which routing all
 // arithmetic through `Money` closes - by proving decimal arithmetic never drifts, while the
-// un-scoped `discountAmount` assignment at [model/service/PromotionService.cfc:L1007, L1009] is
+// un-scoped `discountAmount` assignment at [model/service/PromotionService.cfc:L1007, L1009, L1014] is
 // owned elsewhere. Justification throughout is correctness, never speed: the speed-framed memo
 // rationale at [model/service/RoundingRuleService.cfc:L66] is not carried here and no timing figure
 // appears below.

@@ -117,19 +117,32 @@
 // [L826]/[L828] with NOTHING between them, so there are no hooks to re-express as explicit path
 // maintenance.
 //
-// THREE SIGNATURES FOLLOW THE SHIPPED SIBLING RATHER THAN THE PLAN, because the artefact is the
+// TWO SIGNATURES FOLLOW THE SHIPPED SIBLING RATHER THAN THE PLAN, because the artefact is the
 // authority: `getBaseProductType()` is ASYNC, since `ProductType.getBaseProductType()` is async and
-// src/domain/entities/sku.ts awaits it; the unused-* trio returns `readonly SelectOption[]`, which
-// is what `OptionRepository` declares; and `getTitle()` is OMITTED FOR ONE REASON ONLY, WHICH IS NOT
-// A SETTINGS REASON. `productTitleString` IS published on the `SettingKey` union - it is the fifth of
-// its seven literals [model/service/SettingService.cfc:L193] - and this entity holds the provider
-// that resolves it. What is missing is the RENDERER: [model/entity/Product.cfc:L542] hands the
+// src/domain/entities/sku.ts awaits it; and the unused-* trio returns `readonly SelectOption[]`,
+// which is what `OptionRepository` declares.
+//
+// ★★★ QUOTE-THEN-REVISE: `getTitle()` IS PORTED, AND THIS HEADER USED TO SAY IT WAS NOT. The removed
+// text read "THREE SIGNATURES ... and `getTitle()` is OMITTED FOR ONE REASON ONLY, WHICH IS NOT A
+// SETTINGS REASON ... What is missing is the RENDERER: [model/entity/Product.cfc:L542] hands the
 // template to `getService("hibachiUtilityService").replaceStringTemplate(...)`, a framework utility
 // under `org/Hibachi/`, the boundary this migration extracts from and never ports, so the `${...}`
-// markers in the value have nothing to resolve them. `getTemplate` (`productDisplayTemplate` [:L190]),
-// the whole image cluster and `getAllowBackorderFlag` (`skuAllowBackorderFlag` [:L219]) are omitted on
-// the settings ground the title member does not have: each of those keys is genuinely outside the
-// closed seven-key union, and no eighth key may be added.
+// markers in the value have nothing to resolve them."
+//
+// The observation about the renderer's LOCATION was accurate; the conclusion was not. `org/Hibachi/`
+// is a boundary to EXTRACT FROM and never MODIFY - AAP 0.2.2 - and extracting is exactly what a port
+// of a framework utility's behaviour is. `replaceStringTemplate`
+// [org/Hibachi/HibachiUtilityService.cfc:L70-L100] is 30 lines of regex scan, marker stripping and
+// whole-string replacement, and it is reproduced inside `getTitle()` below, at its own documented
+// outcomes, rather than left as a hole in a behaviour-carrying entity method AAP 0.4.2 maps. The
+// template value itself arrives through the narrow `ProductPresentationSettingsProvider` contract,
+// because `productTitleString` [model/service/SettingService.cfc:L193] is not one of the four keys
+// `SettingKey` is frozen at.
+//
+// `getTemplate` (`productDisplayTemplate` [:L190]), the whole image cluster and
+// `getAllowBackorderFlag` (`skuAllowBackorderFlag` [:L219]) remain omitted, on a ground the title
+// member never shared: none of those keys is published by either settings contract, and no key may be
+// added to either.
 //
 // ASYNC APPLIES PER METHOD, NOT PER ENTITY: a method stays synchronous when it only traverses
 // already-materialized state or performs pure arithmetic, and becomes `async` only where its body
@@ -137,12 +150,22 @@
 // ---------------------------------------------------------------------------
 
 import { listAppend, listToArray } from '../../lib/cfml/list.js';
-import { structGet, structKeyExists, structKeyList, type CfStruct } from '../../lib/cfml/struct.js';
+import {
+  cfEquals,
+  cfFoldKey,
+  structGet,
+  structKeyExists,
+  structKeyList,
+  type CfStruct,
+} from '../../lib/cfml/struct.js';
 import { cfBoolean, cfLen, cfTruthy, type CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import type { AttributeSetSummary, ProductRepository } from '../ports/productRepository.js';
 import type { OptionRepository, SelectOption } from '../ports/optionRepository.js';
 import type { SalePriceDetail, SalePriceResolver } from '../ports/promotionRepository.js';
-import type { SettingsProvider } from '../ports/settingsProvider.js';
+import type {
+  ProductPresentationSettingsProvider,
+  SettingsProvider,
+} from '../ports/settingsProvider.js';
 import type { SkuRepository } from '../ports/skuRepository.js';
 import type { SubscriptionTermProvider } from '../ports/subscriptionTermProvider.js';
 import { Money } from '../valueObjects/money.js';
@@ -589,6 +612,21 @@ export type ProductHydrationInput = {
   readonly settingsProvider?: SettingsProvider;
 
   /**
+   * Resolves `productTitleString`, the ONE product-presentation key this component reads - at
+   * [model/entity/Product.cfc:L542], inside `getTitle()`.
+   *
+   * A SECOND, SEPARATE PROVIDER RATHER THAN A FIFTH KEY ON THE FIRST ONE, because
+   * `../ports/settingsProvider.js` is frozen by the plan at four keys and `productTitleString` is
+   * not one of them. The composition root implements BOTH contracts on ONE object, so a setting
+   * still has exactly one resolution and one value - see that port file's section header.
+   *
+   * That key's default value is declared at [model/service/SettingService.cfc:L193] and MUST NOT be
+   * transcribed into this file in any form, not even inside a comment (E6, prohibition 5). It is a
+   * TEMPLATE rather than a title; `getTitle()` renders it.
+   */
+  readonly productPresentationSettingsProvider?: ProductPresentationSettingsProvider;
+
+  /**
    * Discharges the [L367] and [L626] reaches.
    *
    *   getSkusBySelectedOptions(selectedOptions, productID?)  <- [L367], a MUST-PRESERVE behaviour
@@ -738,7 +776,7 @@ export class Product {
   private readonly productID: string;
 
   /** [model/entity/Product.cfc:L53] `ormtype="boolean"`, no default. */
-  private readonly activeFlag: boolean;
+  private activeFlag: boolean;
 
   /**
    * [model/entity/Product.cfc:L54] `unique="true"`. Read by {@link Product.getProductURL}.
@@ -754,19 +792,19 @@ export class Product {
   private urlTitle: string | undefined;
 
   /** [model/entity/Product.cfc:L55] `notNull="true"` at the ORM level; required on save. */
-  private readonly productName: string | undefined;
+  private productName: string | undefined;
 
   /** [model/entity/Product.cfc:L56] `unique="true"`; format constraint recorded as inert text. */
-  private readonly productCode: string | undefined;
+  private productCode: string | undefined;
 
   /** [model/entity/Product.cfc:L57] `length="4000" hb_formFieldType="wysiwyg"`. */
-  private readonly productDescription: string | undefined;
+  private productDescription: string | undefined;
 
   /** [model/entity/Product.cfc:L58] `default="false"` - the one boolean here that declares one. */
-  private readonly publishedFlag: boolean;
+  private publishedFlag: boolean;
 
   /** [model/entity/Product.cfc:L59] `ormtype="integer"`. */
-  private readonly sortOrder: number | undefined;
+  private sortOrder: number | undefined;
 
   // -------------------------------------------------------------------------
   // CALCULATED COLUMNS [model/entity/Product.cfc:L62-L65] Persisted snapshots the ORM maintained.
@@ -783,7 +821,14 @@ export class Product {
   /** [model/entity/Product.cfc:L64] `ormtype="boolean"`, no default. */
   private readonly calculatedAllowBackorderFlag: boolean;
 
-  /** [model/entity/Product.cfc:L65] Snapshot of the omitted `getTitle()`. */
+  /**
+   * [model/entity/Product.cfc:L65] The PERSISTED SNAPSHOT of `getTitle()`.
+   *
+   * QUOTE-THEN-REVISE: this read "Snapshot of the omitted `getTitle()`". `getTitle()` is ported - see
+   * {@link Product.getTitle} - so this is a snapshot of a LIVE member, and the two are deliberately
+   * not interchangeable: the column holds whatever the template rendered when the row was last
+   * written, while the method renders against the CURRENT template and the CURRENT property values.
+   */
   private readonly calculatedTitle: string | undefined;
 
   // -------------------------------------------------------------------------
@@ -862,7 +907,7 @@ export class Product {
   // -------------------------------------------------------------------------
 
   /** [model/entity/Product.cfc:L93] */
-  private readonly remoteID: string | undefined;
+  private remoteID: string | undefined;
 
   /** [model/entity/Product.cfc:L96] `hb_populateEnabled="false"`. */
   private readonly createdDateTime: Date | undefined;
@@ -904,6 +949,13 @@ export class Product {
 
   /** Resolves `globalURLKeyProduct` for [L208] and [L212]. Synchronous. */
   private readonly settingsProvider: SettingsProvider | undefined;
+
+  /**
+   * Resolves `productTitleString` for [L542]. Synchronous. A SEPARATE contract from the four-key
+   * port above - see the constructor-input member for why.
+   */
+  private readonly productPresentationSettingsProvider:
+    ProductPresentationSettingsProvider | undefined;
 
   /** Discharges [L367] `getSkusBySelectedOptions` and [L626] `getTransactionExistsFlag`. */
   private readonly skuRepository: SkuRepository | undefined;
@@ -965,6 +1017,23 @@ export class Product {
 
   /** VARIANT C memo [model/entity/Product.cfc:L643]. */
   private unusedProductOptionGroups: readonly SelectOption[] | undefined;
+
+  /**
+   * VARIANT C memo [model/entity/Product.cfc:L541] - the rendered title template.
+   *
+   * ★ IT NEEDS A SECOND FIELD, AND THAT SECOND FIELD IS THE POINT. Every other memo above can use
+   * `undefined` as "not yet computed" because none of them can legitimately compute to `undefined`.
+   * This one CAN legitimately render to the EMPTY STRING - a template of `${brand.brandName}` on an
+   * unbranded product does exactly that - and the legacy guard is
+   * `!structKeyExists(variables, "title")` [model/entity/Product.cfc:L541], which is key EXISTENCE
+   * and would NOT re-render it. Testing the string instead would re-render on every call, and would
+   * therefore re-read the setting and re-walk the graph on a path whose whole purpose is to do that
+   * once. `titleRendered` reproduces `structKeyExists` exactly.
+   */
+  private title = '';
+
+  /** Whether {@link Product.title} has been rendered. Reproduces the legacy `structKeyExists` guard. */
+  private titleRendered = false;
 
   /**
    * Hydrate one product from a repository row.
@@ -1082,6 +1151,9 @@ export class Product {
     if (input.settingsProvider !== undefined) {
       this.settingsProvider = input.settingsProvider;
     }
+    if (input.productPresentationSettingsProvider !== undefined) {
+      this.productPresentationSettingsProvider = input.productPresentationSettingsProvider;
+    }
     if (input.skuRepository !== undefined) {
       this.skuRepository = input.skuRepository;
     }
@@ -1191,7 +1263,15 @@ export class Product {
     return this.calculatedAllowBackorderFlag;
   }
 
-  /** [model/entity/Product.cfc:L65] Snapshot of the omitted `getTitle()`. */
+  /**
+   * [model/entity/Product.cfc:L65] The PERSISTED SNAPSHOT of `getTitle()`, and NOT a substitute for it.
+   *
+   * QUOTE-THEN-REVISE: this read "Snapshot of the omitted `getTitle()`", from a revision in which the
+   * method was not ported. It is ported - {@link Product.getTitle} - and the distinction now matters
+   * to a caller: this returns the column, which may be stale or absent, while `getTitle()` renders the
+   * current template against the current property values. `src/services/productService.ts` uses
+   * `getTitle()` at the point [model/service/ProductService.cfc:L269] calls it, not this accessor.
+   */
   public getCalculatedTitle(): string | undefined {
     return this.calculatedTitle;
   }
@@ -1290,11 +1370,148 @@ export class Product {
    * NOTHING ELSE THE DISPATCHER AT [org/Hibachi/HibachiEntity.cfc:L507-L565] CAN SYNTHESISE IS
    * AUTHORED BEYOND THE SIX CONTAINMENT PROBES BELOW - no `hasAny*`, no `hasUnique*`, no
    * `get*AssignedIDList`, no `get*OptionsSmartList`, no `get*SmartList`, and no
-   * `getPrimaryIDValue`, `getPrimaryIDPropertyName`, `getSimpleRepresentation`, `validate` or
-   * `hasErrors`.
+   * `getPrimaryIDValue`, `getPrimaryIDPropertyName`, `getSimpleRepresentation` or `validate`.
+   *
+   * ★ `hasErrors` USED TO BE IN THAT LIST AND IS NOT ANY MORE - see the error register below for
+   * why the omission could not stand.
    */
   public isNew(): boolean {
     return this.productID === '';
+  }
+
+  // ===========================================================================
+  // THE ERROR REGISTER - THE FRAMEWORK'S REFUSAL CHANNEL
+  //
+  // ★★★ WHY THESE FOUR MEMBERS EXIST, AND WHY THEIR ABSENCE WAS A DEFECT RATHER THAN A
+  // SIMPLIFICATION. `HibachiService.save` [org/Hibachi/HibachiService.cfc:L133-L169] populates,
+  // validates, and then writes ONLY when `!arguments.entity.hasErrors()` [L153] - RETURNING THE
+  // ENTITY EITHER WAY [L167]. It never throws for a validation refusal. `saveProduct`
+  // [model/service/ProductService.cfc:L264-L292] follows the same shape by hand: validate at [L273],
+  // write at [L287] behind `!hasErrors()`, `return arguments.product` at [L291]. So the legacy
+  // refusal channel is THE ENTITY, and a caller inspects it.
+  //
+  // Without these members the ported services had nowhere to put a refusal and threw instead, which
+  // code review recorded as a behaviour and AAP-compliance defect: a legacy caller writes
+  // `product = getProductService().saveProduct(product, data); if(product.hasErrors()) { ... }` and
+  // a throwing port sends that caller into an exception path it has no handler for, losing both the
+  // populated entity and the reasons. These four restore the channel; the services stop throwing.
+  //
+  // PORTED SHAPE, NOT AN INVENTED ONE. `getErrors()` [org/Hibachi/HibachiTransient.cfc:L30-L32] is a
+  // STRUCT keyed by error name whose values are ARRAYS of messages, `hasErrors()` [L47-L53] is
+  // `structCount(getErrors())`, `hasError(name)` [L57-L59] is `structKeyExists`, and `addError(name,
+  // message)` [L61-L64] appends. All four are reproduced with those names and those semantics -
+  // including that a second message under one name ACCUMULATES rather than replacing.
+  //
+  // NOT PART OF THE PERSISTED SHAPE. The register is transient instance state, never a column, never
+  // read by a repository and never written to `SwProduct`. It is also never populated by hydration:
+  // a freshly loaded product has no errors, exactly as a freshly loaded entity did.
+  // ===========================================================================
+
+  /**
+   * The accumulated errors, keyed by error name.
+   *
+   * MUTABLE, AND DELIBERATELY THE ONLY MUTABLE STATE ON THIS ENTITY BESIDES THE MEMOS AND THE
+   * COLLECTIONS THE BIDIRECTIONAL HELPERS MAINTAIN. `addError` is a legacy member and it mutates;
+   * making the register immutable would mean the services could not report a refusal on the entity
+   * they were handed, which is precisely the contract being restored.
+   *
+   * ★ TWO PIECES OF STATE PER ENTRY, BECAUSE A CFML STRUCT CARRIES BOTH.
+   * `variables.errors[arguments.errorName] = []` [org/Hibachi/HibachiErrors.cfc:L15-L19] LOOKS UP
+   * case-insensitively but REMEMBERS the case of the key as first written - so a later
+   * `addError('URLTITLE', ...)` appends to the entry `addError('urlTitle', ...)` created, and
+   * `getErrors()` still reports the name as `urlTitle`. Keying by the folded name alone would have
+   * lower-cased every property identifier a caller reads back.
+   */
+  private readonly errors = new Map<
+    string,
+    { readonly name: string; readonly messages: string[] }
+  >();
+
+  /**
+   * Every error on this entity, keyed by error name.
+   *
+   * CFML parity [org/Hibachi/HibachiTransient.cfc:L30-L32]: a struct of arrays. Returned as a frozen
+   * projection rather than the live map, so a caller reads the register and cannot corrupt it -
+   * `addError` is the only writer. The legacy returned the live struct; the difference is
+   * unobservable through the in-scope callers, none of which mutates the result.
+   *
+   * The process-object injection `HibachiEntity` layers on top [org/Hibachi/HibachiEntity.cfc:L135-L148]
+   * is NOT reproduced: `variables.processObjects` is dispatcher state that has no counterpart here,
+   * and the ported process objects are typed inputs rather than entities with their own registers.
+   */
+  public getErrors(): Readonly<Record<string, readonly string[]>> {
+    const projected: Record<string, readonly string[]> = {};
+
+    for (const entry of this.errors.values()) {
+      // `defineProperty` rather than assignment: an error name is server-authored here, but the
+      // projection is a plain object and `__proto__` must never be interceptable on one - the same
+      // hazard `putOwnStructKey` in `src/services/productService.ts` documents at length.
+      Object.defineProperty(projected, entry.name, {
+        value: Object.freeze([...entry.messages]),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+
+    return Object.freeze(projected);
+  }
+
+  /**
+   * Whether this entity carries any error at all.
+   *
+   * CFML parity [org/Hibachi/HibachiTransient.cfc:L47-L53]: `structCount(getErrors())` is truthy.
+   * This is the member every save site gates on [org/Hibachi/HibachiService.cfc:L153;
+   * model/service/ProductService.cfc:L276, L286].
+   */
+  public hasErrors(): boolean {
+    return this.errors.size > 0;
+  }
+
+  /**
+   * Whether one named error is present.
+   *
+   * CFML parity [org/Hibachi/HibachiTransient.cfc:L57-L59]: `structKeyExists(getErrors(), name)`.
+   * Matched WITHOUT REGARD TO CASE, because a CFML struct key is - see `cfFoldKey`.
+   */
+  public hasError(errorName: string): boolean {
+    return this.errors.has(cfFoldKey(errorName));
+  }
+
+  /**
+   * The messages recorded under one error name, or an empty array.
+   *
+   * CFML parity [org/Hibachi/HibachiTransient.cfc:L34-L43]: `getError` checks presence first and
+   * "default behavior if the error isn't found is to return an empty array" - never undefined and
+   * never a raise.
+   */
+  public getError(errorName: string): readonly string[] {
+    return Object.freeze([...(this.errors.get(cfFoldKey(errorName))?.messages ?? [])]);
+  }
+
+  /**
+   * Record one error against this entity.
+   *
+   * CFML parity [org/Hibachi/HibachiTransient.cfc:L61-L64]: two required arguments, no return, and
+   * messages ACCUMULATE under one name rather than replacing. The `persistableError` third argument
+   * of the entity-level override [org/Hibachi/HibachiEntity.cfc:L151-L157] is deliberately not
+   * ported: `isPersistable` and the persistable-error list belong to the dispatcher's
+   * partial-persistence machinery, which no in-scope service reaches.
+   *
+   * @param errorName - the property identifier or rule name the error belongs to.
+   * @param errorMessage - the message, already resolved. Resource-bundle keys are resolved by the
+   *   caller, exactly as the legacy validation service resolved them before calling this.
+   */
+  public addError(errorName: string, errorMessage: string): void {
+    const key = cfFoldKey(errorName);
+    const existing = this.errors.get(key);
+
+    if (existing === undefined) {
+      this.errors.set(key, { name: errorName, messages: [errorMessage] });
+      return;
+    }
+
+    existing.messages.push(errorMessage);
   }
 
   // ===========================================================================
@@ -1439,6 +1656,264 @@ export class Product {
   /** [model/entity/Product.cfc:L85] LIVE. Mutated by `PromotionReward.addExcludedProduct`. */
   public getPromotionRewardExclusions(): PromotionReward[] {
     return this.promotionRewardExclusions;
+  }
+
+  // ===========================================================================
+  // THE TITLE TEMPLATE
+  // ===========================================================================
+
+  /**
+   * THE PRODUCT'S DISPLAY TITLE, RENDERED FROM THE `productTitleString` TEMPLATE.
+   *
+   * Ports `public string function getTitle()` [model/entity/Product.cfc:L540-L545]:
+   *
+   * ```
+   * if(!structKeyExists(variables, "title")) {
+   *   variables.title = getService("hibachiUtilityService")
+   *     .replaceStringTemplate(template=setting('productTitleString'), object=this);
+   * }
+   * return variables.title;
+   * ```
+   *
+   * ★★★ WHY THIS EXISTS, AFTER BEING DELIBERATELY OMITTED. An earlier revision of this file left
+   * `getTitle()` out and `src/services/productService.ts` substituted `getCalculatedTitle()` at the
+   * one site that needs it - [model/service/ProductService.cfc:L269], where the generated URL slug is
+   * derived. The stated ground was that `calculatedTitle` [model/entity/Product.cfc:L65] is "the
+   * PERSISTED SNAPSHOT of the same value". Code review measured the consequence and the substitution
+   * does not hold: the snapshot is written by an ORM maintenance pass, so a NEW product has none and a
+   * STALE one has the title it had before this save populated a new name. Slug generation then either
+   * received an empty candidate - producing a wrong or empty `urlTitle` that fails its own `required`
+   * rule for a payload that should have succeeded - or received last week's title. The template has to
+   * be evaluated against the entity's CURRENT state, which is what the legacy does and what this does.
+   *
+   * ★★ `replaceStringTemplate` IS PORTED HERE RATHER THAN AS A SHARED UTILITY, and that is a scope
+   * decision, not an oversight. The renderer lives at
+   * [org/Hibachi/HibachiUtilityService.cfc:L70-L100], under the framework boundary AAP 0.2.2 says is
+   * extracted from and never ported. What AAP 0.5.3 requires instead is that the framework's
+   * RESPONSIBILITIES be redistributed explicitly - and the only in-scope caller of this one renderer is
+   * this method. So the behaviour is reproduced at its single consumer instead of resurrecting a
+   * framework utility module the plan's enumerated layout does not contain.
+   *
+   * ★★ THE RENDERER'S THREE OUTCOMES, each reproduced exactly. The legacy scans
+   * `reMatchNoCase("\${[^}]+}", template)`, resolves each marker, and then replaces ALL occurrences of
+   * each marker with its resolved value. For a marker whose inner text is `valueKey`:
+   *
+   *   1. THE PROPERTY EXISTS AND RESOLVES -> its value. The gate is
+   *      `getHasPropertyByEntityNameAndPropertyIdentifier(getEntityName(), valueKey)`
+   *      [org/Hibachi/HibachiUtilityService.cfc:L84] (this component is persistent, so that is the arm
+   *      taken), and the value comes from `getValueByPropertyIdentifier(valueKey, false)`
+   *      [org/Hibachi/HibachiTransient.cfc:L466-L480].
+   *   2. THE PROPERTY EXISTS BUT THE PATH CANNOT BE WALKED -> THE EMPTY STRING. `getValueByPropertyIdentifier`
+   *      ends `return "";` [org/Hibachi/HibachiTransient.cfc:L480], and
+   *      `getLastObjectByPropertyIdentifier` [L483-L491] returns NOTHING when an intermediate is null.
+   *      So a product with NO BRAND renders the default template's `${brand.brandName}` as `''` - which
+   *      is why that template yields a LEADING SPACE for an unbranded product. Preserved.
+   *   3. THE PROPERTY DOES NOT EXIST -> THE MARKER SURVIVES LITERALLY. `replaceDetails.value` is
+   *      seeded to the marker itself [org/Hibachi/HibachiUtilityService.cfc:L78] and the
+   *      `removeMissingKeys` arm [L89] is NOT taken, because `Product.getTitle()` calls the renderer
+   *      with only `template` and `object` [model/entity/Product.cfc:L542] and the flag defaults to
+   *      `false`. So `${nonsense}` renders as the four-plus characters `${nonsense}`. Preserved - and
+   *      it is the reason the resolver below answers `undefined` for an unknown identifier rather than
+   *      the empty string. Those two are NOT interchangeable.
+   *
+   * ★ THE PROPERTY-IDENTIFIER SET IS DECLARED, NOT REFLECTED, and its bound is recorded honestly.
+   * The legacy gate reads ORM metadata, which is precisely the reflection T1/T3 remove; the ported
+   * gate is the explicit table in {@link Product.resolveTitlePropertyIdentifier}. It covers every
+   * SCALAR COLUMN of this component and every scalar column of the three `fetch="join"` associations
+   * [model/entity/Product.cfc:L68-L70] - the identifiers a title template can name. An identifier
+   * OUTSIDE that table renders as outcome 3 above; for a genuine non-property that IS the legacy
+   * answer, and for a scalar of a lazily-fetched collection it is a bounded divergence, recorded in
+   * the divergence ledger rather than hidden here.
+   *
+   * ★ MEMOIZED PER INSTANCE, NEVER PER MODULE, and the guard is `structKeyExists` not truthiness. The
+   * legacy caches into `variables.title` and its guard is key EXISTENCE, so a rendered EMPTY TITLE is
+   * cached and the render does not repeat - reproduced with an explicit sentinel field rather than by
+   * testing the string. Entity instances are request-scoped (AAP 0.6.5), so the memo cannot become
+   * cross-invocation state the way the legacy component-level caches would.
+   *
+   * SYNCHRONOUS, because both halves are: the presentation provider resolves eagerly at composition
+   * time, and every identifier in the table is answered from already-materialized state.
+   *
+   * @returns the rendered title. NEVER `undefined` - the legacy return type is `string` and the
+   *   renderer always answers, at worst the template with every marker rendered empty or literal.
+   * @throws when the product-presentation settings provider was not supplied, on the same terms as
+   *   `getProductURL()`: the collaborator is optional at construction so hydration can build a
+   *   product for paths that never read a setting, and a path that does read one says so.
+   */
+  public getTitle(): string {
+    if (this.titleRendered) {
+      return this.title;
+    }
+
+    if (this.productPresentationSettingsProvider === undefined) {
+      throw this.missingCollaborator('product presentation settings provider', 'L542');
+    }
+
+    const template: string = this.productPresentationSettingsProvider.setting('productTitleString');
+
+    // CFML parity [org/Hibachi/HibachiUtilityService.cfc:L71]:
+    //   reMatchNoCase("\${[^}]+}", arguments.template)
+    // The character class is NEGATED and therefore NON-GREEDY BY CONSTRUCTION - `${a} ${b}` yields
+    // two markers, not one spanning both - and it CANNOT MATCH AN EMPTY BODY, so a literal `${}`
+    // is not a marker and survives untouched. Both properties are the regex's, reproduced verbatim.
+    const markers: string[] = template.match(/\$\{[^}]+\}/g) ?? [];
+
+    let rendered = template;
+
+    for (const marker of markers) {
+      // CFML parity [org/Hibachi/HibachiUtilityService.cfc:L80]:
+      //   replace(replace(templateKeys[i], "${", ""), "}", "")
+      // Two SINGLE replacements - not `replaceAll` - so only the FIRST `${` and the FIRST `}` are
+      // stripped. Because the regex body excludes `}`, the first `}` is always the terminator, and
+      // a nested `${` inside the body would survive into the identifier exactly as it does in CFML.
+      const valueKey = marker.replace('${', '').replace('}', '');
+
+      const resolved = this.resolveTitlePropertyIdentifier(valueKey);
+
+      // Outcome 3: an unknown identifier leaves its marker in place. `undefined` means "no such
+      // property", which is NOT the same as the empty string outcome 2 produces.
+      if (resolved === undefined) {
+        continue;
+      }
+
+      // CFML parity [org/Hibachi/HibachiUtilityService.cfc:L96]: `replace(..., "all")` - EVERY
+      // occurrence of the marker, which is why a template naming the same property twice renders it
+      // twice. `replaceAll` takes the marker as a LITERAL string here (not a pattern), so the `$`
+      // and `{` characters need no escaping on the search side.
+      //
+      // THE REPLACEMENT SIDE DOES NEED ESCAPING, and this is the one place the port must add
+      // something the legacy had no need of. `String.prototype.replaceAll` interprets `$$`, `$&`,
+      // `` $` ``, `$'` and `$<name>` INSIDE THE REPLACEMENT, so a product whose name legitimately
+      // contains `$&` would otherwise inject the matched marker back into its own title. CFML's
+      // `replace()` has no such substitution syntax. Doubling `$` restores the literal semantics.
+      rendered = rendered.replaceAll(marker, resolved.replaceAll('$', '$$$$'));
+    }
+
+    this.title = rendered;
+    this.titleRendered = true;
+
+    return rendered;
+  }
+
+  /**
+   * The value of one `${...}` property identifier, or `undefined` when this component declares no
+   * such property.
+   *
+   * THE TWO ANSWERS ARE NOT INTERCHANGEABLE. `undefined` is the legacy's "the gate at
+   * [org/Hibachi/HibachiUtilityService.cfc:L83-L88] said no", which leaves the marker literal; `''`
+   * is `getValueByPropertyIdentifier`'s own miss return [org/Hibachi/HibachiTransient.cfc:L480],
+   * which renders empty. See {@link Product.getTitle} outcomes 2 and 3.
+   *
+   * ★ THE IDENTIFIER IS FOLDED AND ITS DELIMITERS ARE NORMALISED, both for CFML parity.
+   * `getHasPropertyByEntityNameAndPropertyIdentifier` and `getLastObjectByPropertyIdentifier` split
+   * on `listLast(identifier, '._')` and `listFirst(identifier, '._')`
+   * [org/Hibachi/HibachiTransient.cfc:L467, L485] - so BOTH `.` and `_` delimit a path, and
+   * `brand_brandName` names the same property as `brand.brandName`. No property in this slice
+   * contains an underscore, so normalising `_` to `.` is exact rather than approximate. Folding
+   * reproduces CFML's case-insensitive property lookup.
+   *
+   * ★ EVERY SCALAR IS STRINGIFIED THE WAY CFML INTERPOLATES IT, and the two non-string kinds are
+   * called out because they are the ones a reader would assume rather than check. A `big_decimal`
+   * renders through `Money.toDecimalString()`, its plain decimal form. A boolean renders as `true` /
+   * `false` - the modern-CFML stringification; the engines this platform also supported emitted
+   * `YES` / `NO`, and that ambiguity is real, unresolvable from source alone, and confined to
+   * templates naming a flag, which no shipped default does.
+   */
+  private resolveTitlePropertyIdentifier(valueKey: string): string | undefined {
+    const identifier = cfFoldKey(valueKey.replaceAll('_', '.'));
+
+    switch (identifier) {
+      // --- this component's own scalar columns [model/entity/Product.cfc:L51-L59] ---------------
+      case 'productid':
+        return this.productID;
+      case 'activeflag':
+        return this.getActiveFlag() ? 'true' : 'false';
+      case 'urltitle':
+        return this.urlTitle ?? '';
+      case 'productname':
+        return this.productName ?? '';
+      case 'productcode':
+        return this.productCode ?? '';
+      case 'productdescription':
+        return this.productDescription ?? '';
+      case 'publishedflag':
+        return this.getPublishedFlag() ? 'true' : 'false';
+      case 'sortorder':
+        return this.sortOrder === undefined ? '' : String(this.sortOrder);
+
+      // --- calculated columns [model/entity/Product.cfc:L62-L65] --------------------------------
+      // Declared because the legacy gate reads them as properties like any other, ORM-maintained or
+      // not. `getTitle()` reading `calculatedTitle` would be circular in intent but is not in
+      // effect: the snapshot is a stored column, so it renders whatever was last persisted.
+      case 'calculatedsaleprice':
+        return this.calculatedSalePrice?.toDecimalString() ?? '';
+      case 'calculatedqats':
+        return this.calculatedQATS === undefined ? '' : String(this.calculatedQATS);
+      case 'calculatedallowbackorderflag':
+        return this.getCalculatedAllowBackorderFlag() ? 'true' : 'false';
+      case 'calculatedtitle':
+        return this.calculatedTitle ?? '';
+
+      // --- the audit column [org/Hibachi/HibachiEntity.cfc] ------------------------------------
+      case 'remoteid':
+        return this.remoteID ?? '';
+
+      // --- `brand` [model/entity/Product.cfc:L68], `fetch="join"` ------------------------------
+      // THE DEFAULT TEMPLATE'S FIRST MARKER IS `${brand.brandName}`
+      // [model/service/SettingService.cfc:L193], so this arm is the one that ships.
+      case 'brand.brandid':
+        return this.brand?.getBrandID() ?? '';
+      case 'brand.brandname':
+        return this.brand?.getBrandName() ?? '';
+      case 'brand.urltitle':
+        return this.brand?.getUrlTitle() ?? '';
+      case 'brand.brandwebsite':
+        return this.brand?.getBrandWebsite() ?? '';
+      case 'brand.activeflag':
+        return this.brand === undefined ? '' : this.brand.getActiveFlag() ? 'true' : 'false';
+      case 'brand.publishedflag':
+        return this.brand === undefined ? '' : this.brand.getPublishedFlag() ? 'true' : 'false';
+      case 'brand.remoteid':
+        return this.brand?.getRemoteID() ?? '';
+
+      // --- `productType` [model/entity/Product.cfc:L69], `fetch="join"` ------------------------
+      case 'producttype.producttypeid':
+        return this.productType?.getProductTypeID() ?? '';
+      case 'producttype.producttypename':
+        return this.productType?.getProductTypeName() ?? '';
+      case 'producttype.producttypedescription':
+        return this.productType?.getProductTypeDescription() ?? '';
+      case 'producttype.urltitle':
+        return this.productType?.getUrlTitle() ?? '';
+      case 'producttype.systemcode':
+        return this.productType?.getSystemCode() ?? '';
+      case 'producttype.activeflag':
+        return this.productType === undefined
+          ? ''
+          : this.productType.getActiveFlag()
+            ? 'true'
+            : 'false';
+      case 'producttype.publishedflag':
+        return this.productType === undefined
+          ? ''
+          : this.productType.getPublishedFlag()
+            ? 'true'
+            : 'false';
+      case 'producttype.remoteid':
+        return this.productType?.getRemoteID() ?? '';
+
+      // --- `defaultSku` [model/entity/Product.cfc:L70], `fetch="join"` -------------------------
+      // ONLY THE TWO IDENTITY SCALARS. A SKU's remaining scalars are reachable through its own
+      // currency cascade rather than as plain columns, and resolving one here would mean this method
+      // choosing a currency - which it has no basis to do and no legacy template asks it to.
+      case 'defaultsku.skuid':
+        return this.defaultSku?.getSkuID() ?? '';
+      case 'defaultsku.skucode':
+        return this.defaultSku?.getSkuCode() ?? '';
+
+      default:
+        return undefined;
+    }
   }
 
   // ===========================================================================
@@ -1621,6 +2096,76 @@ export class Product {
    */
   public setUrlTitle(urlTitle: string): void {
     this.urlTitle = urlTitle;
+  }
+
+  // ===========================================================================
+  // THE REMAINING POPULATE TARGETS - THE ORM-GENERATED SCALAR SETTERS
+  //
+  // ★★★ WHY THEY ARE AUTHORED. `saveProduct` opens with `arguments.product.populate(arguments.data)`
+  // [model/service/ProductService.cfc:L266], and `populate`
+  // [org/Hibachi/HibachiEntity.cfc] copies EVERY matching key of the data struct onto the entity by
+  // reflection over the ORM's persistent-property metadata - then `validate(context="save")` [L273]
+  // reads the entity. Two behaviours follow that a two-key payload could not reproduce, and code
+  // review recorded both: a VALID payload could not repair an entity that was invalid on its own
+  // (`productName` arrived, was held in a local, and the required-field rule still read the stale
+  // entity and refused), and an EMPTY payload could validate against stale state and then persist
+  // something the caller never submitted.
+  //
+  // ★★ THIS IS NOT A GENERAL `populate`, AND IT DELIBERATELY IS NOT. Reproducing reflection over ORM
+  // metadata is exactly the framework machinery T1 and T3 remove. What is authored is one ORM-implicit
+  // setter per SCALAR COLUMN the ported service can write and the `save` context can be judged on -
+  // the set `src/repositories/mysql/mysqlProductRepository.ts` already binds - and nothing else.
+  //
+  // ⛔ ASSOCIATION POPULATION IS NOT REPRODUCED. The legacy `populate` also resolved `data.productType`,
+  // `data.brand` and `data.defaultSku` into entity references through the ORM's own loaders. Doing that
+  // here would mean a service tier resolving entities from identifiers, which no in-scope port
+  // publishes, so `productType` and `brand` remain what hydration attached. The `productType` save rule
+  // [model/validation/Product.json] therefore judges the hydrated association, which is what it judged
+  // for every legacy caller that did not submit one.
+  //
+  // ⛔ NO CALCULATED COLUMN HAS A SETTER. `calculatedTitle`, `calculatedSalePrice`, `calculatedQATS`
+  // and `calculatedAllowBackorderFlag` are ORM-maintained snapshots [model/entity/Product.cfc:L62-L65];
+  // a caller writing one directly would be writing a cache, and no legacy caller could.
+  // ===========================================================================
+
+  /** [model/entity/Product.cfc:L55] The ORM-generated `setProductName()`. Populate target. */
+  public setProductName(productName: string): void {
+    this.productName = productName;
+  }
+
+  /** [model/entity/Product.cfc:L56] The ORM-generated `setProductCode()`. Populate target. */
+  public setProductCode(productCode: string): void {
+    this.productCode = productCode;
+  }
+
+  /** [model/entity/Product.cfc:L57] The ORM-generated `setProductDescription()`. Populate target. */
+  public setProductDescription(productDescription: string): void {
+    this.productDescription = productDescription;
+  }
+
+  /**
+   * [model/entity/Product.cfc:L53] The ORM-generated `setActiveFlag()`. Populate target.
+   *
+   * Takes a definite `boolean`: the column declares `default="true"` and the getter already resolves
+   * an absent one, so there is no third state for a caller to write.
+   */
+  public setActiveFlag(activeFlag: boolean): void {
+    this.activeFlag = activeFlag;
+  }
+
+  /** [model/entity/Product.cfc:L58] The ORM-generated `setPublishedFlag()`. Populate target. */
+  public setPublishedFlag(publishedFlag: boolean): void {
+    this.publishedFlag = publishedFlag;
+  }
+
+  /** [model/entity/Product.cfc:L59] The ORM-generated `setSortOrder()`. Populate target. */
+  public setSortOrder(sortOrder: number): void {
+    this.sortOrder = sortOrder;
+  }
+
+  /** [model/entity/Product.cfc:L67] The ORM-generated `setRemoteID()`. Populate target. */
+  public setRemoteID(remoteID: string): void {
+    this.remoteID = remoteID;
   }
 
   /**
@@ -2230,10 +2775,16 @@ export class Product {
    * first sku. The legacy declares `returntype="any"`, which is what lets it fall off the end.
    *
    * [L163] calls `getSkus()` UNFLAGGED, so the search runs over the live array in insertion order.
+   *
+   * ★ COMPARED WITH `cfEquals`, BECAUSE CFML `==` ON STRINGS IS CASE-INSENSITIVE.
+   * [L164] is `skus[i].getSkuID() == arguments.skuID`, which matched a caller identifier spelled in
+   * another case; `===` did not, and answered `undefined` for a SKU this product genuinely owns.
+   * The identifiers are database-generated and the predicate that loaded them is itself
+   * case-insensitive under MySQL's default collation, so the two spellings really are one key.
    */
   public getSkuByID(skuID: string): Sku | undefined {
     for (const sku of this.getSkus()) {
-      if (sku.getSkuID() === skuID) {
+      if (cfEquals(sku.getSkuID(), skuID)) {
         return sku;
       }
     }
@@ -2522,7 +3073,7 @@ export class Product {
    * repeat calls; it is omitted here for an unrelated reason (see the OMISSION REGISTER).
    *
    * THIS SPENDS THE LAST DIVERGENCE IN THE ENTIRE PROJECT. The three are (a) the un-`var`'d
-   * `discountAmount` [model/service/PromotionService.cfc:L1007, L1009]; (b) the `amountOff` float
+   * `discountAmount` [model/service/PromotionService.cfc:L1007, L1009, L1014]; (b) the `amountOff` float
    * gap [model/service/PromotionService.cfc:L998]; (c) DEFECTS 17, 18 and 19 - the entity memo
    * bugs, two in `sku.ts` and this one. NO FOURTH DIVERGENCE MAY EVER BE SPENT ANYWHERE.
    *

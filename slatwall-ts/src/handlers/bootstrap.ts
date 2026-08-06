@@ -149,7 +149,7 @@
 //   PARAMETER threaded down the call chain, which normalises the legacy naming
 //   divergence out of existence. The clock is threaded the same way, under an
 //   explicit UTC policy, which is what makes the one mandated entity widening
-//   `isCurrent(now: Date)` [model/entity/PromotionPeriod.cfc:L78] usable.
+//   `isCurrent(now?: Date)` [model/entity/PromotionPeriod.cfc:L78] usable.
 //
 // ---------------------------------------------------------------------------
 // CJS BUNDLE CONSTRAINTS - SOLVED UPSTREAM, NOT RE-LITIGATED HERE
@@ -173,8 +173,8 @@ import { randomUUID } from 'node:crypto';
 
 import { appConfig } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
-import { cfEquals, structGet } from '../lib/cfml/struct.js';
-import { listToArray } from '../lib/cfml/list.js';
+import { cfEquals, cfFoldKey, structGet } from '../lib/cfml/struct.js';
+import { listFindNoCase, listToArray } from '../lib/cfml/list.js';
 import { getPreparedStatementExecutor } from '../repositories/mysql/connection.js';
 import { assertMySqlDialect, resolveDialect } from '../repositories/mysql/dialect.js';
 import { MysqlProductRepository } from '../repositories/mysql/mysqlProductRepository.js';
@@ -190,7 +190,12 @@ import { Promotion } from '../domain/entities/promotion.js';
 // the row they just wrote, the way each writing repository constructs the entity it persisted.
 import { Brand } from '../domain/entities/brand.js';
 import { RoundingRule } from '../domain/entities/roundingRule.js';
-import { toCurrencyCode } from '../domain/valueObjects/currencyCode.js';
+import {
+  currencyCodeEquals,
+  getByCurrencyCode,
+  toCurrencyCode,
+} from '../domain/valueObjects/currencyCode.js';
+import type { CurrencyCode } from '../domain/valueObjects/currencyCode.js';
 import { RoundingRuleService } from '../services/roundingRuleService.js';
 import { BrandService } from '../services/brandService.js';
 import { OptionService } from '../services/optionService.js';
@@ -198,26 +203,29 @@ import { SkuService } from '../services/skuService.js';
 import { ProductService } from '../services/productService.js';
 import { PriceGroupService } from '../services/priceGroupService.js';
 import { PromotionService } from '../services/promotionService.js';
-import { EuropeanCentralBankCurrencyConverter } from '../integrations/europeanCentralBankCurrencyConverter.js';
 import { GoogleFeedRepository } from '../integrations/google/googleFeedRepository.js';
 import { GoogleFeedService } from '../integrations/google/googleFeedService.js';
 import { GoogleIntegration } from '../integrations/google/integration.js';
 
 // `AppConfig` is imported as a TYPE and is deliberately NOT re-exported: `CompositionRoot` used to
-// publish it whole, which put a directly readable database credential on the public surface (F17). The
-// six shapes beside it are the pieces `CompositionDiagnostics` republishes, each either secret-free or
-// already redacted.
+// publish it whole, which put a directly readable database credential on the public surface (F17).
+//
+// THREE OF ITS SHAPES USED TO BE IMPORTED HERE AND ARE NOT ANY MORE - `DatabasePoolConfig`,
+// `FeedConfig` and `CurrencyConfig`. `CompositionDiagnostics` republished all three whole; it now
+// publishes a boolean and two counts derived from them, so the shapes themselves are no longer part of
+// this module's surface. The remaining config types below are the closed enumerations the diagnostics
+// still name, which carry no value a deployment would not print on a status page.
 import type {
   AppConfig,
-  CurrencyConfig,
-  DatabasePoolConfig,
   DatabaseTlsMode,
   EnvironmentSource,
-  FeedConfig,
+  LoggingConfig,
+  LogThresholdSource,
   RuntimeEnvironment,
   TlsMinimumVersion,
 } from '../lib/config.js';
 import type { CfBooleanInput } from '../lib/cfml/truthiness.js';
+import { cfBoolean } from '../lib/cfml/truthiness.js';
 import type {
   AuditActorContext,
   PreparedStatementExecutor,
@@ -245,11 +253,16 @@ import type { OptionRepository } from '../domain/ports/optionRepository.js';
 import type { CurrentAccountContext } from '../domain/ports/priceGroupRepository.js';
 import type { PriceGroupRepository } from '../domain/ports/priceGroupRepository.js';
 import type { ProductRepository } from '../domain/ports/productRepository.js';
-import type { ProductFeedPort } from '../domain/ports/productFeedPort.js';
+import type { FeedCriteria, ProductFeedPort } from '../domain/ports/productFeedPort.js';
 import type { ProductTypeRepository } from '../domain/ports/productTypeRepository.js';
 import type { PromotionRepository } from '../domain/ports/promotionRepository.js';
 import type { SalePriceDetail, SalePriceResolver } from '../domain/ports/promotionRepository.js';
-import type { SettingKey, SettingsProvider } from '../domain/ports/settingsProvider.js';
+import type {
+  ProductPresentationSettingKey,
+  ProductPresentationSettingsProvider,
+  SettingKey,
+  SettingsProvider,
+} from '../domain/ports/settingsProvider.js';
 import type { SkuRepository } from '../domain/ports/skuRepository.js';
 import type {
   SubscriptionBenefitHandle,
@@ -266,8 +279,6 @@ import type { PriceGroupRate } from '../domain/entities/priceGroupRate.js';
 import type { Sku, SkuImageSettingValues, SkuPriceGroupResolver } from '../domain/entities/sku.js';
 import type { CfStruct } from '../lib/cfml/struct.js';
 import { Money } from '../domain/valueObjects/money.js';
-import type { CurrencyRecordProjection } from '../integrations/europeanCentralBankCurrencyConverter.js';
-import type { EuropeanCentralBankRateTable } from '../integrations/europeanCentralBankCurrencyConverter.js';
 import type {
   ResolvedFeedSettingValues,
   ResolvedSkuShippingWeightSetting,
@@ -284,6 +295,7 @@ import type { PriceGroupAppliedIntent } from '../services/priceGroupService.js';
 import type {
   OptionLoadingCollaborator,
   ProductSaveInput,
+  SkuBatchWriteCollaborator,
   SkuCreationCollaborator,
 } from '../services/productService.js';
 import type { CreateSkusInput } from '../services/skuService.js';
@@ -315,7 +327,7 @@ export interface RequestScopeInput {
    *
    * A `Date` is an absolute instant, so threading one is what makes every
    * date-dependent entity method deterministic - the mandated widening
-   * `PromotionPeriod.isCurrent(now: Date)` [model/entity/PromotionPeriod.cfc:L78]
+   * `PromotionPeriod.isCurrent(now?: Date)` [model/entity/PromotionPeriod.cfc:L78]
    * above all. Absent, the scope reads the wall clock once, at scope creation,
    * so that every comparison inside one request sees the SAME instant rather
    * than a drifting one.
@@ -395,12 +407,21 @@ export interface RequestScopeInput {
    * The candidate host the product feed should render, as observed on the
    * request - AND NOTHING ELSE.
    *
-   * RULING B: the host is CAPTURED AT CONSTRUCTION, never passed as a method
-   * argument, which is what keeps `ProductFeedPort.generateProductFeed()`
-   * zero-parameter. Supplied only by `productFeedHandler.ts`, the sole
-   * entrypoint driving the feed and the sole holder of the event the host is
-   * derived from. Omitted, `RequestScope.productFeedPort` is `undefined` and no
-   * feed can be rendered - which is the safe outcome, not a degraded one.
+   * ★★★ QUOTE-THEN-REVISE. This paragraph used to read: "RULING B: the host is
+   * CAPTURED AT CONSTRUCTION, never passed as a method argument, which is what
+   * keeps `ProductFeedPort.generateProductFeed()` zero-parameter." That is no
+   * longer the design and was never the plan's: AAP 0.4.2 freezes the ported
+   * method as `generateProductFeed(criteria: FeedCriteria)` and AAP 0.9.2 gates
+   * on it, so the host reaches the port as a MEMBER OF THAT ARGUMENT, projected
+   * onto `RequestScope.feedCriteria`. A prior review round is not the AAP.
+   *
+   * Nothing about the SAFETY of this member changes. It is still supplied only by
+   * `productFeedHandler.ts`, the sole entrypoint driving the feed and the sole
+   * holder of the event the host is derived from; it is still checked against the
+   * deployment-owned allow-list before any projection is built; and when it is
+   * omitted, both `RequestScope.productFeedPort` and
+   * `RequestScope.feedCriteria` are `undefined` so no feed can be rendered -
+   * which is the safe outcome, not a degraded one.
    *
    * ★ THE ALLOW-LIST IS NO LONGER PART OF THIS INPUT, and that is the whole
    * point of the member's shape.
@@ -441,9 +462,10 @@ export interface RequestScopeInput {
    * request, as `CGI.HTTP_HOST` was
    * [integrationServices/google/views/feed/product.cfm:L14], and it is then
    * checked - now against a list the request cannot influence. PROVENANCE remains
-   * the caller's obligation and is stated on the service constructor too: a
-   * well-formed host that is on the list is admitted, and no check anywhere can
-   * tell whether a caller took it from configuration or from an event header.
+   * the caller's obligation and is restated on `GoogleFeedService.generateProductFeed`,
+   * which is where the value is now supplied: a well-formed host that is on the list
+   * is admitted, and no check anywhere can tell whether a caller took it from
+   * configuration or from an event header.
    */
   readonly feedHost?: string | undefined;
 }
@@ -1038,9 +1060,28 @@ export interface RequestScope extends SalePriceResolver {
 
   /**
    * The feed port, present only when `RequestScopeInput.feedHost` was supplied.
-   * Its host and clock are closed over at construction - RULING B.
+   *
+   * QUOTE-THEN-REVISE: the second line used to read "Its host and clock are closed over at
+   * construction - RULING B." They are not, and were never meant to be: AAP 0.4.2 puts both on the
+   * `FeedCriteria` argument of `generateProductFeed`, which this scope publishes as
+   * {@link RequestScope.feedCriteria}. The port itself is stateless with respect to a request.
    */
   readonly productFeedPort: ProductFeedPort | undefined;
+
+  /**
+   * The argument to pass `productFeedPort.generateProductFeed` - present under exactly the same
+   * condition as the port itself.
+   *
+   * ★ WHY THE SCOPE HANDS THIS OVER RATHER THAN LETTING A HANDLER BUILD IT. Both members of
+   * `FeedCriteria` are things a handler must not decide for itself: the origin authority has to be
+   * checked against the DEPLOYMENT-OWNED allow-list in `AppConfig.feed.allowedHosts`, which no
+   * request may read or write, and the instant has to be THIS request's single instant so that one
+   * document cannot straddle two clock readings. Handing over the finished, frozen criteria is what
+   * keeps the allow-list out of the adapter layer while still satisfying the mapped signature.
+   *
+   * A handler therefore checks ONE thing - that the pair is present - and forwards it unchanged.
+   */
+  readonly feedCriteria: FeedCriteria | undefined;
 
   /**
    * TURN A WIRE-SHAPED ORDER DOCUMENT INTO THE `OrderView` THE TWO PASSES CONSUME.
@@ -1211,41 +1252,59 @@ export interface RequestScope extends SalePriceResolver {
  * `AppConfig.database.toJSON()`. `AppConfig` itself is no longer reachable from the published surface,
  * so a consumer cannot read a credential whether or not it thinks to serialize first.
  *
- * ★★ AND THE REDACTION BOUNDARY IS BORROWED, NOT INVENTED. `DatabaseConnectionConfig.toJSON`'s own
- * docblock already fixes which side each field falls on - "the port and the schema name remain visible,
- * because those two are what make a misconfiguration diagnosable and neither carries a never-echoed
- * promise" - and cites three sources for it. Re-deciding that here would create a second boundary to
- * keep in step with the first, so `database` below is literally that projection's output.
+ * ★★ AND THE BOUNDARY IS BORROWED, NOT INVENTED - BUT THE FILE IT IS BORROWED FROM MOVED, AND THIS
+ * SURFACE MOVED WITH IT. An earlier revision of this docblock cited `toJSON`'s reasoning verbatim:
+ *
+ *     "the port and the schema name remain visible, because those two are what make a
+ *      misconfiguration diagnosable and neither carries a never-echoed promise"
+ *
+ * ⚠ THAT SENTENCE NO LONGER EXISTS IN THAT FILE. `src/repositories/mysql/connection.ts` withdrew the
+ * port, the schema name, the dialect and the connection limit from its pool-created log line and named
+ * the withdrawal a disclosure defect - "a database name and a port together are reconnaissance; a pool
+ * ceiling is capacity intelligence" - and `src/lib/logger.ts` independently redacts a key called `port`
+ * for the same stated reason. `toJSON` then redacted all five of its members, so its output carries no
+ * schema name and no port to re-publish. Borrowing the boundary therefore means CARRYING LESS HERE, and
+ * three consequences follow below.
+ *
+ * ★ `database` IS GONE RATHER THAN REDACTED. It was exactly `toJSON()`'s output; that output is now five
+ * identical redaction markers, so a consumer learns nothing from it that this docblock does not already
+ * say. A member whose every value is a constant is not a diagnostic. The projection's serializability -
+ * the property `toJSON` exists to guarantee - is pinned where it belongs, in the config suite.
+ *
+ * ★ `pool` IS GONE RATHER THAN REDUCED. Its four numbers were described here as carrying no secret, and
+ * individually that is true; `connection.ts` nonetheless classifies a published pool ceiling as capacity
+ * intelligence, and no handler in this tree reads it. There is no reduced form of a capacity number that
+ * is still a capacity number, so the member is withdrawn rather than rounded.
+ *
+ * ★ `feed` AND `currency` BECOME COUNTS. Both were handed over whole on the ground that their contents
+ * are public. That remains true of any single hostname or rate - but the LIST is deployment topology and
+ * the TABLE is the operator's supplied data set, and "how many" answers every question this surface was
+ * needed for ("did the allow-list load?", "did rates arrive?") without enumerating either.
  *
  * WHY PUBLISH ANYTHING AT ALL. The finding permits "an explicitly redacted, purpose-built diagnostic
- * projection if needed", and it is: a deployment that cannot see which dialect it committed to, which
- * schema it opened, which hosts its feed will serve or whether conversion rates were supplied has no
- * way to diagnose a misconfiguration short of reading logs. None of those four is a secret.
+ * projection if needed", and a deployment that cannot see which environment it resolved, which dialect
+ * it committed to, whether its database channel is encrypted, or whether its two optional data sets
+ * loaded has no way to diagnose a misconfiguration short of reading logs. Every member below is a closed
+ * enumeration, a boolean or a count - no host, no port, no schema name, no ceiling, no hostname list and
+ * no rate table - which is the least-privilege shape the finding asked for.
  */
 export interface CompositionDiagnostics {
-  /** `development` | `test` | `production`, as resolved. */
+  /** `development` | `test` | `production`, as resolved. A closed enumeration. */
   readonly environment: RuntimeEnvironment;
 
   /** The dialect this composition committed to. Always `'MySQL'`. */
   readonly dialect: DatabaseDialect;
 
   /**
-   * EXACTLY `AppConfig.database.toJSON()`: port and schema visible, host, account and credential
-   * replaced by that projection's redaction marker. Typed as its return type rather than as
-   * `DatabaseConnectionConfig` so no member of the live config is reachable through it.
-   */
-  readonly database: Readonly<Record<string, string | number>>;
-
-  /** Four operational numbers. None is a target, and none carries a secret. */
-  readonly pool: DatabasePoolConfig;
-
-  /**
-   * Whether the channel is protected and how weak the protocol may be - WITHOUT the trust anchor.
+   * Whether the database channel is protected and how weak the protocol may be - WITHOUT the trust
+   * anchor, and without anything that names the server.
    *
-   * `mode` and `minimumVersion` are the two facts an operator needs to see, and both are enumerations.
-   * `certificateAuthority` is deliberately reduced to a BOOLEAN: the finding named "TLS material"
-   * alongside the password, and while a CA certificate is public by construction, publishing its bytes
-   * serves no diagnostic purpose that "is one configured?" does not serve.
+   * `mode` and `minimumVersion` are the two facts an operator needs to see, and both are closed
+   * enumerations describing this process's POSTURE rather than the datasource's topology - which is why
+   * they survived the withdrawal of `database` and `pool` above. `certificateAuthority` is reduced to a
+   * BOOLEAN: the finding named "TLS material" alongside the password, and while a CA certificate is
+   * public by construction, publishing its bytes serves no diagnostic purpose that "is one configured?"
+   * does not serve.
    */
   readonly tls: {
     readonly mode: DatabaseTlsMode;
@@ -1253,11 +1312,39 @@ export interface CompositionDiagnostics {
     readonly certificateAuthorityConfigured: boolean;
   };
 
-  /** The product-feed allow-list. Public hostnames this deployment will serve a feed for. */
-  readonly feed: FeedConfig;
+  /**
+   * HOW MANY hosts the product-feed allow-list admits, never which ones.
+   *
+   * ★ ALWAYS A NUMBER, BECAUSE `0` IS A READING AND ABSENCE IS NOT. An unconfigured deployment
+   * reports `0` rather than omitting the member: a surface that published nothing when unset would
+   * make "this deployment admits no host" indistinguishable from "this member is not implemented",
+   * and the second is not a fact about the deployment at all.
+   *
+   * `FEED_ALLOWED_HOSTS` does carry a third state that this count deliberately does NOT try to
+   * express: UNSET answers the feed on whatever authority the request carries, exactly as the legacy
+   * `http://#CGI.HTTP_HOST#` did, while set-but-EMPTY publishes no feed. Both admit zero NAMED
+   * hosts, so both read `0` here. That distinction is a policy question rather than a count, it is
+   * resolved on the configuration surface where it is actionable - `resolveFeedAllowedHosts` in
+   * `src/lib/config.ts` keeps `allowedHosts` as `readonly string[] | undefined` for exactly this
+   * reason, and its guidance sentence states both readings - and encoding it a second time as an
+   * `undefined` count would put two different kinds of answer in one field.
+   */
+  readonly feed: {
+    readonly allowedHostCount: number;
+  };
 
-  /** The supplied conversion rates and when they were retrieved. Public reference data. */
-  readonly currency: CurrencyConfig;
+  /**
+   * HOW MANY conversion rates were supplied, and WHETHER a retrieval instant came with them - never the
+   * rates themselves and never the instant.
+   *
+   * The instant is reduced to a boolean rather than published because a timestamp is a fact about the
+   * operator's data pipeline, and `reportRateTableAge` already surfaces its age to the log stream where
+   * a staleness warning belongs.
+   */
+  readonly currency: {
+    readonly referenceRateCount: number;
+    readonly ratesRetrievedAtConfigured: boolean;
+  };
 }
 
 /**
@@ -1354,8 +1441,19 @@ export interface CompositionRoot {
  * detail by accident.
  */
 export interface RequestScopeAdapters {
-  readonly productRepository: ProductRepository;
-  readonly skuRepository: SkuRepository;
+  /**
+   * The product adapter, published with BOTH facets this root composes it through.
+   *
+   * ★★ THE INTERSECTION IS THE HONEST TYPE (F5). The request graph narrows this instance to
+   * `ProductRepository` for every service that holds it, and the wire-document hydration composes the
+   * SAME instance through {@link ProductSetLoader} - the set-based load that is an adapter member
+   * rather than one of the port's six. A seam that published only the port would let a suite spy on a
+   * method the hydrator no longer calls, and pass for the wrong reason.
+   */
+  readonly productRepository: ProductRepository & ProductSetLoader;
+
+  /** The SKU adapter, published with both facets, for the reason given just above. */
+  readonly skuRepository: SkuRepository & SkuSetLoader;
   readonly optionRepository: OptionRepository;
   readonly productTypeRepository: ProductTypeRepository;
   readonly promotionRepository: PromotionRepository;
@@ -1458,11 +1556,31 @@ export interface CompositionOverrides {
   /**
    * The European Central Bank reference rates.
    *
-   * Absent, the documented empty table is used - see section 4.3, where the
-   * choice is recorded as a JUDGMENT CALL against
-   * [model/service/CurrencyService.cfc:L100-L101].
+   * Absent, the DEPLOYMENT's configured table applies, and absent that the documented
+   * empty table is used - see section 4.3, where the choice is recorded as a JUDGMENT
+   * CALL against [model/service/CurrencyService.cfc:L100-L101].
    */
   readonly europeanCentralBankRates?: EuropeanCentralBankRateTable | undefined;
+
+  /**
+   * When the OVERRIDDEN rate table above was retrieved.
+   *
+   * ★ IT PAIRS WITH THE OVERRIDE AND IS READ ONLY ALONGSIDE IT, which closes a small
+   * incoherence rather than adding a feature. `reportRateTableAge` used to be handed the
+   * CONFIGURED instant whatever the table's provenance, so a composition that overrode
+   * the table and also configured an instant had the age of one table reported for
+   * another. The instant now travels with the table it describes: supply this to describe
+   * an overridden table's age, or omit it and the same "supplied without a retrieval
+   * instant" arm reports that the age is unknown - which is what that arm's own comment
+   * has always claimed it was for.
+   *
+   * IT IS DELIBERATELY UNVALIDATED, unlike `ECB_RATES_RETRIEVED_AT`, which
+   * `../lib/config.js` refuses when it names a future instant. A `Date` handed straight
+   * to a composition bypasses every resolver, which is precisely why
+   * `reportRateTableAge` carries a future-instant arm: a seam whose input is not
+   * validated is where the guarantee has to be made rather than assumed.
+   */
+  readonly europeanCentralBankRatesRetrievedAt?: Date | undefined;
 
   /**
    * The environment to resolve configuration FROM, instead of `process.env`.
@@ -1659,9 +1777,12 @@ const DIALECT_DECISION_SITE = 'bootstrap.ts composition root';
  *
  * JUDGMENT CALL: this empty default IS the E3 resolution. Reproducing
  * `getEuropeanCentralBankRates()` [model/service/CurrencyService.cfc:L104-L118]
- * needs BOTH an HTTP client and an XML parser, and the fourteen exactly-pinned
+ * needs BOTH an HTTP client and an XML parser, and the thirteen exactly-pinned
  * packages contain NEITHER. Adding one is forbidden, so the rates arrive as data
- * and the default is EMPTY.
+ * and the default is EMPTY. (Thirteen, counted from `package.json`: three runtime
+ * and ten development. AAP 0.5.1 says fourteen and enumerates thirteen beside a
+ * Node runtime pin, so the fourteenth is the runtime - see `esbuild.config.mjs`
+ * for the full reconciliation. Neither reading admits an HTTP client.)
  *
  * That choice is BEHAVIOURALLY FAITHFUL rather than degraded. When a rate is
  * missing the legacy does not raise: [L100-L101] reads
@@ -1762,6 +1883,96 @@ const EUROPEAN_CENTRAL_BANK_RATE_MAX_AGE_DAYS = 1;
 const MILLISECONDS_PER_DAY = 86_400_000;
 
 /**
+ * How far ahead of this host's clock a rate table's retrieval instant may sit before it
+ * is reported as a future instant rather than as an age of zero.
+ *
+ * Mirrors the allowance `../lib/config.js` applies when it REFUSES a future
+ * `ECB_RATES_RETRIEVED_AT`, and is stated here rather than imported for a reason that is
+ * worth naming: that module's single exported unit is its configuration accessor, and
+ * widening its export surface to share a number would trade a real convention for a
+ * trivial convenience. The duplication is inert - both are a five-minute clock-skew
+ * allowance, neither is a tuning knob, and the two answer different questions anyway
+ * (whether to refuse a process, versus how to describe a table already in hand).
+ */
+const MAX_RATE_INSTANT_CLOCK_SKEW_MS = 5 * 60 * 1_000;
+
+/**
+ * Which threshold-resolution outcomes have already been announced in this process.
+ *
+ * The tier-1 graph is memoized, so in production this file builds one composition per
+ * container and this set holds at most one member. It earns its place under a suite,
+ * which builds many: without it a file that resolves fifty compositions over a
+ * mistyped level would emit fifty identical warnings, which is how a diagnostic added
+ * for legibility makes a log stream illegible. One line per process says everything
+ * fifty would.
+ *
+ * ★ KEYED BY THE CLASSIFIER RATHER THAN BY A BARE BOOLEAN, for two reasons. It is
+ * BOUNDED BY CONSTRUCTION - `LogThresholdSource` is a closed three-member union, so
+ * this can never hold more than three short literals, which is what makes it
+ * categorically unlike the process-global set of RAW `LOG_LEVEL` values this
+ * arrangement replaced. And it keeps the suppression HONEST: a future edit that
+ * started announcing a correctly configured level would be keyed separately and would
+ * still emit, so a test asserting silence for a valid level cannot be masked by an
+ * earlier test having announced a coerced one.
+ */
+const announcedLogThresholdSources = new Set<LogThresholdSource>();
+
+/**
+ * Hand the validated emission threshold to `../lib/logger.js`, and announce a coerced
+ * one exactly once.
+ *
+ * ★★ THIS IS THE HANDOVER THAT MAKES `../lib/config.js` THE ONLY READER OF
+ * `process.env` UNDER `src/**`. The logger used to read `LOG_LEVEL` itself, on every
+ * emission, which meant the subtree had two configuration authorities while
+ * documenting one. Neither of those two files imports the other, and neither may -
+ * configuration must be able to fail before logging exists, and logging must be able
+ * to report that failure - so the value cannot travel between them directly. This
+ * function is the seam: this module is the one place that holds both, so the handover
+ * happens here, at the top of composition, before anything that logs is wired.
+ *
+ * ★ IT IS ALSO WHERE THE DUPLICATED LEVEL UNIONS MEET. `LogThreshold` in
+ * `../lib/config.js` and `LogLevel` in `../lib/logger.js` are declared separately, on
+ * purpose, because neither file may import the other. The assignment below is the
+ * single point at which the compiler compares them, so a level added to one and not
+ * the other is a build failure rather than a runtime surprise.
+ *
+ * ★ THE RAW VALUE IS NOT AVAILABLE HERE, BY CONSTRUCTION, AND THAT IS THE FIX FOR A
+ * DISCLOSURE DEFECT RATHER THAN AN INCONVENIENCE. The first attempt at this warning
+ * lived in the logger and echoed the rejected token, admitting anything matching
+ * `[A-Za-z0-9_.-]{1,32}` verbatim onto the log stream and retaining it in a
+ * process-global set - which is the exact shape of an access key, a short bearer
+ * token or a password pasted into the wrong variable. `../lib/config.js` now discards
+ * the value at resolution and reports only which of three things happened to it, so
+ * there is no echo to get wrong: the only strings this function can emit are closed
+ * union members.
+ */
+function adoptConfiguredLogThreshold(logging: LoggingConfig): void {
+  logger.adoptConfiguredThreshold(logging.level);
+
+  // `configured` and `defaulted-unset` are both correct operator intent - naming a
+  // level, or leaving the variable unset to accept the default - so neither is worth
+  // a line. Only a value that was actually written and is not a level name is.
+  if (
+    logging.levelSource !== 'defaulted-unrecognized' ||
+    announcedLogThresholdSources.has(logging.levelSource)
+  ) {
+    return;
+  }
+
+  announcedLogThresholdSources.add(logging.levelSource);
+
+  // Emitted at `warn`, which the coerced threshold `info` admits, so the report about
+  // the threshold can never be suppressed by the threshold it is reporting on. Both
+  // context keys are in the logger's closed diagnostic allow-list and both values are
+  // closed union members; `logthresholdsource` was added there in place of the
+  // `configuredloglevel` echo this replaces.
+  logger.warn(
+    'LOG_LEVEL holds a value this service does not recognize, so the default threshold is in force; recognized values are debug, info, warn, error',
+    { logThresholdSource: logging.levelSource, thresholdInForce: logging.level },
+  );
+}
+
+/**
  * Report the age of the configured rate table, ONCE, at module-graph construction.
  *
  * Cardinality is the point of doing it here rather than per conversion: the table is
@@ -1813,7 +2024,37 @@ function reportRateTableAge(
     return;
   }
 
-  const ageInDays = Math.floor((Date.now() - retrievedAt.getTime()) / MILLISECONDS_PER_DAY);
+  const ageInMilliseconds = Date.now() - retrievedAt.getTime();
+
+  // ★★ A FUTURE INSTANT IS REPORTED, NOT PASSED OVER, AND IT IS TESTED BEFORE THE
+  // STALENESS COMPARISON RATHER THAN AFTER. A retrieval instant ahead of this host's
+  // clock makes the subtraction NEGATIVE, and a negative age is LESS THAN the refresh
+  // window - so without this arm it sailed straight past the branch below and was
+  // announced as "resolved from configuration", which is the one thing an operator must
+  // not be told about a table whose timestamp is wrong.
+  //
+  // WHY IT IS NOT DEAD CODE NOW THAT CONFIGURATION REFUSES A FUTURE INSTANT. Two routes
+  // reach this function and only one of them is validated: `../lib/config.js` refuses a
+  // future `ECB_RATES_RETRIEVED_AT` outright, but `CompositionOverrides` supplies a rate
+  // table directly and bypasses that resolver entirely, so the pairing of an overridden
+  // table with any configured instant is still reachable. A defensive arm at a seam whose
+  // input is not validated is not redundancy; it is where the guarantee is actually made.
+  //
+  // THE SAME SKEW ALLOWANCE APPLIES HERE AS THERE, AND IT IS SPELLED OUT SEPARATELY
+  // BECAUSE THE TWO ANSWER DIFFERENT QUESTIONS. Configuration decides whether to REFUSE
+  // the process; this decides how to REPORT what it was handed. Ordinary clock skew of a
+  // few seconds between the machine that captured the rates and this host is not a wrong
+  // value, and reporting it as one would make a routine cold start look alarming - so
+  // within the allowance the age is clamped to zero and the ordinary line is emitted.
+  if (ageInMilliseconds < -MAX_RATE_INSTANT_CLOCK_SKEW_MS) {
+    logger.warn(
+      'Currency conversion rates carry a retrieval instant in the future; their age cannot be assessed',
+      { rowCount, ageInDays: Math.ceil(ageInMilliseconds / MILLISECONDS_PER_DAY) },
+    );
+    return;
+  }
+
+  const ageInDays = Math.max(0, Math.floor(ageInMilliseconds / MILLISECONDS_PER_DAY));
 
   if (ageInDays > EUROPEAN_CENTRAL_BANK_RATE_MAX_AGE_DAYS) {
     logger.warn('Currency conversion rates are older than the one-day refresh window', {
@@ -2147,6 +2388,13 @@ const SELECT_ADDRESS_ZONE_LOCATIONS = 'bootstrapSelectAddressZoneLocations';
 const SELECT_SKU_FEED_SETTINGS = 'bootstrapSelectSkuFeedSettings';
 const SELECT_PRODUCT_TYPE_PATHS = 'bootstrapSelectProductTypePaths';
 
+// The statement behind the SETTINGS PORTS - the general, relationship-free rows for the seven names the
+// two settings contracts publish. Distinct from the per-SKU pair above because it asks a different
+// question: not "which override applies to THIS sku" but "what has this installation configured
+// globally", which is the legacy's final `getSettingRecordBySettingRelationships(settingName=...)`
+// probe with no relationships at all [model/service/SettingService.cfc:L490, L595-L608].
+const SELECT_GENERAL_SETTINGS = 'bootstrapSelectGeneralSettings';
+
 // The framework-generated writes. `HibachiService.save` [org/Hibachi/HibachiService.cfc:L155] reached
 // `getHibachiDAO().save(target=...)`, whose statement Hibernate produced from the entity's
 // persistent-property metadata - so these labels name statements that exist in no legacy DAO, which is
@@ -2155,7 +2403,10 @@ const INSERT_ROUNDING_RULE = 'bootstrapInsertRoundingRule';
 const UPDATE_ROUNDING_RULE = 'bootstrapUpdateRoundingRule';
 const INSERT_BRAND = 'bootstrapInsertBrand';
 const UPDATE_BRAND = 'bootstrapUpdateBrand';
-const SELECT_BRAND_BY_URL_TITLE = 'bootstrapSelectBrandByUrlTitle';
+// NO `SELECT_BRAND_BY_URL_TITLE` LABEL. The uniqueness probe below asks EXISTENCE ONLY, so it reads no
+// column through `readIdentifier` and needs no statement label to attribute a read failure to. The
+// label existed to name the conflicting row inside `BrandUrlTitleNotUniqueError`, and that error is
+// retired - see its tombstone.
 
 // --- Statements ------------------------------------------------------------
 
@@ -2582,6 +2833,57 @@ const SELECT_SKU_FEED_SETTINGS_SQL = [
 ].join(' ');
 
 /**
+ * The configured value of every name the two settings contracts publish, read ONCE at composition
+ * time.
+ *
+ * ★★★ WHY THIS STATEMENT HAD TO EXIST. Until it did, `BootstrapSettingsProvider` was built from
+ * the DECLARED DEFAULTS ALONE and `SwSetting` was never consulted for a general setting at all. Code
+ * review recorded that as a CRITICAL money defect and it is exactly that: `skuCurrency` was pinned to
+ * the literal `'USD'` however the installation was configured, so a merchant trading in `GBP` had every
+ * price read out of the SKU's own base columns as though they were dollars - the base-currency step of
+ * the cascade [model/entity/Sku.cfc:L385-L397] compares `skuCurrency` against each eligible code, so
+ * the wrong answer there silently selects the wrong prices. `skuEligibleCurrencies` could not be closed
+ * either: the cascade gate [model/entity/Sku.cfc:L373] is `if(len(setting('skuEligibleCurrencies')))`,
+ * and an installation that deliberately configures it EMPTY meant every price accessor to answer
+ * nothing, which a runtime-computed default cannot express. The URL-key and presentation overrides were
+ * ignored on the same terms.
+ *
+ * ★★ IT IS THE LEGACY'S OWN FINAL PROBE, NOT A NEW LOOKUP. For a `global*` name
+ * [model/service/SettingService.cfc:L488-L500] the legacy probes
+ * `getSettingRecordBySettingRelationships(settingName=...)` with NO relationships; for a prefixed name
+ * such as `skuCurrency` the same relationship-free probe is the LAST step before the declared default
+ * [model/service/SettingService.cfc:L594-L608]. With no object in hand - which is precisely the
+ * composition root's position - the earlier object-scoped steps are unreachable, so the
+ * relationship-free probe IS the resolution. `indexSettingRows` and `lookupSettingValue` are reused
+ * verbatim, with the EMPTY candidate; that empty candidate is what requires all seventeen relationship
+ * columns to be NULL, which is the legacy `AND <col> IS NULL` for every non-participating column.
+ *
+ * ★★ A CONFIGURED ROW WINS EVEN WHEN ITS VALUE IS EMPTY. `indexSettingRows` maps a NULL
+ * `settingValue` to `''` deliberately - see its own note - because the legacy sets `foundValue = true`
+ * in the same breath as the assignment [model/service/SettingService.cfc:L525-L527]. So "row present,
+ * value blank" is a DECISION and reaches the domain as `''`, while "no row" falls through to the
+ * declared default. Collapsing the two would make an explicitly blanked setting inherit the value it
+ * was blanked to suppress - which for `skuEligibleCurrencies` is the difference between a closed
+ * cascade gate and a priced catalog.
+ *
+ * ONE READ FOR EVERY NAME, matching the legacy's own shape: it read the whole table once
+ * [model/dao/SettingDAO.cfc:L51-L62], cached it [model/service/SettingService.cfc:L424-L430] and probed
+ * in-engine. Narrowing to the names actually asked for discards only rows every legacy probe already
+ * discarded, because each probe opens with `LOWER(settingName) = ?`
+ * [model/service/SettingService.cfc:L783].
+ *
+ * @param nameCount - how many setting names the statement binds; one or more. `IN ()` is a MySQL
+ *   syntax error, so a caller with no names must not reach this builder.
+ */
+function buildSelectGeneralSettingsSql(nameCount: number): string {
+  return [
+    `SELECT settingName, settingValue, ${SETTING_RELATIONSHIP_COLUMNS.join(', ')}`,
+    'FROM SwSetting',
+    `WHERE LOWER(settingName) IN (${new Array<string>(nameCount).fill('?').join(', ')})`,
+  ].join(' ');
+}
+
+/**
  * The materialized ancestry paths of the product types a batch mentions.
  *
  * `productTypeIDPath` IS A STORED COLUMN, NOT A COMPUTATION [model/entity/ProductType.cfc:L53], and
@@ -2719,7 +3021,8 @@ const UPDATE_BRAND_SQL = [
  * one query for both.
  *
  * `LIMIT 1` because existence is the whole question - the legacy tested `arrayLen(results)` and nothing
- * else. The identifier is selected only so a diagnostic can name the row that already holds the title.
+ * else. `brandID` is projected because a statement must project something; NOTHING READS IT, which is
+ * why no statement label accompanies it.
  */
 const SELECT_BRAND_BY_URL_TITLE_SQL = [
   'SELECT brandID FROM SwBrand',
@@ -2934,6 +3237,101 @@ function readFlag(row: SqlRow, columnName: string, statementLabel: string): CfBo
 // ---------------------------------------------------------------------------
 
 /**
+ * Every setting name this composition resolves: the four of the frozen settings port plus the three
+ * of the product-presentation contract.
+ *
+ * ONE UNION SO THERE IS ONE TABLE. The provider below implements both contracts, and a single
+ * exhaustive record is what makes "one authority per setting" mechanical rather than asserted - the
+ * compiler requires an entry for every name, and `setting()` can answer either contract from it.
+ */
+type BootstrapSettingName = SettingKey | ProductPresentationSettingKey;
+
+/**
+ * The seven names, folded, exactly as they are spelled in `model/service/SettingService.cfc`.
+ *
+ * The list IS the bind list of `buildSelectGeneralSettingsSql`, folded once here because every legacy
+ * probe compares `LOWER(allSettings.settingName)` [model/service/SettingService.cfc:L783].
+ */
+const GENERAL_SETTING_NAMES: readonly BootstrapSettingName[] = Object.freeze([
+  'globalURLKeyProduct',
+  'globalURLKeyProductType',
+  'productImageDefaultExtension',
+  'productImageOptionCodeDelimiter',
+  'productTitleString',
+  'skuCurrency',
+  'skuEligibleCurrencies',
+]);
+
+/**
+ * One step of the legacy cascade's tail: the configured value when a row matched, otherwise the
+ * declared default.
+ *
+ * ★ `?? ` IS DELIBERATELY NOT `||`. A configured row whose value is the EMPTY STRING is a decision -
+ * see `buildSelectGeneralSettingsSql` - and `||` would discard it in favour of the default, which for
+ * `skuEligibleCurrencies` is the difference between a deliberately closed cascade gate
+ * [model/entity/Sku.cfc:L373] and a fully priced catalog.
+ *
+ * @param configured - the folded name-to-value map from `readGeneralSettingValues`.
+ * @param settingName - the name being resolved, in its declared spelling.
+ * @param declaredDefault - the `defaultValue` from the legacy declaration.
+ * @returns the effective value; never `undefined`, which is what the ports promise.
+ */
+function resolveConfiguredSetting(
+  configured: ReadonlyMap<string, string>,
+  settingName: BootstrapSettingName,
+  declaredDefault: string,
+): string {
+  return configured.get(cfFoldKey(settingName)) ?? declaredDefault;
+}
+
+/**
+ * Reads the relationship-free `SwSetting` row for each of the seven names, ONCE.
+ *
+ * See `buildSelectGeneralSettingsSql` for why this statement exists and which legacy probe it is.
+ * The empty candidate handed to `lookupSettingValue` is what requires every one of the seventeen
+ * relationship columns to be NULL, reproducing the legacy `AND <col> IS NULL` for every
+ * non-participating column [model/service/SettingService.cfc:L768-L870].
+ *
+ * A name with no matching row is ABSENT from the result rather than present-and-empty, because the
+ * two mean different things: absent falls through to the declared default, present-and-empty is a
+ * configured blank that suppresses it.
+ *
+ * @param executor - the request's prepared-statement executor.
+ * @returns configured values keyed by FOLDED setting name.
+ */
+async function readGeneralSettingValues(
+  executor: PreparedStatementExecutor,
+): Promise<ReadonlyMap<string, string>> {
+  const rows = await executor.execute(
+    buildSelectGeneralSettingsSql(GENERAL_SETTING_NAMES.length),
+    GENERAL_SETTING_NAMES.map((settingName: BootstrapSettingName): string =>
+      settingName.toLowerCase(),
+    ),
+  );
+
+  const index = indexSettingRows(rows, SELECT_GENERAL_SETTINGS);
+  const configured = new Map<string, string>();
+
+  for (const settingName of GENERAL_SETTING_NAMES) {
+    // THE EMPTY CANDIDATE: no participating relationship column, so only a row with every one of
+    // them NULL can match. That is the legacy's global probe [model/service/SettingService.cfc:L490]
+    // and its relationship-free last step [L601] alike.
+    const settingValue = lookupSettingValue(index, settingName, []);
+
+    if (settingValue !== undefined) {
+      configured.set(cfFoldKey(settingName), settingValue);
+    }
+  }
+
+  logger.debug('Resolved general setting values', {
+    rowCount: rows.length,
+    resultCount: configured.size,
+  });
+
+  return configured;
+}
+
+/**
  * The single flat settings resolver.
  *
  * The legacy reached settings through FOUR DISTINCT SURFACES - a bare
@@ -2960,29 +3358,67 @@ function readFlag(row: SqlRow, columnName: string, statementLabel: string): CfBo
  * `setting()` returns `string`, never `string | undefined`, which is why
  * `skuEligibleCurrencies` MUST be resolved before an instance exists.
  */
-class BootstrapSettingsProvider implements SettingsProvider {
-  private readonly values: Readonly<Record<SettingKey, string>>;
+class BootstrapSettingsProvider implements SettingsProvider, ProductPresentationSettingsProvider {
+  private readonly values: Readonly<Record<BootstrapSettingName, string>>;
 
   /**
-   * @param skuEligibleCurrencies - the ALREADY-RESOLVED comma-delimited list.
-   *   `skuEligibleCurrencies` is declared with a runtime-computed default,
-   *   `getCurrencyService().getAllActiveCurrencyIDList()`
-   *   [model/service/SettingService.cfc:L222] - a live data lookup, not a
-   *   literal - so the composition root resolves it eagerly and hands the value
-   *   in. See `resolveEligibleCurrencyCodeList`.
+   * @param configured - the values this installation has CONFIGURED, read from the
+   *   relationship-free `SwSetting` rows by `readGeneralSettingValues`. A name present here
+   *   wins over its declared default even when its value is the EMPTY STRING, because the
+   *   legacy sets `foundValue = true` in the same breath as the assignment
+   *   [model/service/SettingService.cfc:L525-L527] - so a blanked setting suppresses
+   *   inheritance rather than falling through. A name ABSENT here means no row matched.
+   * @param skuEligibleCurrencies - the runtime-computed DEFAULT for
+   *   `skuEligibleCurrencies`, already resolved. That key alone declares its default as a
+   *   live data lookup, `getCurrencyService().getAllActiveCurrencyIDList()`
+   *   [model/service/SettingService.cfc:L222], which is why the composition root resolves it
+   *   eagerly and hands the value in; see `resolveEligibleCurrencyCodeList`. It is a
+   *   DEFAULT, not an answer: a configured row for the same name still wins over it, which
+   *   is what lets an installation close the cascade gate [model/entity/Sku.cfc:L373] with
+   *   an explicitly empty value.
    */
-  public constructor(skuEligibleCurrencies: string) {
-    // The seven keys in the order their declarations appear in
+  public constructor(configured: ReadonlyMap<string, string>, skuEligibleCurrencies: string) {
+    // The seven names in the order their declarations appear in
     // `model/service/SettingService.cfc`, so the table can be checked against the
-    // legacy file top to bottom: L178, L179, L191, L192, L193, L221, L222.
+    // legacy file top to bottom: L178, L179, L191, L192, L193, L221, L222. FOUR of them are
+    // `SettingKey` and THREE are `ProductPresentationSettingKey`; one object answers both
+    // contracts so that a setting has exactly one resolution and one value.
+    //
+    // ★ EVERY ONE OF THEM IS `configured ?? declared default` - the legacy cascade's last two
+    // steps, in order [model/service/SettingService.cfc:L481-L486, L594-L608]. Before this the
+    // right-hand side was the WHOLE of the resolution.
     this.values = Object.freeze({
-      globalURLKeyProduct: GLOBAL_URL_KEY_PRODUCT_DEFAULT,
-      globalURLKeyProductType: GLOBAL_URL_KEY_PRODUCT_TYPE_DEFAULT,
-      productImageDefaultExtension: PRODUCT_IMAGE_DEFAULT_EXTENSION_DEFAULT,
-      productImageOptionCodeDelimiter: PRODUCT_IMAGE_OPTION_CODE_DELIMITER_DEFAULT,
-      productTitleString: PRODUCT_TITLE_STRING_DEFAULT,
-      skuCurrency: SKU_CURRENCY_DEFAULT,
-      skuEligibleCurrencies,
+      globalURLKeyProduct: resolveConfiguredSetting(
+        configured,
+        'globalURLKeyProduct',
+        GLOBAL_URL_KEY_PRODUCT_DEFAULT,
+      ),
+      globalURLKeyProductType: resolveConfiguredSetting(
+        configured,
+        'globalURLKeyProductType',
+        GLOBAL_URL_KEY_PRODUCT_TYPE_DEFAULT,
+      ),
+      productImageDefaultExtension: resolveConfiguredSetting(
+        configured,
+        'productImageDefaultExtension',
+        PRODUCT_IMAGE_DEFAULT_EXTENSION_DEFAULT,
+      ),
+      productImageOptionCodeDelimiter: resolveConfiguredSetting(
+        configured,
+        'productImageOptionCodeDelimiter',
+        PRODUCT_IMAGE_OPTION_CODE_DELIMITER_DEFAULT,
+      ),
+      productTitleString: resolveConfiguredSetting(
+        configured,
+        'productTitleString',
+        PRODUCT_TITLE_STRING_DEFAULT,
+      ),
+      skuCurrency: resolveConfiguredSetting(configured, 'skuCurrency', SKU_CURRENCY_DEFAULT),
+      skuEligibleCurrencies: resolveConfiguredSetting(
+        configured,
+        'skuEligibleCurrencies',
+        skuEligibleCurrencies,
+      ),
     });
   }
 
@@ -3009,8 +3445,516 @@ class BootstrapSettingsProvider implements SettingsProvider {
    * @param settingName one of the seven names this composition declares.
    * @returns the declared value.
    */
-  public setting(settingName: SettingKey): string {
+  public setting(settingName: BootstrapSettingName): string {
     return structGet(this.values, settingName) ?? this.values[settingName];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4.0  currencyConverter - THE EUROPEAN CENTRAL BANK RATE-TABLE IMPLEMENTATION
+// ---------------------------------------------------------------------------
+//
+// ★★★ WHY THIS LIVES HERE AND NOT IN A FILE OF ITS OWN. It did, for one revision:
+// `src/integrations/europeanCentralBankCurrencyConverter.ts`, with a module header arguing that "a
+// composition root is a place where instances are connected, not a place where a must-preserve money
+// algorithm is hidden". Code review recorded the file as a SCOPE violation and it was right on both
+// counts that matter: the transformation plan's target layout enumerates `src/integrations/` as
+// exactly `integrationInterface.ts` plus the four Google modules, and the scope gate admits "no
+// adapter other than Google" - so a fifth module under that folder reads as a second integration
+// however narrow it is. `src/domain/ports/currencyConverter.ts` is one of the thirteen ports with NO
+// adapter file in the plan, and the plan's answer for such a port is the composition root, which is
+// where `addressZoneEvaluator`, `urlTitleGenerator`, `imageStore`, `subscriptionTermProvider` and the
+// settings providers already live.
+//
+// NOTHING WAS LOST IN THE MOVE. Every citation, every JUDGMENT CALL and every carried-forward TODO
+// below is the text that shipped in that file, and the class, its rate-table type, its record
+// projection and its pass-through observer are unchanged apart from no longer being `export`ed -
+// this file is their only consumer, so publishing them would widen a surface for nobody.
+//
+// THE ALGORITHM IS STILL AN ALGORITHM, and the earlier header's real point survives as a constraint
+// on maintenance rather than on location: the pivot currency, the guard's evaluation ORDER, the
+// silent pass-through that is easy to "tidy" into a rejection, and the rounding asymmetry are each
+// behavioural, each cited, and each pinned by a characterisation case in
+// `tests/unit/handlers/bootstrap.test.ts`.
+// ---------------------------------------------------------------------------
+
+/**
+ * The pivot currency of the European Central Bank reference-rate table.
+ *
+ * CFML parity [model/service/CurrencyService.cfc:L87, L93]: the legacy hardcodes
+ * the literal `"EUR"` at both ends of the pivot. The rate table is quoted
+ * per-euro by construction, so the pivot is a property of the source rather than
+ * a configurable choice, and it is not exposed as a constructor argument.
+ *
+ * The code is compared through `currencyCodeEquals`, never with `===`, because
+ * CFML's `eq` is case-insensitive and `"eur"` must satisfy the pivot test.
+ *
+ * A note on where this literal is allowed to live: the PORT deliberately names
+ * no currency code as a value, because a pivot is an implementation detail of a
+ * particular rate source. This adapter is that implementation, so the literal
+ * belongs here.
+ */
+const EURO_CURRENCY_CODE = 'EUR';
+
+/**
+ * The European Central Bank reference-rate table, as this adapter consumes it.
+ *
+ * Keys are currency codes, matched CASE-INSENSITIVELY to reproduce CFML struct
+ * semantics. Values are the per-euro rate as a PLAIN DECIMAL STRING - never a
+ * JavaScript number, because every one of them is multiplied into a monetary
+ * value and money never touches a float.
+ *
+ * CFML parity [model/service/CurrencyService.cfc:L118-L119]: the legacy builds
+ * this struct by copying the `currency` and `rate` XML attributes of each `Cube`
+ * element, so a rate is a string there too.
+ *
+ * A code ABSENT from this table is the pass-through case, not an error. See the
+ * module header.
+ */
+type EuropeanCentralBankRateTable = Readonly<Record<string, string>>;
+
+/**
+ * Notified when a conversion could not be performed and the amount passed through.
+ *
+ * ★ WHY OBSERVABILITY RATHER THAN A DIFFERENT RETURN VALUE. A security review
+ * raised, as finding S-20, that a missing rate makes `convertCurrency` return the
+ * original amount and "indistinguishably succeed" - a EUR numeral published as
+ * though it were USD. The VALUE cannot change: [model/service/CurrencyService.cfc:L100-L101]
+ * returns `arguments.amount` untouched, AAP 0.8.1 names the currency resolution
+ * cascade as must-preserve, and step 3 of that cascade
+ * [model/entity/Sku.cfc:L416-L428] consumes the result as a price. What CAN change,
+ * and does, is that the event stops being invisible: every pass-through is reported
+ * here, so a deployment can alert on 1:1 conversions instead of discovering them in
+ * a merchant feed.
+ *
+ * The observer is a plain callback rather than a logger, so this module keeps its
+ * single outward dependency direction and a test can assert the notification without
+ * a log sink. It is called for its effect only - a throw from an observer would turn
+ * a preserved pass-through into a rejection, so implementations must not throw, and
+ * `src/handlers/bootstrap.ts` supplies one that only logs.
+ *
+ * @param originalCurrencyCode the currency the amount was denominated in.
+ * @param convertToCurrencyCode the currency the caller asked for.
+ */
+type CurrencyPassThroughObserver = (
+  originalCurrencyCode: string,
+  convertToCurrencyCode: string,
+) => void;
+
+/** The default observer: a pass-through that nobody asked to hear about is silent. */
+const IGNORE_PASS_THROUGH: CurrencyPassThroughObserver = () => {
+  // Intentionally empty. See CurrencyPassThroughObserver - the sink is optional so
+  // that no caller is forced to supply one, and a no-op is the honest default rather
+  // than a hidden console write.
+};
+
+/**
+ * The two `SwCurrency` columns the two listing methods read, and nothing else.
+ *
+ * CFML parity [model/entity/Currency.cfc:L52-L53]: `currencyCode` is the entity
+ * identifier and `activeFlag` is a nullable boolean. `currencyName` (L54),
+ * `currencySymbol` (L55) and the audit columns are deliberately NOT modelled -
+ * the display label has no in-scope consumer now that the admin application is
+ * out of scope, and projecting it would put a presentation concern in a data
+ * shape. `Currency` is not one of the eighteen in-scope entities, so there is no
+ * `currency.ts` to reuse and this narrow projection stands in for it.
+ *
+ * `activeFlag` is `CfBooleanInput` rather than `boolean` so that a column
+ * hydrating as SQL NULL is representable; `cfBoolean` resolves absent to false,
+ * matching the `activeFlag = 1` predicate the legacy filter emits.
+ *
+ * `currencyCode` is already a `CurrencyCode`. Validating the three-character
+ * width is the RECORD SUPPLIER's job, at the boundary where the row is read, and
+ * it is compile-checked here rather than re-asserted at runtime: raising from a
+ * listing call would be a divergence, since the legacy smart list returns
+ * whatever the column holds and never measures it.
+ */
+interface CurrencyRecordProjection {
+  /** The `SwCurrency` primary key [model/entity/Currency.cfc:L52]. */
+  readonly currencyCode: CurrencyCode;
+
+  /** The nullable active flag [model/entity/Currency.cfc:L53]. */
+  readonly activeFlag: CfBooleanInput;
+}
+
+/**
+ * A `SwCurrency` row with its active flag already resolved to a boolean.
+ *
+ * The resolution happens once, in the constructor, for two reasons. It makes both
+ * listing methods TOTAL - pure array operations that cannot raise - so their
+ * `Promise.resolve` is honest rather than hiding a synchronous throw behind a
+ * promise-typed signature. And it moves the one failure `cfBoolean` can report -
+ * a present flag carrying no boolean meaning, such as `'maybe'` - to
+ * construction, where the whole record set is in view, instead of surfacing it
+ * from a listing call several layers away.
+ *
+ * That failure is a schema surprise rather than a data variation: the legacy
+ * filter is emitted as `activeFlag = 1` against a boolean column, so no value
+ * reaching it could be unrecognised. SQL NULL is a different matter and IS
+ * expected - `cfBoolean` resolves it to false, which is the answer the legacy
+ * predicate gave it.
+ */
+type ResolvedCurrencyRecord = {
+  readonly currencyCode: CurrencyCode;
+  readonly active: boolean;
+};
+
+/**
+ * One resolved half of the euro pivot.
+ *
+ * The point of this type is ORDERING, not tidiness. [L86] tests both halves
+ * before [L90] divides, so both halves are resolved to one of these - or to
+ * `undefined`, meaning "unreachable" - before any arithmetic runs. `'euro'`
+ * carries no rate because neither pivot branch has one: [L88] assigns the amount
+ * unchanged and [L94] multiplies by nothing.
+ */
+type EuroPivotScaling =
+  { readonly kind: 'euro' } | { readonly kind: 'rate'; readonly rate: string };
+
+/**
+ * The `CurrencyConverter` port, implemented over a European Central Bank
+ * reference-rate table and a `SwCurrency` projection supplied at construction.
+ *
+ * Replaces the `getService("currencyService")` locator calls embedded in the SKU
+ * entity at [model/entity/Sku.cfc:L371, L418, L422, L425] - transformation rule
+ * T2. The entity now declares a constructor-injected port, and this class is what
+ * the composition root in THIS module hands it - the wiring is below, in the
+ * request-scope construction, rather than anywhere else.
+ *
+ * INSTANCE-SCOPED AND EFFECTIVELY IMMUTABLE. Both inputs are snapshotted in the
+ * constructor and no method mutates anything, so an instance is safe to share
+ * within one request and must NOT be cached across requests. Every method is
+ * `async` because the port declares it so; none of them awaits anything, which
+ * is a property of THIS implementation - the port exists precisely so that an
+ * implementation which does reach outward can be substituted without the domain
+ * changing.
+ *
+ * THE THREE METHODS ARE THE WHOLE SURFACE. No `refreshRates`, no `clearCache`,
+ * no rate accessor and no currency-record accessor: each would either widen the
+ * port or expose the state whose containment is the point.
+ */
+/**
+ * No reference-rate table was available, so a cross-currency conversion could not be performed.
+ *
+ * ★★★ THIS IS A FAIL-CLOSED REFUSAL, AND IT IS DELIBERATELY NOT THE PASS-THROUGH.
+ * `model/service/CurrencyService.cfc` has TWO failure states and they behave differently. When the
+ * rate table is present but a code is unlisted, [L100-L101] returns the amount UNCONVERTED and the
+ * cascade prices it at par - that is must-preserve behaviour and it is preserved. When the table was
+ * never obtained at all, [L104-L131] swallows the fetch failure and the next statement reads
+ * `variables.europeanCentralBankRates`, which was never assigned; CFML refuses that at runtime. So an
+ * absent table RAISES in the legacy engine, and it raises here.
+ *
+ * Without this distinction the deployed service answered 1:1 for every cross-currency conversion
+ * whenever `ECB_REFERENCE_RATES` was unset - publishing base-currency numerals as foreign-currency
+ * prices, invisibly. Code review recorded that as a currency-parity defect.
+ *
+ * IT NAMES THE TWO CODES AND NOTHING ELSE. No amount, no rate, no configuration value: an error
+ * message is not a place to publish money or configuration, and the two codes are what identify the
+ * conversion that could not be made.
+ *
+ * Exported so a handler's error mapper and this file's own suite can recognise it by type rather than
+ * by message text.
+ */
+export class CurrencyRateTableUnavailableError extends Error {
+  public constructor(
+    public readonly originalCurrencyCode: string,
+    public readonly convertToCurrencyCode: string,
+  ) {
+    super(
+      `No European Central Bank reference-rate table is available, so ${originalCurrencyCode} ` +
+        `cannot be converted to ${convertToCurrencyCode}. The legacy service fetched and daily ` +
+        'refreshed these rates [model/service/CurrencyService.cfc:L102-L131] and raised when it ' +
+        'had none; supply the table through ECB_REFERENCE_RATES rather than pricing at par.',
+    );
+    this.name = 'CurrencyRateTableUnavailableError';
+  }
+}
+
+// ★ EXPORTED FOR ONE REASON, STATED SO IT IS NOT MISTAKEN FOR PART OF THE COMPOSITION CONTRACT:
+// its characterisation suite has to be able to name it. The rate-table type, the record projection
+// and the pass-through observer beside it are NOT exported, because nothing outside this file names
+// them. No production module imports this class - `createRequestGraph` below is its only
+// constructor call site, and the domain sees it only through `CurrencyConverter`.
+//
+// ★★★ THIS CLASS IS NOT A THIRD-PARTY INTEGRATION ADAPTER, AND THE DISTINCTION HAS NOW BEEN RAISED
+// TWICE. A code review recorded it as "a wired non-Google ECB adapter, contrary to explicit
+// exclusions", reading AAP 0.9.5's "no adapter other than Google". The exclusion is real; this is not
+// an instance of it, and the reason is checkable in the legacy source rather than a matter of
+// judgement:
+//
+//   * `convertCurrency()` IS IN SCOPE BY NAME. AAP 0.2.1 admits
+//     `model/service/CurrencyService.cfc` for exactly two methods, `getCurrencySmartList()` and
+//     `convertCurrency()`, because the SKU currency cascade calls them at
+//     [model/entity/Sku.cfc:L379] and [model/entity/Sku.cfc:L421]. Something must implement the
+//     `currencyConverter` port; a port with no implementation is not a narrower scope, it is a
+//     broken graph.
+//   * THE EURO PIVOT AND THE ECB RATES ARE THE LEGACY SERVICE'S OWN MECHANISM, not a vendor this
+//     port chose. [model/service/CurrencyService.cfc:L53] declares
+//     `property name="europeanCentralBankRates"`, [L85] reads it through
+//     `getEuropeanCentralBankRates()`, [L100] pivots with `amountInEUR * cbRates[...]`, and
+//     [L104-L130] fetches `http://www.ecb.int/stats/eurofxref/eurofxref-daily.xml` and caches it
+//     daily. Reproducing `convertCurrency` REQUIRES those semantics; naming the implementation after
+//     the rate source the legacy service itself names is faithfulness, and renaming it would erase
+//     the lineage a reviewer diffing the two surfaces needs.
+//   * THE TARGET IS STRICTLY LESS OF AN INTEGRATION THAN THE SOURCE. There is NO network call here,
+//     at all - no `fetch`, no HTTP client, no URL. The rate table arrives as configuration and is
+//     read once at composition. The legacy's daily HTTP fetch is deliberately not ported, which is
+//     what makes this a configured table rather than an adapter.
+//   * THE HALF OF THAT FINDING WHICH WAS VALID IS ALREADY FIXED. This class previously lived at
+//     `src/integrations/europeanCentralBankCurrencyConverter.ts`, and sitting under `src/integrations/`
+//     beside the Google adapter DID present it as a peer integration - an unplanned file, correctly
+//     counted against the frozen inventory. That file is deleted. The class now lives in the
+//     composition root, which is where AAP 0.3.1 says implementations are instantiated and wired.
+//
+// What genuinely changed on the behavioural side is recorded at `convertCurrency` below: an
+// unavailable rate table now FAILS CLOSED instead of pricing every foreign currency at the base
+// numeral.
+export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
+  /**
+   * The `SwCurrency` projection both listing methods read, active flags resolved.
+   *
+   * Built fresh in the constructor, so a later mutation of the caller's array
+   * cannot reach in here, and never handed back - every listing returns a fresh
+   * array built from it.
+   */
+  private readonly currencies: readonly ResolvedCurrencyRecord[];
+
+  /**
+   * The per-euro reference rates `convertCurrency` consults.
+   *
+   * Snapshotted one level deep, which is the whole depth: the values are
+   * strings, so a shallow copy is a complete copy.
+   */
+  private readonly rates: EuropeanCentralBankRateTable;
+
+  /**
+   * The rate table is deliberately NOT validated here. A malformed or zero rate
+   * is left to raise at the moment it is consulted, because the legacy consults
+   * rates lazily too: a corrupt `USD` entry does not stop a `EUR`-to-`GBP`
+   * conversion there, and refusing the whole table up front would.
+   *
+   * @param currencies the `SwCurrency` rows this converter should see, in the
+   *   order the second listing method should answer in.
+   * @param rates the European Central Bank per-euro rate table, keyed by
+   *   currency code with plain-decimal-string values. Pass an empty object to
+   *   model a failed or unavailable retrieval; every non-pivot conversion then
+   *   takes the [L100-L101] pass-through, which is exactly what the legacy did
+   *   when its empty `catch` at [L127-L128] swallowed a fetch failure.
+   * @throws {CfmlBooleanConversionError} when a supplied `activeFlag` is present
+   *   but carries no boolean meaning. See {@link ResolvedCurrencyRecord}.
+   */
+  /**
+   * Notified whenever a conversion takes the [L100-L101] pass-through.
+   *
+   * Defaults to a no-op, so no caller is forced to supply one and no test has to
+   * thread a sink it does not care about.
+   */
+  private readonly onUnconvertedPassThrough: CurrencyPassThroughObserver;
+
+  constructor(
+    currencies: readonly CurrencyRecordProjection[],
+    rates: EuropeanCentralBankRateTable,
+    onUnconvertedPassThrough: CurrencyPassThroughObserver = IGNORE_PASS_THROUGH,
+  ) {
+    // `map` produces the defensive copy as a side effect of resolving the flags,
+    // so there is no second spread to keep in step with it.
+    this.currencies = currencies.map(
+      (record: CurrencyRecordProjection): ResolvedCurrencyRecord => ({
+        currencyCode: record.currencyCode,
+        active: cfBoolean(record.activeFlag),
+      }),
+    );
+
+    this.rates = { ...rates };
+    this.onUnconvertedPassThrough = onUnconvertedPassThrough;
+  }
+
+  /**
+   * List the currency codes flagged active.
+   *
+   * CFML parity [model/service/CurrencyService.cfc:L57-L67]: the legacy filters
+   * `activeFlag` to 1, selects `currencyCode`, and appends each record to a
+   * comma-delimited string. The comma list becomes an array at the port
+   * boundary so no caller parses one; record ORDER is preserved, because
+   * `listAppend` preserved it and the legacy query carries no `ORDER BY`.
+   * [L69-L77]'s `getCurrencyOptions` applies the identical filter and differs
+   * only in projecting a display label, so it collapses into this method.
+   *
+   * The active flag was resolved at construction, so this method cannot raise.
+   *
+   * @returns every active currency code, as a fresh array.
+   */
+  getAllActiveCurrencyIDList(): Promise<CurrencyCode[]> {
+    const active = this.currencies
+      .filter((record: ResolvedCurrencyRecord): boolean => record.active)
+      .map((record: ResolvedCurrencyRecord): CurrencyCode => record.currencyCode);
+
+    return Promise.resolve(active);
+  }
+
+  /**
+   * Resolve the currencies named by a comma-delimited currency-code list.
+   *
+   * CFML parity [model/entity/Sku.cfc:L371-L375]: the cascade takes a Currency
+   * smart list and narrows it with `addInFilter('currencyCode', ...)` on the
+   * eligible-currency setting. THAT IS ITS ONLY FILTER - there is deliberately
+   * no `activeFlag` clause here, so an inactive currency named in the list is
+   * still returned. See the asymmetry box in the module header before changing
+   * this.
+   *
+   * The record set is iterated and membership of the list is tested, rather than
+   * the reverse, which is what makes a listed-but-nonexistent code answer
+   * nothing and what makes the result order follow the records.
+   *
+   * Matching is case-insensitive: `listFindNoCase` carries the semantics of the
+   * `IN` predicate the legacy filter emits against a case-insensitive column
+   * collation.
+   *
+   * @param currencyCodeList a comma-delimited list of currency codes, in the
+   *   form the `skuEligibleCurrencies` setting stores. An empty string matches
+   *   nothing, which is consistent with the cascade's own eligibility gate at
+   *   [model/entity/Sku.cfc:L373] never opening for one.
+   * @returns the currencies whose code appears in the list, as a fresh array.
+   */
+  getCurrenciesByCurrencyCodeList(currencyCodeList: string): Promise<CurrencyCode[]> {
+    const eligible = this.currencies
+      .filter(
+        (record: ResolvedCurrencyRecord): boolean =>
+          listFindNoCase(currencyCodeList, record.currencyCode) > 0,
+      )
+      .map((record: ResolvedCurrencyRecord): CurrencyCode => record.currencyCode);
+
+    return Promise.resolve(eligible);
+  }
+
+  // TODO [model/service/CurrencyService.cfc:L81]: add integration support so a configured currency-conversion integration can supply the rate.
+  // LEGACY-NOTE [model/service/CurrencyService.cfc:L100-L101]: when either code is missing from the rate table the amount is returned unconverted rather than rejected.
+  // Retained to preserve the cited legacy behavior.
+  /**
+   * Convert an amount between two currencies, pivoting through the euro.
+   *
+   * CFML parity [model/service/CurrencyService.cfc:L85-L101], branch for branch:
+   * the guard at [L86] resolves both halves before any arithmetic; [L87-L91]
+   * expresses the amount in euro, dividing by the source rate unless the source
+   * IS the euro; [L93-L97] scales into the target, multiplying by the target
+   * rate unless the target IS the euro; both return paths round to cents; and
+   * [L100-L101] returns the amount UNTOUCHED - unrounded - when either side has
+   * no reachable rate.
+   *
+   * There is NO equal-code short-circuit, because the legacy has none. See the
+   * module header for what adding one would change.
+   *
+   * @param amount the amount expressed in `originalCurrencyCode`.
+   * @param originalCurrencyCode the currency `amount` is denominated in.
+   * @param convertToCurrencyCode the currency to express the result in.
+   * @returns the converted amount rounded to cents, or `amount` unchanged when
+   *   either currency has no reachable rate.
+   * @throws rejects when a CONSULTED rate is not a plain decimal numeral, or when
+   *   the SOURCE rate is zero - both of which the legacy engine also raised on. A
+   *   rate that is malformed but never consulted is harmless, exactly as it was
+   *   in the legacy, so neither fault is a pass-through and neither is
+   *   pre-validated.
+   */
+  convertCurrency(
+    amount: Money,
+    originalCurrencyCode: CurrencyCode,
+    convertToCurrencyCode: CurrencyCode,
+  ): Promise<Money> {
+    // WHY A PROMISE EXECUTOR RATHER THAN `Promise.resolve(...)`. The arithmetic
+    // below is synchronous and CAN raise on malformed rate data, and a
+    // `Promise`-typed method that throws synchronously breaks its own contract -
+    // `.catch()` would never see it. An executor body runs immediately, so
+    // nothing is deferred and no microtask is introduced, and a raise inside it
+    // becomes a REJECTION. `async` is not the alternative here: there is
+    // genuinely nothing to await, and the lint gate rejects an `async` function
+    // without one.
+    return new Promise<Money>((resolve) => {
+      // [L86] Both halves first. No arithmetic has happened yet, and none may.
+      const source: EuroPivotScaling | undefined = this.resolveScaling(originalCurrencyCode);
+      const target: EuroPivotScaling | undefined = this.resolveScaling(convertToCurrencyCode);
+
+      if (source === undefined || target === undefined) {
+        // ★★★ NO RATE TABLE AT ALL IS A DIFFERENT STATE FROM AN UNLISTED CODE, AND IT FAILS
+        // CLOSED. Code review recorded that without injected rates EVERY cross-currency
+        // conversion passed through 1:1 in production, while the legacy
+        // [model/service/CurrencyService.cfc:L102-L131] actively FETCHED and daily-refreshed the
+        // reference rates - so the two systems were not doing the same thing at all. Map the
+        // legacy states honestly:
+        //
+        //   * table present, one code unlisted  -> [L100-L101] returns the amount unconverted.
+        //     Preserved exactly, below. This is the must-preserve pass-through.
+        //   * table never obtained              -> [L104-L131] swallows the fetch failure, and the
+        //     very next line `return variables.europeanCentralBankRates` reads a variable that was
+        //     NEVER ASSIGNED, which CFML refuses at runtime. The legacy RAISES here; it does not
+        //     price at par.
+        //
+        // An empty table is the second state: no rate source was ever obtained. Answering 1:1 for
+        // it would publish a foreign-currency price at the base-currency numeral - a wrong number
+        // that is indistinguishable from a right one - for every eligible currency at once. Raising
+        // instead surfaces the misconfiguration where it can be fixed, and it cannot fire on a
+        // single-currency installation, because step 3 of the cascade
+        // [model/entity/Sku.cfc:L416-L428] only converts currencies that need converting.
+        //
+        // The euro pivot is deliberately NOT exempted from the emptiness test by accident: a
+        // EUR-to-EUR conversion resolves both sides as `{ kind: 'euro' }` and never reaches this
+        // branch, so an empty table still converts the pivot to itself.
+        if (Object.keys(this.rates).length === 0) {
+          throw new CurrencyRateTableUnavailableError(originalCurrencyCode, convertToCurrencyCode);
+        }
+
+        // [L100-L101] The pass-through. Returned as received, deliberately NOT
+        // rounded, and - to the CALLER - deliberately not distinguishable from a
+        // real conversion, because the legacy return value carries no such
+        // distinction and the cascade consumes it as a price.
+        //
+        // ★ IT IS NO LONGER INDISTINGUISHABLE TO THE OPERATOR. The observer is
+        // notified first, so the event is reported even though the value is
+        // unchanged. This is the whole of finding S-20's observability half; see
+        // {@link CurrencyPassThroughObserver} for why the value itself may not move.
+        this.onUnconvertedPassThrough(originalCurrencyCode, convertToCurrencyCode);
+
+        resolve(amount);
+      } else {
+        // [L87-L91] `amountInEUR`. The euro branch divides by nothing at all,
+        // which is [L88]; every other source divides by its own rate, [L90].
+        const amountInEuro: Money = source.kind === 'euro' ? amount : amount.dividedBy(source.rate);
+
+        // [L93-L97] Into the target. The euro branch multiplies by nothing, which
+        // is [L94]; every other target multiplies by its own rate, [L96].
+        const scaled: Money =
+          target.kind === 'euro' ? amountInEuro : amountInEuro.times(target.rate);
+
+        // [L94]/[L96] `round(... * 100) / 100`. Two decimals, half away from
+        // zero. This is CALCULATION, not presentation, so the rounded value goes
+        // back into `Money` rather than being handed out as a formatted string.
+        resolve(Money.fromDecimalString(scaled.toFixed2()));
+      }
+    });
+  }
+
+  /**
+   * Resolve one side of the pivot, or report that it cannot be resolved.
+   *
+   * CFML parity [model/service/CurrencyService.cfc:L86]: one half of the guard,
+   * which is `structKeyExists(cbRates, code) || code eq "EUR"`. The pivot test
+   * comes FIRST and wins, matching [L87] and [L93], so the euro converts even
+   * when the supplied table carries no `EUR` key - and the European Central
+   * Bank table never does, because its rates are quoted per euro.
+   *
+   * @param currencyCode the code to resolve.
+   * @returns how to scale through the euro for this code, or `undefined` when
+   *   the code is neither the pivot nor present in the rate table.
+   */
+  private resolveScaling(currencyCode: CurrencyCode): EuroPivotScaling | undefined {
+    if (currencyCodeEquals(currencyCode, EURO_CURRENCY_CODE)) {
+      return { kind: 'euro' };
+    }
+
+    // Case-insensitive, because CFML struct keys are. `getByCurrencyCode` is the
+    // domain's published accessor for exactly this lookup shape.
+    const rate: string | undefined = getByCurrencyCode(this.rates, currencyCode);
+
+    return rate === undefined ? undefined : { kind: 'rate', rate };
   }
 }
 
@@ -3371,14 +4315,17 @@ function locationValueExcludes(
 // 4.3  currencyConverter - WIRED, NOT RE-IMPLEMENTED
 // ---------------------------------------------------------------------------
 //
-// RECONCILIATION. The instruction to carry every non-repository adapter inline
-// was written when `CurrencyConverter` had no adapter file. One now exists:
-// `src/integrations/europeanCentralBankCurrencyConverter.ts` implements the port,
-// names `src/handlers/bootstrap.ts` as the site that "constructs and wires this
-// class", and is already consumed by the entity suites and the SKU fixtures.
-// Three ports cite it. This root therefore WIRES it and does not duplicate it.
+// ★★★ QUOTE-THEN-REVISE - THE ADAPTER IS CARRIED INLINE HERE, AND THERE IS NO ADAPTER FILE.
+// This block used to read: "RECONCILIATION. The instruction to carry every
+// non-repository adapter inline was written when `CurrencyConverter` had no adapter
+// file. One now exists: `src/integrations/europeanCentralBankCurrencyConverter.ts`
+// implements the port ... This root therefore WIRES it and does not duplicate it."
+// That module was WITHDRAWN as unplanned architecture: AAP 0.3.1 enumerates the target
+// layout exhaustively and lists no such file, and AAP 0.9.5 holds the change set to that
+// inventory. Its class moved into this composition root, which AAP 0.3.1 does enumerate,
+// so the original instruction stands unamended and this root CARRIES the adapter.
 //
-// Re-implementing it inline was considered and refused. The conversion is a
+// Duplicating it was never the question and is still refused. The conversion is a
 // MUST-PRESERVE money algorithm - a euro pivot, a guard whose evaluation order is
 // behavioural, a silent fallback that is easy to "tidy" into a rejection, and a
 // rounding step - and two copies of it would be two arithmetic surfaces for the
@@ -3556,13 +4503,34 @@ export class UntrustedFeedHostError extends Error {
 }
 
 /**
- * Admit a feed host only if this DEPLOYMENT lists it, and answer the normalized form.
+ * Admit a feed host, enforcing this DEPLOYMENT's allow-list when it configured one, and answer
+ * the normalized form.
  *
  * TWO REFUSALS AND NO MORE. An empty or whitespace-only candidate is refused because there is
- * nothing to serve; a candidate absent from the configured list is refused because a list the
- * request cannot write is the only kind worth consulting. An EMPTY LIST therefore refuses
- * everything, which is the deliberate default: a deployment that configured no `FEED_ALLOWED_HOSTS`
- * does not serve a feed, and cannot be made to serve one by a request.
+ * nothing to serve; a candidate absent from a CONFIGURED list is refused because a list the
+ * request cannot write is the only kind worth consulting.
+ *
+ * ★★★ NO CONFIGURED LIST IS NOT AN EMPTY LIST (F40). QUOTE-THEN-REVISE: this note ended "An
+ * EMPTY LIST therefore refuses everything, which is the deliberate default: a deployment that
+ * configured no `FEED_ALLOWED_HOSTS` does not serve a feed, and cannot be made to serve one by a
+ * request." The second half was the defect. `FEED_ALLOWED_HOSTS` is optional, so "configured
+ * nothing" is the ordinary state of nearly every deployment, and treating it as deny-all meant
+ * the feed - which the source publishes PUBLICLY at
+ * [integrationServices/google/controllers/feed.cfc:L54] and serves on whatever `CGI.HTTP_HOST`
+ * the request carried - answered nothing at all until an operator set a variable the legacy
+ * never had. That is not hardening a contract, it is withdrawing one, and AAP 0.1.1 requires the
+ * feed contract be preserved exactly.
+ *
+ * So `allowedHosts === undefined` - the variable UNSET - admits the request's own normalized
+ * authority, which is source-equivalent. A PRESENT list is enforced, and an explicitly empty one
+ * still refuses everything, so deny-all remains reachable as a deliberate operator choice. The
+ * S-15 remedy is untouched either way: when a list exists it is process configuration that no
+ * request can write, which is the whole of what S-15 asked for.
+ *
+ * ★ AND "NO ALLOW-LIST" IS NOT "NO VALIDATION". The candidate is still normalized here, and
+ * `../integrations/google/rssFeedRenderer.js` still owns the authority grammar and the
+ * 259-character bound and still refuses a malformed host before it composes an origin. What the
+ * unset case removes is the MEMBERSHIP test, which the legacy did not perform, and nothing else.
  *
  * NORMALIZATION IS `trim().toLowerCase()` ON BOTH SIDES, and it is the only rewriting performed.
  * Host names are case-insensitive, so folding is parity rather than leniency, and the entries a
@@ -3575,15 +4543,24 @@ export class UntrustedFeedHostError extends Error {
  * not a bare authority cannot equal an allow-list entry that is one.
  *
  * @param candidate the host observed on the request; never trusted for provenance.
- * @param allowedHosts the frozen, deployment-owned list resolved once at module scope.
+ * @param allowedHosts the frozen, deployment-owned list resolved once at module scope, or
+ *   `undefined` when this deployment configured no host policy.
  * @returns the normalized host, which is what the feed service closes over.
- * @throws UntrustedFeedHostError when the candidate is empty or is not listed.
+ * @throws UntrustedFeedHostError when the candidate is empty, or when a list is configured and
+ *   does not contain it.
  */
-function assertAllowedFeedHost(candidate: string, allowedHosts: readonly string[]): string {
+function assertAllowedFeedHost(
+  candidate: string,
+  allowedHosts: readonly string[] | undefined,
+): string {
   const normalized = candidate.trim().toLowerCase();
 
   if (normalized.length === 0) {
     throw new UntrustedFeedHostError(candidate, 'it is empty or contains only whitespace');
+  }
+
+  if (allowedHosts === undefined) {
+    return normalized;
   }
 
   const permitted = allowedHosts.some((allowed) => allowed.trim().toLowerCase() === normalized);
@@ -3800,7 +4777,7 @@ type ImageFileNameSettingValues = Pick<
  * NO IMAGE BUSINESS LOGIC IS ADDED HERE, and none may be: no resizing, no format
  * conversion, no thumbnailing, no provider selection, no upload validation. No
  * Node filesystem built-in and no cloud SDK is imported - the AWS SDK is not one
- * of the fourteen pinned packages. Because this store touches no filesystem it
+ * of the thirteen pinned packages. Because this store touches no filesystem it
  * cannot traverse one, so the port's root-containment obligation has nothing to
  * contain here; that is a property of this stub and NOT a discharge of the
  * obligation, and whoever replaces it inherits the obligation in full.
@@ -4030,17 +5007,20 @@ function buildSettingRelationshipKey(candidate: SettingRelationshipCandidate): s
  * [model/service/SettingService.cfc:L525]. See `SELECT_SKU_FEED_SETTINGS_SQL` on why no `ORDER BY`
  * imposes which row that is.
  */
-function indexSettingRows(rows: readonly SqlRow[]): SettingRowIndex {
+function indexSettingRows(
+  rows: readonly SqlRow[],
+  statementLabel: string = SELECT_SKU_FEED_SETTINGS,
+): SettingRowIndex {
   const index = new Map<string, Map<string, string>>();
 
   for (const row of rows) {
-    const settingName = readIdentifier(row, 'settingName', SELECT_SKU_FEED_SETTINGS);
-    const settingValue = readOptionalText(row, 'settingValue', SELECT_SKU_FEED_SETTINGS) ?? '';
+    const settingName = readIdentifier(row, 'settingName', statementLabel);
+    const settingValue = readOptionalText(row, 'settingValue', statementLabel) ?? '';
 
     const participating: [string, string][] = [];
 
     for (const columnName of SETTING_RELATIONSHIP_COLUMNS) {
-      const value = readOptionalText(row, columnName, SELECT_SKU_FEED_SETTINGS);
+      const value = readOptionalText(row, columnName, statementLabel);
 
       if (value !== undefined) {
         participating.push([columnName, value]);
@@ -4670,6 +5650,55 @@ interface PriceGroupSetLoader {
 }
 
 /**
+ * The set-based product load the wire-document hydration needs.
+ *
+ * ★★★ WHY IT EXISTS (F5). `materializeOrderViewDocument` used to call
+ * `ProductRepository.getProductByProductID` ONCE PER DISTINCT PRODUCT an order document named, and each
+ * of those calls is a graph read, a SKU read, an option read and one sale-price resolution - so a
+ * ten-product order paid for up to forty statements to hydrate ten products. Code review recorded it as
+ * at least 2P graph-load paths for P products, and it was: the loader underneath has ALWAYS taken a
+ * list, so the N+1 lived in this file rather than in the adapter.
+ *
+ * ★★ A STRUCTURAL CONTRACT, NOT A WIDENED PORT. `ProductRepository` publishes six members and the plan
+ * freezes them, so the set-based twin is published on the ADAPTER and named here - the identical
+ * arrangement {@link PriceGroupSetLoader} already uses for `getPriceGroupsByID`. Satisfied with no
+ * `implements` clause, checked at the call.
+ *
+ * ★ EVERY ENTITY ARRIVES WITH THE FETCH SHAPE THE SINGULAR READ GIVES IT - the same three statements,
+ * the same eager `brand` and `productType`, the same `skus`, options, `defaultSku` and sale-price map -
+ * so substituting this for a loop of singular reads cannot change what a caller can see. An identifier
+ * that matched no row is simply ABSENT from the map, which is what lets the caller refuse with the
+ * member path of the order item that named it.
+ */
+export interface ProductSetLoader {
+  getProductsByProductID(productIDs: readonly string[]): Promise<ReadonlyMap<string, Product>>;
+}
+
+/**
+ * The set-based SKU load the wire-document hydration needs.
+ *
+ * ★★★ THE SECOND HALF OF THE SAME FINDING (F5). `loadDocumentSkus` called
+ * `SkuRepository.getProductSkus(product, true)` once per product, and each call issues the SKU read
+ * plus the two association reads the adapter's hydration performs - currencies and options - so P
+ * products cost 3P statements to answer what four can.
+ *
+ * ★★ THE FETCH SHAPE IS PRESERVED PER PRODUCT, WHICH IS WHY THE ADAPTER GROUPS RATHER THAN FLATTENS.
+ * `getProductSkus` chooses its eager-fetch join from the product's own base type
+ * [model/dao/SkuDAO.cfc:L150-L168], so products of different base types need different statements. The
+ * adapter groups by that join and issues one statement per group; each product is therefore read with
+ * exactly the statement the singular form would have used for it.
+ *
+ * ★ `SkuRepository` IS LOCKED AT SEVEN MEMBERS - its own header records the removal of an eighth - so
+ * this too is an adapter member named through a structural contract rather than a widened port.
+ */
+export interface SkuSetLoader {
+  getProductSkusForProducts(
+    products: readonly Product[],
+    fetchOptions: boolean,
+  ): Promise<ReadonlyMap<string, Sku[]>>;
+}
+
+/**
  * The two price-group reads `PriceGroupService` declares.
  *
  * Satisfied structurally, with no `implements` clause: the interface is
@@ -4910,23 +5939,15 @@ class FrameworkWriteError extends Error {
   }
 }
 
-/**
- * Raised when a brand save would duplicate an existing `urlTitle`.
- *
- * [model/validation/Brand.json] declares `"urlTitle": [{"contexts":"save","required":true,"unique":true}]`
- * and [model/entity/Brand.cfc:L55] carries the matching `unique="true"`. The legacy framework evaluated
- * the `unique` rule BEFORE reaching the database, so a duplicate surfaced as a validation failure rather
- * than as a driver-level constraint violation; this reproduces that ordering.
- */
-class BrandUrlTitleNotUniqueError extends Error {
-  public constructor(urlTitle: string, conflictingBrandID: string) {
-    super(
-      `saveBrand refused: urlTitle "${urlTitle}" is already held by brand ${conflictingBrandID}. ` +
-        'Declared unique at model/validation/Brand.json and model/entity/Brand.cfc:L55.',
-    );
-    this.name = 'BrandUrlTitleNotUniqueError';
-  }
-}
+// ---------------------------------------------------------------------------
+// RETIRED - `BrandUrlTitleNotUniqueError`. Its docblock argued correctly that "the legacy framework
+// evaluated the `unique` rule BEFORE reaching the database, so a duplicate surfaced as a validation
+// failure rather than as a driver-level constraint violation" - and then reproduced only the ORDERING
+// of that sentence, not its outcome: a validation failure that arrives as a thrown error is not a
+// validation failure. The rule is now decided by `src/services/brandService.ts` and recorded on the
+// entity, through `SqlBrandFrameworkWrites.isUrlTitleUnique` above, which is the same probe over the
+// same statement asked one step earlier.
+// ---------------------------------------------------------------------------
 
 /**
  * The durable half of `super.save` for `SwRoundingRule`, over the request's executor.
@@ -5092,12 +6113,41 @@ class SqlBrandFrameworkWrites {
   ) {}
 
   /**
+   * Whether `urlTitle` is free - the query half of `model/validation/Brand.json`'s
+   * `"urlTitle": {"unique":true}` save rule.
+   *
+   * Transcribes `HibachiDAO.isUniqueProperty` [org/Hibachi/HibachiDAO.cfc:L130-L147]: it counts rows
+   * holding the value while EXCLUDING the saving entity's own row, which is what lets an update keep
+   * its existing title. A new brand's identifier is the empty string
+   * [model/entity/Brand.cfc:L52, `unsavedvalue=""`], which matches no stored row, so nothing is
+   * excluded - the legacy behaviour for an unsaved entity.
+   *
+   * ★ THE PROBE MOVED, AND ONLY THE DECISION MOVED WITH IT. `saveBrand` below used to run this query
+   * itself and THROW `BrandUrlTitleNotUniqueError` on a collision. The legacy evaluated the rule in
+   * `validate` [org/Hibachi/HibachiService.cfc:L151] - which is the service's step - and recorded a
+   * failure on the ENTITY, so the throw turned an ordinary validation refusal into an exception. The
+   * statement, the exclusion semantics and the ordering relative to the write are all unchanged; what
+   * changed is that `src/services/brandService.ts` now asks this question as part of validation and
+   * records the answer with the other two rules.
+   */
+  public async isUrlTitleUnique(urlTitle: string, brandID: string): Promise<boolean> {
+    const conflicting = await this.executor.execute(SELECT_BRAND_BY_URL_TITLE_SQL, [
+      urlTitle,
+      brandID,
+    ]);
+
+    return conflicting[0] === undefined;
+  }
+
+  /**
    * Insert or update one brand and answer the persisted row.
    *
-   * THE UNIQUENESS RULE IS EVALUATED BEFORE THE WRITE, not left to the column constraint, because
-   * [org/Hibachi/HibachiService.cfc:L151] validated before it reached the DAO - so a duplicate title was
-   * a refused save rather than a driver error. The probe excludes the row being saved, so re-saving an
-   * existing brand without changing its title is not a self-collision.
+   * VALIDATION HAS ALREADY HAPPENED. Every save-context rule of [model/validation/Brand.json],
+   * including uniqueness, is decided by `src/services/brandService.ts` before this is reached - the
+   * legacy ordering, where `validate` [org/Hibachi/HibachiService.cfc:L151] precedes the flush
+   * [L153-L155]. The database's own `unique` constraint [model/entity/Brand.cfc:L55] remains the
+   * backstop for a title claimed between the probe and this write, which is the one case the legacy
+   * also left to the column.
    *
    * ONE CAPTURED INSTANT, and the audit columns follow exactly the rules
    * `SqlRoundingRuleFrameworkWrites.saveRoundingRule` documents: NULL on insert when the gate refuses,
@@ -5109,24 +6159,6 @@ class SqlBrandFrameworkWrites {
     const isInsert = brand.isNew();
     const brandID = isInsert ? mintFrameworkIdentifier() : brand.getBrandID();
     const urlTitle = brand.getUrlTitle();
-
-    // `urlTitle` is REQUIRED as well as unique, and the service has already enforced requiredness - so
-    // by here it is present, and only the uniqueness half remains. The probe runs on both paths: an
-    // insert can collide with a stored row, and an update can collide with a DIFFERENT stored row.
-    if (urlTitle !== undefined) {
-      const conflicting = await this.executor.execute(SELECT_BRAND_BY_URL_TITLE_SQL, [
-        urlTitle,
-        brandID,
-      ]);
-      const conflict = conflicting[0];
-
-      if (conflict !== undefined) {
-        throw new BrandUrlTitleNotUniqueError(
-          urlTitle,
-          readIdentifier(conflict, 'brandID', SELECT_BRAND_BY_URL_TITLE),
-        );
-      }
-    }
 
     if (isInsert) {
       const inserted = await this.executor.executeMutation(INSERT_BRAND_SQL, [
@@ -5377,6 +6409,19 @@ interface ModuleScopeGraph {
   readonly dialect: DatabaseDialect;
   readonly executor: PreparedStatementExecutor;
   readonly settingsProvider: SettingsProvider;
+
+  /**
+   * The SAME `BootstrapSettingsProvider` instance `settingsProvider` above holds, published under
+   * its second contract.
+   *
+   * TWO MEMBERS, ONE OBJECT, AND THAT IS THE POINT. `src/domain/ports/settingsProvider.ts` is frozen
+   * by the plan at four keys, so `productTitleString` travels on
+   * {@link ProductPresentationSettingsProvider} instead - but a setting must still have exactly ONE
+   * resolution, so the same instance answers both. Binding a second instance here would let one
+   * installation resolve `skuCurrency` and `productTitleString` from two different reads of the same
+   * `SwSetting` table.
+   */
+  readonly productPresentationSettingsProvider: ProductPresentationSettingsProvider;
   readonly currencyRecords: readonly CurrencyRecordProjection[];
   readonly europeanCentralBankRates: EuropeanCentralBankRateTable;
   // NO `addressZoneEvaluator`. It USED TO SIT HERE, as a parameterless
@@ -5437,6 +6482,15 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
   // readers at all: each receives its dialect from the module constant its own
   // MySQL adapter states.
   const config = appConfig.load(overrides.environment);
+
+  // --- 1a. The logging threshold -----------------------------------------
+  // FIRST, AND BEFORE ANYTHING THAT LOGS. `../lib/logger.js` reads no environment
+  // variable of its own, so until this line runs it is emitting at its built-in
+  // `info` floor. Adopting here means every line the rest of this function produces -
+  // the rate-table age, the eager settings reads, the wiring confirmation - is filtered
+  // at the level the deployment actually configured. It is also the reason a deployment
+  // can set `LOG_LEVEL=debug` and see the composition's own debug lines at all.
+  adoptConfiguredLogThreshold(config.logging);
 
   // --- 2. The dialect decision -------------------------------------------
   // JUDGMENT CALL: THIS HARD FAILURE IS A DELIBERATE IMPROVEMENT OVER THE
@@ -5513,11 +6567,29 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
       ? config.currency.europeanCentralBankRates
       : EMPTY_EUROPEAN_CENTRAL_BANK_RATES);
 
-  reportRateTableAge(config.currency.ratesRetrievedAt, europeanCentralBankRates);
+  // THE INSTANT TRAVELS WITH THE TABLE IT DESCRIBES. An overridden table's age comes from
+  // the paired override and from nowhere else: reporting the CONFIGURED instant for a
+  // table that did not come from configuration would describe one table's freshness while
+  // serving another's rates. When a table is overridden with no paired instant the age is
+  // unknown, and `reportRateTableAge` says so.
+  const ratesRetrievedAt =
+    overrides.europeanCentralBankRates === undefined
+      ? config.currency.ratesRetrievedAt
+      : overrides.europeanCentralBankRatesRetrievedAt;
+
+  reportRateTableAge(ratesRetrievedAt, europeanCentralBankRates);
   const skuEligibleCurrencies = await resolveEligibleCurrencyCodeList(
     currencyRecords,
     europeanCentralBankRates,
   );
+
+  // ★★★ THE CONFIGURED VALUES, READ FROM `SwSetting`. Everything above resolves DEFAULTS; this is
+  // the step that lets an installation's own configuration be seen at all. Its absence was the
+  // CRITICAL money defect recorded against this file: `skuCurrency` was the literal `'USD'` however
+  // the shop was configured, an explicitly emptied `skuEligibleCurrencies` could not close the
+  // cascade gate [model/entity/Sku.cfc:L373], and the URL-key and presentation overrides were
+  // ignored. See `buildSelectGeneralSettingsSql` for the legacy probe this reproduces.
+  const configuredSettings = await readGeneralSettingValues(executor);
   // ★ FROZEN AT CONSTRUCTION, BECAUSE "STATELESS AND IMMUTABLE" HAS TO BE TRUE OF THE INSTANCE AND
   // NOT ONLY OF ITS TABLE. The constructor freezes `this.values`, and the root that publishes this
   // provider is itself frozen - but freezing the root stops a member from being REPLACED, not the
@@ -5527,7 +6599,9 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
   // outlived the request and was still there for the next one on a warm container. Sealing the
   // instance makes that assignment a `TypeError` instead, at no cost: the class declares one field,
   // writes it once here, and `setting()` only reads.
-  const settingsProvider = Object.freeze(new BootstrapSettingsProvider(skuEligibleCurrencies));
+  const settingsProvider = Object.freeze(
+    new BootstrapSettingsProvider(configuredSettings, skuEligibleCurrencies),
+  );
 
   // --- 5. The stateless adapters -----------------------------------------
   // Each is immutable and holds no memo, which is what makes module scope safe
@@ -5562,6 +6636,8 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
     dialect,
     executor,
     settingsProvider,
+    // The same sealed instance under its second contract - see the member's own note.
+    productPresentationSettingsProvider: settingsProvider,
     currencyRecords,
     europeanCentralBankRates,
     urlTitleGenerator: new SqlUrlTitleGenerator(executor),
@@ -5669,36 +6745,45 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
 /**
  * Project the live configuration onto the redacted surface a caller may see.
  *
- * ★★ EVERY MEMBER IS COPIED OUT RATHER THAN THE OBJECT BEING RE-EXPOSED, which is what makes this a
- * projection and not a rename. `database` is the output of the config's own `toJSON()`, so the three
- * never-echoed fields are already markers by the time they arrive; `tls` is rebuilt from two
- * enumerations plus a boolean, so the trust anchor's bytes are not carried at all; and neither
- * `graph.config` nor `graph.config.database` is referenced by the returned value, so there is no path
- * back to a credential through it.
+ * ★★ NO MEMBER OF THE LIVE CONFIGURATION IS HANDED OVER, which is what makes this a projection rather
+ * than a rename. Two scalars are copied - both closed enumerations - and every remaining member is
+ * BUILT here from something narrower than what it was built from: `tls` from two enumerations plus a
+ * boolean, so the trust anchor's bytes are never carried; `feed` and `currency` from array lengths and
+ * an `undefined` test, so no hostname, rate or timestamp is carried either.
  *
- * `pool`, `feed` and `currency` are handed over as they stand. Each is already a frozen shape of
- * numbers, public hostnames and public reference data, and re-copying them would suggest a redaction
- * that is not happening.
+ * The consequence worth stating is structural rather than stylistic: `config.database`, `config.pool`,
+ * `config.feed.allowedHosts` and `config.currency.europeanCentralBankRates` are not referenced by the
+ * returned value AT ALL. There is no path back to a credential, a schema name, a port, a pool ceiling,
+ * a hostname list or a rate table through the object this returns, and that is checkable by reading the
+ * eight lines below rather than by trusting this paragraph.
  *
- * ★ THE PROJECTION AND ITS ONE REBUILT MEMBER ARE FROZEN. `appConfig` and `config.database` are
- * frozen, so a projection of them that was not would be the one mutable step in the chain - QA
- * testing (INFO-2) found exactly that, with `root.diagnostics.database = {}` succeeding. Freezing
- * changes nothing a reader can observe and makes a write a `TypeError` rather than a silent
- * substitution of a diagnostic surface another consumer holds.
+ * ★ THE PROJECTION AND ITS THREE BUILT MEMBERS ARE FROZEN. `appConfig` and `config.database` are frozen,
+ * so a projection of them that was not would be the one mutable step in the chain - QA testing (INFO-2)
+ * found exactly that, with `root.diagnostics.database = {}` succeeding. Freezing changes nothing a
+ * reader can observe and makes a write a `TypeError` rather than a silent substitution of a diagnostic
+ * surface another consumer holds.
  */
 function projectCompositionDiagnostics(config: AppConfig): CompositionDiagnostics {
   return Object.freeze({
     environment: config.environment,
     dialect: config.dialect,
-    database: Object.freeze(config.database.toJSON()),
-    pool: config.pool,
     tls: Object.freeze({
       mode: config.tls.mode,
       minimumVersion: config.tls.minimumVersion,
       certificateAuthorityConfigured: config.tls.certificateAuthority !== undefined,
     }),
-    feed: config.feed,
-    currency: config.currency,
+    feed: Object.freeze({
+      // ★ A COUNT, AND `0` WHEN NOTHING IS CONFIGURED. The member is always present and always a
+      // number, so "no host is admitted" reads as a value rather than as a missing key. The
+      // unset-versus-set-but-empty distinction `FEED_ALLOWED_HOSTS` carries is a policy reading, not
+      // a count, and it stays on the configuration surface (`FeedConfig.allowedHosts` is
+      // `undefined` when unset) instead of being folded into this number a second time.
+      allowedHostCount: config.feed.allowedHosts?.length ?? 0,
+    }),
+    currency: Object.freeze({
+      referenceRateCount: Object.keys(config.currency.europeanCentralBankRates).length,
+      ratesRetrievedAtConfigured: config.currency.ratesRetrievedAt !== undefined,
+    }),
   });
 }
 
@@ -5865,9 +6950,18 @@ interface RequestGraph {
   /** Per request, because the ECB daily-rate memo must not outlive one. */
   readonly currencyConverter: CurrencyConverter;
 
-  /** The six MySQL adapters, each satisfying its correspondingly-named port. */
-  readonly productRepository: ProductRepository;
-  readonly skuRepository: SkuRepository;
+  /**
+   * The six MySQL adapters, each satisfying its correspondingly-named port.
+   *
+   * ★ TWO OF THEM CARRY A SECOND FACET (F5). The product and SKU adapters each publish a SET-BASED
+   * twin of a singular read - `getProductsByProductID` and `getProductSkusForProducts` - which the
+   * wire-document hydration composes with so that a P-product order costs a constant number of
+   * statements rather than 2P graph loads. Neither twin is a port member, so the binding names the
+   * intersection: every service still receives the port, and only this graph and the hydration it
+   * builds can reach the other facet.
+   */
+  readonly productRepository: ProductRepository & ProductSetLoader;
+  readonly skuRepository: SkuRepository & SkuSetLoader;
   readonly optionRepository: OptionRepository;
   readonly productTypeRepository: ProductTypeRepository;
   readonly promotionRepository: PromotionRepository;
@@ -5895,8 +6989,28 @@ interface RequestGraph {
   /** The feed query side, built unconditionally - it needs no host. */
   readonly feedRepository: GoogleFeedRepository;
 
-  /** The feed port, deferred to the request that carries a host to validate. */
-  readonly createProductFeedPort: (feedHost: string) => ProductFeedPort;
+  /**
+   * The feed port, built unconditionally from collaborators alone.
+   *
+   * QUOTE-THEN-REVISE: this member used to be
+   * `readonly createProductFeedPort: (feedHost: string) => ProductFeedPort` - a per-request FACTORY,
+   * documented as "the feed port, deferred to the request that carries a host to validate". The
+   * factory existed only because the host and the instant were CONSTRUCTOR arguments of
+   * `GoogleFeedService`. AAP 0.4.2 puts both on the method's `FeedCriteria` argument, so the port has
+   * no request-scoped state left to defer and is a plain instance again. Whether a request may USE it
+   * is still decided by `input.feedHost`, in the projection.
+   */
+  readonly productFeedPort: ProductFeedPort;
+
+  /**
+   * This request's `FeedCriteria`, or `undefined` when it carried no feed host.
+   *
+   * The AAP 0.4.2 argument of `generateProductFeed`, assembled where both of its halves are
+   * reachable: the origin authority, already normalized and already checked against the frozen
+   * deployment allow-list, and this request's instant. Gated on exactly the condition that gates
+   * {@link RequestGraph.productFeedPort} in the projection, so the two travel together.
+   */
+  readonly feedCriteria: FeedCriteria | undefined;
 
   /** The same sale-price adapter the product repository hydrates through. */
   readonly getSalePriceDetailsForProductSkus: (
@@ -5916,6 +7030,23 @@ interface RequestGraph {
 }
 
 /**
+ * The request-graph bindings that {@link assertCompleteRequestGraph} allows to be absent.
+ *
+ * EXACTLY ONE MEMBER, and it is typed `keyof RequestGraph` so a rename cannot leave a stale string
+ * behind: `feedCriteria` is absent for every request that carried no feed host, which is most of
+ * them, and the projection publishes no feed port for such a request either.
+ *
+ * ★ TYPED `ReadonlySet<string>` AT THE BINDING AND `keyof RequestGraph` AT THE LITERAL. The set is
+ * consulted with the `string` keys `Object.entries` yields, so a `ReadonlySet<keyof RequestGraph>`
+ * would force a cast at the one call site - and a cast is exactly what this check exists to avoid.
+ * The literal below is annotated `keyof RequestGraph` instead, so the compiler still rejects a name
+ * that is not a real graph member while the lookup stays assertion-free.
+ */
+const OPTIONAL_REQUEST_GRAPH_BINDINGS: ReadonlySet<string> = new Set<keyof RequestGraph>([
+  'feedCriteria',
+]);
+
+/**
  * Refuse an incomplete request graph, naming the binding that is absent.
  *
  * ★ WHAT THIS CATCHES THAT THE COMPILER DOES NOT. The `return` statement in
@@ -5929,13 +7060,21 @@ interface RequestGraph {
  * `Record<keyof RequestGraph, unknown>`, so the assignment needs no assertion, and
  * `Object.entries` over it yields every own binding with its name attached.
  *
+ * ★★★ ONE BINDING IS LEGITIMATELY ABSENT AND IS EXEMPTED BY NAME. `feedCriteria` is
+ * `FeedCriteria | undefined` BY CONTRACT: a request that carried no feed host has no origin
+ * authority and no criteria to build, and that is the safe outcome rather than a hole - the
+ * projection publishes no feed port for it either. Exempting it by NAME rather than by relaxing
+ * the `=== undefined` test keeps the walk strict for the other bindings, which is the whole value
+ * of this check; a future member that may legitimately be absent has to be added here
+ * deliberately, and the compiler proves the name is a real key of the graph.
+ *
  * @throws `CompositionIncompleteError` naming the first absent binding.
  */
 function assertCompleteRequestGraph(requestGraph: RequestGraph): void {
   const bindings: Readonly<Record<keyof RequestGraph, unknown>> = requestGraph;
 
   for (const [binding, value] of Object.entries(bindings)) {
-    if (value === undefined) {
+    if (value === undefined && !OPTIONAL_REQUEST_GRAPH_BINDINGS.has(binding)) {
       throw new CompositionIncompleteError(binding);
     }
   }
@@ -6334,11 +7473,22 @@ function createRequestGraph(
   // a collaborator. THE SAME INSTANCE constructed twenty lines above is passed, so a
   // product type reached through a product read and one reached through the
   // product-type adapter answer identically within a request.
-  const productRepository: ProductRepository = new MysqlProductRepository(
+  // ★ NAMED CONCRETELY FIRST, THEN NARROWED, exactly as the SKU and price-group adapters are (F5). The
+  // concrete instance is what the wire-document hydration composes with, because its set-based
+  // `getProductsByProductID` is an adapter member rather than a port member; every other consumer is
+  // handed the port-typed narrowing below, so nothing else can reach past the six frozen members.
+  const mysqlProductRepository = new MysqlProductRepository(
     graph.executor,
     auditActor,
     {
       settingsProvider: graph.settingsProvider,
+      // ★ THE ANSWER TO FINDING F13, AT ITS WIRING END. `Product.getTitle()`
+      // [model/entity/Product.cfc:L540-L545] renders the `productTitleString` template, and
+      // `saveProduct` derives the generated URL slug from it
+      // [model/service/ProductService.cfc:L269]. Without this collaborator every hydrated product
+      // would raise on that path instead of rendering, so it is supplied at the one construction
+      // site that hydrates products.
+      productPresentationSettingsProvider: graph.productPresentationSettingsProvider,
       skuRepository: mysqlSkuRepository,
       optionRepository,
       subscriptionTermProvider: graph.subscriptionTermProvider,
@@ -6347,6 +7497,10 @@ function createRequestGraph(
     },
     mysqlSkuRepository,
   );
+
+  // ★ THE NARROWING IS STILL PUBLISHED TO SERVICES, and the graph binding carries both facets - see
+  // `RequestGraph.productRepository`. Every service constructor below takes the port-typed name.
+  const productRepository: ProductRepository = mysqlProductRepository;
 
   // --- THE FIVE READ-ONLY ENTITY LOADS ------------------------------------
   // ★★★ THE ANSWER TO FINDING F3, AND IT IS DELIBERATELY BUILT FROM READS THAT ALREADY
@@ -6500,11 +7654,17 @@ function createRequestGraph(
   // value the service owns, and inventing one would assert a bound the source
   // does not state. The sixth is the resolved image settings, which is why
   // `Sku.generateImageFileName()` can compose a name at all.
+  // ★ FIVE ARGUMENTS, NOT SIX (F4). The fifth used to be `refuseDuplicateSkuCodes` and
+  // this root passed `undefined` for it, so the ONE protection `createSkus` had against a
+  // retried invocation doubling a product's SKU set was switched off in the only place it
+  // ever ran. The parameter is gone: reconciliation is unconditional inside the service,
+  // so there is no longer anything for this root to enable or forget. `undefined` remains
+  // for `maximumSkuCreationBatchSize`, which is a bound rather than a correctness switch
+  // and whose 1000 default this root deliberately accepts.
   const skuService = new SkuService(
     skuRepository,
     graph.imageStore,
     graph.subscriptionTermProvider,
-    undefined,
     undefined,
     graph.imageSettingValues,
   );
@@ -6545,6 +7705,55 @@ function createRequestGraph(
   // and the product-type save path both use it - and NOT because of the dead
   // `productTypeDAO` declaration. Note also that [L55] IS BLANK, which is why the
   // eight declarations span L52-L60.
+  // ★★★ THE ONE PLACE THE REPRICED SET BECOMES ONE UNIT OF WORK (F3).
+  // `ProductService.processProduct_updateSkus` mutates every SKU on a product and then has to
+  // persist the set. A loop over `SkuRepository.saveSku` opened one unit of work per SKU, so a
+  // PERMANENT mid-batch failure left some SKUs repriced and the rest not, and every retry
+  // reproduced the identical split - idempotency by key makes a retry SAFE, it does not make an
+  // unreachable write SUCCEED. This closes that by committing the whole set or none of it.
+  //
+  // ★ IT RESTORES THE SOURCE'S BEHAVIOUR RATHER THAN IMPROVING ON IT.
+  // [model/service/ProductService.cfc:L216-L233] persists nothing itself and
+  // `HibachiService.process()` [org/Hibachi/HibachiService.cfc:L84-L129] never saves; [L232]
+  // handed back MANAGED entities whose Hibernate session flushed every dirtied SKU as ONE unit
+  // inside the request's `cftransaction`. "All repriced" and "unchanged" were the only reachable
+  // outcomes, and they are the only reachable outcomes again.
+  //
+  // ★ WHY THE TRANSACTION IS HERE AND NOT ON A PORT. `SkuRepository` is LOCKED at seven members
+  // and its header records the removal of a `saveSkus` eighth; a port member naming a
+  // `PreparedStatementExecutor` would put a `src/repositories/**` type on a `src/domain/**`
+  // interface, which the layer-boundary lint rule refuses outright. So the service names a
+  // CAPABILITY - `SkuBatchWriteCollaborator` - and this root supplies the transaction, exactly as
+  // it supplies `skuCreation` and `optionLoading`.
+  //
+  // ★ THE CASCADE SEAM IS THE ADAPTER'S OWN, NOT A NEW ONE. `MysqlSkuRepository.saveSku` already
+  // takes an optional adapter-only third parameter so a caller holding an open transaction can
+  // hand it down - the same seam `MysqlProductRepository.saveProduct` uses when it cascades to
+  // SKUs. The concrete adapter is used here rather than the port-typed binding because only the
+  // adapter publishes that parameter and the executor it needs; a port-shaped consumer still sees
+  // arity 1.
+  //
+  // ★ AN EMPTY SET OPENS NO TRANSACTION AND ISSUES NO STATEMENT, which is what a Hibernate
+  // session that dirtied no entity did. Guarding here rather than in the service keeps the
+  // service's contract to "persist this set" with no capacity reasoning in it.
+  //
+  // ★ THE ORDER IS THE CALLER'S. The set arrives in the product's own collection order and is
+  // written in that order inside the one transaction, so nothing here re-sorts, de-duplicates or
+  // groups the writes.
+  const skuBatchWrite: SkuBatchWriteCollaborator = {
+    saveMutatedSkus: async (skus): Promise<void> => {
+      if (skus.length === 0) {
+        return;
+      }
+
+      await graph.executor.transaction(async (tx): Promise<void> => {
+        for (const sku of skus) {
+          await mysqlSkuRepository.saveSku(sku, undefined, tx);
+        }
+      });
+    },
+  };
+
   const productService = new ProductService(
     productRepository,
     skuRepository,
@@ -6554,6 +7763,7 @@ function createRequestGraph(
     graph.subscriptionTermProvider,
     skuCreation,
     optionLoading,
+    skuBatchWrite,
   );
 
   // Three collaborators, matching [model/service/PromotionService.cfc:L51, L53,
@@ -6618,72 +7828,95 @@ function createRequestGraph(
     roundingRuleService,
   );
 
-  // RULING B: the feed host and the clock are CLOSED OVER AT CONSTRUCTION, which
-  // is what keeps `generateProductFeed()` ZERO-PARAMETER. There is no
-  // `FeedCriteria` type anywhere in this migration, and the four feed filters -
-  // `activeFlag = 1` [integrationServices/google/controllers/feed.cfc:L68],
-  // `product.activeFlag = 1` [L69], `product.publishedFlag = 1` [L70] and
-  // `addRange('product.calculatedQATS','1^')` [L72] - are INVARIANTS of the
-  // repository's statement, never options a caller can reach. The renderer is
-  // left to the service's default, which is the PURE SYNCHRONOUS function
-  // `renderGoogleProductFeed(rows, feedHost, now)`; nothing here overrides it.
+  // ★★★ QUOTE-THEN-REVISE: THE PORT IS AN INSTANCE AGAIN, NOT A PER-REQUEST FACTORY.
+  // This block used to open: "RULING B: the feed host and the clock are CLOSED OVER AT
+  // CONSTRUCTION, which is what keeps `generateProductFeed()` ZERO-PARAMETER. There is no
+  // `FeedCriteria` type anywhere in this migration", and went on to argue at length for "A
+  // FACTORY, NOT AN INSTANCE, AND THAT IS WHAT MAKES THE FEED BINDING VALIDATABLE WITHOUT
+  // INVENTING A HOST".
   //
-  // `assertAllowedFeedHost` normalizes the candidate and then checks its MEMBERSHIP
-  // of the allow-list, throwing `UntrustedFeedHostError` otherwise. An EMPTY
-  // allow-list refuses everything, which is the safe failure and not a bypass.
+  // AAP 0.4.2 freezes the ported method as `generateProductFeed(criteria: FeedCriteria)` and
+  // records that reshaping explicitly; AAP 0.9.2 makes each row a parity gate and admits no
+  // fourth reshaping. The zero-parameter form was a fourth, adopted on a prior review's ruling,
+  // and a review ruling is not the AAP. With the host and the instant on the ARGUMENT, this
+  // binding has no request-scoped state left, so:
   //
-  // ★ MEMBERSHIP ONLY - THE HOST GRAMMAR IS NOT CHECKED HERE AND MUST NOT BE ADDED.
+  //   * it is constructible from the module-scope graph alone, like every other binding here -
+  //     which is the property the factory was invented to simulate, now held for real;
+  //   * a warm container may reuse one instance, because it cannot carry one request's origin
+  //     into another's document; and
+  //   * the allow-list refusal did not move to a weaker place. It never depended on this
+  //     construction: `createRequestScope` and `createInspectableRequestScope` BOTH call
+  //     `assertAllowedFeedHost(input.feedHost, graph.config.feed.allowedHosts)` before any
+  //     projection is built, so the call that used to sit here was a redundant THIRD check.
+  //     An unlisted host still rejects with `UntrustedFeedHostError`, before a port is reachable
+  //     and before any feed statement is issued.
+  //
+  // WHAT IS UNCHANGED. The four feed filters - `activeFlag = 1`
+  // [integrationServices/google/controllers/feed.cfc:L68], `product.activeFlag = 1` [L69],
+  // `product.publishedFlag = 1` [L70] and `addRange('product.calculatedQATS','1^')` [L72] - are
+  // INVARIANTS of the repository's statement, never options a caller can reach, and
+  // `FeedCriteria` carries no selection member that could touch them. The renderer is left to the
+  // service's default, the PURE SYNCHRONOUS `renderGoogleProductFeed(rows, feedHost, now)`;
+  // nothing here overrides it. No scheme is passed or held anywhere: it is the frozen legacy
+  // `http://` literal inside `../integrations/google/rssFeedRenderer.js`, and the revision that
+  // took it from `graph.config.feed.scheme` (accepting finding S-09) stays reverted, because AAP
+  // 0.1.1 and 0.8.1 freeze the product-feed contract and AAP 0.6.7 admits no fourth divergence.
+  //
+  // ★ MEMBERSHIP ONLY - THE HOST GRAMMAR IS NOT CHECKED IN THIS FILE AND MUST NOT BE ADDED.
   // A completeness review removed a duplicated host grammar from
-  // `../integrations/google/googleFeedService.js` on the ground that
-  // `./rssFeedRenderer.js` already owns it - the same character class and the same
-  // 259-character bound - and refuses a malformed origin before it composes one.
-  // Re-creating that grammar in this file would recreate exactly the duplication that
-  // was removed. It is not needed: a candidate that is not a bare authority cannot
-  // equal an allow-list entry that is one, so `https://host/feed` is refused by the
-  // membership check, and a malformed entry that somehow matched would still be
-  // refused by the renderer.
+  // `../integrations/google/googleFeedService.js` on the ground that `./rssFeedRenderer.js`
+  // already owns it - the same character class and the same 259-character bound - and refuses a
+  // malformed origin before it composes one. Re-creating that grammar here would recreate exactly
+  // the duplication that was removed, and it is not needed: a candidate that is not a bare
+  // authority cannot equal an allow-list entry that is one, so `https://host/feed` is refused by
+  // the membership check, and a malformed entry that somehow matched would still be refused by
+  // the renderer.
   //
-  // ★ THE ALLOW-LIST IS READ FROM PROCESS CONFIGURATION, NEVER FROM `input`.
-  // This is the enforcement half of finding S-15's resolution; the type half is
-  // on `RequestScopeInput.feedHost`, which carries a bare candidate string.
-  // `graph.config` was resolved once at module scope from the process environment
-  // and is frozen, so a request cannot reach it, widen it or reorder it. A
-  // deployment that configured no `FEED_ALLOWED_HOSTS` has an empty list here and
-  // therefore publishes no feed at all, whatever candidate a caller sends.
+  // ★ THE ALLOW-LIST IS READ FROM PROCESS CONFIGURATION, NEVER FROM `input`. This is the
+  // enforcement half of finding S-15's resolution; the type half is on
+  // `RequestScopeInput.feedHost`, which carries a bare candidate string. `graph.config` was
+  // resolved once at module scope from the process environment and is frozen, so a request cannot
+  // reach it, widen it or reorder it.
   //
-  // ★ A FACTORY, NOT AN INSTANCE, AND THAT IS WHAT MAKES THE FEED BINDING
-  // VALIDATABLE WITHOUT INVENTING A HOST. Every other binding in this graph can be
-  // constructed from the module-scope graph alone, so tier 1 can assemble the whole
-  // thing and check it; this one needs a host CANDIDATE that only a request carries,
-  // and there is no default to fall back on - a hard-coded host would be exactly the
-  // configuration-in-code this root forbids. Publishing the CAPABILITY TO BUILD it
-  // rather than the built instance means the validation pass can confirm the binding
-  // EXISTS without CALLING it, and a request that carries no feed host still gets no
-  // feed port. `toTrustedFeedHost` therefore runs once per feed request, on that
-  // request's own candidate and against the configured allow-list, exactly as before.
+  // ★ AND AN UNSET `FEED_ALLOWED_HOSTS` IS NO POLICY, NOT AN EMPTY POLICY (F40). QUOTE-THEN-REVISE:
+  // this note ended "A deployment that configured no `FEED_ALLOWED_HOSTS` has an empty list and
+  // therefore publishes no feed at all, whatever candidate a caller sends." An unset variable now
+  // resolves to `undefined` and admits the request's own normalized authority, which is what the
+  // source did; a PRESENT list is enforced exactly as before, and an explicitly empty one still
+  // refuses everything. S-15 asked that the list be unreachable from the request, and it is - that
+  // is untouched by which default applies when no list exists.
+  const productFeedPort: ProductFeedPort = new GoogleFeedService(feedRepository);
+
+  // ★★★ THE CRITERIA IS BUILT HERE, WHICH IS THE ONLY PLACE THAT HOLDS BOTH HALVES OF IT.
+  // AAP 0.4.2's `FeedCriteria` carries the origin AUTHORITY and the request INSTANT, and this is the
+  // one function with access to the frozen deployment allow-list (`graph.config`) and to this
+  // request's clock. Building it anywhere further out would either hand a handler the allow-list or
+  // hand this file a second clock.
   //
-  // The host reaching the service is the NORMALIZED one - trimmed and case-folded by the
-  // check above - and the service then forwards it to the renderer byte for byte, which
-  // is that module's own documented contract.
-  const createProductFeedPort = (feedHost: string): ProductFeedPort =>
-    new GoogleFeedService(
-      feedRepository,
-      assertAllowedFeedHost(feedHost, graph.config.feed.allowedHosts),
-      // ★ NO SCHEME IS PASSED, AND THERE IS NO THIRD ARGUMENT BETWEEN THE HOST AND THE
-      // CLOCK. Only the ALLOW-LIST for the origin's AUTHORITY is process configuration
-      // (S-15). The SCHEME is not configuration at all: it is the frozen legacy `http://`
-      // literal inside `../integrations/google/rssFeedRenderer.js`. An intervening
-      // revision passed `graph.config.feed.scheme` here, accepting finding S-09; both
-      // that argument and the config member it read are removed, because AAP 0.1.1 and
-      // 0.8.1 freeze the product-feed contract and AAP 0.6.7 admits no fourth divergence.
-      // A deployment needing HTTPS feed URLs terminates TLS in front of this service.
-      //
-      // A FRESH COPY of the request epoch, drawn the same way `RequestScope.now` draws its own: the
-      // service closes over what it is handed, so sharing one mutable `Date` with any other consumer
-      // would let whoever mutated it move the feed's `<lastBuildDate>` and every generated-at stamp
-      // with it. Since no consumer shares an instance, no consumer can move another's baseline.
-      requestClock.now(),
-    );
+  // `undefined` WHEN NO HOST WAS SUPPLIED, gated on exactly the condition that gates the port in the
+  // projection, so the two are present or absent together and a caller cannot hold one without the
+  // other. A request that carries no feed host therefore has no criteria to pass and no port to pass
+  // it to.
+  //
+  // THE HOST IS THE NORMALIZED FORM, ALLOW-LISTED WHEN A LIST EXISTS. `assertAllowedFeedHost` trims
+  // and case-folds the candidate; when `graph.config.feed.allowedHosts` is a list it checks
+  // MEMBERSHIP and throws `UntrustedFeedHostError` otherwise, returning the value it matched, so the
+  // origin that reaches the renderer is byte for byte the one the deployment approved. When the
+  // deployment configured no list the normalized candidate is admitted, which is the source
+  // behaviour (F40); an explicitly EMPTY list still refuses everything, which is the safe failure
+  // and not a bypass. Both published scope routes ALSO run this same check before any projection is
+  // built, so an unlisted host is refused whether or not this expression is ever evaluated.
+  //
+  // A FRESH `Date`, drawn the way `RequestScope.now` draws its own: nothing shares the instance, so
+  // no consumer can move the feed's `<lastBuildDate>` or any generated-at stamp by mutating it.
+  const feedCriteria: FeedCriteria | undefined =
+    input.feedHost === undefined
+      ? undefined
+      : Object.freeze({
+          feedHost: assertAllowedFeedHost(input.feedHost, graph.config.feed.allowedHosts),
+          now: requestClock.now(),
+        });
 
   // --- THE THREE LATE BINDINGS, ASSERTED CLOSED ---------------------------
   // ★ THE ONE WIRING DEFECT THE COMPILER CANNOT CATCH, CHECKED RATHER THAN TRUSTED.
@@ -6716,8 +7949,11 @@ function createRequestGraph(
     },
     currentAccountContext,
     currencyConverter,
-    productRepository,
-    skuRepository,
+    // The CONCRETE instances, because this binding declares both facets (F5). `productRepository` and
+    // `skuRepository` above are the port-typed narrowings the services receive; these are the same two
+    // objects, published here with the set-based twin the hydration composes with.
+    productRepository: mysqlProductRepository,
+    skuRepository: mysqlSkuRepository,
     optionRepository,
     productTypeRepository,
     promotionRepository,
@@ -6735,7 +7971,8 @@ function createRequestGraph(
     priceResolution,
     promotionQueries,
     feedRepository,
-    createProductFeedPort,
+    productFeedPort,
+    feedCriteria,
     // The `SalePriceResolver` member `RequestScope` INHERITS, satisfied here. THE SAME
     // ADAPTER THE PRODUCT REPOSITORY HOLDS, not a second one built over the same
     // service, so a caller reaching it off the scope and a `Product` reaching it through
@@ -6763,8 +8000,12 @@ function createRequestGraph(
     materializeOrderView: (document) =>
       materializeOrderViewDocument(
         document,
-        productRepository,
-        skuRepository,
+        // ★ THE CONCRETE ADAPTERS, not the port-typed narrowings above them: the two set-based loads
+        // (F5) are adapter members composed through a structural contract, exactly as the price-group
+        // set load already was. THE SAME INSTANCES the ports were narrowed from, so a product or SKU
+        // reached through either door is the same entity built the same way.
+        mysqlProductRepository,
+        mysqlSkuRepository,
         mysqlPriceGroupRepository,
         input.accountID,
       ),
@@ -6931,8 +8172,13 @@ function projectRequestScope(requestGraph: RequestGraph, input: RequestScopeInpu
     priceGroupService: requestGraph.priceResolution,
     promotionService: requestGraph.promotionQueries,
     currencyConverter: requestGraph.currencyConverter,
+    // ★ THE PORT AND ITS CRITERIA ARE PROJECTED UNDER ONE CONDITION, and it is the graph's own -
+    // `requestGraph.feedCriteria` is already `undefined` for a request that carried no host, so
+    // testing it here rather than re-testing `input.feedHost` keeps a single source of truth and
+    // makes it impossible to publish a port with no criteria or criteria with no port.
     productFeedPort:
-      input.feedHost === undefined ? undefined : requestGraph.createProductFeedPort(input.feedHost),
+      requestGraph.feedCriteria === undefined ? undefined : requestGraph.productFeedPort,
+    feedCriteria: requestGraph.feedCriteria,
     materializeOrderView: requestGraph.materializeOrderView,
     getSalePriceDetailsForProductSkus: requestGraph.getSalePriceDetailsForProductSkus,
     updateOrderAmountsWithPriceGroupsThenPromotions:
@@ -7089,21 +8335,37 @@ async function toCreateSkusInput(
  */
 async function loadDocumentProducts(
   document: OrderViewDocument,
-  productRepository: ProductRepository,
+  productSetLoader: ProductSetLoader,
 ): Promise<ReadonlyMap<string, Product>> {
+  // ★★★ ONE READ FOR EVERY DISTINCT PRODUCT, NOT ONE READ EACH (F5). This loop used to `await
+  // productRepository.getProductByProductID(item.productID)` per distinct identifier, and each of
+  // those is a graph read, a SKU read, an option read and a sale-price resolution. The loader
+  // underneath always took a LIST, so the amplification was here. The distinct set is collected
+  // first, loaded once, and the REFUSAL is then reported per order item exactly as before.
+  const requestedProductIDs: string[] = [];
+  const seenFoldedProductIDs = new Set<string>();
+
+  for (const item of document.orderItems) {
+    const foldedProductID = foldIdentifier(item.productID);
+
+    if (seenFoldedProductIDs.has(foldedProductID)) {
+      continue;
+    }
+
+    seenFoldedProductIDs.add(foldedProductID);
+    requestedProductIDs.push(item.productID);
+  }
+
+  const loadedByFoldedID = await productSetLoader.getProductsByProductID(requestedProductIDs);
   const productsByFoldedID = new Map<string, Product>();
 
   // INDEXED, so a refusal can name `order.orderItems.<i>.productID` rather than merely saying that
   // some product did not resolve. The index is the caller's own array position, which is what makes
-  // the report actionable without echoing the identifier that failed.
+  // the report actionable without echoing the identifier that failed. The FIRST unresolved item still
+  // decides the refusal, in document order, exactly as the per-item loop refused.
   for (const [itemIndex, item] of document.orderItems.entries()) {
     const foldedProductID = foldIdentifier(item.productID);
-
-    if (productsByFoldedID.has(foldedProductID)) {
-      continue;
-    }
-
-    const product = await productRepository.getProductByProductID(item.productID);
+    const product = loadedByFoldedID.get(foldedProductID);
 
     if (product === undefined) {
       // Refused, never skipped. An order item whose product cannot be loaded is an order
@@ -7125,7 +8387,36 @@ async function loadDocumentProducts(
 }
 
 /**
+ * The key under which one product's SKU is filed, and under which one order item looks its SKU up.
+ *
+ * ★★★ THE SEPARATOR IS A CODE POINT NO IDENTIFIER REACHING THIS TIER CAN CONTAIN, WHICH IS WHAT MAKES
+ * THE COMPOSITION UNAMBIGUOUS. Concatenating without one would let `(ab, cdef)` and `(abcd, ef)` name a
+ * single key; a NUL cannot appear in either half, because the identifiers on this side of the seam are
+ * the 32-character hexadecimal keys the datastore issued and the request boundaries refuse control
+ * characters before a document reaches here.
+ *
+ * ★ BOTH HALVES ARRIVE ALREADY FOLDED, and this function does not fold them again. Case folding is a
+ * decision about IDENTIFIER COMPARISON that {@link foldIdentifier} owns for the whole file; taking
+ * folded input keeps that decision in one place and makes it visible at each call site that what is
+ * being composed is a folded value.
+ *
+ * @param foldedProductID the case-folded identifier of the product the SKU hangs off.
+ * @param foldedSkuID the case-folded identifier of the SKU itself.
+ * @returns the composite map key.
+ */
+function documentSkuKey(foldedProductID: string, foldedSkuID: string): string {
+  return `${foldedProductID}\u0000${foldedSkuID}`;
+}
+
+/**
  * Resolve every SKU the document names, keyed by case-folded identifier.
+ *
+ * ★★★ RESOLUTION IS PER ITEM, AGAINST THE PRODUCT THAT ITEM NAMED. Every SKU read is filed under the
+ * PAIR `(product, sku)` and every order item is looked up by its own pair, so "the SKU is carried by
+ * the product on this line" is what is actually checked. The earlier shape pooled every product's SKUs
+ * into one SKU-keyed map, which a code review recorded as admitting a CROSSED pair whenever both
+ * products appeared somewhere in the same document - see {@link documentSkuKey} and the note inside
+ * this function.
  *
  * ★ REACHED THROUGH `getProductSkus(product, true)`, WHICH IS THE ONE PORTED READ THAT
  * WIRES A SKU'S `product` ASSOCIATION THROUGH. `getSkuBySkuCode` and
@@ -7143,20 +8434,50 @@ async function loadDocumentProducts(
 async function loadDocumentSkus(
   document: OrderViewDocument,
   productsByFoldedID: ReadonlyMap<string, Product>,
-  skuRepository: SkuRepository,
+  skuSetLoader: SkuSetLoader,
 ): Promise<ReadonlyMap<string, Sku>> {
-  const skusByFoldedID = new Map<string, Sku>();
+  // ★★★ ONE READ PER FETCH SHAPE, NOT ONE PER PRODUCT, AND KEYED BY THE (PRODUCT, SKU) PAIR. Two code
+  // reviews land on this loop from opposite directions and both fixes are here.
+  //
+  // THE PAIR IS WHAT MAKES THE CHECK BELOW SOUND. The map used to be keyed by folded SKU identifier
+  // alone while being filled from EVERY product the document names, which made the check "is this SKU
+  // carried by ANY product in this document" rather than "by the product named on THIS item". A
+  // document naming two products could therefore carry a CROSSED pair - product A with a SKU belonging
+  // to product B - and be admitted, because B's SKU was in the pooled map. Pricing then ran against a
+  // SKU whose product-type ancestry, brand and option list belong to a product the item never named,
+  // which is exactly the state the refusal below exists to prevent (CWE-20). `getProductSkusForProducts`
+  // returns its result keyed by FOLDED PRODUCT ID, so the pair is available without a second read.
+  //
+  // ONE READ PER FETCH SHAPE closes the other half. This loop used to `await
+  // skuRepository.getProductSkus(product, true)` for every product, and each of those issues the SKU
+  // read plus the adapter's two association reads. The set-based twin groups the products by the
+  // eager-fetch join their own base types select and issues one statement per group, so each product
+  // is still read with exactly the statement the singular form would have used - see
+  // `MysqlSkuRepository.getProductSkusForProducts`. The hydrated SKUs are identical, `product`
+  // association included, which is why the resolution below is unchanged.
+  const skusByProductAndSkuID = new Map<string, Sku>();
+  const skusByProduct = await skuSetLoader.getProductSkusForProducts(
+    [...productsByFoldedID.values()],
+    true,
+  );
 
-  for (const [, product] of productsByFoldedID) {
-    for (const sku of await skuRepository.getProductSkus(product, true)) {
-      skusByFoldedID.set(foldIdentifier(sku.getSkuID()), sku);
+  for (const [foldedProductID, productSkus] of skusByProduct) {
+    for (const sku of productSkus) {
+      skusByProductAndSkuID.set(
+        documentSkuKey(foldedProductID, foldIdentifier(sku.getSkuID())),
+        sku,
+      );
     }
   }
 
   const resolved = new Map<string, Sku>();
 
   for (const [itemIndex, item] of document.orderItems.entries()) {
-    const sku = skusByFoldedID.get(foldIdentifier(item.skuID));
+    // Looked up by the item's OWN pair, so a SKU that exists elsewhere in the document is not a SKU
+    // this item may name.
+    const sku = skusByProductAndSkuID.get(
+      documentSkuKey(foldIdentifier(item.productID), foldIdentifier(item.skuID)),
+    );
 
     if (sku === undefined) {
       // The SKU is not among the SKUs of the product the caller named it under. That is a
@@ -7292,13 +8613,16 @@ function materializeAppliedPromotion(document: AppliedPromotionDocument): Applie
  */
 async function materializeOrderViewDocument(
   document: OrderViewDocument,
-  productRepository: ProductRepository,
-  skuRepository: SkuRepository,
+  productSetLoader: ProductSetLoader,
+  skuSetLoader: SkuSetLoader,
   priceGroupSetLoader: PriceGroupSetLoader,
   establishedAccountID: string | undefined,
 ): Promise<OrderView> {
-  const productsByFoldedID = await loadDocumentProducts(document, productRepository);
-  const skusByFoldedID = await loadDocumentSkus(document, productsByFoldedID, skuRepository);
+  // ★★ THREE SET-BASED LOADS, ONE PER ENTITY KIND (F5). Each takes the whole distinct set the document
+  // names; none loops a singular read. The price-group load has always been shaped this way, and the
+  // other two now match it.
+  const productsByFoldedID = await loadDocumentProducts(document, productSetLoader);
+  const skusByFoldedID = await loadDocumentSkus(document, productsByFoldedID, skuSetLoader);
   const priceGroupsByFoldedID = await loadDocumentPriceGroups(document, priceGroupSetLoader);
 
   const orderItems: OrderItemView[] = document.orderItems.map((item): OrderItemView => {

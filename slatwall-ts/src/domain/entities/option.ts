@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/domain/entities/promotionQualifier.ts  PromotionQualifier entity
 //   src/domain/entities/promotionReward.ts     PromotionReward entity
@@ -192,7 +190,7 @@
 //   `LEGACY-NOTE` instead, so the stronger marker keeps its meaning.
 //
 // TEST COVERAGE IS NET-NEW, IN FULL
-//   Coverage belongs at `slatwall-ts/tests/unit/domain/entities/option.test.ts` (planned)
+//   Coverage belongs at `slatwall-ts/tests/unit/domain/entities/option.test.ts`
 //   and ALL of it is net-new: no legacy test under `meta/tests/**` touches this
 //   entity. Only `meta/tests/unit/entity/BrandTest.cfc` and
 //   `meta/tests/unit/entity/ProductTest.cfc` are extended anywhere in this
@@ -238,15 +236,15 @@ import type { Sku } from './sku.js';
 //     `getOptionCode`, `getOptionName`, `getOptionDescription`, `getSortOrder`, `getRemoteID`,
 //     `getCreatedDateTime` and `getModifiedDateTime` - to resolve its `orderby` argument. All eight
 //     are generated below, and none of them is optional for that reason.
-//   * `src/domain/entities/sku.ts` (planned) MUST expose `addOption` and `removeOption`. Those are the
+//   * `src/domain/entities/sku.ts` MUST expose `addOption` and `removeOption`. Those are the
 //     accessors ColdFusion's ORM generates for the OWNING side of the `SwSkuOption` many-to-many,
 //     declared with `singularname="option"` at [model/entity/Sku.cfc:L76]; `Sku.cfc` hand-writes
 //     neither, which is exactly why they are ORM-generated rather than ported bodies.
-//   * `src/domain/entities/promotionReward.ts` (planned) MUST expose `addOption`, `removeOption`,
+//   * `src/domain/entities/promotionReward.ts` MUST expose `addOption`, `removeOption`,
 //     `addExcludedOption` and `removeExcludedOption` - hand-written at
 //     [model/entity/PromotionReward.cfc:L218, L226, L318, L326] - backing the `options` and
 //     `excludedOptions` collections at [L81] and [L87].
-//   * `src/domain/entities/promotionQualifier.ts` (planned) MUST expose the same four names, hand-written at
+//   * `src/domain/entities/promotionQualifier.ts` MUST expose the same four names, hand-written at
 //     [model/entity/PromotionQualifier.cfc:L160, L168, L260, L268], backing [L78] and [L84].
 //
 // `removeExcludedOption` appears in that contract for both promotion entities even though this file

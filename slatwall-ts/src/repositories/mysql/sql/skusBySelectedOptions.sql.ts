@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/repositories/mysql/mysqlSkuRepository.ts  MySQL SKU adapter
 //   tests/integration/repositories                repository integration tier
@@ -21,7 +19,7 @@
 //   `SkuRepository.getSkusBySelectedOptions(selectedOptions, productID?)`
 //   [slatwall-ts/src/domain/ports/skuRepository.ts:L499], lifted out of the
 //   adapter so that it can be read, reviewed and asserted AS SQL. Its single
-//   consumer is `slatwall-ts/src/repositories/mysql/mysqlSkuRepository.ts` (planned).
+//   consumer is `slatwall-ts/src/repositories/mysql/mysqlSkuRepository.ts`.
 //
 //   The division of labour is deliberate and narrow. THIS MODULE OWNS THE
 //   STATEMENT TEXT AND THE BIND ARRAY, and nothing else. Executing the

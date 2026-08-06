@@ -50,11 +50,15 @@
 // the suite. Four differences were found by reading `src/services/*` and are
 // recorded here so a reviewer sees them declared rather than discovers them:
 //
-//   1. THE CONSTRUCTOR TAKES EIGHT PORTS, NOT NINE. `ProductService.length` is
-//      8. There is NO `OptionRepository` edge: the module imports only the
+//   1. THE CONSTRUCTOR TAKES NINE COLLABORATORS. `ProductService.length` is 9.
+//      There is NO `OptionRepository` edge: the module imports only the
 //      `SelectOption` TYPE from that port file, and a shared type is not an
 //      injected edge. The legacy component declares no `optionDAO` property
-//      either, so eight is the faithful count. Asserted below.
+//      either. QUOTE-THEN-REVISE: this read "THE CONSTRUCTOR TAKES EIGHT PORTS,
+//      NOT NINE ... so eight is the faithful count." The ninth is
+//      `SkuBatchWriteCollaborator`, added so the repriced set commits as ONE unit
+//      of work (F3) - see that interface for why the transaction cannot live on the
+//      locked `SkuRepository` port. Asserted below.
 //   2. `ProductRepository` DECLARES SIX MEMBERS AND IS LOCKED AT SIX:
 //      `getAttributeSets`, `loadDataFromFile`, `searchProductsByProductType`,
 //      `getProductByProductID`, `saveProduct`, `deleteProduct`. An earlier
@@ -233,12 +237,6 @@ import { CfmlBooleanConversionError } from '../../../src/lib/cfml/truthiness.js'
 import {
   ProductPagingCriteriaError,
   ProductService,
-  // The two refusal classes this tier now throws for a validation-refused save, unified with
-  // `BrandValidationError` in `src/services/brandService.ts`. Imported so the cases narrow with
-  // `instanceof` rather than by name: the refusal is what a caller branches on, so an imitation
-  // would prove nothing.
-  ProductTypeValidationError,
-  ProductValidationError,
 } from '../../../src/services/productService.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
@@ -277,6 +275,7 @@ type ImageStorePort = ConstructorParameters<typeof ProductService>[4];
 type SubscriptionTermProviderPort = ConstructorParameters<typeof ProductService>[5];
 type SkuCreationPort = ConstructorParameters<typeof ProductService>[6];
 type OptionLoadingPort = ConstructorParameters<typeof ProductService>[7];
+type SkuBatchWritePort = ConstructorParameters<typeof ProductService>[8];
 
 type SkuCreationPayloadShape = Parameters<SkuCreationPort['createSkus']>[1];
 
@@ -310,16 +309,35 @@ type ProductSavePayloadShape = Parameters<ProductRepositoryPort['saveProduct']>[
 type ProductTypeSavePayloadShape = Parameters<ProductTypeRepositoryPort['saveProductType']>[1];
 
 /**
- * The materialization window the repository's search member accepts, recovered the same way and
- * for the same reason - a type this suite never imports cannot drift from the shipped port.
+ * The window the repository's search member accepts, recovered the same way and for the same reason -
+ * a type this suite never imports cannot drift from the shipped port.
  *
  * `NonNullable` strips the `| undefined` the optional parameter position carries, so the alias
  * names the window ITSELF rather than "a window or nothing"; the places that can be handed
  * nothing spell their own `| undefined`.
+ *
+ * QUOTE-THEN-REVISE: named `ProductMaterializationWindow` while the port's own type was (F38). Nothing
+ * is materialized on this path any more - the search answers the two columns its statement selects -
+ * so the port renamed it `ProductSearchWindow` and this alias follows.
  */
-type ProductMaterializationWindow = NonNullable<
+type ProductSearchWindow = NonNullable<
   Parameters<ProductRepositoryPort['searchProductsByProductType']>[2]
 >;
+
+/**
+ * One matched row the repository's search member answers with, recovered the same way.
+ *
+ * The element type of `records`, which the port narrowed from a hydrated `Product` to the legacy's own
+ * two-key `{"id","value"}` structure [model/dao/ProductDAO.cfc:L429-L436] under F38.
+ */
+type ProductSearchRow = Awaited<
+  ReturnType<ProductRepositoryPort['searchProductsByProductType']>
+>['records'][number];
+
+/** One matched row, as this suite writes one. `value` is omitted when no name is given. */
+function matchRow(id: string, value?: string): ProductSearchRow {
+  return value === undefined ? { id } : { id, value };
+}
 
 /**
  * The match set the repository's search member answers with, recovered the same way.
@@ -377,6 +395,18 @@ const FIXTURE_URL_TITLE = 'nike-air-jorden';
  * passing by coincidence.
  */
 const FIXTURE_PRODUCT_NAME = 'Test Product';
+
+/**
+ * The brand name `makeProductFixture` attaches, mirrored from `tests/fixtures/productFixtures.ts`.
+ *
+ * Needed because the rendered title template resolves `${brand.brandName}`
+ * [model/service/SettingService.cfc:L193], so the title-source case has to state both markers'
+ * resolved values. Mirrored rather than imported because the fixture module publishes the factory,
+ * not its internal constants - and a suite that hard-codes the string would silently drift if the
+ * fixture changed, whereas this one name is asserted against the fixture's own product in the same
+ * case.
+ */
+const FIXTURE_BRAND_NAME = 'Test Brand';
 
 /**
  * Identifier carried ONLY by the instance the persistence double answers with.
@@ -670,7 +700,7 @@ interface RecordedProductSearch {
    * memory, so the window bounded the RESPONSE and not the WORK. Capturing the third argument is
    * what makes "the window reached the adapter" assertable rather than assumed.
    */
-  readonly materializationWindow: ProductMaterializationWindow | undefined;
+  readonly window: ProductSearchWindow | undefined;
 }
 
 /**
@@ -701,7 +731,17 @@ class RecordingProductRepository implements ProductRepositoryPort {
   readonly savePayloads: ProductSavePayloadShape[] = [];
   readonly deletes: Product[] = [];
 
-  searchResult: Product[] = [];
+  /**
+   * The rows the search answers.
+   *
+   * ★★★ ROWS, NOT PRODUCTS (F38). This was `Product[]`, because the port used to publish hydrated
+   * entities from its search member - which code review recorded as a two-column source query
+   * [model/dao/ProductDAO.cfc:L421] amplified into a graph read, a SKU read, an option read and a
+   * per-product sale-price resolution, for an answer whose only consumed members were the identifier
+   * and the name. The port publishes `ProductSearchRow` - the legacy's own `{"id","value"}` structure
+   * [L429-L436] - so the double stores those.
+   */
+  searchResult: ProductSearchRow[] = [];
 
   /**
    * What the double reports as the pre-window match count.
@@ -726,20 +766,17 @@ class RecordingProductRepository implements ProductRepositoryPort {
   searchProductsByProductType(
     term?: string,
     productTypeIDs?: string,
-    materializationWindow?: ProductMaterializationWindow,
+    window?: ProductSearchWindow,
   ): Promise<ProductSearchMatches> {
-    this.searches.push({ term, productTypeIDs, materializationWindow });
+    this.searches.push({ term, productTypeIDs, window });
 
-    // The double APPLIES the window it was handed, because the real adapter does - to the matched
-    // identifier list, before any graph is materialized. A double that ignored it would let a service
-    // that stopped pushing it down still pass every assertion about the returned page.
+    // The double APPLIES the window it was handed, because the real adapter does. A double that
+    // ignored it would let a service that stopped pushing it down still pass every assertion about
+    // the returned page.
     const records =
-      materializationWindow === undefined
+      window === undefined
         ? this.searchResult
-        : this.searchResult.slice(
-            materializationWindow.start,
-            materializationWindow.start + materializationWindow.count,
-          );
+        : this.searchResult.slice(window.start, window.start + window.count);
 
     return Promise.resolve({
       records,
@@ -909,6 +946,45 @@ class RecordingSkuRepository implements SkuRepositoryPort {
     // `processProduct_updateSkus` discards the result anyway - it returns the argument
     // product, whose SKUs are the ones the loop mutated.
     return Promise.resolve(sku);
+  }
+}
+
+/**
+ * In-memory stand-in for the batch-write collaborator, and the double that makes ATOMICITY
+ * observable (F3).
+ *
+ * ★★★ WHY IT DELEGATES RATHER THAN MERELY RECORDING. Many existing cases in this file assert on
+ * `RecordingSkuRepository.savedSkus`, and those assertions are about WHICH SKUS WERE PERSISTED - a
+ * question that survives the move from a per-SKU loop to one transaction. So this double records the
+ * BATCH it was handed and then forwards each member to the same recording repository, which keeps
+ * every one of those assertions meaningful while adding the one they could not make: that the whole
+ * set arrived in ONE call.
+ *
+ * ★★★ AND WHY IT CAN FAIL WITHOUT FORWARDING. {@link RecordingSkuBatchWrite.failure} models the
+ * property the real collaborator gets from `executor.transaction`: a failure anywhere in the unit of
+ * work leaves NOTHING persisted. Setting it raises AFTER recording the request and BEFORE forwarding
+ * any member, so a case can prove that a PERMANENT mid-batch failure persists no row at all - which
+ * is precisely the state the per-SKU loop could not avoid and could not recover from by retrying.
+ */
+class RecordingSkuBatchWrite implements SkuBatchWritePort {
+  /** One entry per call, holding a COPY of the set so a later mutation cannot rewrite history. */
+  readonly batches: (readonly Sku[])[] = [];
+
+  /** When set, the unit of work fails and forwards nothing - the rollback, modelled. */
+  failure: Error | undefined = undefined;
+
+  constructor(private readonly repository: RecordingSkuRepository) {}
+
+  async saveMutatedSkus(skus: readonly Sku[]): Promise<void> {
+    this.batches.push([...skus]);
+
+    if (this.failure !== undefined) {
+      throw this.failure;
+    }
+
+    for (const sku of skus) {
+      await this.repository.saveSku(sku);
+    }
   }
 }
 
@@ -1294,57 +1370,78 @@ function rbKeyPropertyIdentifier(rbKey: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// The save-refusal readers
+// The refused-save reader
 //
-// ★★★ THEY EXIST BECAUSE THE REFUSAL PROTOCOL CHANGED, AND THE CHANGE WAS A RUNTIME FINDING. QA
-// testing called `saveProduct` and `saveProductType` with payloads that fail the ported save-context
-// rules and found the methods RETURNING the entity with the datastore unchanged and NO error channel
-// of any kind - while `saveBrand`, in the same ported tier, threw `BrandValidationError` for the same
-// class of refusal. Two contradictory protocols in one tier, and the silent one is the protocol a
-// write-capable handler would have been built on. Both now throw, and these readers are what let a
-// case assert the refusal precisely rather than merely asserting that nothing was written.
+// ★★★ THEY READ THE ENTITY, WHICH IS WHERE THE LEGACY PUTS A REFUSAL - AND THAT IS THE SECOND CHANGE
+// TO THIS BLOCK. Round one: QA testing found `saveProduct` and `saveProductType` RETURNING the entity
+// with the datastore unchanged and NO error channel of any kind, so a refusal was indistinguishable
+// from a success. Round two made both THROW, and these readers narrowed the thrown class. Code review
+// then recorded that the throw was itself the divergence: `HibachiService.save`
+// [org/Hibachi/HibachiService.cfc:L151-L167] validates, writes only on a clean entity, and RETURNS THE
+// SAME ENTITY EITHER WAY, and `saveProduct` ends `return arguments.product;`
+// [model/service/ProductService.cfc:L291]. So the entities now publish the framework's four-member
+// error register [org/Hibachi/HibachiTransient.cfc:L30-L64] and these readers assert against it.
+//
+// WHAT DID NOT CHANGE ACROSS ANY ROUND: a refused save must still write nothing, and every case that
+// asserted that still does. What changed is only how the refusal is OBSERVED.
 // ---------------------------------------------------------------------------
 
+/** The two members a refused save answers through, on either entity. */
+interface RefusableEntity {
+  hasErrors(): boolean;
+  getErrors(): Readonly<Record<string, readonly string[]>>;
+}
+
 /**
- * Run a save that must be refused and hand back the `Error` it refused with.
+ * The rules an entity was refused on, flattened to one record per message in the order they were
+ * recorded.
  *
- * Fails loudly when the call RESOLVES, because "the save was refused" is the whole assertion and a
- * resolving call would otherwise slip past as a passing case with nothing checked.
+ * ★ WHY FLATTEN. The register is `Record<errorName, string[]>`
+ * [org/Hibachi/HibachiTransient.cfc:L30-L32], because one property can fail two rules - `urlTitle` is
+ * both `required` and `unique` [model/validation/Product.json]. The service that records them,
+ * however, produces a flat list of `{propertyIdentifier, errorMessage}` rules, and the cases assert
+ * against that list. Flattening reads the register back into the shape the rules were written in,
+ * message by message, so a case can state exactly which rules failed AND in which order - `Map`
+ * preserves insertion order and `Object.defineProperty` preserves it into the projection.
+ *
+ * ORDER IS PART OF THE ASSERTION. The legacy `validate()` evaluated rules in the JSON's own property
+ * order, so a case pinning the order pins the evaluation order too.
  */
-async function refusalOf(run: () => Promise<unknown>): Promise<Error> {
-  try {
-    await run();
-  } catch (thrown: unknown) {
-    if (thrown instanceof Error) {
-      return thrown;
+function refusedRulesOf(entity: {
+  getErrors(): Readonly<Record<string, readonly string[]>>;
+}): { propertyIdentifier: string; errorMessage: string }[] {
+  const rules: { propertyIdentifier: string; errorMessage: string }[] = [];
+
+  for (const [propertyIdentifier, messages] of Object.entries(entity.getErrors())) {
+    for (const errorMessage of messages) {
+      rules.push({ propertyIdentifier, errorMessage });
     }
-
-    throw new Error(`the suite expected an Error and the save raised a ${typeof thrown}`);
   }
 
-  throw new Error('the suite expected the save to be REFUSED, and it resolved');
+  return rules;
 }
 
-/** Narrow a refusal to a product save refusal, so its accumulated rules can be read. */
-function requireProductRefusal(refusal: Error): ProductValidationError {
-  if (!(refusal instanceof ProductValidationError)) {
+/**
+ * Run a save that must be REFUSED and hand back the entity it answered with.
+ *
+ * Fails loudly when the returned entity carries NO error, because "the save was refused" is the whole
+ * premise and a clean entity would otherwise slip past as a passing case with nothing checked. It
+ * also fails loudly when the call THROWS, because a throw is precisely the protocol this tier no
+ * longer uses - so a regression back to throwing is caught here rather than reported as an unrelated
+ * failure.
+ */
+async function refusedEntityOf<TEntity extends RefusableEntity>(
+  run: () => Promise<TEntity>,
+): Promise<TEntity> {
+  const entity = await run();
+
+  if (!entity.hasErrors()) {
     throw new Error(
-      `the suite expected a ProductValidationError and the save raised ${refusal.name}`,
+      'the suite expected the save to be REFUSED, and the entity came back carrying no error',
     );
   }
 
-  return refusal;
-}
-
-/** Narrow a refusal to a product-type save refusal, so its accumulated rules can be read. */
-function requireProductTypeRefusal(refusal: Error): ProductTypeValidationError {
-  if (!(refusal instanceof ProductTypeValidationError)) {
-    throw new Error(
-      `the suite expected a ProductTypeValidationError and the save raised ${refusal.name}`,
-    );
-  }
-
-  return refusal;
+  return entity;
 }
 
 // --- Suite -----
@@ -1358,6 +1455,7 @@ describe('ProductService', () => {
   let subscriptionTermProvider: RecordingSubscriptionTermProvider;
   let skuCreation: RecordingSkuCreation;
   let optionLoading: RecordingOptionLoading;
+  let skuBatchWrite: RecordingSkuBatchWrite;
   let persistedProduct: Product;
   let service: ProductService;
 
@@ -1375,6 +1473,9 @@ describe('ProductService', () => {
     subscriptionTermProvider = new RecordingSubscriptionTermProvider();
     skuCreation = new RecordingSkuCreation();
     optionLoading = new RecordingOptionLoading();
+    // Constructed over the SAME recording repository, so `savedSkus` keeps reporting exactly which
+    // SKUs were persisted while `batches` reports how many units of work carried them.
+    skuBatchWrite = new RecordingSkuBatchWrite(skuRepository);
 
     // JUDGMENT CALL: transformation rule T1, and the whole wiring story.
     //
@@ -1384,7 +1485,7 @@ describe('ProductService', () => {
     // `getOptionService()`. DI/1 resolved those by SCANNING component properties at run time,
     // behind a first-scan lock. The ported class takes every collaborator as an explicit,
     // compile-checked constructor argument, which is why constructing the subject needs nothing but
-    // eight plain objects, why this file imports no container, composition root or service locator,
+    // nine plain objects, why this file imports no container, composition root or service locator,
     // and why nothing below reads ambient state.
     service = new ProductService(
       productRepository,
@@ -1395,6 +1496,7 @@ describe('ProductService', () => {
       subscriptionTermProvider,
       skuCreation,
       optionLoading,
+      skuBatchWrite,
     );
   });
 
@@ -1457,8 +1559,10 @@ describe('ProductService', () => {
       // reached from this component at all. Eight declared, six real - and the ported constructor's
       // eight are a DIFFERENT eight, because two legacy properties fell away and two collaborations
       // that arrived by inheritance (entity save/delete, and the framework's generic entity loader)
-      // became explicit.
-      expect(ProductService.length).toBe(8);
+      // became explicit. The NINTH is `SkuBatchWriteCollaborator`, which has no legacy
+      // property at all: it stands in for Hibernate's own flush, which wrote every dirtied SKU
+      // of a request as ONE unit inside the ambient `cftransaction` (F3).
+      expect(ProductService.length).toBe(9);
     });
 
     it('declares a product repository port of exactly six members', () => {
@@ -1487,7 +1591,7 @@ describe('ProductService', () => {
       expect('getProductByProductID' in productRepository).toBe(true);
     });
 
-    it('needs nothing but its eight collaborators to answer a call', async () => {
+    it('needs nothing but its nine collaborators to answer a call', async () => {
       await service.loadDataFromFile('file://products.csv');
 
       expect(productRepository.imports).toStrictEqual([
@@ -2433,11 +2537,12 @@ describe('ProductService', () => {
         subscriptionTermProvider,
         skuCreation,
         optionLoading,
+        skuBatchWrite,
         bound,
       );
     }
 
-    it('writes EVERY mutated SKU in exactly one batch, and never one at a time', async () => {
+    it('writes EVERY mutated SKU in exactly ONE unit of work, never one per SKU (F3)', async () => {
       const { product, skus } = productWithThreeSkus();
 
       await service.processProduct_updateSkus(product, {
@@ -2447,8 +2552,89 @@ describe('ProductService', () => {
         listPrice: '15.00',
       });
 
-      // THREE writes, one per SKU, in collection order and with no repetition.
+      // ★★★ ONE CALL, CARRYING ALL THREE. QUOTE-THEN-REVISE: this case asserted only
+      // `savedSkus` and its comment read "THREE writes, one per SKU, in collection order and with
+      // no repetition" - which was an accurate description of a shape code review then recorded as
+      // a data-integrity defect, because a PERMANENT mid-batch failure left some SKUs repriced and
+      // the rest not, with every retry reproducing the identical split. The set now commits as one
+      // unit, so the number of units of work is itself an assertion.
+      expect(skuBatchWrite.batches).toHaveLength(1);
+      expect(skuBatchWrite.batches[0]).toStrictEqual([skus[0], skus[1], skus[2]]);
+
+      // And the rows that unit carried, in collection order and with no repetition. Unchanged.
       expect(skuRepository.savedSkus).toStrictEqual([skus[0], skus[1], skus[2]]);
+    });
+
+    it('★★★ ATOMICITY - a PERMANENT failure inside the unit of work persists NOTHING (F3)', async () => {
+      // ★★★ THE CASE THE PER-SKU LOOP COULD NOT PASS, AND THE REASON THIS COLLABORATOR EXISTS.
+      // A loop over `saveSku` opened one unit of work per SKU, so a failure on the sixth of ten
+      // left one to five durably repriced. That was defended as "self-healing" because the write
+      // is idempotent by key - true of a TRANSIENT failure, false of a PERMANENT one: an
+      // unreachable write does not become reachable by being retried, so the split was permanent.
+      //
+      // The legacy could not reach that state at all. [model/service/ProductService.cfc:L216-L233]
+      // persists nothing itself, `HibachiService.process()`
+      // [org/Hibachi/HibachiService.cfc:L84-L129] never saves, and [L232] handed back managed
+      // entities whose Hibernate session flushed every dirtied SKU as ONE unit inside the
+      // request's `cftransaction`. "All repriced" and "unchanged" were the only outcomes.
+      const { product, skus } = productWithThreeSkus();
+      const permanentFailure = new Error('a constraint this row violates on every attempt');
+
+      skuBatchWrite.failure = permanentFailure;
+
+      await expect(
+        service.processProduct_updateSkus(product, {
+          updatePriceFlag: 1,
+          price: '4.10',
+          updateListPriceFlag: 0,
+        }),
+      ).rejects.toBe(permanentFailure);
+
+      // THE UNIT OF WORK WAS ATTEMPTED, WHOLE - so this is not passing because the write was
+      // skipped.
+      expect(skuBatchWrite.batches).toHaveLength(1);
+      expect(skuBatchWrite.batches[0]).toHaveLength(3);
+
+      // AND NOT ONE ROW WAS PERSISTED. No partial application survives, which is what a rollback
+      // buys and what the per-SKU loop could not offer.
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+
+      // The caller's own objects DO carry the mutation, which is faithful: the legacy's in-memory
+      // entities were mutated before the flush too, and a failed flush left them that way.
+      for (const sku of skus) {
+        expect(sku?.getPrice().toFixed2()).toBe('4.10');
+      }
+
+      // ★ AND THE FAILURE IS PROPAGATED UNWRAPPED. The service adds no failure mode of its own and
+      // maps none: the identity assertion above is what proves it, because a re-thrown wrapper
+      // would be a different object.
+    });
+
+    it('★★ RETRY AFTER A TRANSIENT FAILURE CONVERGES, and converges in ONE unit of work (F3)', async () => {
+      // Idempotency is still load-bearing and is still asserted - it is what makes a retry SAFE.
+      // What changed is that the retry now has only two states to converge FROM rather than three.
+      const { product, skus } = productWithThreeSkus();
+      const input = { updatePriceFlag: 1, price: '5.55', updateListPriceFlag: 0 } as const;
+
+      skuBatchWrite.failure = new Error('a transient failure: the pool was momentarily exhausted');
+
+      await expect(service.processProduct_updateSkus(product, input)).rejects.toThrow(
+        /transient failure/,
+      );
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+
+      // The retry, with the fault cleared and the SAME input.
+      skuBatchWrite.failure = undefined;
+
+      await service.processProduct_updateSkus(product, input);
+
+      // ONE further unit of work - two attempted in total - and the whole set persisted once.
+      expect(skuBatchWrite.batches).toHaveLength(2);
+      expect(skuRepository.savedSkus).toStrictEqual([skus[0], skus[1], skus[2]]);
+
+      for (const sku of skus) {
+        expect(sku?.getPrice().toFixed2()).toBe('5.55');
+      }
     });
 
     it('collects a SKU touched by BOTH branches exactly ONCE', async () => {
@@ -2499,16 +2685,21 @@ describe('ProductService', () => {
         updateListPriceFlag: 0,
       });
 
-      // NO WRITE AT ALL, and that is a behaviour change this assertion records rather
-      // than hides. It read `toStrictEqual([[]])` - ONE recorded call carrying an empty
-      // collection - because the write was a collection member the service handed an
-      // empty array to, the port specifying an empty collection as a no-op that opened
-      // no transaction. With a per-SKU write there is no empty call to make: the loop
-      // simply does not run. What the assertion is FOR is unchanged and is what matters
-      // - a no-op must not rewrite every row with its own current values - and it is
-      // now proved by the absence of any write rather than by the emptiness of one.
+      // NO ROW WRITTEN, which is what this case is FOR: a no-op must not rewrite every row with
+      // its own current values. The assertion has now been through three shapes and the INTENT has
+      // never changed. It first read `toStrictEqual([[]])` - one call carrying an empty collection,
+      // against a port member that specified an empty collection as a no-op opening no
+      // transaction. It then read "the absence of any write", because a per-SKU loop has no empty
+      // call to make. With the batch collaborator (F3) the empty call is back, and BOTH halves are
+      // asserted: the service asks once, with nothing in it, and no row is touched.
+      expect(skuBatchWrite.batches).toStrictEqual([[]]);
       expect(skuRepository.savedSkus).toStrictEqual([]);
       expect(skus[0]?.getPrice().toFixed2()).toBe('19.99');
+
+      // ★ AND NO TRANSACTION IS OPENED FOR IT. That guard is the composition root's, not this
+      // service's - `src/handlers/bootstrap.ts` returns early on an empty set - so it is asserted
+      // in `tests/unit/handlers/bootstrap.test.ts` against the real collaborator rather than here
+      // against a double that has no transaction to open.
     });
 
     it('writes an EMPTY set for a product with no SKUs at all', async () => {
@@ -2520,8 +2711,8 @@ describe('ProductService', () => {
         updateListPriceFlag: 0,
       });
 
-      // As above: a product with no SKUs issues no write whatsoever, where it once
-      // issued one empty collection write.
+      // As above: a product with no SKUs asks for an empty unit of work and touches no row.
+      expect(skuBatchWrite.batches).toStrictEqual([[]]);
       expect(skuRepository.savedSkus).toStrictEqual([]);
       expect(answered).toBe(skuless);
     });
@@ -2626,20 +2817,65 @@ describe('ProductService', () => {
       expect(skuRepository.savedSkus).toHaveLength(2);
     });
 
-    it('refuses on COUNT ALONE, even when the flags would have selected no SKU', async () => {
+    it('★★★ does NOT refuse a source-required NO-OP, however many SKUs the product carries', async () => {
       const boundedAtOne = serviceBoundedAt(1);
       const twoSkus = productWithSkuCount(2);
 
-      // Documented deliberately: the bound is on the work the call would undertake,
-      // not on the write set, because the write set is only known after the loop the
-      // bound is protecting. A caller who would be refused with the flags set should
-      // not discover that only after setting them.
+      // ★★★ THIS CASE ASSERTED THE OPPOSITE, AND THE OPPOSITE WAS A DEFECT. It was titled "refuses on
+      // COUNT ALONE, even when the flags would have selected no SKU" and defended by: "the bound is
+      // on the work the call would undertake, not on the write set, because the write set is only
+      // known after the loop the bound is protecting. A caller who would be refused with the flags
+      // set should not discover that only after setting them."
+      //
+      // The premise was false. Mutation is decided by the FLAGS ALONE
+      // [model/service/ProductService.cfc:L222, L226] - there is no per-SKU condition anywhere in the
+      // loop - so the write set IS knowable before it: every SKU, or none. And the consequence was a
+      // behaviour the source cannot produce: with both flags falsy the legacy loop touches nothing
+      // and [L232] returns the product, so there is no path in CFML by which this call fails.
+      //
+      // The bound still exists and still protects the same thing; it now measures the work the call
+      // WOULD DO rather than the size of the collection it was pointed at.
+      const answered = await boundedAtOne.processProduct_updateSkus(twoSkus, {
+        updatePriceFlag: 0,
+        updateListPriceFlag: 0,
+      });
+
+      // CFML parity [model/service/ProductService.cfc:L232]: the product comes back, untouched.
+      expect(answered).toBe(twoSkus);
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+    });
+
+    it('★ still refuses the SAME product once a flag asks for the work', async () => {
+      // The other side of the correction: the bound is not weakened, only re-aimed. The identical
+      // over-large product IS refused the moment the call actually asks to reprice it.
+      const boundedAtOne = serviceBoundedAt(1);
+      const twoSkus = productWithSkuCount(2);
+
       await expect(
         boundedAtOne.processProduct_updateSkus(twoSkus, {
-          updatePriceFlag: 0,
+          updatePriceFlag: 1,
+          price: '4.50',
           updateListPriceFlag: 0,
         }),
-      ).rejects.toThrow(/above the configured bound of 1/);
+      ).rejects.toThrow(/would reprice 2 SKUs, above the configured bound of 1/);
+
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+    });
+
+    it('★ an UNCONVERTIBLE flag is left for the loop to reject, not pre-empted by the bound', async () => {
+      // The bound's probe is deliberately non-raising and answers `false` for a value no CFML engine
+      // would accept - so the bound stands aside and `cfTruthy` rejects it INSIDE the loop, at the
+      // line [model/service/ProductService.cfc:L222] rejects it. Were the probe to raise instead, the
+      // legacy's mid-flight half-application would become unreachable.
+      const boundedAtOne = serviceBoundedAt(1);
+      const twoSkus = productWithSkuCount(2);
+
+      await expect(
+        boundedAtOne.processProduct_updateSkus(twoSkus, {
+          updatePriceFlag: 'not-a-boolean',
+          updateListPriceFlag: 0,
+        }),
+      ).rejects.toBeInstanceOf(CfmlBooleanConversionError);
 
       expect(skuRepository.savedSkus).toStrictEqual([]);
     });
@@ -2676,12 +2912,12 @@ describe('ProductService', () => {
       expect(serviceBoundedAt(DEFAULT_UPDATE_BOUND)).toBeInstanceOf(ProductService);
     });
 
-    it('keeps `ProductService.length` at 8, because the bound is DEFAULTED and not optional', async () => {
-      // The eight-collaborator claim in the constructor-wiring block above must stay
+    it('keeps `ProductService.length` at 9, because the bound is DEFAULTED and not optional', async () => {
+      // The nine-collaborator claim in the constructor-wiring block above must stay
       // literally checkable. A defaulted parameter is excluded from `Function.length`
       // where an optional one is not, which is why the bound is written with a default
       // rather than as `bound?: number`.
-      expect(ProductService.length).toBe(8);
+      expect(ProductService.length).toBe(9);
 
       // AND THE DEFAULT VALUE IS PINNED, not merely present. The shared `service` was
       // constructed with eight arguments, so the bound it is refusing with can only be
@@ -2721,7 +2957,7 @@ describe('ProductService', () => {
   // it did not.
   describe('findProducts - the territory the two excluded legacy tests left uncovered', () => {
     it('asserts UNCONDITIONALLY on a result set of fewer than two records', async () => {
-      const onlyProduct = makeProductFixture({ productID: 'product-alpha' });
+      const onlyProduct = matchRow('product-alpha');
 
       productRepository.searchResult = [onlyProduct];
 
@@ -2761,9 +2997,9 @@ describe('ProductService', () => {
     // of `addFilter('property','value')` calls: every member asserted below is declared on the
     // shipped criteria interface, and there is no escape hatch for an arbitrary key.
     it('takes a TYPED criteria object and answers a TYPED page', async () => {
-      const alpha = makeProductFixture({ productID: 'product-alpha' });
-      const beta = makeProductFixture({ productID: 'product-beta' });
-      const gamma = makeProductFixture({ productID: 'product-gamma' });
+      const alpha = matchRow('product-alpha');
+      const beta = matchRow('product-beta');
+      const gamma = matchRow('product-gamma');
 
       productRepository.searchResult = [alpha, beta, gamma];
 
@@ -2790,7 +3026,7 @@ describe('ProductService', () => {
         {
           term: 'nike',
           productTypeIDs: 'product-type-one,product-type-two',
-          materializationWindow: { start: 1, count: 1 },
+          window: { start: 1, count: 1 },
         },
       ]);
 
@@ -2873,8 +3109,8 @@ describe('ProductService', () => {
     });
 
     it('defaults the page window without inventing a page size', async () => {
-      const alpha = makeProductFixture({ productID: 'product-alpha' });
-      const beta = makeProductFixture({ productID: 'product-beta' });
+      const alpha = matchRow('product-alpha');
+      const beta = matchRow('product-beta');
 
       productRepository.searchResult = [alpha, beta];
 
@@ -2909,7 +3145,7 @@ describe('ProductService', () => {
       // source is: the keyword is ALWAYS bound, and the product-type list is forwarded
       // exactly as given, absence included.
       expect(productRepository.searches).toStrictEqual([
-        { term: REQUIRED_KEYWORD, productTypeIDs: undefined, materializationWindow: undefined },
+        { term: REQUIRED_KEYWORD, productTypeIDs: undefined, window: undefined },
       ]);
     });
 
@@ -2936,7 +3172,7 @@ describe('ProductService', () => {
       // term; the shipped adapter would not, and that gap is now unreachable from a
       // compiling caller.
       expect(productRepository.searches).toStrictEqual([
-        { term: undefined, productTypeIDs: 'product-type-one', materializationWindow: undefined },
+        { term: undefined, productTypeIDs: 'product-type-one', window: undefined },
       ]);
     });
   });
@@ -2953,11 +3189,11 @@ describe('ProductService', () => {
   // failing or starting at the beginning. Every case here is NET-NEW COVERAGE per AAP 0.6.6; a
   // legacy smart list took no such argument in a form that could be shaped wrongly.
   describe('findProducts - the paging shape check (S-08)', () => {
-    /** Three products, so a wrong window is DISTINGUISHABLE from a right one. */
-    function threeProducts(): readonly Product[] {
-      const alpha = makeProductFixture({ productID: 'product-alpha' });
-      const beta = makeProductFixture({ productID: 'product-beta' });
-      const gamma = makeProductFixture({ productID: 'product-gamma' });
+    /** Three matched rows, so a wrong window is DISTINGUISHABLE from a right one. */
+    function threeProducts(): readonly ProductSearchRow[] {
+      const alpha = matchRow('product-alpha');
+      const beta = matchRow('product-beta');
+      const gamma = matchRow('product-gamma');
 
       productRepository.searchResult = [alpha, beta, gamma];
 
@@ -3112,7 +3348,7 @@ describe('ProductService', () => {
         {
           term: REQUIRED_KEYWORD,
           productTypeIDs: undefined,
-          materializationWindow: { start: 1, count: 1 },
+          window: { start: 1, count: 1 },
         },
       ]);
 
@@ -3155,7 +3391,7 @@ describe('ProductService', () => {
       });
 
       expect(productRepository.searches).toStrictEqual([
-        { term: REQUIRED_KEYWORD, productTypeIDs: undefined, materializationWindow: undefined },
+        { term: REQUIRED_KEYWORD, productTypeIDs: undefined, window: undefined },
       ]);
       expect(page.records).toStrictEqual([beta, gamma]);
       expect(page.recordsCount).toBe(3);
@@ -3177,7 +3413,7 @@ describe('ProductService', () => {
         {
           term: REQUIRED_KEYWORD,
           productTypeIDs: undefined,
-          materializationWindow: { start: 0, count: 0 },
+          window: { start: 0, count: 0 },
         },
       ]);
       expect(page.records).toStrictEqual([]);
@@ -3313,7 +3549,7 @@ describe('ProductService', () => {
       expect(answered).toBe(product);
     });
 
-    it("processProduct_uploadDefaultImage carries 'validate.fileUpload' and SWALLOWS a refused save", async () => {
+    it("processProduct_uploadDefaultImage RECORDS 'validate.fileUpload' and does not rethrow", async () => {
       const product = makeProductFixture({ productID: 'product-under-upload' });
 
       imageStore.saveRejection = new Error('synthetic refusal from the image store');
@@ -3332,17 +3568,46 @@ describe('ProductService', () => {
 
       // CFML parity [model/service/ProductService.cfc:L247-L254]: the legacy catches
       // the failure and adds a validation error keyed by the resource-bundle
-      // identifier `validate.fileUpload`, then STILL RETURNS THE PRODUCT at [L262] -
-      // it does not rethrow. The identifier is carried forward VERBATIM as a plain
-      // string constant so the legacy admin can still resolve it, and no
-      // resource-bundle runtime is introduced to resolve it here. Because `Product`
-      // publishes no `addError`, the identifier is unreachable from outside; what IS
-      // observable, and is asserted, is that the refusal is swallowed exactly as
-      // [L247-L254] swallows it. The identifier itself lives in the shipped module as
-      // the private constant `FILE_UPLOAD_VALIDATION_RB_KEY` and is deliberately not
-      // exported, so it is not asserted from here; exporting a string only so a test
-      // could read it would widen the module's surface for no behaviour.
+      // identifier `validate.fileUpload`, then STILL RETURNS THE PRODUCT at [L256] -
+      // it does not rethrow. The identifier is carried forward VERBATIM so the legacy admin can
+      // still resolve it, and no resource-bundle runtime is introduced to resolve it here.
       expect(answered).toBe(product);
+
+      // ★★★ AND THE FAILURE IS NOW OBSERVABLE, WHICH IS THE CORRECTION. This case used to close
+      // with: "Because `Product` publishes no `addError`, the identifier is unreachable from
+      // outside; what IS observable, and is asserted, is that the refusal is swallowed exactly as
+      // [L247-L254] swallows it." Code review recorded the consequence: a FAILED upload was reported
+      // to the caller as a success, indistinguishable from one that stored bytes.
+      //
+      // ★★ THE LEGACY'S FAILURE WAS NEVER UNREACHABLE - it travelled from the process object to the
+      // entity. [L253] writes the error onto the process object, and
+      // `HibachiEntity.getErrors()` [org/Hibachi/HibachiEntity.cfc:L133-L146] OVERRIDES the entity
+      // accessor to inject `addError('processObjects', <context>, true)` for any process object
+      // carrying errors. So a legacy caller asking `product.getErrors()` after this method saw
+      // `processObjects: ['uploadDefaultImage']`. Both entries are asserted here: the framework's
+      // injected one, and the `imageFile` entry relocated to the only register the ported model has.
+      expect(answered.hasErrors()).toBe(true);
+      expect(answered.getError('imageFile')).toStrictEqual(['validate.fileUpload']);
+      expect(answered.getError('processObjects')).toStrictEqual(['uploadDefaultImage']);
+    });
+
+    it('★ records NOTHING when the upload succeeded, so the register separates the two outcomes', async () => {
+      // The other side of the correction. A case that only asserted "did not throw" could not tell
+      // success from failure at all, which is exactly what the finding was about.
+      const product = makeProductFixture({ productID: 'product-under-successful-upload' });
+
+      const answered = await service.processProduct_uploadDefaultImage(product, {
+        imageFile: 'candidate-upload.png',
+        uploadFile: {
+          serverDirectory: '/synthetic/upload/dir',
+          serverFile: 'candidate-upload.png',
+          clientFileExt: 'png',
+        },
+      });
+
+      expect(imageStore.savedFiles).toHaveLength(1);
+      expect(answered.hasErrors()).toBe(false);
+      expect(answered.getErrors()).toStrictEqual({});
     });
 
     // =======================================================================
@@ -3362,9 +3627,13 @@ describe('ProductService', () => {
     // `arguments.processObject.getImageFile()`, a data property really declared at
     // [model/process/Product_UploadDefaultImage.cfc:L54], and [L250] `fileMove`s to it.
     // A traversing name therefore reached the filesystem in the legacy. Refusing it is a
-    // documented divergence, permitted because the method is an out-of-scope thin
-    // pass-through to a STUB port (AAP 0.2.2, AAP 0.9.5, AAP 0.3.1) and because no
-    // numbered entry of the twenty-defect register covers it, so AAP 0.9.3 is not engaged.
+    // SECURITY REFUSAL ON AN OUT-OF-SCOPE STUB PATH - registered in
+    // `tests/traceability/legacyTestMap.ts` under `outOfScopeSecurityRefusals` and reasoned in
+    // full at the guard in `src/services/productService.ts`. It is NOT one of the three
+    // deliberate divergences AAP 0.6.7 permits and spends none of that budget: the method is an
+    // out-of-scope thin pass-through to a STUB port (AAP 0.2.2, AAP 0.9.5, AAP 0.3.1), and no
+    // numbered entry of the register's thirty entries - nor any of its eight secondary items -
+    // covers a caller-supplied image path, so AAP 0.9.3 is not engaged.
     //
     // ★★★ WHAT IS ASSERTED, AND WHY IT IS NOT THE MESSAGE. A probe established that
     // NOTHING escapes this method: the guard throws INSIDE the try that [L237-L254] wraps
@@ -3381,7 +3650,7 @@ describe('ProductService', () => {
       /** Runs the upload and reports what the caller can actually observe. */
       const attemptUpload = async (
         imageFile: string,
-      ): Promise<{ threw: boolean; answeredProduct: boolean }> => {
+      ): Promise<{ threw: boolean; answeredProduct: boolean; recordedRefusal: boolean }> => {
         const product = makeProductFixture({ productID: 'product-under-upload-traversal' });
 
         try {
@@ -3394,9 +3663,17 @@ describe('ProductService', () => {
             },
           });
 
-          return { threw: false, answeredProduct: answered === product };
+          return {
+            threw: false,
+            answeredProduct: answered === product,
+            // ★ A TRAVERSAL REFUSAL LANDS IN THE SAME `catch` ARM the legacy designated for a
+            // file-upload validation failure [model/service/ProductService.cfc:L236, L253], so it is
+            // RECORDED rather than erased - which is what stops a refused upload from looking like a
+            // stored one.
+            recordedRefusal: answered.hasError('imageFile'),
+          };
         } catch {
-          return { threw: true, answeredProduct: false };
+          return { threw: true, answeredProduct: false, recordedRefusal: false };
         }
       };
 
@@ -3409,6 +3686,10 @@ describe('ProductService', () => {
         // And the legacy's own answer for a failed upload survives unchanged.
         expect(observed.threw).toBe(false);
         expect(observed.answeredProduct).toBe(true);
+
+        // ★ AND THE REFUSAL IS RECORDED, so "stored nothing" is something the caller learns rather
+        // than something only this test can see.
+        expect(observed.recordedRefusal).toBe(true);
       });
 
       it.each([
@@ -4611,28 +4892,50 @@ describe('ProductService', () => {
       expect(answered.getProductID()).toBe(PERSISTED_PRODUCT_ID);
     });
 
-    it('generates from the CALCULATED TITLE against "SwProduct" when no title is present', async () => {
+    it('generates from the RENDERED TITLE TEMPLATE against "SwProduct" when no title is present', async () => {
       const product = makeProductFixture({ urlTitle: undefined });
       const data: ProductSaveInput = {};
 
       await service.saveProduct(product, data);
 
-      // SHIPPED-SURFACE CORRECTION 3, PART ONE - THE TITLE SOURCE. The legacy line is
+      // ★★★ THE TITLE SOURCE, AND THIS ASSERTION HAS BEEN WRONG ONCE ALREADY. The legacy line is
       //   getService("dataService").createUniqueURLTitle(
       //     titleString=arguments.product.getTitle(), tableName="SwProduct")
-      // The ported entity publishes NO `getTitle()`: the closed entity surface exposes
-      // `getCalculatedTitle()`, the PERSISTED SNAPSHOT of the same value, and no member may be
-      // added to it. The shipped service reads that accessor, so THAT is what the generator
-      // receives and what is asserted. The fixture deliberately gives the calculated title a value
-      // differing from `productName`, so the assertion cannot pass by coincidence.
+      // and this case used to assert `FIXTURE_CALCULATED_TITLE`, on the reading that "the ported
+      // entity publishes NO `getTitle()`: the closed entity surface exposes `getCalculatedTitle()`,
+      // the PERSISTED SNAPSHOT of the same value, and no member may be added to it."
+      //
+      // Code review measured what the substitution costs. `calculatedTitle`
+      // [model/entity/Product.cfc:L65] is written by an ORM maintenance pass, so a NEW product has
+      // NO snapshot - slug generation received an empty candidate and the `urlTitle` `required` rule
+      // then refused a payload that should have succeeded - and a STALE one carries the title it had
+      // BEFORE this save populated a new name. `Product.getTitle()`
+      // [model/entity/Product.cfc:L540-L545] is now ported and renders the `productTitleString`
+      // template against CURRENT state, so THAT is what the generator receives.
+      //
+      // ★★ THE ASSERTED VALUE IS THE RENDERED TEMPLATE, NOT A COLUMN. The fixture's template is the
+      // legacy default `'${brand.brandName} ${productName}'`
+      // [model/service/SettingService.cfc:L193], and the fixture's brand and product name are
+      // distinct known values - so a coincidental pass is impossible, and the assertion proves both
+      // markers resolved AND the single separating space between them survived.
       //
       // Contrast the sibling sources: `saveProductType` prefers the payload's `productTypeName` and
       // falls back to the entity's, and `model/service/BrandService.cfc:L69` reads
       // `getBrandName()`. THREE DIFFERENT TITLE SOURCES ACROSS THREE SAVE OVERRIDES, none
       // harmonised.
       expect(urlTitleGenerator.requests).toStrictEqual([
-        { titleString: FIXTURE_CALCULATED_TITLE, tableName: PRODUCT_TABLE_NAME },
+        {
+          titleString: `${FIXTURE_BRAND_NAME} ${FIXTURE_PRODUCT_NAME}`,
+          tableName: PRODUCT_TABLE_NAME,
+        },
       ]);
+
+      // And the calculated snapshot is NOT what was used, which is the whole point of the
+      // correction: the fixture's snapshot differs from the rendered template.
+      expect(product.getCalculatedTitle()).toBe(FIXTURE_CALCULATED_TITLE);
+      expect(product.getCalculatedTitle()).not.toBe(
+        `${FIXTURE_BRAND_NAME} ${FIXTURE_PRODUCT_NAME}`,
+      );
 
       // ★★ WHERE THE RESOLVED VALUE LANDS: ON THE ENTITY *AND* IN THE REPOSITORY PAYLOAD,
       // AND ON THE CALLER'S STRUCT NEVER.
@@ -4771,10 +5074,10 @@ describe('ProductService', () => {
       const product = makeProductFixture({ urlTitle: 'fixture-title' });
       const data: ProductSaveInput = { urlTitle: '' };
 
-      // ★★ THE REFUSAL IS NOW THROWN RATHER THAN RETURNED, so the populate assertions are made after
-      // catching it. Everything they assert is unchanged - populate ran, the guard declined, the
-      // payload was not written to - and the refusal itself is asserted at the foot of the case.
-      const refusal = await refusalOf(() => service.saveProduct(product, data));
+      // ★★ THE REFUSAL COMES BACK ON THE RETURNED ENTITY, so the populate assertions read the same
+      // instance the method answered with. Everything they assert is unchanged - populate ran, the
+      // guard declined, the payload was not written to - and the refusal is asserted at the foot.
+      const refused = await refusedEntityOf(() => service.saveProduct(product, data));
 
       expect(product.getUrlTitle()).toBe('');
       expect(urlTitleGenerator.requests).toStrictEqual([]);
@@ -4806,12 +5109,14 @@ describe('ProductService', () => {
       expect(productRepository.saves).toStrictEqual([]);
       expect(productRepository.savePayloads).toStrictEqual([]);
 
-      // ★★★ AND THE REFUSAL IS DETECTABLE, WHICH IS THE SECOND REVISION OF THIS CASE. It previously
-      // asserted only that nothing was persisted - a state a caller had no way to observe, because the
-      // method returned the entity and the entity publishes no error channel. QA testing found that
-      // silence in this exact shape, so the refusal now names the rule that failed.
-      expect(refusal).toBeInstanceOf(ProductValidationError);
-      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+      // ★★★ AND THE REFUSAL IS DETECTABLE ON THE ENTITY, WHICH IS THE THIRD REVISION OF THIS CASE.
+      // Revision one asserted only that nothing was persisted - a state a caller had no way to
+      // observe, because the method returned the entity and the entity published no error channel.
+      // Revision two made the method THROW. Revision three publishes the register the legacy always
+      // had [org/Hibachi/HibachiTransient.cfc:L30-L64], so the SAME entity comes back naming the rule
+      // that failed - which is what [model/service/ProductService.cfc:L291] answers.
+      expect(refused).toBe(product);
+      expect(refusedRulesOf(refused)).toStrictEqual([
         { propertyIdentifier: 'urlTitle', errorMessage: 'urlTitle is required' },
       ]);
     });
@@ -4838,8 +5143,10 @@ describe('ProductService', () => {
       const product = makeProductFixture({ urlTitle: '' });
       const data: ProductSaveInput = {};
 
-      const refusal = await refusalOf(() => service.saveProduct(product, data));
+      const refused = await refusedEntityOf(() => service.saveProduct(product, data));
 
+      // ★ AND IT IS THE CALLER'S OWN INSTANCE, ANSWERED RATHER THAN RAISED [model/service/ProductService.cfc:L291].
+      expect(refused).toBe(product);
       // LEGACY-NOTE [model/service/ProductService.cfc:L268]: THE GUARD HERE IS ONE CLAUSE -
       // `isNull(arguments.product.getURLTitle())` and nothing else. `isNull('')` is FALSE, so an
       // empty-string URL title SUPPRESSES generation.
@@ -4855,9 +5162,10 @@ describe('ProductService', () => {
       expect(productRepository.saves).toStrictEqual([]);
 
       // The entity is left exactly as populate and the guard left it - the refusal mutates nothing on
-      // the way out - and the refusal names the rule the empty title failed.
+      // the way out - and it is that entity which comes back, unpersisted, per
+      // [model/service/ProductService.cfc:L291]. The `urlTitle` save-context rule is what refused it.
       expect(product.getUrlTitle()).toBe('');
-      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+      expect(refusedRulesOf(refused)).toStrictEqual([
         { propertyIdentifier: 'urlTitle', errorMessage: 'urlTitle is required' },
       ]);
     });
@@ -4882,13 +5190,13 @@ describe('ProductService', () => {
       expect(answered).toBe(persistedProduct);
     });
 
-    it('neither creates SKUs nor saves an invalid product, and REFUSES detectably', async () => {
+    it('neither creates SKUs nor saves an invalid product, and ANSWERS IT UNPERSISTED', async () => {
       const product = makeProductFixture({ productName: undefined });
       const data: ProductSaveInput = {};
 
       const dispatchSpy = vi.spyOn(service, 'processProduct_updateDefaultImageFileNames');
 
-      const refusal = await refusalOf(() => service.saveProduct(product, data));
+      const refused = await refusedEntityOf(() => service.saveProduct(product, data));
 
       // LEGACY-NOTE [model/validation/Product.json]: the `save` context declares exactly five rules
       // - `price`, `productName`, `productCode`, `productType` and `urlTitle`. This case falsifies
@@ -4902,33 +5210,38 @@ describe('ProductService', () => {
       expect(dispatchSpy).not.toHaveBeenCalled();
       expect(productRepository.saves).toStrictEqual([]);
 
-      // ★★★ QUOTE-THEN-REVISE, AND THIS IS THE CASE THE RUNTIME FINDING WAS MADE ON. It used to close
-      // with: "CFML parity [model/service/ProductService.cfc:L291]: the legacy returns
-      // `arguments.product` unconditionally, so an invalid product comes back as itself - the caller
-      // inspects it, nothing is thrown, and nothing is null", asserting `answered).toBe(product)`.
-      // The CFML reading is right and the parity claim was hollow: the legacy caller "inspects it" by
-      // asking `hasErrors()` [L286], and the ported entity publishes no such member - so what a caller
-      // actually got was an entity indistinguishable from a persisted one. QA testing confirmed both
-      // halves: the database was unchanged and `typeof saved.hasErrors === 'undefined'`.
-      //
-      // The tier's OWN sibling already threw for this class of refusal (`saveBrand` ->
-      // `BrandValidationError`), so the protocol is unified rather than invented.
-      expect(refusal).toBeInstanceOf(ProductValidationError);
-      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+      // ★★★ THE FULL RECORD OF THIS CASE, WHICH IS WHERE THE FINDING WAS MADE AND THEN RE-MADE.
+      // Revision one closed with "CFML parity [model/service/ProductService.cfc:L291]: the legacy
+      // returns `arguments.product` unconditionally, so an invalid product comes back as itself - the
+      // caller inspects it, nothing is thrown, and nothing is null", asserting `answered).toBe(product)`
+      // and nothing else. The CFML reading was right and the parity claim was hollow: a legacy caller
+      // "inspects it" by asking `hasErrors()` [L286], and the ported entity published no such member,
+      // so a refusal was indistinguishable from a success. Revision two made the method THROW.
+      // Revision three publishes the member: THE SAME ENTITY comes back, carrying its errors, which is
+      // both what [L291] answers and what makes revision one's sentence finally true.
+      expect(refused).toBe(product);
+      expect(refused.hasErrors()).toBe(true);
+      expect(refused.hasError('productName')).toBe(true);
+      // ★ AND THE LOOKUP IS CASE-INSENSITIVE, because a CFML struct key is
+      // [org/Hibachi/HibachiErrors.cfc:L15]. A caller spelling the property differently still finds
+      // its error.
+      expect(refused.hasError('PRODUCTNAME')).toBe(true);
+      expect(refusedRulesOf(refused)).toStrictEqual([
         { propertyIdentifier: 'productName', errorMessage: 'productName is required' },
       ]);
       // The message states the rule and NOT the value that failed it - the same discipline the
       // published field reports follow, so a primary adapter may forward it.
-      expect(refusal.message).toContain('productName is required');
-      expect(refusal.message).toContain('No row was written.');
+      expect(refused.getError('productName')).toStrictEqual(['productName is required']);
     });
 
     it('rejects a product code holding an unsupported character', async () => {
       const product = makeProductFixture({ productCode: 'not a valid code' });
       const data: ProductSaveInput = {};
 
-      const refusal = await refusalOf(() => service.saveProduct(product, data));
+      const refused = await refusedEntityOf(() => service.saveProduct(product, data));
 
+      // ★ AND IT IS THE CALLER'S OWN INSTANCE, ANSWERED RATHER THAN RAISED [model/service/ProductService.cfc:L291].
+      expect(refused).toBe(product);
       // The save-context rule is
       //   "productCode": [{"contexts":"save","required":true,
       //                    "unique":true,"regex":"^[a-zA-Z0-9-_.|:~^]+$"}]
@@ -4936,7 +5249,7 @@ describe('ProductService', () => {
       // this separately from the missing-`productName` case is what proves the regex half of the
       // rule is enforced, not only the `required` half.
       expect(productRepository.saves).toStrictEqual([]);
-      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+      expect(refusedRulesOf(refused)).toStrictEqual([
         {
           propertyIdentifier: 'productCode',
           errorMessage: 'productCode contains an unsupported character',
@@ -4944,7 +5257,7 @@ describe('ProductService', () => {
       ]);
       // ★ THE OFFENDING CODE IS NOT IN THE REFUSAL. It is caller-submitted data, and a refusal that
       // echoed it would be unsafe for `src/handlers/errorMapper.ts` to publish.
-      expect(refusal.message).not.toContain('not a valid code');
+      expect(JSON.stringify(refused.getErrors())).not.toContain('not a valid code');
     });
 
     // =======================================================================
@@ -5023,8 +5336,10 @@ describe('ProductService', () => {
         // Records the call through the collaborator itself and attaches no SKU.
       };
 
-      const refusal = await refusalOf(() => service.saveProduct(product, {}));
+      const refused = await refusedEntityOf(() => service.saveProduct(product, {}));
 
+      // ★ AND IT IS THE CALLER'S OWN INSTANCE, ANSWERED RATHER THAN RAISED [model/service/ProductService.cfc:L291].
+      expect(refused).toBe(product);
       // Creation DID run - which is what separates this ground from a validation refusal, where the
       // branch is never entered and the zero-SKU state means nothing.
       expect(skuCreation.requests).toHaveLength(1);
@@ -5032,7 +5347,7 @@ describe('ProductService', () => {
       expect(productRepository.saves).toStrictEqual([]);
 
       // ONE ground, reported against the collection the legacy attached its errors to.
-      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+      expect(refusedRulesOf(refused)).toStrictEqual([
         {
           propertyIdentifier: 'skus',
           errorMessage:
@@ -5146,7 +5461,7 @@ describe('ProductService', () => {
       const productType = new ProductType({ productTypeID: 'product-type-with-no-name' });
       const data: ProductTypeSaveInput = {};
 
-      const refusal = await refusalOf(() => service.saveProductType(productType, data));
+      const refused = await refusedEntityOf(() => service.saveProductType(productType, data));
 
       // CFML parity [model/service/ProductService.cfc:L296-L300]: THERE IS NO `else`. When neither
       // the payload nor the entity yields a usable name the URL title is simply NEVER SET - no
@@ -5174,19 +5489,20 @@ describe('ProductService', () => {
       // it is a whole-table constraint, and no port member answers it.
       expect(productTypeRepository.saves).toStrictEqual([]);
 
-      // ★★★ QUOTE-THEN-REVISE, ON THE SAME RUNTIME FINDING AS ITS `saveProduct` SIBLING. This used to
-      // close with: "The entity is still ANSWERED, carrying its errors, because
-      // [org/Hibachi/HibachiService.cfc:L167] returns the entity either way", asserting
-      // `answered).toBe(productType)`. The framework statement is accurate about CFML and the port
-      // could not honour the "carrying its errors" half - `ProductType` publishes no error channel -
-      // so a caller received an entity with an empty identifier and no way to tell it apart from a
-      // persisted one. QA testing observed exactly that. BOTH failed rules are reported, not just the
-      // first, because `validate()` accumulated them all.
-      expect(requireProductTypeRefusal(refusal).errors).toStrictEqual([
+      // ★★★ AND THE ENTITY IS ANSWERED, CARRYING ITS ERRORS - the sentence this case has been trying
+      // to make true across three revisions. Revision one asserted `answered).toBe(productType)` and
+      // claimed the entity carried its errors, which `ProductType` had no channel for. Revision two
+      // made the method THROW, which no longer answered the entity at all. Revision three publishes
+      // the channel, so [org/Hibachi/HibachiService.cfc:L167] and this assertion finally agree.
+      //
+      // BOTH failed rules are reported, not just the first, because `validate()` accumulated them all
+      // through `addError` [org/Hibachi/HibachiTransient.cfc:L61-L64] before the flush asked
+      // `hasErrors()` once.
+      expect(refused).toBe(productType);
+      expect(refusedRulesOf(refused)).toStrictEqual([
         { propertyIdentifier: 'productTypeName', errorMessage: 'productTypeName is required' },
         { propertyIdentifier: 'urlTitle', errorMessage: 'urlTitle is required' },
       ]);
-      expect(refusal.message).toContain('No row was written.');
     });
 
     it('does not generate when the PAYLOAD already supplies a usable urlTitle', async () => {
@@ -5215,6 +5531,40 @@ describe('ProductService', () => {
         { titleString: 'Name On The Entity', tableName: PRODUCT_TYPE_TABLE_NAME },
       ]);
       expect(data.urlTitle).toBe(GENERATED_URL_TITLE);
+    });
+
+    it('★★★ RETURNS a refused product type and does NOT inherit its parent\u2019s products', async () => {
+      // ★★★ THE `!hasErrors()` TERM OF [model/service/ProductService.cfc:L306], ASSERTED END TO END.
+      // The legacy gates parent-product inheritance on that term, so a product type that failed a
+      // save-context rule must come back WITHOUT the parent's collection - and must come back, rather
+      // than raise, because `super.save` answers the entity either way
+      // [org/Hibachi/HibachiService.cfc:L167]. A revision that threw satisfied the inheritance half by
+      // never reaching the statement and broke the return half; a revision that skipped the gate would
+      // hand a refused product type the parent's entire catalogue. This case pins both.
+      const parentProduct = makeProductFixture({ productID: 'product-owned-by-a-parent' });
+      const parent = new ProductType({ productTypeID: 'parent-of-a-refused-product-type' });
+      parent.addProduct(parentProduct);
+
+      // Neither save-context rule of `model/validation/ProductType.json` is satisfiable here: no
+      // `productTypeName` and no `urlTitle`, and an empty payload leaves the generation gate with
+      // nothing to work from.
+      const refusedChild = new ProductType({
+        productTypeID: 'refused-child-product-type',
+        parentProductType: parent,
+      });
+
+      const answered = await service.saveProductType(refusedChild, {});
+
+      expect(answered).toBe(refusedChild);
+      expect(refusedRulesOf(answered).map((rule) => rule.propertyIdentifier)).toStrictEqual([
+        'productTypeName',
+        'urlTitle',
+      ]);
+      expect(productTypeRepository.saves).toStrictEqual([]);
+
+      // ★ THE INHERITANCE DID NOT HAPPEN, and the parent is untouched on both sides of the association.
+      expect(answered.getProducts()).toStrictEqual([]);
+      expect(parent.getProducts()).toStrictEqual([parentProduct]);
     });
 
     it('answers the PERSISTED instance and inherits from ITS parent, not the argument', async () => {
@@ -5456,15 +5806,200 @@ describe('ProductService', () => {
       // leave a recorded payload with no recorded save beside it.
       const product = makeProductFixture({ productName: undefined });
 
-      const refusal = await refusalOf(() => service.saveProduct(product, {}));
+      const refused = await refusedEntityOf(() => service.saveProduct(product, {}));
 
+      // ★ AND IT IS THE CALLER'S OWN INSTANCE, ANSWERED RATHER THAN RAISED [model/service/ProductService.cfc:L291].
+      expect(refused).toBe(product);
       expect(productRepository.saves).toStrictEqual([]);
       expect(productRepository.savePayloads).toStrictEqual([]);
       // The refusal is DETECTABLE, so "no payload was handed over" is something a caller learns rather
       // than something only a test can see.
-      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+      expect(refusedRulesOf(refused)).toStrictEqual([
         { propertyIdentifier: 'productName', errorMessage: 'productName is required' },
       ]);
+    });
+
+    // -----------------------------------------------------------------------
+    // POPULATE-BEFORE-VALIDATE, BOTH DIRECTIONS
+    //
+    // ★★★ THE ORDERING THE FINDING WAS ABOUT, ASSERTED FROM BOTH SIDES. `populate` runs at
+    // [model/service/ProductService.cfc:L266] and `validate(context="save")` at [L273], so the state
+    // validation judges IS the state that will be written. Two consequences follow, and only asserting
+    // BOTH pins the order: a VALID PAYLOAD MUST REPAIR AN INVALID ENTITY, and AN INVALID PAYLOAD MUST
+    // NOT PASS ON STALE ENTITY STATE. A port that validated first would fail the first; a port that
+    // populated but validated the pre-populate snapshot would fail the second.
+    // -----------------------------------------------------------------------
+
+    it('★ saveProduct: a VALID PAYLOAD REPAIRS an entity that is invalid on its own', async () => {
+      // The entity has NO `productName`, which is `required` in the save context
+      // [model/validation/Product.json]. On its own it is refused - the sibling case
+      // 'neither creates SKUs nor saves an invalid product' proves exactly that. The payload supplies
+      // the missing name, and because populate runs FIRST the rule sees the submitted value.
+      const product = makeProductFixture({ productName: undefined });
+      const data: ProductSaveInput = { productName: 'A Name Only The Payload Has' };
+
+      const answered = await service.saveProduct(product, data);
+
+      // It saved, which is the whole assertion: the payload repaired the entity.
+      expect(product.hasErrors()).toBe(false);
+      expect(productRepository.saves).toStrictEqual([product]);
+      expect(answered).toBe(persistedProduct);
+
+      // And the value is ON THE ENTITY, not merely in a local that the payload restated. This is the
+      // exact defect code review recorded: the name used to be held in a local, so the rule read the
+      // stale entity and refused a payload that should have succeeded.
+      expect(product.getProductName()).toBe('A Name Only The Payload Has');
+      expect(productRepository.savePayloads).toStrictEqual([
+        { urlTitle: FIXTURE_URL_TITLE, productName: 'A Name Only The Payload Has' },
+      ]);
+    });
+
+    it('★ saveProduct: an INVALID PAYLOAD cannot pass on STALE entity state', async () => {
+      // The entity is valid. The payload BLANKS the name - which populate copies, because a blank is
+      // a value [org/Hibachi/HibachiTransient.cfc] - and the rule then judges the blank rather than
+      // the name the entity arrived with. A port that validated the pre-populate snapshot would have
+      // saved this product and written the empty name, which is the second half of the finding.
+      const product = makeProductFixture();
+      expect(product.getProductName()).toBe(FIXTURE_PRODUCT_NAME);
+
+      const data: ProductSaveInput = { productName: '   ' };
+
+      const refused = await refusedEntityOf(() => service.saveProduct(product, data));
+
+      // ★ THE BLANK WAS TRIMMED ON THE WAY IN, which is `_setProperty(name, trim(value))`
+      // [org/Hibachi/HibachiTransient.cfc]. `productName` declares `notNull="true"`
+      // [model/entity/Product.cfc:L55], so it is stored as `''` rather than cleared to NULL - the one
+      // column in the populate set that takes that arm.
+      expect(refused.getProductName()).toBe('');
+      expect(refusedRulesOf(refused)).toStrictEqual([
+        { propertyIdentifier: 'productName', errorMessage: 'productName is required' },
+      ]);
+      expect(productRepository.saves).toStrictEqual([]);
+      expect(productRepository.savePayloads).toStrictEqual([]);
+    });
+
+    it('★ saveProduct POPULATES every declared scalar column, trimmed', async () => {
+      // The full populate set, in one case, because "expand the typed input and population layer to
+      // every in-scope mutable field" is only demonstrably done if every member lands. The columns are
+      // [model/entity/Product.cfc:L53-L59] plus the `remoteID` audit column.
+      const product = makeProductFixture();
+      const data: ProductSaveInput = {
+        productName: '  Trimmed Name  ',
+        productCode: '  trimmed-code  ',
+        productDescription: '  A description.  ',
+        activeFlag: false,
+        publishedFlag: true,
+        sortOrder: 42,
+        remoteID: '  remote-42  ',
+      };
+
+      await service.saveProduct(product, data);
+
+      expect(product.getProductName()).toBe('Trimmed Name');
+      expect(product.getProductCode()).toBe('trimmed-code');
+      expect(product.getProductDescription()).toBe('A description.');
+      expect(product.getActiveFlag()).toBe(false);
+      expect(product.getPublishedFlag()).toBe(true);
+      expect(product.getSortOrder()).toBe(42);
+      expect(product.getRemoteID()).toBe('remote-42');
+
+      // The entity is what the adapter binds the remaining columns from, so the save happened and the
+      // payload restates only the two columns it addresses.
+      expect(productRepository.saves).toStrictEqual([product]);
+    });
+
+    it('★ saveProduct leaves a column ALONE when the payload omits its key', async () => {
+      // `structKeyExists` [org/Hibachi/HibachiTransient.cfc] is the populate guard, so an ABSENT key
+      // is not "populate to undefined" - it is "do not touch". That distinction is what makes a
+      // partial update partial rather than destructive.
+      const product = makeProductFixture({ productCode: 'code-on-the-entity' });
+
+      await service.saveProduct(product, { productName: 'Only The Name Arrived' });
+
+      expect(product.getProductName()).toBe('Only The Name Arrived');
+      expect(product.getProductCode()).toBe('code-on-the-entity');
+    });
+
+    it('★ saveProduct REFUSES a sortOrder that is not an ORM integer', async () => {
+      // The column is `ormtype="integer"` [model/entity/Product.cfc:L59]. The legacy had Hibernate's
+      // own coercion between `_setProperty` and the column; this tier has none, so a fractional value
+      // is refused rather than truncated on its way to the row. It is a PAYLOAD-SHAPE refusal, which
+      // is why it throws where a failed validation rule does not.
+      const product = makeProductFixture();
+
+      await expect(service.saveProduct(product, { sortOrder: 1.5 })).rejects.toThrow(
+        /ormtype="integer"/,
+      );
+
+      expect(productRepository.saves).toStrictEqual([]);
+    });
+
+    it('★ saveProductType: a VALID PAYLOAD REPAIRS an entity that is invalid on its own', async () => {
+      // The mirror of the `saveProduct` case, on the other save flow. `super.save`'s populate step
+      // [org/Hibachi/HibachiService.cfc:L145] runs before `validate` [L150], so a submitted
+      // `productTypeName` satisfies its own `required` rule [model/validation/ProductType.json].
+      // This is the defect code review recorded as "validates stale entity state instead of populated
+      // productTypeName".
+      const productType = new ProductType({ productTypeID: 'nameless-product-type' });
+      const data: ProductTypeSaveInput = { productTypeName: 'A Name Only The Payload Has' };
+
+      const answered = await service.saveProductType(productType, data);
+
+      // It saved. And the generation gate fired from the payload name, so the entity now carries a
+      // generated `urlTitle` too - which is what satisfies the SECOND required rule.
+      expect(productType.hasErrors()).toBe(false);
+      expect(productType.getProductTypeName()).toBe('A Name Only The Payload Has');
+      expect(productType.getUrlTitle()).toBe(GENERATED_URL_TITLE);
+      expect(productTypeRepository.saves).toStrictEqual([productType]);
+      // The recording adapter answers the instance it was handed, exactly as the sibling
+      // product-type cases assert.
+      expect(answered).toBe(productType);
+    });
+
+    it('★ saveProductType: an INVALID PAYLOAD cannot pass on STALE entity state', async () => {
+      // The entity is valid on its own. The payload blanks the name; populate copies the blank, and
+      // the `required` rule then judges it. Note the generation gate does NOT fire: its fourth clause
+      // reads `data.urlTitle`, and its inner branches need a NON-EMPTY name from either source, so a
+      // blank payload name falls through to the entity name - which the gate then uses. That is the
+      // source's own preference order [model/service/ProductService.cfc:L296-L299], reproduced, and it
+      // is why the refusal names only `productTypeName`.
+      const productType = new ProductType({
+        productTypeID: 'valid-product-type',
+        productTypeName: 'Name On The Entity',
+        urlTitle: 'title-on-the-entity',
+      });
+
+      const refused = await refusedEntityOf(() =>
+        service.saveProductType(productType, { productTypeName: '  ' }),
+      );
+
+      expect(refused.getProductTypeName()).toBe('');
+      expect(refusedRulesOf(refused)).toStrictEqual([
+        { propertyIdentifier: 'productTypeName', errorMessage: 'productTypeName is required' },
+      ]);
+      expect(productTypeRepository.saves).toStrictEqual([]);
+    });
+
+    it('★ saveProductType POPULATES every declared scalar column, trimmed', async () => {
+      const productType = new ProductType({
+        productTypeID: 'product-type-to-populate',
+        urlTitle: 'title-on-the-entity',
+      });
+
+      await service.saveProductType(productType, {
+        productTypeName: '  Trimmed Type Name  ',
+        productTypeDescription: '  A type description.  ',
+        systemCode: '  merchandise  ',
+        activeFlag: false,
+        publishedFlag: true,
+      });
+
+      expect(productType.getProductTypeName()).toBe('Trimmed Type Name');
+      expect(productType.getProductTypeDescription()).toBe('A type description.');
+      expect(productType.getSystemCode()).toBe('merchandise');
+      expect(productType.getActiveFlag()).toBe(false);
+      expect(productType.getPublishedFlag()).toBe(true);
+      expect(productTypeRepository.saves).toStrictEqual([productType]);
     });
 
     it('saveProductType hands the resolved title to the repository, from the PAYLOAD name', async () => {
@@ -5547,8 +6082,10 @@ describe('ProductService', () => {
       const productType = new ProductType({ productTypeID: 'product-type-with-no-name' });
       const data: ProductTypeSaveInput = {};
 
-      const refusal = await refusalOf(() => service.saveProductType(productType, data));
+      const refused = await refusedEntityOf(() => service.saveProductType(productType, data));
 
+      // ★ AND IT IS THE CALLER'S OWN INSTANCE, ANSWERED RATHER THAN RAISED [model/service/ProductService.cfc:L291].
+      expect(refused).toBe(productType);
       expect(urlTitleGenerator.requests).toStrictEqual([]);
 
       // Nothing was written into the caller's struct - the two write sites [L297] and [L299]
@@ -5556,18 +6093,17 @@ describe('ProductService', () => {
       expect(data).toStrictEqual({});
       expect(productType.getUrlTitle()).toBeUndefined();
 
-      // ★★★ QUOTE-THEN-REVISE. This used to close with "And the refusal is a refusal, not a throw: the
-      // framework answers the entity either way [org/Hibachi/HibachiService.cfc:L167], so the caller
-      // gets its own unpersisted product type back", asserting `answered).toBe(productType)`. The
-      // framework fact is accurate and the port could not reproduce the half that made it usable - the
-      // errors CFML left on the entity have nowhere to live on the ported one - so the caller got an
-      // entity with an empty identifier and no signal. QA testing observed it; the refusal is now
-      // thrown, by the same protocol `saveBrand` in this tier already used.
+      // ★★★ AND THE REFUSAL IS A REFUSAL, NOT A THROW: the framework answers the entity either way
+      // [org/Hibachi/HibachiService.cfc:L167], so the caller gets its own unpersisted product type
+      // back - now WITH the errors CFML left on it, which is the half two earlier revisions of this
+      // case could not reproduce and one of them replaced with a throw.
       expect(productTypeRepository.saves).toStrictEqual([]);
       expect(productTypeRepository.savePayloads).toStrictEqual([]);
-      expect(
-        requireProductTypeRefusal(refusal).errors.map((error) => error.propertyIdentifier),
-      ).toStrictEqual(['productTypeName', 'urlTitle']);
+      expect(refused).toBe(productType);
+      expect(refusedRulesOf(refused).map((rule) => rule.propertyIdentifier)).toStrictEqual([
+        'productTypeName',
+        'urlTitle',
+      ]);
     });
 
     it('saveProductType passes a caller-supplied title through untouched', async () => {

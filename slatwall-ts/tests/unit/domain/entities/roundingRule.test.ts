@@ -162,15 +162,36 @@ function satisfiesDeleteContextRule(rule: RoundingRule): boolean {
 
 /**
  * Every member `RoundingRule.prototype` carries, sorted - the interface-parity contract in
- * executable form. Twelve of the thirteen are the legacy CFML names verbatim: the four
- * `accessors=true` getters over [model/entity/RoundingRule.cfc:L52-L55], the two audit timestamp
- * getters [L58, L60], the two opaque account-column getters [L59, L61], the collection getter [L64]
- * and the three declared methods [L66-L86]. The thirteenth, `isNew`, is the one framework member
- * the ported service calls [model/service/RoundingRuleService.cfc:L57].
+ * executable form. Twelve are the legacy CFML names verbatim: the four `accessors=true` getters over
+ * [model/entity/RoundingRule.cfc:L52-L55], the two audit timestamp getters [L58, L60], the two opaque
+ * account-column getters [L59, L61], the collection getter [L64] and the three declared methods
+ * [L66-L86].
+ *
+ * ★★ THE REMAINING NINE ARE FRAMEWORK MEMBERS THE PORTED SERVICE CONCRETELY CALLS, and the list grew
+ * from ONE to nine in one revision, so the reason is recorded here rather than inferred. `isNew` was
+ * always among them [model/service/RoundingRuleService.cfc:L57]. The other eight arrived together
+ * because `saveRoundingRule` reproduces `super.save`
+ * [org/Hibachi/HibachiService.cfc:L133-L169] - and that method has THREE steps, not one:
+ *
+ *   * `populate` [L145] needs a setter per populatable column, so `setRoundingRuleName`,
+ *     `setRoundingRuleExpression` and `setRoundingRuleDirection` are the three ORM-generated setters
+ *     over [model/entity/RoundingRule.cfc:L53-L55]. The four audit properties declare
+ *     `hb_populateEnabled="false"` [L57-L60] and get none, and `roundingRuleID` is UUID-minted [L52].
+ *   * `validate` [L150] records failures through `addError`, and the flush gate [L153] and the return
+ *     [L167] read them back - so the five-member error register of
+ *     [org/Hibachi/HibachiTransient.cfc:L30-L64] is here: `addError`, `getError`, `getErrors`,
+ *     `hasError`, `hasErrors`.
+ *
+ * Code review recorded both absences as defects of exactly the kind this list exists to make visible:
+ * with no setters the payload was never applied, and with no register a refused save was
+ * indistinguishable from a successful one.
  */
 const PORTED_PUBLIC_SURFACE: readonly string[] = [
+  'addError',
   'getCreatedByAccountID',
   'getCreatedDateTime',
+  'getError',
+  'getErrors',
   'getModifiedByAccountID',
   'getModifiedDateTime',
   'getPriceGroupRates',
@@ -179,9 +200,14 @@ const PORTED_PUBLIC_SURFACE: readonly string[] = [
   'getRoundingRuleExpression',
   'getRoundingRuleID',
   'getRoundingRuleName',
+  'hasError',
+  'hasErrors',
   'hasExpressionWithListOfNumericValuesOnly',
   'isNew',
   'roundValue',
+  'setRoundingRuleDirection',
+  'setRoundingRuleExpression',
+  'setRoundingRuleName',
 ];
 
 const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
@@ -193,8 +219,12 @@ const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
   'clearAttributeCache',
   'getAttributeValue',
   'getSimpleRepresentation',
+  // `validate` STAYS UNPORTED even though the error register it wrote into does not. The register is
+  // five small members with no framework behind them; `validate` is metadata-driven dispatch over
+  // `model/validation/*.json` through `HibachiValidationService`, and the ported services transcribe
+  // the rules they need instead - `collectSaveContextErrors` in
+  // `src/services/roundingRuleService.ts`. So the RULES are reproduced and the DISPATCHER is not.
   'validate',
-  'hasErrors',
   'preInsert',
   'preUpdate',
   'getPriceGroupRatesCount',
@@ -203,9 +233,6 @@ const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
   'getRoundingRuleDirectionOptionsSmartList',
   'addPriceGroupRate',
   'removePriceGroupRate',
-  'setRoundingRuleName',
-  'setRoundingRuleExpression',
-  'setRoundingRuleDirection',
 ];
 
 describe('roundValue delegates, and does nothing else', () => {
@@ -720,7 +747,7 @@ describe('structural parity with the SwRoundingRule row', () => {
       .sort();
 
     expect(members).toEqual([...PORTED_PUBLIC_SURFACE].sort());
-    expect(members).toHaveLength(13);
+    expect(members).toHaveLength(21);
   });
 
   it('exposes no accessor for the component attributes that stayed documentation', () => {
@@ -877,5 +904,58 @@ describe('the Hibachi base class is documented, not reproduced', () => {
 
   it('is an instance of RoundingRule and of nothing else in the port', () => {
     expect(aRoundingRule()).toBeInstanceOf(RoundingRule);
+  });
+});
+
+// ===========================================================================
+// The error register, invoked directly on this entity
+// ===========================================================================
+//
+// ★★★ ADDED BECAUSE A MECHANICAL INVENTORY FOUND THESE MEMBERS NAMED BUT NEVER CALLED HERE. A code
+// review reported that "nine public methods have no invocation in any test AST", which is a sharper
+// question than whether a name appears somewhere: a method mentioned only in a comment is a method
+// nothing exercises. The register's behaviour WAS covered - through the service suites, where a refused
+// save is observed - but not at the entity that declares it, so the per-entity contract rested on
+// another tier's assertions. Gate `A24` now requires an actual invocation.
+//
+// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees and
+// that the save-refusal semantics depend on: a MISS yields an empty array rather than undefined,
+// messages ACCUMULATE under one name rather than replacing, and lookup is CASE-INSENSITIVE while the
+// key remembers the case it was FIRST written with.
+
+describe('RoundingRule: the inherited error register', () => {
+  it('returns an empty array for a name that was never recorded, never undefined', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent name
+    // has to be safe to iterate - `undefined` here would turn a clean validation pass into a crash.
+    const subject = aRoundingRule({ roundingRuleID: 'rr-errors-1' });
+
+    expect(subject.getError('noSuchRule')).toStrictEqual([]);
+    expect(subject.hasErrors()).toBe(false);
+    expect(subject.getErrors()).toStrictEqual({});
+  });
+
+  it('★★ accumulates messages under one name instead of replacing them', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after the
+    // first, which is how a partially invalid entity comes to look like a singly invalid one.
+    const subject = aRoundingRule({ roundingRuleID: 'rr-errors-1' });
+
+    subject.addError('urlTitle', 'is required');
+    subject.addError('urlTitle', 'must be unique');
+
+    expect(subject.getError('urlTitle')).toStrictEqual(['is required', 'must be unique']);
+    expect(subject.hasErrors()).toBe(true);
+  });
+
+  it('★★ looks a name up case-insensitively, and keeps the case it was first written with', () => {
+    // CFML struct keys are case-insensitive, so `getError('URLTITLE')` must find what `addError`
+    // recorded as `urlTitle` - while [org/Hibachi/HibachiErrors.cfc:L14-L31] REMEMBERS the first
+    // spelling, so the published key is the one the first write used.
+    const subject = aRoundingRule({ roundingRuleID: 'rr-errors-1' });
+
+    subject.addError('urlTitle', 'first');
+    subject.addError('URLTITLE', 'second');
+
+    expect(subject.getError('UrlTitle')).toStrictEqual(['first', 'second']);
+    expect(Object.keys(subject.getErrors())).toStrictEqual(['urlTitle']);
   });
 });

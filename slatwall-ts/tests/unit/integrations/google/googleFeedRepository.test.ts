@@ -2325,6 +2325,80 @@ describe('the derived paths reproduce the legacy interpolations exactly', () => 
     expect(rowAt(rows, 0).imageLinkPath).toBe('/fake-assets/fake-missing.jpg');
   });
 
+  it('★★★ falls back for a STORED-BUT-UNUSABLE image file, not only for a NULL one (F41)', async () => {
+    // THE GAP F41 NAMES. The legacy substitutes on `!fileExists(expandPath(imagePath))`
+    // [model/service/ImageService.cfc:L81], and `''` or `'   '` in `SwSku.imageFile` interpolates to
+    // `#baseImageURL#/product/default/` [model/entity/Sku.cfc:L145-L147] - a path ending in a
+    // separator, which no file can satisfy. Those are STORED values whose asset is absent, and the
+    // NULL-only test let them through: the feed published `g:image_link` pointing at a DIRECTORY,
+    // which Google Merchant Center rejects the item on.
+    for (const storedButUnusable of ['', ' ', '   ', '\t', '\n']) {
+      const { rows } = await runFeed(
+        { selection: [makeSelectionRow({ skuImageFile: storedButUnusable })] },
+        { baseImageURL: '/fake-assets', missingImagePath: '/fake-missing.jpg' },
+      );
+
+      expect(rowAt(rows, 0).imageLinkPath).toBe('/fake-missing.jpg');
+      expect(rowAt(rows, 0).imageLinkPath).not.toContain('/product/default/');
+    }
+  });
+
+  it('does not TRIM a usable image file, because the legacy interpolated the column verbatim', async () => {
+    // The blankness test decides whether to substitute and rewrites nothing. A stored name that
+    // merely carries surrounding space still addresses whatever the storefront serves under that
+    // exact name, and silently normalizing it here would change the URL the legacy published.
+    const { rows } = await runFeed(
+      { selection: [makeSelectionRow({ skuImageFile: ' fake-padded.jpg ' })] },
+      { baseImageURL: '/fake-assets', missingImagePath: '/fake-missing.jpg' },
+    );
+
+    expect(rowAt(rows, 0).imageLinkPath).toBe('/fake-assets/product/default/ fake-padded.jpg ');
+  });
+
+  it('★★★ applies the same trigger to BOTH components of an additional image path (F41)', async () => {
+    // The image path interpolates TWO stored components [model/entity/Image.cfc:L79-L81], so either
+    // one being unusable collapses it. A blank `directory` yields `base//file.jpg`, which addresses
+    // something other than what was stored even where a filesystem would collapse the double
+    // separator - so it takes the fallback, exactly as a blank `imageFile` does.
+    const { rows } = await runFeed(
+      {
+        selection: [makeSelectionRow()],
+        images: [
+          makeImageRow({ imageDirectory: '   ', imageFile: 'fake-one.jpg' }),
+          makeImageRow({ imageDirectory: 'fake-dir', imageFile: '' }),
+          makeImageRow({ imageDirectory: '', imageFile: '  ' }),
+          makeImageRow({ imageDirectory: 'fake-dir', imageFile: 'fake-usable.jpg' }),
+        ],
+      },
+      { baseImageURL: '/fake-assets', missingImagePath: '/fake-missing.jpg' },
+    );
+
+    // FOUR rows in, FOUR elements out - one per image row, as the legacy loop emitted.
+    expect(rowAt(rows, 0).additionalImageLinkPaths).toStrictEqual([
+      '/fake-missing.jpg',
+      '/fake-missing.jpg',
+      '/fake-missing.jpg',
+      '/fake-assets/fake-dir/fake-usable.jpg',
+    ]);
+  });
+
+  it('publishes a WELL-FORMED stored path unprobed, which is the declared residual gap (F41)', async () => {
+    // ⚠ ASSERTED SO THE LIMIT IS VISIBLE RATHER THAN IMPLIED. A path that names a file is published
+    // even though the file may have been deleted, where the legacy `fileExists` probe would have
+    // substituted. Closing it needs an asset store to interrogate, and there is none to ask: a
+    // Lambda has no `expandPath` filesystem and a per-row HTTP probe would issue one network call
+    // per SKU and make the feed depend on the storefront being reachable. Registered in
+    // `tests/traceability/legacyTestMap.ts` as an acknowledged gap, not as parity.
+    const { rows } = await runFeed(
+      { selection: [makeSelectionRow({ skuImageFile: 'fake-deleted-asset.jpg' })] },
+      { baseImageURL: '/fake-assets', missingImagePath: '/fake-missing.jpg' },
+    );
+
+    expect(rowAt(rows, 0).imageLinkPath).toBe(
+      '/fake-assets/product/default/fake-deleted-asset.jpg',
+    );
+  });
+
   it('does not route the fallback through the stored-path shape, because it is already a path', async () => {
     const { rows } = await runFeed(
       { selection: [makeSelectionRow({ skuImageFile: null })] },

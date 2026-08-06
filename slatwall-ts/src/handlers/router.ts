@@ -86,9 +86,11 @@ import { routeNotFoundResponse } from './errorMapper.js';
  *
  * The set is fixed by the AAP's resolution of handler granularity: one handler module per bounded
  * capability, sharing a common bootstrap - catalog query, SKU resolution, promotion application,
- * price resolution and product feed. Each member names the handler that owns it, `<member>Handler`;
- * those five modules are the unfulfilled obligation recorded in the module header, so the mapping
- * states intended ownership rather than an existing import.
+ * price resolution and product feed. Each member names the handler that owns it, `<member>Handler`,
+ * and all five of those modules are on the branch. The mapping is still expressed as a NAMING
+ * CONVENTION rather than as an import, and that is deliberate rather than provisional: importing a
+ * handler here would invert the dependency this module exists to keep one-way and would put an
+ * import cycle into every capability bundle.
  *
  * A string-literal union rather than the TypeScript enumeration construct: a union is erased on
  * emit, so nothing survives into the bundle as a runtime object, and the values stay directly
@@ -236,9 +238,10 @@ const PATH_DELIMITER = '/';
 /**
  * The complete route table, keyed by capability.
  *
- * Every row declares the method, path and action name the owning capability handler answers; those
- * handler modules are the unfulfilled obligation recorded in the module header, and the per-row
- * prose describes the surface each capability exposes through ported services.
+ * Every row declares the method, path and action name the owning capability handler answers. All
+ * five of those handler modules exist and each reads its own row from this table, which is what
+ * holds five independently bundled artifacts to one agreed URL surface; the per-row prose describes
+ * the surface each capability exposes through ported services.
  *
  * `Readonly<Record<RoutedCapability, RouteDescriptor>>` is the type that carries the guarantee:
  * every capability has exactly one route, and a key that is not a capability cannot be added.

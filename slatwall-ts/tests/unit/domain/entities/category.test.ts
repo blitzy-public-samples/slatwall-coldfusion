@@ -811,11 +811,23 @@ describe('preInsert and preUpdate maintain the path under the legacy names', () 
 
   // Every path INCLUDES SELF and is never empty, so it always has at least one element. Test
   // hierarchies here are deliberately acyclic and shallow, which keeps these tests about ordering and
-  // contents. A cycle is a separate question and is asserted in its own block below: the legacy walk
-  // carries no cycle guard, but this port REFUSES one - `setParentCategory` will not close a cycle and
-  // the shared walk will not produce a path from one - the single documented divergence from
-  // [org/Hibachi/HibachiEntity.cfc:L314-L321], reasoned in full on `buildIdPathList` in
+  // contents. A cycle is a separate question and is asserted in its own block below.
+  //
+  // ★★★ THIS NOTE DESCRIBED THE OPPOSITE OF WHAT THAT BLOCK ASSERTS, AND THE CONTRADICTION IS A
+  // REVIEW FINDING. It read that "the legacy walk carries no cycle guard, but this port REFUSES one -
+  // `setParentCategory` will not close a cycle and the shared walk will not produce a path from one -
+  // the single documented divergence". Every clause of that is now false, and the cases it pointed at
+  // prove it: `accepts a descendant as its parent, closing a multi-level cycle`, `maintains the far
+  // side when it closes a cycle`, and `accepts a cycle through addChildCategory too`. The setter
+  // assigns whatever it is handed, exactly as [model/entity/Category.cfc:L101-L105] does; the shared
+  // walk reproduces [org/Hibachi/HibachiEntity.cfc:L314-L321] and follows a cycle forever; and no
+  // divergence is spent on this file at all. Both guards were removed as ADDITIONS to the source
+  // rather than reproductions of it - the reasoning is on `buildIdPathList` in
   // src/domain/valueObjects/materializedIdPath.ts.
+  //
+  // The residual risk is therefore real and unguarded HERE, and is bounded only by the fact that
+  // nothing in the ported slice materializes a category ancestry: `Category` is a read-mostly leaf and
+  // its `categoryIDPath` is a persisted column this migration reads rather than recomputes.
   it('always includes self, so a path is never empty of elements', () => {
     const root = aCategory({ categoryID: 'root-1' });
     const child = aCategory({ categoryID: 'child-1', parentCategory: root });

@@ -220,15 +220,10 @@ type MembershipPairProbe = {
 
 // --- The schema and surface contracts, stated once ---------------------------------------------
 
-/**
- * The physical table, verbatim. SCHEMA CONTINUITY IS BINDING
- * [model/entity/PromotionQualifier.cfc:L49]: the port reads and writes `SwPromoQual` unchanged.
- *
- * CFML parity [model/entity/PromotionQualifier.cfc:L49]: the name is ABBREVIATED - `SwPromoQual`
- * and not `SwPromotionQualifier` - matching `PromotionReward`'s `SwPromoReward`. Carried forward
- * exactly and never expanded, so a well-meaning "correction" fails here rather than at a database.
- */
-const LEGACY_TABLE = 'SwPromoQual';
+// The physical table `SwPromoQual` - ABBREVIATED, never `SwPromotionQualifier`
+// [model/entity/PromotionQualifier.cfc:L49] - is no longer restated as a constant here. Schema
+// continuity is binding (AAP 0.8.1), and it is checked against the shipped source rather than
+// against a literal in this file: tests/traceability/legacyTestMap.ts block A20.
 
 /**
  * All thirteen many-to-many link tables, verbatim, keyed by the property that declares each.
@@ -304,18 +299,12 @@ const REWARD_MATCHING_TYPE_OPTION_KEYS: readonly string[] = [
   'entity.promotionQualifier.rewardMatchingType.brand',
 ];
 
-/**
- * The `hb_permission` attribute, verbatim.
- *
- * CFML parity [model/entity/PromotionQualifier.cfc:L49]: THIS SPELLING IS CORRECT, and that is
- * worth an assertion of its own. The direct contrast is [model/entity/PromotionReward.cfc:L57],
- * whose equivalent reads `hb_permission="promotionPeriod.promtionRewards"` - missing the `o` in
- * "promotion". The sibling's misspelling is the ONE identifier in that file requiring a documented
- * rename; THIS FILE REQUIRES NONE, and this correctly-spelled control is what proves the sibling's
- * is a typo rather than a convention. (Locator note: the reward's component declaration is at
- * `PromotionReward.cfc:L57`, not the L49 an upstream summary cites. Source wins.)
- */
-const QUALIFIER_PERMISSION = 'promotionPeriod.promotionQualifiers';
+// `hb_permission="promotionPeriod.promotionQualifiers"` [model/entity/PromotionQualifier.cfc:L49]
+// IS SPELLED CORRECTLY, and that is what proves its sibling
+// [model/entity/PromotionReward.cfc:L57] `promotionPeriod.promtionRewards` is a typo rather than a
+// convention. Neither string is restated as a constant here, because CFML admin metadata has no
+// target expression to check it against; both sides are read from the frozen components in
+// tests/traceability/legacyTestMap.ts block A12b, alongside the plan's own L49-vs-L57 locator slip.
 
 /**
  * Every member the port authors on the prototype, sorted - interface parity in executable form.
@@ -1758,44 +1747,14 @@ describe('the thirteen associations split three ways, and the fourteenth is not 
     }
   });
 
-  it('preserves all thirteen link-table names verbatim and abbreviated', () => {
-    // C5 SCHEMA CONTINUITY.
-    expect(LEGACY_TABLE).toBe('SwPromoQual');
-    expect(LEGACY_TABLE).not.toBe('SwPromotionQualifier');
-
-    expect(LEGACY_LINK_TABLES).toEqual({
-      fulfillmentMethods: 'SwPromoQualFulfillmentMethod',
-      shippingMethods: 'SwPromoQualShippingMethod',
-      shippingAddressZones: 'SwPromoQualShipAddressZone',
-      brands: 'SwPromoQualBrand',
-      options: 'SwPromoQualOption',
-      skus: 'SwPromoQualSku',
-      products: 'SwPromoQualProduct',
-      productTypes: 'SwPromoQualProductType',
-      excludedBrands: 'SwPromoQualExclBrand',
-      excludedOptions: 'SwPromoQualExclOption',
-      excludedSkus: 'SwPromoQualExclSku',
-      excludedProducts: 'SwPromoQualExclProduct',
-      excludedProductTypes: 'SwPromoQualExclProductType',
-    });
-
-    // Every link table is prefixed by the owning table's own abbreviated name.
-    for (const linkTable of Object.values(LEGACY_LINK_TABLES)) {
-      expect(linkTable.startsWith(LEGACY_TABLE)).toBe(true);
-    }
-
-    // The five exclude tables abbreviate; none spells `Excluded` out.
-    for (const property of [
-      'excludedBrands',
-      'excludedOptions',
-      'excludedSkus',
-      'excludedProducts',
-      'excludedProductTypes',
-    ] as const) {
-      expect(LEGACY_LINK_TABLES[property]).toContain('Excl');
-      expect(LEGACY_LINK_TABLES[property]).not.toContain('Excluded');
-    }
-  });
+  // C5 SCHEMA CONTINUITY - `SwPromoQual` is not `SwPromotionQualifier`, and none of the thirteen
+  // link tables spells `Excluded` out - is NOT asserted here. `LEGACY_TABLE` and
+  // `LEGACY_LINK_TABLES` are declared in this file, so comparing them with the same literals proves
+  // only that the file holds what it was written to hold; a target module that misspelled a table
+  // would sail past it. The check lives where the shipped text is readable:
+  // tests/traceability/legacyTestMap.ts block A20 derives all thirteen `SwPromoQual*` names from
+  // [model/entity/PromotionQualifier.cfc:L73-L87] and holds `src/` to them, in code and in
+  // commentary. The constants stay because the membership probes below are LABELLED with them.
 
   it('carries the type="array" declaration inconsistency forward without normalising it', () => {
     // CFML parity [model/entity/PromotionQualifier.cfc:L83-L84]: ONLY `excludedBrands` and
@@ -2824,38 +2783,14 @@ describe('there is no validation surface, and none is invented', () => {
 // members are enumerated on `UNPORTED_FRAMEWORK_MEMBERS` above.
 
 describe('the structural facts hold, and the framework base class stays unported', () => {
-  it('spells hb_permission correctly, unlike its sibling', () => {
-    // The control that proves the reward's spelling is a typo.
-    const { permissionAttributeContrast } = freshFixtures();
-
-    expect(QUALIFIER_PERMISSION).toBe('promotionPeriod.promotionQualifiers');
-    expect(permissionAttributeContrast.qualifierPermissionAsWritten).toBe(QUALIFIER_PERMISSION);
-    expect(permissionAttributeContrast.qualifierPermissionLocator).toBe(
-      'model/entity/PromotionQualifier.cfc:L49',
-    );
-
-    // The sibling's typo, recorded for contrast and asserted by `promotionReward.test.ts`.
-    expect(permissionAttributeContrast.rewardPermissionAsWritten).toBe(
-      'promotionPeriod.promtionRewards',
-    );
-    expect(permissionAttributeContrast.rewardPermissionCorrected).toBe(
-      'promotionPeriod.promotionRewards',
-    );
-    expect(permissionAttributeContrast.rewardPermissionLocator).toBe(
-      'model/entity/PromotionReward.cfc:L57',
-    );
-    // The locator correction itself, kept visible rather than silently applied.
-    expect(permissionAttributeContrast.rewardPermissionLocatorPerPlan).toBe(
-      'model/entity/PromotionReward.cfc:L49',
-    );
-    expect(permissionAttributeContrast.rewardPermissionLocator).not.toBe(
-      permissionAttributeContrast.rewardPermissionLocatorPerPlan,
-    );
-
-    // And this entity's own spelling contains no truncation of any kind.
-    expect(QUALIFIER_PERMISSION).toContain('promotion');
-    expect(QUALIFIER_PERMISSION).not.toContain('promtion');
-  });
+  // `hb_permission="promotionPeriod.promotionQualifiers"` [L49] and its misspelled sibling
+  // `promotionPeriod.promtionRewards` [model/entity/PromotionReward.cfc:L57] used to be contrasted
+  // here by asserting FIXTURE-AUTHORED strings against the same literals - a closed loop between two
+  // test files that could not detect anything about either the legacy source or the port. Both sides
+  // are now read from the frozen components: tests/traceability/legacyTestMap.ts asserts the
+  // contrast in block A12b, the typo in `verbatimIdentifiers`, and the plan's own L49-vs-L57 locator
+  // slip in `locatorCorrections`. Neither spelling has any target expression, which that block also
+  // proves by showing no module publishes a permission accessor at all.
 
   it('reports a fresh instance as new, because the key default is honest', () => {
     // [L52] declares `unsavedvalue="" default=""`, so an unsaved row's key is the empty string and

@@ -206,6 +206,27 @@ const SENTINEL_SKU_CODE = 'TESTPRODUCTXXX-1';
 const CALLER_ACCOUNT_ID = 'eeee1111222233334444555566667777';
 
 /**
+ * The default authorizer context: an identified caller carrying the ADMINISTRATIVE claim.
+ *
+ * ★★★ THE DEFAULT USED TO BE `{ accountID: CALLER_ACCOUNT_ID }` ALONE, AND THAT WAS THE DEFECT
+ * (F45, CWE-862). Every one of the three operations this capability publishes is administrative in
+ * the source - `getUnusedProductOptions` and `getUnusedProductOptionGroups` are consumed only by
+ * `admin/views/entity/preprocessproduct_addoption.cfm:L60` and its option-group twin, inside an
+ * application whose controllers declare `this.publicMethods=''`, and `findProducts` stands in for
+ * `searchProductsByProductType` [model/dao/ProductDAO.cfc:L419-L437], which has no caller anywhere in
+ * the legacy tree and whose statement carries no `activeFlag`/`publishedFlag` predicate. A default
+ * principal WITHOUT the claim therefore drove 130 cases through a gate that should have refused it,
+ * and the suite could not have noticed the missing authorization because it never asserted it.
+ *
+ * The default now carries the claim, so every operation case exercises a caller the route legitimately
+ * serves, and the gate itself is asserted explicitly by the cases that omit or falsify the claim.
+ */
+const ADMIN_AUTHORIZER_CONTEXT: Readonly<Record<string, unknown>> = Object.freeze({
+  accountID: CALLER_ACCOUNT_ID,
+  adminAccountFlag: true,
+});
+
+/**
  * A unit price, as a DECIMAL STRING.
  *
  * [meta/tests/unit/Helper.cfc:L55] writes `price = 100` as a bare number, and that is the
@@ -339,9 +360,7 @@ function makeEvent(overrides: EventOverrides = {}): APIGatewayProxyEvent {
       accountId: '000000000000',
       apiId: 'catalog-query-test-api',
       authorizer:
-        overrides.authorizer === undefined
-          ? { accountID: CALLER_ACCOUNT_ID }
-          : overrides.authorizer,
+        overrides.authorizer === undefined ? { ...ADMIN_AUTHORIZER_CONTEXT } : overrides.authorizer,
       protocol: 'HTTP/1.1',
       httpMethod: method,
       identity: {
@@ -555,6 +574,24 @@ interface ProductPageOverrides {
  * property at weight 1. Publishing more here would let this suite pass while the service told callers
  * a brand-name match would work.
  */
+/**
+ * One matched search row, in the shape the ported statement's own projection carries.
+ *
+ * ★★★ WHY THIS REPLACED `makeProductFixture` IN EVERY `makeProductPage` CALL (F38). The service used
+ * to answer hydrated `Product` entities here, so these cases had to build a whole product graph -
+ * priced, SKU-carrying, collaborator-holding - to assert a two-member projection. Code review recorded
+ * the hydration behind that as unasked-for work: [model/dao/ProductDAO.cfc:L419-L436] issues ONE
+ * statement selecting `productID, productName` and returns `{"id","value"}` per row. `ProductPage`
+ * now carries those rows, so the fixture is the row, and the two members are the legacy's own keys.
+ *
+ * `value` is OMITTED rather than set when no name is given, because that is how the port represents a
+ * NULL `SwProduct.productName` [model/entity/Product.cfc:L55] and the omission is what the projection
+ * has to carry through.
+ */
+function matchRow(id: string, value?: string): MatchedProduct {
+  return value === undefined ? { id } : { id, value };
+}
+
 function makeProductPage(
   records: readonly MatchedProduct[],
   overrides: ProductPageOverrides = {},
@@ -651,10 +688,19 @@ type BrandServiceDouble = Pick<BrandService, 'saveBrand'>;
  * this: the executor below is injected, so `getPreparedStatementExecutor()` is never reached.
  */
 const CATALOG_ENVIRONMENT: EnvironmentSource = Object.freeze({
-  DB_HOST: 'unused-by-this-suite.invalid',
+  // A NAMED host, because `DB_TLS_MODE` below is `verify-identity` and `src/lib/config.ts` refuses
+  // that mode against an IP literal (F47) - a certificate binds to host NAMES, so an address would
+  // silently reduce the mode to a chain-only check. `.invalid` is the reserved never-resolvable TLD
+  // [RFC 2606], and the injected executor means nothing here ever connects.
+  DB_HOST: 'slatwall-database.invalid',
   DB_USER: 'unused-by-this-suite',
   DB_PASSWORD: 'unused-by-this-suite',
-  DB_TLS_MODE: 'disabled',
+  // F48: this fixture paired a non-loopback host with `disabled` transport, which the configuration
+  // contract refuses outright - cleartext is admitted only for a provable loopback destination, in
+  // every environment. The fixture describes a suite that never connects, so the mode is raised to
+  // the recommended `verify-identity`, which the NAMED host above satisfies and which needs no
+  // trust anchor.
+  DB_TLS_MODE: 'verify-identity',
   DB_DIALECT: 'mySql',
 });
 
@@ -1453,14 +1499,15 @@ describe('catalogQueryHandler', () => {
     it('emits no authentication challenge because no scheme is declared', async () => {
       const response = await bed.invoke({ authorizer: null });
 
-      // ★ THREE HEADERS, STILL CLOSED. `x-content-type-options: nosniff` was added to the shared
-      // response set for QA-I4; what this case asserts is unchanged - no `www-authenticate`, because
-      // this route declares no challenge scheme.
+      // ★ TWO HEADERS, STILL CLOSED. `x-content-type-options: nosniff` briefly joined the shared
+      // response set and a code review removed it as an invented HTTP semantic (AAP 0.8.1); what this
+      // case asserts is unchanged - no `www-authenticate`, because this route declares no challenge
+      // scheme.
       expect(
         Object.keys(response.headers ?? {})
           .map((name): string => name.toLowerCase())
           .sort(),
-      ).toEqual(['cache-control', 'content-type', 'x-content-type-options']);
+      ).toEqual(['cache-control', 'content-type']);
     });
 
     it('logs only the closed refusal category and no caller-authored claim text', async () => {
@@ -1478,7 +1525,7 @@ describe('catalogQueryHandler', () => {
 
     it('opens the request scope with the account the gate established', async () => {
       const response = await bed.invoke({
-        authorizer: { accountID: CALLER_ACCOUNT_ID },
+        authorizer: { accountID: CALLER_ACCOUNT_ID, adminAccountFlag: true },
         query: queryFor('findProducts', { keyword: 'jorden' }),
       });
 
@@ -1488,21 +1535,136 @@ describe('catalogQueryHandler', () => {
 
     it('reads the account claim case-insensitively', async () => {
       const response = await bed.invoke({
-        authorizer: { accountId: CALLER_ACCOUNT_ID },
+        authorizer: { accountId: CALLER_ACCOUNT_ID, ADMINACCOUNTFLAG: true },
         query: queryFor('findProducts', { keyword: 'jorden' }),
       });
 
+      // BOTH claims are read case-insensitively, which is CFML struct-key semantics and the reason
+      // `structGet` is used for each. An authorizer that spells either differently is the same caller.
       expect(response.statusCode).toBe(200);
       expect(bed.scopeInputs).toStrictEqual([{ accountID: CALLER_ACCOUNT_ID }]);
     });
 
-    it('serves the authenticated default caller past the gate', async () => {
+    it('serves the administrative default caller past the gate', async () => {
       const response = await bed.invoke({
         query: queryFor('findProducts', { keyword: 'jorden' }),
       });
 
       expect(response.statusCode).toBe(200);
       expect(bed.findProductsCalls).toHaveLength(1);
+    });
+
+    it('★★★ refuses an IDENTIFIED caller carrying no administrative claim, with 403 (F45)', async () => {
+      const response = await bed.invoke({
+        authorizer: { accountID: CALLER_ACCOUNT_ID },
+        query: queryFor('findProducts', { keyword: '' }),
+      });
+
+      // AN EMPTY KEYWORD MATCHES EVERY ROW and the statement carries no `activeFlag`/`publishedFlag`
+      // predicate, so this is the exact request that enumerated inactive and unpublished catalog data
+      // for any identified account. 403, not 401 - an identity WAS established and is insufficient -
+      // and not 400, because nothing about the input was malformed.
+      expect(response.statusCode).toBe(403);
+      expect(readFailureBody(response).error.category).toBe('forbidden');
+      expect(bed.findProductsCalls).toHaveLength(0);
+      expect(bed.scopeInputs).toStrictEqual([]);
+    });
+
+    it('refuses every non-admitted rendering of the administrative claim, and admits the closed two', async () => {
+      // The vocabulary is `errorMapper`'s and is not widened here: a real `boolean true`, or one of
+      // the two truthy STRINGS API Gateway can carry. A NUMBER is refused - including `1`, which is
+      // admitted as the string `'1'` and refused as the numeral - because a claim that arrives
+      // untyped is not a claim this route will guess at. Fail-closed is the direction for a
+      // permission bit.
+      for (const refused of [
+        false,
+        'false',
+        '0',
+        0,
+        1,
+        '',
+        ' ',
+        'no',
+        'yes',
+        null,
+        undefined,
+        {},
+        [],
+      ]) {
+        const fresh = makeTestBed();
+        const response = await fresh.invoke({
+          authorizer: { accountID: CALLER_ACCOUNT_ID, adminAccountFlag: refused },
+          query: queryFor('findProducts', { keyword: 'jorden' }),
+        });
+
+        expect(response.statusCode).toBe(403);
+        expect(fresh.findProductsCalls).toHaveLength(0);
+      }
+
+      for (const admitted of [true, 'true', '1', ' TRUE ', 'True']) {
+        const fresh = makeTestBed();
+        const response = await fresh.invoke({
+          authorizer: { accountID: CALLER_ACCOUNT_ID, adminAccountFlag: admitted },
+          query: queryFor('findProducts', { keyword: 'jorden' }),
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(fresh.findProductsCalls).toHaveLength(1);
+      }
+    });
+
+    it('refuses a non-administrative caller on EVERY published operation, not just the search', async () => {
+      // The finding names the two option operations as "admin-only" explicitly, so the gate is
+      // asserted on all three rather than on the one that happens to be listed first.
+      for (const query of [
+        queryFor('findProducts', { keyword: 'jorden' }),
+        queryFor('getUnusedProductOptions', {
+          productID: FIRST_PRODUCT_ID,
+          existingOptionGroupIDList: '',
+        }),
+        queryFor('getUnusedProductOptionGroups', { existingOptionGroupIDList: '' }),
+      ]) {
+        const fresh = makeTestBed();
+        const response = await fresh.invoke({
+          authorizer: { accountID: CALLER_ACCOUNT_ID },
+          query,
+        });
+
+        expect(response.statusCode).toBe(403);
+      }
+    });
+
+    it('publishes nothing about the claim in the 403, and costs no statement', async () => {
+      const response = await bed.invoke({
+        authorizer: { accountID: CALLER_ACCOUNT_ID },
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+      });
+      const failure = readFailureBody(response).error;
+
+      // The 403 sentence is the 401 sentence: an attacker learns WHICH refusal occurred from the
+      // status and nothing else from the body. No claim name, no account identifier, no field path.
+      expect(failure.message).toBe('The request was not served.');
+      expect(failure.fields).toBeUndefined();
+      expect(response.body).not.toContain('adminAccountFlag');
+      expect(response.body).not.toContain('admin');
+      expect(response.body).not.toContain(CALLER_ACCOUNT_ID);
+      expect(bed.scopeInputs).toStrictEqual([]);
+    });
+
+    it('logs the administrative refusal without the account identifier or the claim name', async () => {
+      await bed.invoke({
+        authorizer: { accountID: CALLER_ACCOUNT_ID },
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+      });
+
+      const warnings = decodedLines(bed).filter((line) => line.level === 'warn');
+
+      expect(warnings).toHaveLength(2);
+      expect(atIndex(warnings, 0).message).toContain('no administrative claim');
+      expect(atIndex(warnings, 1).message).toContain('not permitted the operation');
+      for (const warning of warnings) {
+        expect(warning.raw).not.toContain(CALLER_ACCOUNT_ID);
+      }
     });
   });
 
@@ -2375,11 +2537,11 @@ describe('catalogQueryHandler', () => {
       const response = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
 
       expect(response.statusCode).toBe(200);
-      // ★ THE THIRD IS THE `nosniff` ADDED FOR QA-I4. Still an EXACT set, so an invented fourth fails.
+      // ★ AN EXACT SET OF TWO, so an invented third fails - which is how the `nosniff` header a code
+      // review withdrew stays withdrawn.
       expect(response.headers).toEqual({
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
-        'x-content-type-options': 'nosniff',
       });
     });
 
@@ -2408,9 +2570,7 @@ describe('catalogQueryHandler', () => {
       // [model/dao/ProductDAO.cfc:L421] selects `productID, productName` from `SwProduct` and joins
       // nothing. Publishing a brand or a product-type member would tell a caller that a value was
       // selected when it was not, so the projection is closed at two.
-      bed.outcomes.productPage = makeProductPage([
-        makeProductFixture({ productID: FIRST_PRODUCT_ID, productName: 'Nike Air Jorden' }),
-      ]);
+      bed.outcomes.productPage = makeProductPage([matchRow(FIRST_PRODUCT_ID, 'Nike Air Jorden')]);
 
       const response = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
       const record = atIndex(readProductPage(response).records, 0);
@@ -2425,9 +2585,7 @@ describe('catalogQueryHandler', () => {
       // `''`, never `0`. That discipline is not cosmetic in this subtree: `getPriceByCurrencyCode`
       // [model/entity/Sku.cfc:L269-L273] has no `else` and no fallback, and substituting a zero for
       // that absence would silently sell products for free.
-      bed.outcomes.productPage = makeProductPage([
-        makeProductFixture({ productID: THIRD_PRODUCT_ID, productName: undefined }),
-      ]);
+      bed.outcomes.productPage = makeProductPage([matchRow(THIRD_PRODUCT_ID)]);
 
       const response = await bed.invoke({ query: queryFor('findProducts', { keyword: '' }) });
       const record = atIndex(readProductPage(response).records, 0);
@@ -2443,25 +2601,41 @@ describe('catalogQueryHandler', () => {
       expect(JSON.stringify(record)).not.toContain('""');
     });
 
-    it('publishes NO monetary value and NO SKU member, even from a product carrying both', async () => {
-      // No `Money` reaches this capability's surface at all - the module says so and this proves it.
-      // The fixture is deliberately fully priced and carries a SKU, so the assertion is about the
-      // projection being closed rather than about the data happening to be empty.
-      bed.outcomes.productPage = makeProductPage([
-        makeProductFixture({
-          productID: FIRST_PRODUCT_ID,
-          productName: 'Nike Air Jorden',
-          price: Money.fromDecimalString(SENTINEL_UNIT_PRICE),
-          calculatedSalePrice: Money.fromDecimalString(SENTINEL_SALE_PRICE),
-          skus: [
-            makeSkuFixture({
-              skuID: SENTINEL_SKU_ID,
-              skuCode: SENTINEL_SKU_CODE,
-              price: Money.fromDecimalString(SENTINEL_UNIT_PRICE),
-            }),
-          ],
-        }),
-      ]);
+    it('★★★ publishes NO monetary value and NO SKU member, and can no longer even be handed one (F38)', async () => {
+      // ★★★ QUOTE-THEN-REVISE. This case used to seed the page with a FULLY HYDRATED product - priced,
+      // sale-priced and carrying a priced SKU - under a note reading "The fixture is deliberately
+      // fully priced and carries a SKU, so the assertion is about the projection being closed rather
+      // than about the data happening to be empty." That fixture was possible because the service
+      // answered entities from its search path, which is exactly what code review recorded as
+      // unasked-for work: [model/dao/ProductDAO.cfc:L421] selects two columns and
+      // [L429-L436] returns them. `ProductPage.records` now carries those rows, so a monetary value
+      // cannot be put into the page AT ALL - the seeding this case used to perform does not compile.
+      //
+      // The property is therefore proven twice over now, and the stronger half is the directives:
+      // seeding money is a TYPE error, so the projection is closed by construction rather than by a
+      // mapping function that remembers to leave things out. The run-time assertions are kept because
+      // they are what a reader checks, and the two sentinels are still asserted absent from the body.
+      const priced = makeProductFixture({
+        productID: FIRST_PRODUCT_ID,
+        productName: 'Nike Air Jorden',
+        price: Money.fromDecimalString(SENTINEL_UNIT_PRICE),
+        calculatedSalePrice: Money.fromDecimalString(SENTINEL_SALE_PRICE),
+        skus: [
+          makeSkuFixture({
+            skuID: SENTINEL_SKU_ID,
+            skuCode: SENTINEL_SKU_CODE,
+            price: Money.fromDecimalString(SENTINEL_UNIT_PRICE),
+          }),
+        ],
+      });
+
+      // @ts-expect-error - a page cannot carry an ENTITY any more; `records` is a row list (F38).
+      void (() => makeProductPage([priced]));
+
+      // @ts-expect-error - and a row cannot carry a price, a sale price or a SKU either.
+      void (() => matchRow(FIRST_PRODUCT_ID, 'Nike Air Jorden', priced.getPrice()));
+
+      bed.outcomes.productPage = makeProductPage([matchRow(FIRST_PRODUCT_ID, 'Nike Air Jorden')]);
 
       const response = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
       const record = atIndex(readProductPage(response).records, 0);
@@ -2478,9 +2652,12 @@ describe('catalogQueryHandler', () => {
       // time - and they hold injected collaborators, so handing one to `JSON.stringify` would walk
       // from a product into a repository. Every response is an EXPLICIT projection, and this asserts
       // the observable consequence: none of the entity's own field names appears in the document.
-      bed.outcomes.productPage = makeProductPage([
-        makeProductFixture({ productID: FIRST_PRODUCT_ID, productName: 'Nike Air Jorden' }),
-      ]);
+      //
+      // ★ IT IS NOW TRUE FOR A SECOND, INDEPENDENT REASON (F38), and the case is kept for the first.
+      // The search path answers rows rather than entities, so on THIS route there is no entity in the
+      // service's result to serialize even by accident. The projection discipline is still what the
+      // case pins, because the other arms of this capability do return entities.
+      bed.outcomes.productPage = makeProductPage([matchRow(FIRST_PRODUCT_ID, 'Nike Air Jorden')]);
 
       const response = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
 
@@ -2500,9 +2677,9 @@ describe('catalogQueryHandler', () => {
 
     it('preserves repository order and never reorders, filters or de-duplicates records', async () => {
       bed.outcomes.productPage = makeProductPage([
-        makeProductFixture({ productID: SECOND_PRODUCT_ID, productName: 'Zulu Trainer' }),
-        makeProductFixture({ productID: FIRST_PRODUCT_ID, productName: 'Alpha Trainer' }),
-        makeProductFixture({ productID: SECOND_PRODUCT_ID, productName: 'Zulu Trainer' }),
+        matchRow(SECOND_PRODUCT_ID, 'Zulu Trainer'),
+        matchRow(FIRST_PRODUCT_ID, 'Alpha Trainer'),
+        matchRow(SECOND_PRODUCT_ID, 'Zulu Trainer'),
       ]);
 
       const response = await bed.invoke({
@@ -2517,10 +2694,7 @@ describe('catalogQueryHandler', () => {
     });
 
     it('OMITS the paging window when the service returned the whole result set', async () => {
-      bed.outcomes.productPage = makeProductPage(
-        [makeProductFixture({ productID: FIRST_PRODUCT_ID })],
-        { recordsCount: 7 },
-      );
+      bed.outcomes.productPage = makeProductPage([matchRow(FIRST_PRODUCT_ID)], { recordsCount: 7 });
 
       const response = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
       const page = readProductPage(response);
@@ -2531,10 +2705,11 @@ describe('catalogQueryHandler', () => {
     });
 
     it('publishes the paging window the service actually applied when there was one', async () => {
-      bed.outcomes.productPage = makeProductPage(
-        [makeProductFixture({ productID: FIRST_PRODUCT_ID })],
-        { recordsCount: 42, pageRecordsStart: 20, pageRecordsShow: 1 },
-      );
+      bed.outcomes.productPage = makeProductPage([matchRow(FIRST_PRODUCT_ID)], {
+        recordsCount: 42,
+        pageRecordsStart: 20,
+        pageRecordsShow: 1,
+      });
 
       const response = await bed.invoke({
         query: queryFor('findProducts', {
@@ -2813,15 +2988,14 @@ describe('catalogQueryHandler', () => {
         expect(Object.keys(response.headers ?? {}).sort()).toEqual([
           'cache-control',
           'content-type',
-          'x-content-type-options',
         ]);
       }
     });
 
     it('emits one served line carrying the correlation identifier, route and record count', async () => {
       bed.outcomes.productPage = makeProductPage([
-        makeProductFixture({ productID: FIRST_PRODUCT_ID }),
-        makeProductFixture({ productID: SECOND_PRODUCT_ID }),
+        matchRow(FIRST_PRODUCT_ID),
+        matchRow(SECOND_PRODUCT_ID),
       ]);
 
       await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
@@ -2872,7 +3046,15 @@ describe('catalogQueryHandler', () => {
 
       expect(line.level).toBe('warn');
       expect(line.context['invalidRequestReason']).toBe('unusableRequestInput');
-      expect(line.context['fieldPaths']).toEqual(['operation']);
+      // ★★ A COUNT RATHER THAN THE PATHS, AND THIS ASSERTION WAS REVISED TO REQUIRE IT. The shared
+      // refusal builder used to copy every published field path onto the log stream under `fieldPaths`,
+      // and a security review found (MAJOR, CWE-209/CWE-532) that one producer of those paths assembled
+      // them out of the CALLER's own key names. The paths are still published to the caller in the
+      // response body - which the refusal cases above assert - while the line carries only a closed
+      // reason and a number. `operation` is a member name this handler wrote, so nothing was lost HERE;
+      // the change is that no caller can put its own text on the stream through this member.
+      expect(line.context['fieldIssueCount']).toBe(1);
+      expect(line.context['fieldPaths']).toBeUndefined();
     });
   });
 

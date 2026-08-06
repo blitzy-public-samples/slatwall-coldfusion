@@ -93,6 +93,13 @@
 // position the whole header above would disappear from `build/**`. Anchoring the leading comments
 // to a statement that survives erasure is what keeps them in the emitted artifact.
 import { cfLen, cfTruthy } from '../../lib/cfml/truthiness.js';
+// ★★ THE HOST GRAMMAR IS IMPORTED, NOT RESTATED, AND THAT IS THE POINT OF THE IMPORT. This module
+// and `../../lib/config.ts` both decide whether a value is a bare host authority - here at the
+// point it is written into five URL sites, there when a deployment authorizes it - and they used to
+// do so with two separate regular expressions that DID NOT AGREE. `src/integrations/**` importing
+// `src/lib/**` is explicitly permitted by the layer rule in `eslint.config.mjs`; the dependency
+// runs this way round rather than the other because `config.ts` may not import at all.
+import { parseHostAuthority } from '../../lib/config.js';
 import type { GoogleProductFeedRow } from './googleFeedRepository.js';
 import type { Money } from '../../domain/valueObjects/money.js';
 // NOTHING IS IMPORTED FROM `src/lib/config.ts`, DELIBERATELY. An intervening revision
@@ -158,8 +165,18 @@ const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for ';
 /**
  * The scheme-and-separator prefix of the composed feed origin. Hardcoded, on purpose.
  *
- * SECURITY REVIEW DISPOSITION - RAISED AS S-09, RE-RAISED AS V-12, CWE-319. ESCALATED ON AAP
- * GROUNDS AND NOT RESOLVED HERE.
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-09, RE-RAISED AS V-12, RE-RAISED A THIRD TIME AS
+ * F13 / SEC-01, CWE-319. ESCALATED ON AAP GROUNDS AND NOT RESOLVED HERE.
+ *
+ * ★★★ THE THIRD RAISING, F13 / SEC-01, AGREED WITH THIS RECORD RATHER THAN OVERTURNING IT, and
+ * its wording is quoted because it is the closest thing to an instruction a remediation pass can
+ * act on: "Escalation is correctly documented because the frozen AAP requires exact legacy
+ * output. A product owner must authorize an explicit divergence/AAP amendment; then emit HTTPS or
+ * a closed secure scheme and update fixtures." It graded the finding MINOR, listed it as the
+ * project's one residual vulnerability, and recorded the containment below as passing. So three
+ * independent reviews have now reached one conclusion: the change is authorized by a PLAN OWNER,
+ * not by a reviewer and not by an implementer. Nothing about the emitted document is changed by
+ * this pass; what changed is that the register now names all three raisings.
  *
  * ★★★ RE-RAISED BY A SECOND, LATER REVIEW AS V-12 (MINOR, CWE-319, Cleartext Transmission),
  * WHICH REACHED THE SAME CONCLUSION THIS BLOCK ALREADY RECORDS and stated it as its own
@@ -189,9 +206,21 @@ const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for ';
  *
  * ★ AND THE MITIGATION THAT IS ALREADY IN PLACE, so the escalation is not a bare refusal: a
  * deployment that must publish `https` URLs terminates TLS in front of this service, and the
- * authority the scheme is glued to is drawn from a deployment-owned allow-list
- * (`assertAllowedFeedHost` in `../../handlers/bootstrap.js`, finding S-15) rather than from the
- * request - so a cleartext scheme cannot be pointed at an attacker's origin.
+ * authority the scheme is glued to is checked against a deployment-owned allow-list
+ * (`assertAllowedFeedHost` in `../../handlers/bootstrap.js`, finding S-15) WHENEVER THE DEPLOYMENT
+ * CONFIGURED ONE - so a cleartext scheme cannot then be pointed at an attacker's origin.
+ *
+ * ★★ THAT MITIGATION IS CONDITIONAL, AND F40 IS WHY IT HAD TO BE RESTATED. This paragraph
+ * previously claimed the authority "is drawn from a deployment-owned allow-list ... rather than from
+ * the request" without qualification, which was true only while an UNSET `FEED_ALLOWED_HOSTS`
+ * resolved to a deny-all empty list. That default disabled the feed for every deployment that
+ * configured nothing, so F40 restored the source-equivalent behaviour: with no list configured the
+ * feed answers on the authority the request carries. The exposure in that state is EXACTLY THE
+ * LEGACY'S OWN - `http://#CGI.HTTP_HOST#` at five sites with no allow-list anywhere in the source -
+ * so it is not a regression introduced here; but it is not contained either, and saying otherwise
+ * would be the kind of false containment claim a reviewer is right to reject. CONFIGURING
+ * `FEED_ALLOWED_HOSTS` is therefore the recommended posture, and it is the posture under which the
+ * sentence above holds.
  *
  * CFML parity [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24]:
  * the legacy writes `http://#CGI.HTTP_HOST#` at FIVE sites - the channel link, the channel
@@ -690,57 +719,49 @@ function renderFeedItem(
     textElement('g:price', monetaryBody(row.productPrice)),
   );
 
-  // Elements 12 and 13, emitted together or not at all.
+  // Elements 12 and 13.
   //
   // The gate is a MONEY comparison: `isGreaterThan` is the target of the legacy `gt` at
   // [integrationServices/google/views/feed/product.cfm:L28], and no raw `>` is applied to a price
   // here.
   //
-  // JUDGMENT CALL: the target requires FOUR things where the legacy tested one, and the addition
-  // follows from emitting a well-formed range. The legacy gate is the price comparison alone; here
-  // both operands must also be PRESENT to be compared, and both ends of the effective-date range
-  // must be renderable, because an ISO 8601 interval has two ends. An absent operand cannot be
-  // strictly below the price, so the block is skipped.
+  // ★★★ THE SALE PRICE IS GATED ON THE PRICE COMPARISON ALONE, EXACTLY AS THE SOURCE GATES IT
+  // (F42). QUOTE-THEN-REVISE. Both elements used to be emitted "together or not at all" behind a
+  // four-part condition, and the block was annotated at length: "`saleWindowEnd !== undefined` CAN
+  // [change the outcome]. A promotion period with a null end date qualifies as current
+  // [model/dao/PromotionDAO.cfc:L319] and projects a null expiration [:L344], so a live sale with no
+  // end date is reachable. The legacy would reach `dateFormat()` on the empty string that
+  // `getSalePriceExpirationDateTime()` returns for that case [model/entity/Sku.cfc:L560-L565] and
+  // fail there rather than emit anything; this port skips the block ... It is a divergence in
+  // outcome only where the source could not produce valid output at all."
   //
-  // TWO OF THE THREE ADDED CONDITIONS ARE VACUOUS; THE THIRD IS NOT, AND IT IS
-  // NAMED HERE RATHER THAN LEFT TO BE DISCOVERED.
-  //   * `skuPrice !== undefined` and `skuSalePrice !== undefined` cannot change the
-  //     outcome. `Sku.getSalePrice()` falls back to `getPrice()` when the detail
-  //     carries no sale price [model/entity/Sku.cfc:L546-L551], which the projection
-  //     reproduces, so the two are absent only together - when the SKU price column
-  //     is itself SQL `NULL` - and a comparison between two absent operands has no
-  //     sale to advertise either way.
-  //   * `saleWindowEnd !== undefined` CAN. A promotion period with a null end date
-  //     qualifies as current [model/dao/PromotionDAO.cfc:L319] and projects a null
-  //     expiration [model/dao/PromotionDAO.cfc:L344], so a live sale with no end
-  //     date is reachable. The legacy would reach `dateFormat()` on the empty string
-  //     that `getSalePriceExpirationDateTime()` returns for that case
-  //     [model/entity/Sku.cfc:L560-L565] and fail there rather than emit anything;
-  //     this port skips the block. Skipping is the faithful reading of an
-  //     unrenderable range - an ISO 8601 interval has two ends and cannot be
-  //     well-formed with one - and the only reading that keeps a half-formed interval
-  //     out of the feed. It is a divergence in outcome only where the source could
-  //     not produce valid output at all.
+  // THE REACHABILITY WAS RIGHT AND THE CONCLUSION WAS TOO WIDE. That reasoning is about the
+  // EFFECTIVE-DATE element - an ISO 8601 interval genuinely has two ends - and it was applied to
+  // `g:sale_price` as well, which has nothing to do with the expiration. So a SKU with a live,
+  // reachable sale and no end date silently stopped advertising its sale price at all, and the
+  // source advertises it unconditionally on `getPrice() gt getSalePrice()`. AAP 0.6.7 admits exactly
+  // three divergences in this port and this is not among them, so the wider half is withdrawn: the
+  // price comparison alone decides `g:sale_price`, and the expiration decides only the element that
+  // needs it.
   //
-  // ★★ AN EARLIER READING OF THIS BLOCK DEFENDED THE GATE ON REACHABILITY RATHER THAN
-  // ON MERIT, asserting that the addition "cannot change which items advertise a sale
-  // in any row this repository produces" because `skuSalePrice` and
-  // `salePriceExpirationDateTime` were "documented as ALWAYS ABSENT" from
-  // `./googleFeedRepository.js`. That was true of the projection as it then stood and
-  // is no longer: both fields are now resolved there, TOGETHER, from one winning
-  // reward row [model/dao/PromotionDAO.cfc:L298-L591]. So the block IS reachable, that
-  // defence is gone with it, and the gate stands on the merit stated above instead.
+  // THE TWO PRESENCE TESTS ARE STILL FORMALITIES, and are kept only because `isGreaterThan` needs
+  // both operands narrowed. `Sku.getSalePrice()` falls back to `getPrice()` when the detail carries
+  // no sale price [model/entity/Sku.cfc:L546-L551], which the projection reproduces, so the pair is
+  // absent only together - when the SKU price column is itself SQL `NULL` - and two absent operands
+  // have no sale to advertise either way.
   //
-  // What the reachability changes is WHICH of the added conditions does the work. The
-  // two price presence tests remain formalities, for the reason set out above - the
-  // projection reproduces the accessor's fallback, so the pair is absent only when the
-  // SKU price column is SQL `NULL` and neither operand exists to compare. They are kept
-  // because `isGreaterThan` needs both operands narrowed, not because either can decide
-  // an outcome. `isGreaterThan` is what decides whether a real sale is advertised -
-  // which is the legacy's `gt` at
-  // [integrationServices/google/views/feed/product.cfm:L28] and nothing more - and
-  // `saleWindowEnd !== undefined` is the one added condition that genuinely
-  // discriminates.
+  // ⚠ THE EFFECTIVE-DATE ELEMENT IS OMITTED WHEN THE RANGE HAS NO END, AND THAT NARROW DIVERGENCE
+  // IS DECLARED RATHER THAN DEFENDED AS PARITY. The source interpolates
+  // `dateFormat(getSalePriceExpirationDateTime(), "YYYY-MM-DD")` over the EMPTY STRING that accessor
+  // returns for an endless sale [model/entity/Sku.cfc:L560-L565], and what happens next is
+  // ENGINE-DEPENDENT: the readme supports both ColdFusion 9.0.1+ and Railo 4.1+ [readme.md:L1-L14],
+  // one of which formats an empty string to an empty string - yielding the malformed interval tail
+  // `T-0` - and the other of which raises and fails the whole feed request. Neither produces a valid
+  // interval, and the port will not pick one engine's answer and present it as the source's. The
+  // element is therefore omitted for that row, the SALE ITSELF is still advertised, and the residual
+  // is registered in `tests/traceability/legacyTestMap.ts` beside the missing-image probe. This is a
+  // strictly SMALLER divergence than the one it replaces: one element on an endless sale, rather
+  // than the sale.
   const skuPrice = row.skuPrice;
   const skuSalePrice = row.skuSalePrice;
   const salePriceExpiration = row.salePriceExpirationDateTime;
@@ -752,17 +773,18 @@ function renderFeedItem(
   if (
     skuPrice !== undefined &&
     skuSalePrice !== undefined &&
-    saleWindowStart !== undefined &&
-    saleWindowEnd !== undefined &&
     skuPrice.isGreaterThan(skuSalePrice)
   ) {
-    children.push(
-      textElement('g:sale_price', monetaryBody(skuSalePrice)),
-      textElement(
-        'g:sale_price_effective_date',
-        `${saleWindowStart}${SALE_WINDOW_SEPARATOR}${saleWindowEnd}`,
-      ),
-    );
+    children.push(textElement('g:sale_price', monetaryBody(skuSalePrice)));
+
+    if (saleWindowStart !== undefined && saleWindowEnd !== undefined) {
+      children.push(
+        textElement(
+          'g:sale_price_effective_date',
+          `${saleWindowStart}${SALE_WINDOW_SEPARATOR}${saleWindowEnd}`,
+        ),
+      );
+    }
   }
 
   // Element 14, independently gated.
@@ -866,60 +888,57 @@ function renderFeedItem(
 // The principal exported unit
 // ---------------------------------------------------------------------------
 
-/**
- * The accepted shape of a feed origin: a bare host, optionally with a port.
- *
- * ★★★ SECURITY BOUNDARY — CWE-346 (ORIGIN VALIDATION ERROR). The host supplied to
- * {@link renderGoogleProductFeed} is concatenated into FIVE URL sites - the channel
- * link, the channel description, each item's link, each item's image link and every
- * additional image link - so whatever it holds becomes the origin that Google
- * Merchant Center and, through it, every shopper follows. An unvalidated value can
- * therefore repoint the entire catalog: `evil.test/x` produces
- * `http://evil.test/x/product/...`, and `a@evil.test` produces a URL whose authority
- * is `evil.test` with `a` read as credentials.
- *
- * ★ AN ALLOW-LIST HERE, UNLIKE THE IMAGE-NAME GUARD, and the asymmetry is principled
- * rather than inconsistent. A host's vocabulary is fixed by RFC 1123 and RFC 3986 and
- * cannot be reconfigured by an operator, so an allow-list can be complete without
- * risking a legitimate value. An image file name's vocabulary is composed from two
- * operator-settable delimiters, which is why that guard states forbidden CONSTRUCTS
- * instead.
- *
- * The grammar, and what each alternative is for:
- *
- *   bracketed literal   `[...]` holding only hex digits, colons and dots, so an IPv6
- *                       deployment is not refused. Brackets are required, as RFC 3986
- *                       requires them, which is also what keeps the colon-rich form
- *                       from being confused with a host-and-port.
- *   registered name     one or more dot-separated LABELS, where a label must START and
- *                       END alphanumeric with hyphens and underscores permitted
- *                       between. Composing the shape per label rather than over the
- *                       whole name is what refuses a leading dot, a trailing dot, a
- *                       leading or trailing hyphen and an EMPTY LABEL (`a..b`)
- *                       without needing a rule for each - an over-the-whole-name
- *                       character class would admit every one of the dot cases,
- *                       because it cannot see where one label ends.
- *
- *                       The underscore is not permitted by RFC 1123 for a public
- *                       name, but it is common in internal DNS and refusing it would
- *                       break a legitimate deployment for no security gain: an
- *                       underscore cannot change which authority a URL resolves to.
- *   optional port       one to five digits after a single colon.
- *
- * What the shape refuses, and why each matters: a SCHEME (`http://x` - the caller
- * supplies a host, and the scheme is this module's literal); a PATH (`x/y` - would
- * silently reparent every URL in the feed); CREDENTIALS (`u:p@x` - moves the real
- * authority past the `@`); a QUERY or FRAGMENT (`x?y`, `x#y`); WHITESPACE, leading,
- * trailing or internal - which is also why the value is never trimmed, because
- * trimming would accept a padded value and quietly change it; CONTROL CHARACTERS,
- * including the CR and LF that a header-splitting payload needs; and EMPTINESS, which
- * the legacy accepted and which yields the bare `http://` prefix as an origin.
- */
-const FEED_HOST_SHAPE =
-  /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?)*)(?::\d{1,5})?$/;
+// ---------------------------------------------------------------------------
+// The feed-origin grammar - a bare host, optionally with a port
+//
+// ★★★ SECURITY BOUNDARY — CWE-346 (ORIGIN VALIDATION ERROR). The host supplied to
+// {@link renderGoogleProductFeed} is concatenated into FIVE URL sites - the channel
+// link, the channel description, each item's link, each item's image link and every
+// additional image link - so whatever it holds becomes the origin that Google
+// Merchant Center and, through it, every shopper follows. An unvalidated value can
+// therefore repoint the entire catalog: `evil.test/x` produces
+// `http://evil.test/x/product/...`, and `a@evil.test` produces a URL whose authority
+// is `evil.test` with `a` read as credentials.
+//
+// ★★ THE GRAMMAR ITSELF LIVES IN `../../lib/config.ts`, AS `parseHostAuthority`, AND IS
+// SHARED WITH THE DEPLOYMENT'S ALLOW-LIST RATHER THAN DUPLICATED HERE. This module used
+// to carry its own `FEED_HOST_SHAPE`, and `config.ts` carried a second pattern for
+// `FEED_ALLOWED_HOSTS` whose docblock claimed the two were "deliberately identical". They
+// were not: that one was lowercase-only, admitted no underscore and had no
+// bracketed-IPv6 alternative, so `SHOP.example.com`, `internal_host` and `[::1]` were
+// refused as configuration and accepted here. Two grammars for one decision is a defect
+// whatever direction they differ in, so there is now one function and this module calls
+// it.
+//
+// ★ AND THE PORT RANGE IS NOW ACTUALLY ENFORCED, WHICH NEITHER PATTERN DID. Both accepted
+// one to five digits - `:0`, `:00000`, `:65536` and `:99999` among them. `:0` names no
+// port, anything above 65535 names nothing at all, and `:065535` is a second spelling of
+// a port that would then fail an allow-list comparison written the ordinary way. The
+// shared parser refuses all four.
+//
+// ★ AN ALLOW-LIST, UNLIKE THE IMAGE-NAME GUARD, and the asymmetry is principled rather
+// than inconsistent. A host's vocabulary is fixed by RFC 1123 and RFC 3986 and cannot be
+// reconfigured by an operator, so an allow-list can be complete without risking a
+// legitimate value. An image file name's vocabulary is composed from two
+// operator-settable delimiters, which is why that guard states forbidden CONSTRUCTS
+// instead.
+//
+// What the shared shape refuses, and why each matters: a SCHEME (`http://x` - the caller
+// supplies a host, and the scheme is this module's literal); a PATH (`x/y` - would
+// silently reparent every URL in the feed); CREDENTIALS (`u:p@x` - moves the real
+// authority past the `@`); a QUERY or FRAGMENT (`x?y`, `x#y`); WHITESPACE, leading,
+// trailing or internal - which is also why the value is never trimmed, because trimming
+// would accept a padded value and quietly change it; CONTROL CHARACTERS, including the CR
+// and LF that a header-splitting payload needs; and EMPTINESS, which the legacy accepted
+// and which yields the bare `http://` prefix as an origin.
+// ---------------------------------------------------------------------------
 
 /**
  * The longest accepted feed origin: RFC 1035's 253-character host plus `:65535`.
+ *
+ * Checked here so that an over-long value gets a message naming the measured length,
+ * which is the actionable diagnosis. `parseHostAuthority` enforces the same ceiling
+ * independently, so the bound holds even if this check were removed.
  */
 const FEED_HOST_MAX_LENGTH = 259;
 
@@ -964,12 +983,13 @@ function assertFeedHostShape(feedHost: string): void {
     );
   }
 
-  if (!FEED_HOST_SHAPE.test(feedHost)) {
+  if (parseHostAuthority(feedHost) === undefined) {
     throw new Error(
       'feedHost must be a bare host with an optional port and nothing else: no scheme, no path, ' +
-        'no credentials, no query, no fragment, no whitespace and no control characters. It is ' +
-        'concatenated into every link, image link and additional image link in the feed, so a ' +
-        'value carrying any of those would repoint the whole catalog. No feed was rendered.',
+        'no credentials, no query, no fragment, no whitespace and no control characters, and a ' +
+        'port - when written - between 1 and 65535 with no leading zero. It is concatenated into ' +
+        'every link, image link and additional image link in the feed, so a value carrying any of ' +
+        'those would repoint the whole catalog. No feed was rendered.',
     );
   }
 }

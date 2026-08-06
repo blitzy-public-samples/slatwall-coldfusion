@@ -207,9 +207,43 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type * as NodeCrypto from 'node:crypto';
+
 import { PromotionCode } from '../../../../src/domain/entities/promotionCode.js';
 import { Promotion } from '../../../../src/domain/entities/promotion.js';
 import { makePromotionFixtures } from '../../../fixtures/promotionFixtures.js';
+
+/**
+ * A scriptable seam over the platform UUID generator.
+ *
+ * ★★★ WHY IT EXISTS. `preInsert` repairs a missing promotion code by calling `randomUUID()` from
+ * `node:crypto` [src/domain/entities/promotionCode.ts:L314], which is a module import rather than a
+ * constructor argument - there is nothing to inject. A code review measured the generation cases
+ * asserting only that two real draws DIFFER, which is a probabilistic claim about entropy rather than
+ * a claim about this entity: it cannot say what the entity DID with the value, and in principle it can
+ * fail with nothing wrong. Scripting the source lets the generated code be asserted EXACTLY, which
+ * pins the part that is actually this port's behaviour - the CFML 8-4-4-16 uppercase regrouping.
+ *
+ * DELIBERATELY A PASS-THROUGH WHEN NOTHING IS SCRIPTED, so every other case in this file - including
+ * the shape case, which asserts the real generator's output against the CFML pattern - runs against
+ * the genuine platform source exactly as before.
+ */
+const { scriptedUuid } = vi.hoisted(() => ({
+  scriptedUuid: { queue: [] as string[], draws: 0 },
+}));
+
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeCrypto>();
+
+  return {
+    ...actual,
+    randomUUID: (): string => {
+      scriptedUuid.draws += 1;
+
+      return scriptedUuid.queue.shift() ?? actual.randomUUID();
+    },
+  };
+});
 
 // JUDGMENT CALL: `Promotion` is imported as a VALUE, not with `import type`, because this
 // suite CONSTRUCTS promotions - `setPromotion` and `removePromotion` need a real far side
@@ -356,24 +390,17 @@ const CFML_SHAPED_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const CFML_SHAPED_UUID_LENGTH = 35;
 
 // ---------------------------------------------------------------------------
-// Schema strings recorded verbatim, for continuity rather than for computation.
+// Schema strings: recorded, but NOT recorded here.
 // ---------------------------------------------------------------------------
-// The port reads and writes the EXISTING tables unchanged - no migration, no rename, no new
-// column - so the physical names are recorded here as data and asserted below. A rename
-// upstream fails this suite, which is the whole point of recording them.
-
-/** [model/entity/PromotionCode.cfc:L49] - the row's own table. */
-const TABLE_NAME = 'SwPromotionCode';
-/** [model/entity/PromotionCode.cfc:L65] - the owner-side many-to-many link table. */
-const ACCOUNT_LINK_TABLE_NAME = 'SwPromotionCodeAccount';
-/** [model/entity/PromotionCode.cfc:L68] - the inverse-side many-to-many link table. */
-const ORDER_LINK_TABLE_NAME = 'SwOrderPromotionCode';
-/** [model/entity/PromotionCode.cfc:L49] - the ORM entity name behind the HQL alias. */
-const ENTITY_NAME = 'SlatwallPromotionCode';
-/** [model/entity/PromotionCode.cfc:L49] - the service the legacy bean factory routed to. */
-const SERVICE_NAME = 'promotionService';
-/** [model/entity/PromotionCode.cfc:L49] - the admin permission key, an inert string. */
-const PERMISSION_KEY = 'promotion.promotionCodes';
+// The port reads and writes the EXISTING tables unchanged - no migration, no rename, no new column
+// (AAP 0.8.1) - and `SwPromotionCode` [L49], `SwPromotionCodeAccount` [L65], `SwOrderPromotionCode`
+// [L68], the ORM name `SlatwallPromotionCode` and the inert `hb_serviceName`/`hb_permission` strings
+// all carry that contract. None of them is held in a constant in this file, because a constant
+// declared here and asserted here changes nothing when a target module misspells a table - the
+// rename it is supposed to catch happens somewhere this suite never reads.
+// tests/traceability/legacyTestMap.ts block A20 derives the table and entity names from the frozen
+// `table=`/`entityname=` attributes of all 18 entities and both link tables from the frozen
+// `linktable=` declarations, then holds the shipped `src/` text to them.
 /** [model/entity/PromotionCode.cfc:L54-L55] - the null-display key for both date bounds. */
 const FOREVER_RB_KEY = 'define.forever';
 /** [model/entity/PromotionCode.cfc:L56-L57] - the null-display key for both ceilings. */
@@ -2013,13 +2040,11 @@ describe('the accounts many-to-many reproduces addAccount ASYMMETRIC guard polar
     }
   });
 
-  it('records the owner-side link table name verbatim', () => {
-    // CFML parity [model/entity/PromotionCode.cfc:L65]: `accounts` is the OWNER side of the
-    // many-to-many across `SwPromotionCodeAccount`. The port reads and writes the existing table
-    // unchanged - no migration, no rename - so the physical name is recorded here and a rename
-    // upstream fails this suite.
-    expect(ACCOUNT_LINK_TABLE_NAME).toBe('SwPromotionCodeAccount');
-  });
+  // `accounts` is the OWNER side of the many-to-many across `SwPromotionCodeAccount`
+  // [model/entity/PromotionCode.cfc:L65]. That physical name is checked against the frozen
+  // declaration and the shipped source in tests/traceability/legacyTestMap.ts block A20, which also
+  // records it as one of exactly six link tables the port names in commentary but never queries -
+  // its far side, Account, is outside the entity budget.
 });
 
 describe('the orders many-to-many is pure inverse-side delegation, kept entirely opaque', () => {
@@ -2154,15 +2179,13 @@ describe('the orders many-to-many is pure inverse-side delegation, kept entirely
     }
   });
 
-  it('records the inverse-side link table name verbatim and its lazy="extra" fetch mode', () => {
-    // CFML parity [model/entity/PromotionCode.cfc:L68]: `inverse="true" lazy="extra"` across
-    // `SwOrderPromotionCode`. `lazy="extra"` asked Hibernate to answer size and containment
-    // questions with a targeted query instead of hydrating the collection - a fetch STRATEGY, which
-    // has no equivalent in a driver-only stack. In the target the shape is chosen at the repository
-    // method that produced the row, which is why the collection arrives already materialized and why
-    // `hasOrder` is a synchronous scan rather than a query.
-    expect(ORDER_LINK_TABLE_NAME).toBe('SwOrderPromotionCode');
-  });
+  // `inverse="true" lazy="extra"` across `SwOrderPromotionCode` [model/entity/PromotionCode.cfc:L68].
+  // `lazy="extra"` asked Hibernate to answer size and containment questions with a targeted query
+  // instead of hydrating the collection - a fetch STRATEGY with no equivalent in a driver-only stack.
+  // In the target the shape is chosen at the repository method that produced the row, which is why
+  // the collection arrives already materialized and why `hasOrder` is a synchronous scan. The
+  // physical table name is held to the frozen declaration in tests/traceability/legacyTestMap.ts
+  // block A20 rather than to a literal in this file.
 
   it('records the delete-context tension between the schema and the boundary, unresolved', () => {
     const subject = aPromotionCode({ promotionCodeID: 'pc-1', orders: [anOrderLink('order-1')] });
@@ -2594,16 +2617,40 @@ describe('preInsert() repairs an absent code and never overwrites a present one'
     expect(generated).toBe(generated?.toUpperCase());
   });
 
-  it('generates a distinct value on each repair', () => {
+  it('★★ generates a distinct value on each repair, from a SCRIPTED source so both are exact', () => {
+    // ★★★ DETERMINISTIC, AND STRICTLY STRONGER THAN THE FORM IT REPLACES. This case used to draw two
+    // real UUIDs and assert only that they differ - a claim about the platform's entropy, not about
+    // this entity, and one that could in principle fail with nothing wrong. With the source scripted,
+    // every character of both results is asserted: the hyphen removal, the uppercasing and the CFML
+    // 8-4-4-16 regrouping are this port's behaviour and are now pinned exactly, while distinctness
+    // follows from the two results rather than being the only thing observed.
+    scriptedUuid.queue.length = 0;
+    scriptedUuid.draws = 0;
+    scriptedUuid.queue.push(
+      '0189a3b4-c5d6-47e8-9f01-23456789abcd',
+      'fedcba98-7654-4321-8fed-cba987654321',
+    );
+
     const first = aPromotionCode({ promotionCode: undefined });
     const second = aPromotionCode({ promotionCode: undefined });
 
     first.preInsert();
     second.preInsert();
 
+    // 32 hexadecimal digits, uppercased, regrouped 8-4-4-16 - so the FOURTH group is the RFC form's
+    // final two groups merged, which is exactly where CFML's 35-character shape comes from.
+    expect(first.getPromotionCode()).toBe('0189A3B4-C5D6-47E8-9F0123456789ABCD');
+    expect(second.getPromotionCode()).toBe('FEDCBA98-7654-4321-8FEDCBA987654321');
+
     expect(first.getPromotionCode()).not.toBe(second.getPromotionCode());
     expect(first.getPromotionCode()).toMatch(CFML_SHAPED_UUID);
     expect(second.getPromotionCode()).toMatch(CFML_SHAPED_UUID);
+
+    // ONE DRAW PER REPAIR. A generator consulted per accessor read would hand a caller a different
+    // code each time it asked, and a generator consulted once for both entities would give two rows
+    // the same redeemable code.
+    expect(scriptedUuid.draws).toBe(2);
+    expect(scriptedUuid.queue).toHaveLength(0);
   });
 
   it('is idempotent - a second call keeps the value the first one generated', () => {
@@ -2831,18 +2878,14 @@ describe('the structural facts the row carries', () => {
     expect(subject.getPromotionID()).toBeUndefined();
   });
 
-  it('records the table, entity, service and permission strings verbatim', () => {
-    // CFML parity [model/entity/PromotionCode.cfc:L49]: the port reads and writes the EXISTING
-    // `Sw*` schema unchanged, so every physical name is recorded and a rename upstream fails here.
-    // `hb_serviceName` and `hb_permission` are inert metadata in the target - the first named the
-    // bean the legacy factory routed CRUD through, which the composition root now wires explicitly;
-    // the second is an admin permission key the legacy admin still resolves, carried forward as a
-    // string and never consulted by this port.
-    expect(TABLE_NAME).toBe('SwPromotionCode');
-    expect(ENTITY_NAME).toBe('SlatwallPromotionCode');
-    expect(SERVICE_NAME).toBe('promotionService');
-    expect(PERMISSION_KEY).toBe('promotion.promotionCodes');
-  });
+  // The table, ORM entity name, `hb_serviceName` and `hb_permission` strings
+  // [model/entity/PromotionCode.cfc:L49] are all schema-or-metadata continuity, and all four used to
+  // be asserted here against constants this file declared itself. The first two are now derived from
+  // the frozen attributes and checked against `src/` in tests/traceability/legacyTestMap.ts block
+  // A20. The other two have NO target expression at all: the bean name the legacy factory routed
+  // CRUD through is replaced by explicit wiring in the composition root, and the admin permission key
+  // is never consulted by this port - which block A12b proves by showing no module publishes a
+  // permission accessor.
 
   it('carries none of the component metadata warts into the ported class', () => {
     const subject = aPromotionCode();
@@ -2917,13 +2960,12 @@ describe('the structural facts the row carries', () => {
     expect(second.getAccounts()).toHaveLength(0);
   });
 
-  it('records that this suite is net-new, from the shared coverage flag', () => {
-    const fixtures = makePromotionFixtures();
-
-    // The shared graph records the measured finding directly: no legacy test covers this family. This
-    // suite is therefore net-new in full and must never be reported as parity coverage.
-    expect(fixtures.legacyTestCoverageExists).toBe(false);
-  });
+  // TRACEABILITY: that this suite is NET-NEW - no legacy antecedent under `meta/tests/` - is not
+  // asserted here against a fixture-authored boolean, which could only ever agree with itself.
+  // tests/traceability/legacyTestMap.ts owns the provenance: `legacyExtendedSuites` names the ONLY
+  // two suites that carry a legacy assertion forward, block A7 asserts that the list is exactly
+  // those two, and block A14 accounts for every suite on disk. A suite presenting net-new coverage
+  // as parity therefore fails the ledger, not a self-agreeing flag.
 
   it('builds every subject from an injected clock, never from ambient time', () => {
     const clock = aMovableClock(NOW_UTC);

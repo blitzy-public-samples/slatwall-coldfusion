@@ -88,8 +88,8 @@ import { Product } from '../../domain/entities/product.js';
 import { Sku } from '../../domain/entities/sku.js';
 import { Money } from '../../domain/valueObjects/money.js';
 import { buildIdPathList } from '../../domain/valueObjects/materializedIdPath.js';
-import { listAppend } from '../../lib/cfml/list.js';
-import { cfEquals } from '../../lib/cfml/struct.js';
+import { listAppend, listToArray } from '../../lib/cfml/list.js';
+import { cfEquals, cfFoldKey } from '../../lib/cfml/struct.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { isNullish } from '../../lib/cfml/truthiness.js';
 import type {
@@ -453,7 +453,7 @@ const SELECT_PRICE_GROUP_BY_ID_SQL = [
  * statement's row order at all: the adapter keys the results by identifier and the CALLER rebuilds
  * its own requested order from its own list. Ordering in SQL would be inventing an ordering the
  * legacy never expressed, for a consumer that does not read one - the same restraint
- * `SELECT_CHILD_PRICE_GROUPS_SQL` and `getActivePromotionRewards` exercise.
+ * `buildSelectChildPriceGroupsSql` and `getActivePromotionRewards` exercise.
  *
  * E5: one positional `?` per identifier, each bound separately. `identifierCount` is a number this
  * module computes from an array length and never a caller-supplied string, so the interpolated run
@@ -471,14 +471,43 @@ function buildSelectPriceGroupsByIDSql(identifierCount: number): string {
   ].join('\n');
 }
 
-// CFML parity [model/service/PriceGroupService.cfc:L463]: this statement exists solely so
-// `getChildPriceGroups()` can answer with the direct children the service's detachment loop reads.
-// No `ORDER BY` - the legacy read an unordered Hibernate collection.
-const SELECT_CHILD_PRICE_GROUPS_SQL = [
-  `SELECT ${PRICE_GROUP_SELECT_LIST}`,
-  'FROM SwPriceGroup pg',
-  'WHERE pg.parentPriceGroupID = ?',
-].join('\n');
+/**
+ * The direct children of a SET of parent price groups (F37).
+ *
+ * CFML parity [model/service/PriceGroupService.cfc:L463]: this statement exists solely so
+ * `getChildPriceGroups()` can answer with the direct children the service's detachment loop reads.
+ * No `ORDER BY` - the legacy read an unordered Hibernate collection.
+ *
+ * QUOTE-THEN-REVISE. A module constant `SELECT_CHILD_PRICE_GROUPS_SQL` stood here, ending
+ * `WHERE pg.parentPriceGroupID = ?`, and its caller bound it once per seed. It is REPLACED rather
+ * than kept alongside this builder, because after F37 nothing binds one parent: keeping two texts
+ * for one read would leave a constant no code path emits and give the suite two shapes to pin. For a
+ * single parent this builder emits `IN (?)`, which MySQL evaluates identically to `= ?` - the same
+ * substitution `buildSelectPriceGroupsByIDSql` already makes for the by-key read.
+ *
+ * ★★ THE PROJECTION AND THE PREDICATE ARE THE SINGULAR FORM'S, WIDENED IN EXACTLY ONE RESPECT, on
+ * the same terms as `buildSelectPriceGroupsByIDSql`: the identical `PRICE_GROUP_SELECT_LIST`, the
+ * identical `SwPriceGroup`, and the identical `parentPriceGroupID` equality stated over N keys
+ * instead of one. `parentPriceGroupID` is selected by that list, so every returned row carries the
+ * key it must be partitioned by - which is what lets one statement answer for N parents.
+ *
+ * The set-based form must be interchangeable with N singular calls or it is not a refactoring of the
+ * fetch shape, and here it is: `parentPriceGroupID IN (a, b)` returns exactly the union of
+ * `= a` and `= b`, with no row belonging to both, because a row has one parent.
+ *
+ * E5: one positional `?` per key. `parentCount` is a number this module computes from an array
+ * length, never a caller-supplied string.
+ *
+ * @param parentCount - how many parent keys the statement binds. `sqlPlaceholderList` refuses zero,
+ *   so `IN ()` cannot be emitted; the caller returns early on an empty set.
+ */
+function buildSelectChildPriceGroupsSql(parentCount: number): string {
+  return [
+    `SELECT ${PRICE_GROUP_SELECT_LIST}`,
+    'FROM SwPriceGroup pg',
+    `WHERE pg.parentPriceGroupID IN (${sqlPlaceholderList(parentCount)})`,
+  ].join('\n');
+}
 
 const PRICE_GROUP_RATE_SELECT_LIST = [
   ...PRICE_GROUP_RATE_COLUMNS.map((columnName) => `pgr.${columnName}`),
@@ -1684,12 +1713,40 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
    * work depends on the previous answer. Under Hibernate those were ONE association fetch each. This
    * method restores the single-fetch shape.
    *
-   * FETCH SHAPE (T3): IDENTICAL TO {@link MySqlPriceGroupRepository.getPriceGroup}, ASSOCIATION FOR
-   * ASSOCIATION, because it hands the seed rows to the very same hydrator with the very same
-   * `includeDirectChildren: true`. Every returned group carries its rates, each rate's rounding rule
-   * and its six identity-only link collections, its parent chain to the ROOT, and its DIRECT children
-   * one level. Nothing is added and nothing is dropped, so a caller cannot tell which form produced
-   * the entity it holds - which is the property that makes this substitution safe.
+   * FETCH SHAPE (T3): every returned group carries its rates, each rate's rounding rule and its six
+   * identity-only link collections, and its parent chain to the ROOT. It does NOT carry its direct
+   * children.
+   *
+   * QUOTE-THEN-REVISE, and the revision is a deliberate divergence from the singular form. This
+   * paragraph previously read: "IDENTICAL TO `getPriceGroup`, ASSOCIATION FOR ASSOCIATION, because it
+   * hands the seed rows to the very same hydrator with the very same `includeDirectChildren: true`
+   * ... and its DIRECT children one level. Nothing is added and nothing is dropped, so a caller
+   * cannot tell which form produced the entity it holds - which is the property that makes this
+   * substitution safe." The children clause is now false, on purpose (F37), and the invariant it was
+   * protecting survives intact in the form that actually matters: NO CONSUMER OF THIS METHOD CAN TELL,
+   * because no consumer of this method reads `getChildPriceGroups()`. All three are enumerated in
+   * `src/handlers/bootstrap.ts` and each was checked:
+   *
+   *  * the account price-group association read, whose groups are merged at
+   *    [model/service/PriceGroupService.cfc:L280-L284] and passed to
+   *    `calculateSkuPriceBasedOnPriceGroup` (L290), which walks RATES and the PARENT chain;
+   *  * order-document materialization, whose groups become `OrderItemView.appliedPriceGroup` - a
+   *    read-only view consumed by the L241 discriminator and the rate cascade;
+   *  * price-group intent projection, which produces the same read-only view.
+   *
+   * WHY THIS IS THE FAITHFUL SHAPE RATHER THAN A REDUCED ONE. `childPriceGroups` was a LAZY Hibernate
+   * collection: the legacy paid for it only where it was touched, and the one place it is touched is
+   * the detachment loop at [model/service/PriceGroupService.cfc:L463-L467] together with the
+   * `"childPriceGroups": [{"contexts":"delete","maxCollection":0}]` delete rule. Materializing it for
+   * three callers that never look was the implicit N+1 that transformation rule T3 exists to remove -
+   * one statement per seed, answering a question nobody asked.
+   *
+   * ★ THE PORT'S CONTRACT IS UNTOUCHED, AND THAT LINE IS THE SAFETY ARGUMENT. Both PORT reads -
+   * `getPriceGroup` and `getAccountSubscriptionPriceGroups` - still pass `includeDirectChildren: true`,
+   * so every entity reachable through `PriceGroupRepository` still arrives with the collection the
+   * delete rule reads, and an entity that reaches `deletePriceGroup` cannot have come from here: this
+   * method is declared on the ADAPTER, is reached only through the `PriceGroupSetLoader` contract in
+   * the composition root, and that contract publishes no delete.
    *
    * ★ AND IT IS STRICTLY BETTER ON ENTITY IDENTITY, for the reason
    * {@link MySqlPriceGroupRepository.hydrateCascadeReadyPriceGroups} records at length: N separate
@@ -1757,7 +1814,9 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     const hydrated = await this.hydrateCascadeReadyPriceGroups(
       seedRows,
       SELECT_PRICE_GROUPS_BY_ID,
-      true,
+      // No direct children: none of this method's three consumers reads them. See the fetch-shape
+      // paragraph above, which names each one and what it does read.
+      false,
     );
 
     const priceGroupsByFoldedID = new Map<string, PriceGroup>();
@@ -1811,7 +1870,7 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     return toPriceGroupRate(
       rateRow,
       SELECT_RATE_BY_ID,
-      membershipByRateID.get(storedPriceGroupRateID) ?? EMPTY_RATE_LINK_MEMBERSHIP,
+      membershipByRateID.get(cfFoldKey(storedPriceGroupRateID)) ?? EMPTY_RATE_LINK_MEMBERSHIP,
       owningPriceGroup,
       this.valueRounder,
     );
@@ -2426,15 +2485,26 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
 
     const ratesByPriceGroupID = await this.loadRatesForPriceGroups([...collected.keys()]);
 
+    const seedPriceGroupIDs = seedRows.map((seedRow) =>
+      readIdentifier(seedRow, 'priceGroupID', statementLabel),
+    );
+
+    // ★★★ ONE CHILD STATEMENT FOR EVERY SEED, NOT ONE PER SEED (F37). This read used to sit inside
+    // the loop below, so a set of P seeds issued P statements that differ only in the key they bind.
+    // `buildSelectChildPriceGroupsSql` states the identical predicate over the whole key set and the
+    // result is partitioned by the `parentPriceGroupID` the projection already carries, so each seed
+    // receives exactly the collection its own statement would have returned. When children are not
+    // wanted, NO statement is issued at all rather than one per seed being issued and discarded.
+    const childPriceGroupsByFoldedParentID = includeDirectChildren
+      ? await this.loadDirectChildPriceGroups(seedPriceGroupIDs)
+      : new Map<string, PriceGroup[]>();
+
     const hydratedByPriceGroupID = new Map<string, PriceGroup>();
     const seeds: PriceGroup[] = [];
 
-    for (const seedRow of seedRows) {
-      const seedPriceGroupID = readIdentifier(seedRow, 'priceGroupID', statementLabel);
-
-      const childPriceGroups = includeDirectChildren
-        ? await this.loadDirectChildPriceGroups(seedPriceGroupID)
-        : [];
+    for (const seedPriceGroupID of seedPriceGroupIDs) {
+      const childPriceGroups =
+        childPriceGroupsByFoldedParentID.get(cfFoldKey(seedPriceGroupID)) ?? [];
 
       seeds.push(
         this.materializeCollectedPriceGroup(
@@ -2462,15 +2532,45 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
    * Each seed starts with an EMPTY chain rather than inheriting one, because a chain is exactly the
    * per-seed thing: two seeds sharing an ancestor have not looped, and seeding one seed's chain into
    * another's would report that legitimate sharing as a cycle.
+   *
+   * ★★★ EVERY ANCESTOR OF EVERY SEED IS READ IN ONE STATEMENT BEFORE THE WALK (F37). This pass used
+   * to `await this.readPriceGroupRow(parentPriceGroupID)` on every hop of every chain, so P seeds
+   * standing D levels deep cost up to P x D statements - and every seed row ALREADY CARRIES the
+   * answer: `priceGroupIDPath` is a stored materialized path [model/entity/PriceGroup.cfc:L53],
+   * maintained by the entity's `preInsert`/`preUpdate` hooks [L206, L211] and by this adapter's own
+   * insert and update paths, and read by the legacy service itself at
+   * [model/service/PriceGroupService.cfc:L236]. Asking for those identifiers once is the same
+   * question asked once.
+   *
+   * THE WALK ITSELF IS UNTOUCHED, WHICH IS THE POINT. It still climbs PARENT POINTERS rather than the
+   * path's order, so a path that disagrees with the stored pointers does not get to redraw the
+   * hierarchy; both decisions - cycle and shared-ancestor - are still made on the parent identifier
+   * BEFORE its row is resolved; and a parent the path does not name still falls back to its own read,
+   * which is what keeps a STALE path (nothing rewrites a descendant's path when an ancestor moves)
+   * answering exactly as it did. The prefetch changes WHERE A ROW COMES FROM and nothing else.
    */
   private async collectPriceGroupAncestry(
     seedRows: readonly SqlRow[],
     statementLabel: string,
   ): Promise<Map<string, CollectedPriceGroupRow>> {
     const collected = new Map<string, CollectedPriceGroupRow>();
+    const pathAncestorRowsByFoldedID = await this.readAncestorRowsBySeedPaths(
+      seedRows,
+      statementLabel,
+    );
 
     for (const seedRow of seedRows) {
       const seedPriceGroupID = readIdentifier(seedRow, 'priceGroupID', statementLabel);
+      // ★★★ THE TWO IDENTITY SETS ARE KEYED BY THE FOLDED IDENTIFIER, AND THE CYCLE GUARD
+      // DEPENDS ON IT. `parentPriceGroupID = ?` runs under MySQL's default collation, so a stored
+      // parent link of `ABC` resolves the row whose own `priceGroupID` column reads `abc`. With raw
+      // keys, `chain.has('ABC')` was then false for a chain that already held `abc`, the loop climbed
+      // the same pointer again, and a two-row cycle spelled in two cases span FOREVER instead of
+      // raising `PriceGroupCycleError` - one request pinned to a connection until the platform killed
+      // it. `collected` is folded for the same reason on the benign side: an ancestor shared by two
+      // seeds under two spellings was otherwise read and constructed twice.
+      // The ORIGINAL spelling is what still reaches the statement below and what
+      // `PriceGroupCycleError` reports; only set identity is folded.
       const chain = new Set<string>();
       const chainOrder: string[] = [];
 
@@ -2480,10 +2580,10 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
       let walking = true;
 
       while (walking) {
-        chain.add(currentPriceGroupID);
+        chain.add(cfFoldKey(currentPriceGroupID));
         chainOrder.push(currentPriceGroupID);
 
-        const alreadyCollected = collected.get(currentPriceGroupID);
+        const alreadyCollected = collected.get(cfFoldKey(currentPriceGroupID));
 
         const collectedCurrent: CollectedPriceGroupRow = alreadyCollected ?? {
           row: currentRow,
@@ -2496,7 +2596,7 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
         };
 
         if (alreadyCollected === undefined) {
-          collected.set(currentPriceGroupID, collectedCurrent);
+          collected.set(cfFoldKey(currentPriceGroupID), collectedCurrent);
         }
 
         const parentPriceGroupID = collectedCurrent.parentPriceGroupID;
@@ -2511,34 +2611,135 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
           // looked up. That is the outcome the ORM reached when a many-to-one failed to resolve,
           // without issuing a statement that could not match.
           walking = false;
-        } else if (chain.has(parentPriceGroupID)) {
+        } else if (chain.has(cfFoldKey(parentPriceGroupID))) {
           // This chain has climbed back onto itself: the stored pointers form a cycle.
           throw new PriceGroupCycleError(chainOrder, parentPriceGroupID);
-        } else if (collected.has(parentPriceGroupID)) {
+        } else if (collected.has(cfFoldKey(parentPriceGroupID))) {
           // The parent - and therefore its whole chain above it - was collected by an earlier seed.
           // Stopping here is what makes a shared ancestor ONE row read and ONE instance. It cannot
           // hide a cycle: the chain that collected it climbed it to the end and raised on any repeat
           // of its own, and the check above catches a loop back into THIS chain.
           walking = false;
         } else {
-          const parentRow = await this.readPriceGroupRow(parentPriceGroupID);
+          // FROM THE ONE PREFETCH when a seed's stored path named this ancestor, which is the
+          // ordinary case; from its own read when no path named it, or when the prefetch found no
+          // such row. Both arms yield the SAME row shape - `buildSelectPriceGroupsByIDSql` projects
+          // the identical `PRICE_GROUP_SELECT_LIST` from the identical table with the identical
+          // primary-key predicate and no extra filter - so which arm answered is unobservable.
+          const prefetchedParentRow = pathAncestorRowsByFoldedID.get(cfFoldKey(parentPriceGroupID));
+          const parentRow =
+            prefetchedParentRow ?? (await this.readPriceGroupRow(parentPriceGroupID));
 
           if (parentRow === undefined) {
             walking = false;
           } else {
-            currentPriceGroupID = readIdentifier(
-              parentRow,
-              'priceGroupID',
-              SELECT_PRICE_GROUP_BY_ID,
-            );
+            const parentStatementLabel =
+              prefetchedParentRow === undefined
+                ? SELECT_PRICE_GROUP_BY_ID
+                : SELECT_PRICE_GROUPS_BY_ID;
+
+            currentPriceGroupID = readIdentifier(parentRow, 'priceGroupID', parentStatementLabel);
             currentRow = parentRow;
-            currentStatementLabel = SELECT_PRICE_GROUP_BY_ID;
+            currentStatementLabel = parentStatementLabel;
           }
         }
       }
     }
 
     return collected;
+  }
+
+  /**
+   * Every ancestor named by any seed's stored materialized path, in ONE statement (F37).
+   *
+   * The candidate set is assembled ENTIRELY CLIENT-SIDE from `priceGroupIDPath` on the seed rows the
+   * caller already holds, so this method asks the database nothing it cannot use:
+   *
+   *  * The seeds' own identifiers are removed. Their rows are already in hand and phase one records
+   *    each one in `collected` before it climbs, so re-reading them would be pure waste - and asking
+   *    for one would additionally let a self-parent resolve from this map instead of reaching the
+   *    cycle guard.
+   *  * Repeats across seeds are folded away with `cfFoldKey`, so a shared ancestor is requested once
+   *    however many seeds' paths name it and whatever case each of them spells it in. The ORIGINAL
+   *    spelling is what gets bound; `priceGroupID IN (...)` runs under MySQL's default collation, so
+   *    either spelling resolves the row, exactly as the singular `= ?` read did.
+   *  * AN EMPTY CANDIDATE SET ISSUES NO STATEMENT. A set of roots - every path naming nothing but its
+   *    own row, which is what `DETACH_CHILD_PRICE_GROUPS_SQL` leaves behind and what
+   *    `composeInsertedPriceGroupIDPath` writes for a parentless insert - therefore costs ZERO extra
+   *    reads rather than one that could only come back empty.
+   *
+   * `listToArray` splits the path with CFML list semantics, so `''`, `','` and `',,'` all contribute
+   * nothing, matching `listLen`'s reading of the same three values.
+   *
+   * THE STATEMENT IS THE EXISTING SET-BASED READ, not a new one. `buildSelectPriceGroupsByIDSql` is
+   * documented at its definition as interchangeable with N singular calls - same projection, same
+   * table, same primary-key predicate, no `activeFlag` filter, no `ORDER BY`, no `LIMIT` - which is
+   * exactly the property that makes substituting it for N `readPriceGroupRow` calls a fetch-shape
+   * refactor rather than a different query. Row order is not read: the result is keyed by identifier
+   * and the walk decides its own order from the stored pointers.
+   *
+   * A returned row can never be a seed, because seed identifiers are filtered out of the bound list
+   * above; no second exclusion is applied here, since a guard on an unreachable case would be dead
+   * code asserting something the `IN` list already guarantees.
+   *
+   * @param seedRows the rows the ancestry walk will start from.
+   * @param statementLabel the label attributing the seed rows' columns, for column-error messages.
+   * @returns every prefetched ancestor row, keyed by folded identifier; empty when no seed path names
+   *   an identifier other than a seed's own.
+   * @throws An error named `PriceGroupColumnError` when a seed row or a returned row is missing a
+   *   column this read projects.
+   */
+  private async readAncestorRowsBySeedPaths(
+    seedRows: readonly SqlRow[],
+    statementLabel: string,
+  ): Promise<ReadonlyMap<string, SqlRow>> {
+    const seedFoldedIDs = new Set<string>();
+
+    for (const seedRow of seedRows) {
+      seedFoldedIDs.add(cfFoldKey(readIdentifier(seedRow, 'priceGroupID', statementLabel)));
+    }
+
+    const candidatePriceGroupIDs: string[] = [];
+    const requestedFoldedIDs = new Set<string>();
+
+    for (const seedRow of seedRows) {
+      const priceGroupIDPath = readOptionalText(seedRow, 'priceGroupIDPath', statementLabel);
+
+      if (priceGroupIDPath === undefined) {
+        continue;
+      }
+
+      for (const pathElement of listToArray(priceGroupIDPath)) {
+        const foldedPathElement = cfFoldKey(pathElement);
+
+        if (seedFoldedIDs.has(foldedPathElement) || requestedFoldedIDs.has(foldedPathElement)) {
+          continue;
+        }
+
+        requestedFoldedIDs.add(foldedPathElement);
+        candidatePriceGroupIDs.push(pathElement);
+      }
+    }
+
+    if (candidatePriceGroupIDs.length === 0) {
+      return new Map<string, SqlRow>();
+    }
+
+    const ancestorRows = await this.executor.execute(
+      buildSelectPriceGroupsByIDSql(candidatePriceGroupIDs.length),
+      candidatePriceGroupIDs,
+    );
+
+    const rowsByFoldedID = new Map<string, SqlRow>();
+
+    for (const ancestorRow of ancestorRows) {
+      rowsByFoldedID.set(
+        cfFoldKey(readIdentifier(ancestorRow, 'priceGroupID', SELECT_PRICE_GROUPS_BY_ID)),
+        ancestorRow,
+      );
+    }
+
+    return rowsByFoldedID;
   }
 
   /**
@@ -2562,17 +2763,23 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     childPriceGroups: PriceGroup[],
     inProgressPriceGroupIDs: readonly string[] = [],
   ): PriceGroup {
-    const alreadyHydrated = hydratedByPriceGroupID.get(priceGroupID);
+    // ★ EVERY MAP AND SET IDENTITY IN THIS PASS IS FOLDED, for the reason recorded on
+    // `collectPriceGroupAncestry`: the collation behind every identifier predicate is
+    // case-insensitive, so two spellings of one identifier are one row and must be one key. An
+    // unfolded `includes` here would also let the recursion re-enter a node it is already
+    // materialising, which is a stack overflow rather than a named error.
+    const identity = cfFoldKey(priceGroupID);
+    const alreadyHydrated = hydratedByPriceGroupID.get(identity);
 
     if (alreadyHydrated !== undefined) {
       return alreadyHydrated;
     }
 
-    if (inProgressPriceGroupIDs.includes(priceGroupID)) {
+    if (inProgressPriceGroupIDs.some((held: string) => cfEquals(held, priceGroupID))) {
       throw new PriceGroupCycleError(inProgressPriceGroupIDs, priceGroupID);
     }
 
-    const collectedRow = collected.get(priceGroupID);
+    const collectedRow = collected.get(identity);
 
     if (collectedRow === undefined) {
       throw new PriceGroupPersistenceError(
@@ -2587,7 +2794,7 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     const parentPriceGroup =
       parentPriceGroupID === undefined ||
       parentPriceGroupID === '' ||
-      !collected.has(parentPriceGroupID)
+      !collected.has(cfFoldKey(parentPriceGroupID))
         ? undefined
         : this.materializeCollectedPriceGroup(
             parentPriceGroupID,
@@ -2601,10 +2808,10 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     const priceGroup = toPriceGroup(collectedRow.row, collectedRow.statementLabel, {
       parentPriceGroup,
       childPriceGroups,
-      priceGroupRates: ratesByPriceGroupID.get(priceGroupID) ?? [],
+      priceGroupRates: ratesByPriceGroupID.get(identity) ?? [],
     });
 
-    hydratedByPriceGroupID.set(priceGroupID, priceGroup);
+    hydratedByPriceGroupID.set(identity, priceGroup);
 
     return priceGroup;
   }
@@ -2637,8 +2844,12 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
   ): Promise<ReadonlyMap<string, PriceGroupRate[]>> {
     const ratesByPriceGroupID = new Map<string, PriceGroupRate[]>();
 
+    // ★ FOLDED KEYS, MATCHING THE COLLECTION AND MATERIALISATION PASSES. The partitioning below
+    // reads the OWNER identifier off the returned row, whose stored spelling need not match the
+    // spelling that was bound; without the fold a rate row could find no bucket and the group would
+    // hydrate with no rates at all - a silently unpriced price group.
     for (const priceGroupID of priceGroupIDs) {
-      ratesByPriceGroupID.set(priceGroupID, []);
+      ratesByPriceGroupID.set(cfFoldKey(priceGroupID), []);
     }
 
     if (priceGroupIDs.length === 0) {
@@ -2683,7 +2894,7 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
       // A row whose owner is not in the requested set cannot arise from this statement, since the `IN`
       // list IS the requested set. The lookup is still narrowed explicitly rather than asserted, because
       // a non-null assertion is forbidden in `src/**`.
-      const ownerRates = ratesByPriceGroupID.get(owningPriceGroupID);
+      const ownerRates = ratesByPriceGroupID.get(cfFoldKey(owningPriceGroupID));
 
       if (ownerRates !== undefined) {
         ownerRates.push(rate);
@@ -2704,8 +2915,12 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
   ): Promise<ReadonlyMap<string, RateLinkMembership>> {
     const membershipByRateID = new Map<string, MutableRateLinkMembership>();
 
+    // ★ FOLDED KEYS. Every caller looks a bucket up by an identifier read back off a RETURNED row,
+    // whose stored spelling need not match the spelling that was bound, and the link predicates are
+    // themselves case-insensitive. An unfolded key silently dropped a rate's whole link membership,
+    // which reads downstream as "this rate excludes nothing".
     for (const priceGroupRateID of priceGroupRateIDs) {
-      membershipByRateID.set(priceGroupRateID, createMutableRateLinkMembership());
+      membershipByRateID.set(cfFoldKey(priceGroupRateID), createMutableRateLinkMembership());
     }
 
     if (priceGroupRateIDs.length === 0) {
@@ -2724,7 +2939,7 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
         const owningRateID = readIdentifier(linkRow, 'priceGroupRateID', linkTable.statementLabel);
         const memberID = readIdentifier(linkRow, linkTable.memberColumn, linkTable.statementLabel);
 
-        const membership = membershipByRateID.get(owningRateID);
+        const membership = membershipByRateID.get(cfFoldKey(owningRateID));
 
         // A link row whose owner is not in the requested set cannot arise from these statements,
         // since the `IN` list IS the requested set. The lookup is still narrowed explicitly rather
@@ -2756,17 +2971,54 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
    * instances - not their keys, not their paths, not their depth. These handles serve the service loop
    * and only the service loop, and that is exactly what makes the two halves independent: a caller who
    * loaded the parent without its children still gets every stored child detached.
+   *
+   * ★ KEYED BY A SET OF PARENTS, ANSWERED IN ONE STATEMENT (F37). QUOTE-THEN-REVISE: this method took
+   * a single `priceGroupID` and bound a `parentPriceGroupID = ?` statement, and its caller
+   * invoked it once per seed. Nothing about the returned handles changes - same columns, same three
+   * empty associations, same statement label - only how many statements produce them. A parent with
+   * no stored child is ABSENT from the returned map rather than present with an empty array, and the
+   * caller reads it as `?? []`, so "no children" and "not asked about" stay the same answer they were
+   * when each parent got its own read.
+   *
+   * @param priceGroupIDs the parents whose direct children are wanted.
+   * @returns the direct children of each parent, keyed by folded parent identifier; empty when no key
+   *   was supplied or no row matched.
    */
-  private async loadDirectChildPriceGroups(priceGroupID: string): Promise<PriceGroup[]> {
-    const childRows = await this.executor.execute(SELECT_CHILD_PRICE_GROUPS_SQL, [priceGroupID]);
+  private async loadDirectChildPriceGroups(
+    priceGroupIDs: readonly string[],
+  ): Promise<ReadonlyMap<string, PriceGroup[]>> {
+    const childPriceGroupsByFoldedParentID = new Map<string, PriceGroup[]>();
 
-    return childRows.map((childRow) =>
-      toPriceGroup(childRow, SELECT_CHILD_PRICE_GROUPS, {
+    if (priceGroupIDs.length === 0) {
+      return childPriceGroupsByFoldedParentID;
+    }
+
+    const childRows = await this.executor.execute(
+      buildSelectChildPriceGroupsSql(priceGroupIDs.length),
+      [...priceGroupIDs],
+    );
+
+    for (const childRow of childRows) {
+      const foldedParentID = cfFoldKey(
+        readIdentifier(childRow, 'parentPriceGroupID', SELECT_CHILD_PRICE_GROUPS),
+      );
+
+      const childPriceGroup = toPriceGroup(childRow, SELECT_CHILD_PRICE_GROUPS, {
         parentPriceGroup: undefined,
         childPriceGroups: [],
         priceGroupRates: [],
-      }),
-    );
+      });
+
+      const siblings = childPriceGroupsByFoldedParentID.get(foldedParentID);
+
+      if (siblings === undefined) {
+        childPriceGroupsByFoldedParentID.set(foldedParentID, [childPriceGroup]);
+      } else {
+        siblings.push(childPriceGroup);
+      }
+    }
+
+    return childPriceGroupsByFoldedParentID;
   }
 
   // --- Private: writes ---------------------------------------------------------------------------

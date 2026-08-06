@@ -257,11 +257,12 @@
 //   over VERBATIM in camelCase - including the trailing `ID` on
 //   `getSortedProductSkusID`, which must never be "corrected" to `Ids` or
 //   `IDs`. ESLint deliberately enables no naming-convention rule for exactly
-//   this reason. The five subtrees that will consume this port
+//   this reason. All five subtrees that consume this port
 //   (`src/domain/entities/`, `src/services/`, `src/repositories/mysql/`,
-//   `src/handlers/`, `src/integrations/google/`) are not yet authored, so the
-//   names published here are the ones every consumer will be written against.
-//   Do not rename them later.
+//   `src/handlers/`, `src/integrations/google/`) are authored and are written
+//   against exactly these names, so a rename here is no longer a local edit - it
+//   is a change to the acceptance contract and to every one of those consumers at
+//   once. Do not rename them.
 //
 // WHAT DOES NOT BELONG ON THIS PORT
 //   * `searchProductsByProductType` (model/dao/ProductDAO.cfc:L419) is the
@@ -283,7 +284,7 @@
 //   (L54), `subscriptionService` (L55) and `contentService` (L56). The DI/1
 //   convention scan that resolved them is replaced by constructor injection:
 //   `property name="skuDAO";` becomes a constructor parameter typed to THIS
-//   interface, wired once in `src/handlers/bootstrap.ts` (planned). No runtime scan, no
+//   interface, wired once in `src/handlers/bootstrap.ts`. No runtime scan, no
 //   service locator.
 //
 // SCHEMA CONTINUITY
@@ -313,7 +314,7 @@
 //   is authored separately and none of it lives in this file.
 //
 // WHO IMPLEMENTS THIS PORT
-//   `src/repositories/mysql/mysqlSkuRepository.ts`. `src/handlers/bootstrap.ts` (planned)
+//   `src/repositories/mysql/mysqlSkuRepository.ts`. `src/handlers/bootstrap.ts`
 //   WIRES the port to that adapter; it does not implement it. Five obligations
 //   transfer to the adapter:
 //

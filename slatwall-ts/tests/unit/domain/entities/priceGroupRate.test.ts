@@ -132,36 +132,41 @@ import { makePriceGroupFixtures } from '../../../fixtures/priceGroupFixtures.js'
  */
 const APPLIES_TO_ALL_PRODUCTS_RB_KEY = 'admin.pricegroup.edit.priceGroupRateAppliesToAllProducts';
 
-/**
- * The six physical link-table names, verbatim from [model/entity/PriceGroupRate.cfc:L71-L77].
- *
- * CFML parity [model/entity/PriceGroupRate.cfc:L71-L77]: these physical names ARE the schema
- * contract, so C5 schema continuity binds and the names are recorded here as the reviewable text a
- * rename would have to pass through. The entity holds them as inert metadata, not runtime members.
- * Note correction 2 above: only `excludedProductTypes` [L75] is abbreviated, and it is never
- * expanded while [L76]/[L77] are never abbreviated to match it.
- */
-const MANY_TO_MANY_LINK_TABLES = {
-  productTypes: 'SwPriceGroupRateProductType',
-  products: 'SwPriceGroupRateProduct',
-  skus: 'SwPriceGroupRateSku',
-  excludedProductTypes: 'SwPriceGrpRateExclProductType',
-  excludedProducts: 'SwPriceGroupRateExclProduct',
-  excludedSkus: 'SwPriceGroupRateExclSku',
-} as const;
+// C5 SCHEMA CONTINUITY: the six physical link-table names from
+// [model/entity/PriceGroupRate.cfc:L71-L77] ARE the schema contract - including that ONLY
+// `excludedProductTypes` [L75] abbreviates `Group` to `Grp` while [L76] and [L77] spell it in full.
+// They are deliberately NOT held in a constant here: a constant declared in this file can only ever
+// be compared with the same literals, which says nothing about the port. The contract is checked
+// against the frozen declarations AND the shipped source in tests/traceability/legacyTestMap.ts
+// block A20, which also proves each of the six collections is published as an accessor.
 
 /**
  * Every member the port ships, asserted as an exact set so a widening fails here.
  *
- * ★ THE EIGHT `set*` MEMBERS ARE FRAMEWORK-GENERATED, NOT HAND-WRITTEN. `accessors=true`
+ * ★ THE ELEVEN `set*` MEMBERS ARE FRAMEWORK-GENERATED, NOT HAND-WRITTEN. `accessors=true`
  * [model/entity/PriceGroupRate.cfc:L49] makes the CFML engine emit a `set<Property>` for every
- * declared property, and each of the eight below is published because one line of
- * `savePriceGroupRate` [model/service/PriceGroupService.cfc:L404, L430, L437-L442] invokes it. The
- * generated setters with NO in-scope caller - `setAmountType`, `setRemoteID`, `setRoundingRule` and
- * the four audit setters - are deliberately absent, which is what keeps this list a statement about
- * what the slice uses rather than about what CFML would have generated.
+ * declared property, and each one below is published because a line of `savePriceGroupRate`
+ * [model/service/PriceGroupService.cfc:L404, L430, L437-L442] invokes it - INCLUDING [L404], whose
+ * `super.save(entity=..., data=...)` populates every submitted persistent property before validating
+ * [org/Hibachi/HibachiService.cfc:L145, L150].
+ *
+ * ★★ THREE OF THEM ARRIVED IN ONE REVISION AND THE REASON IS RECORDED HERE. This note used to read:
+ * "The generated setters with NO in-scope caller - `setAmountType`, `setRemoteID`, `setRoundingRule`
+ * and the four audit setters - are deliberately absent." That was wrong about the first three,
+ * because [L404]'s populate step IS an in-scope caller of every populatable setter, and code review
+ * measured the consequence: `amountType` carries `{"contexts":"save","required":true}`
+ * [model/validation/PriceGroupRate.json], so with no setter for it NO PAYLOAD COULD EVER PRODUCE A
+ * VALID RATE. The FOUR AUDIT SETTERS remain absent, and correctly so: each of those properties
+ * declares `hb_populateEnabled="false"` [model/entity/PriceGroupRate.cfc:L61-L64], which is the
+ * framework's own instruction that populate must skip them.
  */
 const PORTED_PUBLIC_SURFACE = [
+  // ★★ THE FIVE-MEMBER ERROR REGISTER, ported from [org/Hibachi/HibachiTransient.cfc:L30-L64].
+  // `savePriceGroupRate` [model/service/PriceGroupService.cfc:L397-L459] reaches persistence, and
+  // `HibachiService.save` [org/Hibachi/HibachiService.cfc:L151-L167] records a refused save's rules on
+  // the ENTITY, skips the flush, and returns that entity - so a port with no register could not report
+  // a refusal at all. Code review recorded that silence across this whole save tier.
+  'addError',
   'addProduct',
   'addProductType',
   'addSku',
@@ -173,6 +178,8 @@ const PORTED_PUBLIC_SURFACE = [
   'getCreatedByAccountID',
   'getCreatedDateTime',
   'getDisplayName',
+  'getError',
+  'getErrors',
   'getExcludedProductTypes',
   'getExcludedProducts',
   'getExcludedSkus',
@@ -187,6 +194,8 @@ const PORTED_PUBLIC_SURFACE = [
   'getRoundingRule',
   'getSimpleRepresentationPropertyName',
   'getSkus',
+  'hasError',
+  'hasErrors',
   'hasProduct',
   'hasProductType',
   'hasSku',
@@ -196,6 +205,7 @@ const PORTED_PUBLIC_SURFACE = [
   'removeProductType',
   'removeSku',
   'setAmount',
+  'setAmountType',
   'setExcludedProductTypes',
   'setExcludedProducts',
   'setExcludedSkus',
@@ -203,6 +213,8 @@ const PORTED_PUBLIC_SURFACE = [
   'setPriceGroup',
   'setProductTypes',
   'setProducts',
+  'setRemoteID',
+  'setRoundingRule',
   'setSkus',
 ] as const;
 
@@ -1975,69 +1987,6 @@ describe('hasProductType, hasProduct and hasSku compare by primary key only', ()
   });
 });
 
-describe('the physical link-table contract', () => {
-  // C5 schema continuity: these six names ARE the contract, recorded verbatim so a rename has to
-  // pass through a failing assertion and a reviewer can diff them against
-  // [model/entity/PriceGroupRate.cfc:L71-L77] without opening a second file. Nothing here executes
-  // SQL - `model/dao/PriceGroupDAO.cfc:L52-L100` is cited by the integration tier, never here.
-
-  it('names all six link tables exactly as the CFC declares them', () => {
-    expect(MANY_TO_MANY_LINK_TABLES).toStrictEqual({
-      productTypes: 'SwPriceGroupRateProductType',
-      products: 'SwPriceGroupRateProduct',
-      skus: 'SwPriceGroupRateSku',
-      excludedProductTypes: 'SwPriceGrpRateExclProductType',
-      excludedProducts: 'SwPriceGroupRateExclProduct',
-      excludedSkus: 'SwPriceGroupRateExclSku',
-    });
-  });
-
-  it('preserves the abbreviation on L75 and ONLY on L75', () => {
-    // VERIFIED CORRECTION: of the three exclude tables, only `excludedProductTypes` at [L75] is
-    // abbreviated to `SwPriceGrpRate…`; [L76] and [L77] spell `SwPriceGroupRateExcl…` in full. L75
-    // is never expanded to match its siblings and L76/L77 are never abbreviated to match it - the
-    // inconsistency is the schema.
-    expect(MANY_TO_MANY_LINK_TABLES.excludedProductTypes).toBe('SwPriceGrpRateExclProductType');
-    expect(MANY_TO_MANY_LINK_TABLES.excludedProductTypes).not.toBe(
-      'SwPriceGroupRateExclProductType',
-    );
-
-    const abbreviated = Object.values(MANY_TO_MANY_LINK_TABLES).filter((table) =>
-      table.startsWith('SwPriceGrpRate'),
-    );
-
-    expect(abbreviated).toStrictEqual(['SwPriceGrpRateExclProductType']);
-  });
-
-  it('spells the other two exclude tables in full', () => {
-    expect(MANY_TO_MANY_LINK_TABLES.excludedProducts).toBe('SwPriceGroupRateExclProduct');
-    expect(MANY_TO_MANY_LINK_TABLES.excludedSkus).toBe('SwPriceGroupRateExclSku');
-  });
-
-  it('marks every exclude table with Excl and no include table with it', () => {
-    expect(MANY_TO_MANY_LINK_TABLES.productTypes).not.toContain('Excl');
-    expect(MANY_TO_MANY_LINK_TABLES.products).not.toContain('Excl');
-    expect(MANY_TO_MANY_LINK_TABLES.skus).not.toContain('Excl');
-    expect(MANY_TO_MANY_LINK_TABLES.excludedProductTypes).toContain('Excl');
-    expect(MANY_TO_MANY_LINK_TABLES.excludedProducts).toContain('Excl');
-    expect(MANY_TO_MANY_LINK_TABLES.excludedSkus).toContain('Excl');
-  });
-
-  it('records one table per shipped collection accessor, and no more', () => {
-    const declared = Object.keys(MANY_TO_MANY_LINK_TABLES).sort();
-
-    expect(declared).toStrictEqual([
-      'excludedProductTypes',
-      'excludedProducts',
-      'excludedSkus',
-      'productTypes',
-      'products',
-      'skus',
-    ]);
-    expect(new Set(Object.values(MANY_TO_MANY_LINK_TABLES)).size).toBe(6);
-  });
-});
-
 // --- setPriceGroup and removePriceGroup: the many-to-one pair ---------------
 
 describe('setPriceGroup', () => {
@@ -2826,9 +2775,11 @@ describe('structural parity with the SwPriceGroupRate row', () => {
       'clearAttributeCache',
       'getPropertyTitle',
       'getAttributeValue',
+      // `validate` STAYS UNPORTED even though the error register it wrote into does not: the register
+      // is five small members with no framework behind them, whereas `validate` is metadata-driven
+      // dispatch over `model/validation/*.json` through `HibachiValidationService`. The RULES are
+      // transcribed by the service that needs them; the DISPATCHER is not ported.
       'validate',
-      'getErrors',
-      'hasErrors',
     ]) {
       expect(members).not.toContain(notPorted);
     }
@@ -3098,5 +3049,58 @@ describe('what the validation schema does NOT declare', () => {
     // VERIFIED CORRECTION to AAP 0.2.1, which states twelve: `model/validation/` holds 96 `.json`
     // files, and the in-scope split is FIFTEEN PRESENT / SIX ABSENT.
     expect(Object.keys(DECLARED_VALIDATION_SCHEMA)).toStrictEqual(['conditions', 'properties']);
+  });
+});
+
+// ===========================================================================
+// The error register, invoked directly on this entity
+// ===========================================================================
+//
+// ★★★ ADDED BECAUSE A MECHANICAL INVENTORY FOUND THESE MEMBERS NAMED BUT NEVER CALLED HERE. A code
+// review reported that "nine public methods have no invocation in any test AST", which is a sharper
+// question than whether a name appears somewhere: a method mentioned only in a comment is a method
+// nothing exercises. The register's behaviour WAS covered - through the service suites, where a refused
+// save is observed - but not at the entity that declares it, so the per-entity contract rested on
+// another tier's assertions. Gate `A24` now requires an actual invocation.
+//
+// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees and
+// that the save-refusal semantics depend on: a MISS yields an empty array rather than undefined,
+// messages ACCUMULATE under one name rather than replacing, and lookup is CASE-INSENSITIVE while the
+// key remembers the case it was FIRST written with.
+
+describe('PriceGroupRate: the inherited error register', () => {
+  it('returns an empty array for a name that was never recorded, never undefined', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent name
+    // has to be safe to iterate - `undefined` here would turn a clean validation pass into a crash.
+    const subject = new PriceGroupRate({ priceGroupRateID: 'rate-errors-1' });
+
+    expect(subject.getError('noSuchRule')).toStrictEqual([]);
+    expect(subject.hasErrors()).toBe(false);
+    expect(subject.getErrors()).toStrictEqual({});
+  });
+
+  it('★★ accumulates messages under one name instead of replacing them', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after the
+    // first, which is how a partially invalid entity comes to look like a singly invalid one.
+    const subject = new PriceGroupRate({ priceGroupRateID: 'rate-errors-1' });
+
+    subject.addError('urlTitle', 'is required');
+    subject.addError('urlTitle', 'must be unique');
+
+    expect(subject.getError('urlTitle')).toStrictEqual(['is required', 'must be unique']);
+    expect(subject.hasErrors()).toBe(true);
+  });
+
+  it('★★ looks a name up case-insensitively, and keeps the case it was first written with', () => {
+    // CFML struct keys are case-insensitive, so `getError('URLTITLE')` must find what `addError`
+    // recorded as `urlTitle` - while [org/Hibachi/HibachiErrors.cfc:L14-L31] REMEMBERS the first
+    // spelling, so the published key is the one the first write used.
+    const subject = new PriceGroupRate({ priceGroupRateID: 'rate-errors-1' });
+
+    subject.addError('urlTitle', 'first');
+    subject.addError('URLTITLE', 'second');
+
+    expect(subject.getError('UrlTitle')).toStrictEqual(['first', 'second']);
+    expect(Object.keys(subject.getErrors())).toStrictEqual(['urlTitle']);
   });
 });

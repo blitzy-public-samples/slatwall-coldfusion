@@ -129,12 +129,17 @@ import type { ProductHydrationInput } from '../../src/domain/entities/product.js
 import type { Sku } from '../../src/domain/entities/sku.js';
 import type {
   AttributeSetSummary,
-  ProductMaterializationWindow,
   ProductRepository,
   ProductSearchMatches,
+  ProductSearchWindow,
 } from '../../src/domain/ports/productRepository.js';
 import type { OptionRepository, SelectOption } from '../../src/domain/ports/optionRepository.js';
-import type { SettingKey, SettingsProvider } from '../../src/domain/ports/settingsProvider.js';
+import type {
+  ProductPresentationSettingKey,
+  ProductPresentationSettingsProvider,
+  SettingKey,
+  SettingsProvider,
+} from '../../src/domain/ports/settingsProvider.js';
 import type { SkuRepository } from '../../src/domain/ports/skuRepository.js';
 import type { CfBooleanInput } from '../../src/lib/cfml/truthiness.js';
 
@@ -535,6 +540,27 @@ interface ProductFixtureOverrides {
   readonly settingsProvider?: SettingsProvider | undefined;
 
   /**
+   * Resolves the three product-presentation keys - of which this entity reads exactly one,
+   * `productTitleString` at [model/entity/Product.cfc:L542].
+   *
+   * Default: THE SAME double `settingsProvider` gets, because the composition root implements both
+   * contracts on one object and a fixture must resolve a setting the way production does. It MUST be
+   * supplied by default, because `getTitle()` refuses outright without it - and `saveProduct` calls
+   * `getTitle()` on every save [model/service/ProductService.cfc:L269]. Pass `undefined` explicitly to
+   * exercise that refusal.
+   */
+  readonly productPresentationSettingsProvider?: ProductPresentationSettingsProvider | undefined;
+
+  /**
+   * The template the presentation double answers for `productTitleString`.
+   *
+   * Default `'${brand.brandName} ${productName}'`, the verified legacy default at
+   * [model/service/SettingService.cfc:L193]. Ignored when a whole
+   * `productPresentationSettingsProvider` is supplied.
+   */
+  readonly productTitleString?: string | undefined;
+
+  /**
    * Discharges the [model/entity/Product.cfc:L367] and [L626] reaches.
    *
    * Default: the hand-written double from `makeFixtureSkuRepository`, whose
@@ -850,19 +876,26 @@ function makeAuditTrail(idPrefix: string): AuditTrail {
  * observe delegation supplies its own port through `overrides.settingsProvider`
  * - which is strictly more expressive than a recorder baked in here.
  */
-function makeFixtureSettingsProvider(globalURLKeyProduct: string): SettingsProvider {
-  const table: Readonly<Record<SettingKey, string>> = {
+function makeFixtureSettingsProvider(
+  globalURLKeyProduct: string,
+  productTitleString: string,
+): SettingsProvider & ProductPresentationSettingsProvider {
+  // ★ THE TABLE SPANS BOTH SETTINGS CONTRACTS. `SettingsProvider` is frozen at FOUR keys and the
+  // three product-presentation keys travel on `ProductPresentationSettingsProvider`; the double
+  // implements both, exactly as the composition root does, so a fixture resolves a setting the same
+  // way production does.
+  const table: Readonly<Record<SettingKey | ProductPresentationSettingKey, string>> = {
     globalURLKeyProduct,
     globalURLKeyProductType: GLOBAL_URL_KEY_PRODUCT_TYPE,
     productImageDefaultExtension: PRODUCT_IMAGE_DEFAULT_EXTENSION,
     productImageOptionCodeDelimiter: PRODUCT_IMAGE_OPTION_CODE_DELIMITER,
-    productTitleString: PRODUCT_TITLE_STRING,
+    productTitleString,
     skuCurrency: SKU_CURRENCY,
     skuEligibleCurrencies: SKU_ELIGIBLE_CURRENCIES,
   };
 
   return {
-    setting(settingName: SettingKey): string {
+    setting(settingName: SettingKey | ProductPresentationSettingKey): string {
       return table[settingName];
     },
   };
@@ -1067,13 +1100,13 @@ function makeFixtureProductRepository(): ProductRepository {
     searchProductsByProductType(
       term?: string,
       productTypeIDs?: string,
-      materializationWindow?: ProductMaterializationWindow,
+      window?: ProductSearchWindow,
     ): Promise<ProductSearchMatches> {
       void term;
       void productTypeIDs;
       // The window is accepted and unused: the double holds no store, so there is nothing to window.
       // Declaring it keeps the double honest about the port's shape rather than narrowing it.
-      void materializationWindow;
+      void window;
 
       return Promise.resolve({ records: [], matchedCount: 0 });
     },
@@ -1549,6 +1582,7 @@ export function makeProductFixture(overrides?: ProductFixtureOverrides): Product
 
   const brandName: string | undefined = resolveOverride(overrides, 'brandName', BRAND_NAME);
   const globalURLKeyProduct: string = overrides?.globalURLKeyProduct ?? GLOBAL_URL_KEY_PRODUCT;
+  const productTitleString: string = overrides?.productTitleString ?? PRODUCT_TITLE_STRING;
   const selectedOptionsCandidateSkus: readonly Sku[] =
     overrides?.selectedOptionsCandidateSkus ?? [];
 
@@ -1571,7 +1605,15 @@ export function makeProductFixture(overrides?: ProductFixtureOverrides): Product
 
   const settingsProvider: SettingsProvider | undefined = hasOverride(overrides, 'settingsProvider')
     ? overrides?.settingsProvider
-    : makeFixtureSettingsProvider(globalURLKeyProduct);
+    : makeFixtureSettingsProvider(globalURLKeyProduct, productTitleString);
+
+  // ONE DOUBLE, BOTH CONTRACTS, exactly as `src/handlers/bootstrap.ts` binds one sealed
+  // `BootstrapSettingsProvider` to both graph members. Built separately only so a suite can override
+  // either contract on its own.
+  const productPresentationSettingsProvider: ProductPresentationSettingsProvider | undefined =
+    hasOverride(overrides, 'productPresentationSettingsProvider')
+      ? overrides?.productPresentationSettingsProvider
+      : makeFixtureSettingsProvider(globalURLKeyProduct, productTitleString);
 
   const skuRepository: SkuRepository | undefined = hasOverride(overrides, 'skuRepository')
     ? overrides?.skuRepository
@@ -1703,9 +1745,12 @@ export function makeProductFixture(overrides?: ProductFixtureOverrides): Product
     ...(salePriceDetailsForSkus === undefined ? {} : { salePriceDetailsForSkus }),
     ...(nextOptionGroupSortOrder === undefined ? {} : { nextOptionGroupSortOrder }),
 
-    // The four wired ports. The fifth, `subscriptionTermProvider`, is deliberately
+    // The five wired ports. The sixth, `subscriptionTermProvider`, is deliberately
     // never supplied - see the judgment call above.
     ...(settingsProvider === undefined ? {} : { settingsProvider }),
+    ...(productPresentationSettingsProvider === undefined
+      ? {}
+      : { productPresentationSettingsProvider }),
     ...(skuRepository === undefined ? {} : { skuRepository }),
     ...(optionRepository === undefined ? {} : { optionRepository }),
     ...(productRepository === undefined ? {} : { productRepository }),

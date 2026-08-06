@@ -7,22 +7,22 @@
  */
 
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name. Every one of
+// them exists on the branch, so each mention is a pointer to real code rather
+// than to an intention:
 //
 //   src/handlers/bootstrap.ts                   composition root (wiring)
-//   tests/fixtures                              fixture tier
-//   tests/integration/repositories              repository integration tier
+//   tests/fixtures/                             fixture tier
+//   tests/integration/repositories/             repository integration tier
 //   tests/traceability/legacyTestMap.ts         structural coverage map
 //   tests/unit/domain/entities/brand.test.ts    brand entity suite
 //   tests/unit/domain/entities/product.test.ts  product entity suite
+//
+// This file imports NONE of them. Naming a boundary is how it records what it
+// refuses to do; importing one would make this setup module a second source of
+// truth for work that already has an owner.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -64,8 +64,8 @@
 //   tier is owned elsewhere, and duplicating one here would create a second
 //   source of truth for it:
 //
-//     fixtures, factories, test data   tests/fixtures/*.ts (planned)
-//     the structural coverage floor    tests/traceability/legacyTestMap.ts (planned)
+//     fixtures, factories, test data   tests/fixtures/*.ts
+//     the structural coverage floor    tests/traceability/legacyTestMap.ts
 //     emitted SQL and bound values     tests/integration/repositories/*.test.ts
 //     behavioural gates                tests/unit/**/*.test.ts
 //
@@ -73,33 +73,45 @@
 //   block, and no assertion about application behaviour.
 //
 // TYPECHECKED, NEVER SHIPPED
-//   `tsconfig.json:L133` includes `tests/**/*.ts`, so this file is held to the
-//   same maximal strict profile as `src/**`: `strict`,
+//   `tsconfig.json` names `tests/**/*.ts` in its `include`, so this file is held
+//   to the same maximal strict profile as `src/**`: `strict`,
 //   `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
 //   `noImplicitOverride` and `noUnusedLocals`, with `skipLibCheck` off.
 //   `tsconfig.build.json` narrows the emit program to `src/**`, so this module
 //   never reaches `dist/` and is never bundled into the Lambda artifact.
 //
 // CONFORMANCE TO THE SHIPPED CONFIGURATION (read, not assumed)
-//   Each point below was checked against the files as they exist on the branch.
-//   No contradiction with this file's specification was found, and no sibling
-//   configuration was edited to suit this file.
+//   Each point below was RE-DERIVED from the files as they exist on the branch,
+//   not carried over. An earlier revision of this block cited line numbers from a
+//   draft of `vitest.config.ts` that was several times longer than the shipped
+//   one - `:L144`, `:L154`, `:L190-L194` and `:L251` against a file of 107 lines -
+//   so every locator below was looked up again and the ones that had drifted are
+//   corrected. No contradiction with this file's specification was found, and no
+//   sibling configuration was edited to suit this file.
 //
-//   * `globals: false` (vitest.config.ts:L144) together with `"types":
-//     ["node"]` (tsconfig.json:L65) means the runner injects no ambient test
+//   Every reference here names the SETTING KEY and the file that holds it, never
+//   a line number. A line number into a sibling in this same subtree is the one
+//   citation that rots without anyone touching the fact it points at: a comment
+//   added to `vitest.config.ts` moves every setting below it, and the reader is
+//   then sent to prose that says nothing about the claim. Legacy CFML locators
+//   are cited by line throughout this port because that tree is frozen; these
+//   are not, so they are cited by key.
+//
+//   * `globals: false` (vitest.config.ts) together with `"types": ["node"]`
+//     (tsconfig.json `compilerOptions`) means the runner injects no ambient test
 //     globals and the type program declares none. Explicit named imports from
 //     'vitest' are therefore mandatory here, not merely preferred.
-//   * `module` and `moduleResolution` are both `NodeNext`
-//     (tsconfig.json:L58-L59) and `allowImportingTsExtensions` is absent, so a
-//     relative specifier would need an explicit `.js` extension. This module
-//     needs no relative import at all - 'vitest' and 'dotenv' are the only two
-//     specifiers it uses, both already pinned exactly (package.json:L36, L42).
-//     No dependency is introduced by this file.
-//   * `environment: 'node'` (vitest.config.ts:L136), `watch: false` (L154) and
-//     `npm test` = `vitest run` (package.json:L18). Nothing here assumes an
+//   * `module` and `moduleResolution` are both `NodeNext` (tsconfig.json) and
+//     `allowImportingTsExtensions` is absent, so a relative specifier would need
+//     an explicit `.js` extension. This module needs no relative import at all -
+//     'vitest' and 'dotenv' are the only two specifiers it uses, both pinned to
+//     an exact version in `package.json` with no range operator. No dependency
+//     is introduced by this file.
+//   * `environment: 'node'` and `watch: false` (vitest.config.ts), and the
+//     `test` script in `package.json` is `vitest run`. Nothing here assumes an
 //     interactive session or a browser-like environment.
-//   * `isolate: true` (vitest.config.ts:L251) gives every test file a fresh
-//     module registry. That setting is load-bearing - see R4.
+//   * `isolate: true` (vitest.config.ts) gives every test file a fresh module
+//     registry. That setting is load-bearing - see R4.
 //
 // WHAT IT CARRIES FORWARD FROM THE LEGACY HARNESS, AND WHAT IT REFUSES
 //   Positive reference - meta/tests/unit/Helper.cfc:L51-L75. The legacy fixture
@@ -120,7 +132,7 @@
 //   one of the thirty preserved business-logic defects - so its absence here is
 //   a decision rather than an oversight, and it correctly carries no
 //   preserved-defect marker. The literal fixture values on L54-L59 are
-//   likewise out of scope for this file; they belong to tests/fixtures/ (planned).
+//   likewise out of scope for this file; they belong to tests/fixtures/.
 //
 //   Negative reference - meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L73, the
 //   anti-pattern this file is the exact inverse of. It extends the vendored
@@ -148,8 +160,11 @@
 //   before every test. The equivalent here is per-test construction inside each
 //   suite plus the runner's per-file isolation - never a shared mutable subject
 //   parked in this module. The four shared cases at L51-L67 themselves belong
-//   to tests/unit/domain/entities/brand.test.ts (planned) and
-//   tests/unit/domain/entities/product.test.ts (planned).
+//   to tests/unit/domain/entities/brand.test.ts and
+//   tests/unit/domain/entities/product.test.ts, which carry them today - those
+//   two are the only suites in the tree that EXTEND legacy coverage rather than
+//   being net-new, so they are also the two `tests/traceability/legacyTestMap.ts`
+//   labels legacy-extended.
 //
 // THE EMPTY-ENVIRONMENT GUARANTEE
 //   The entire suite passes with a completely empty environment. No test may
@@ -226,12 +241,15 @@ const FLAG_DISABLED_LITERALS: readonly string[] = ['false', '0', 'no', ''];
  * conflated. The legacy host chose its ORM dialect with a three-branch
  * case-insensitive substring chain [config/configORM.cfm:L9-L15] - the opening
  * test on L9 and the two alternatives on L11 and L13 - and that chain closes on
- * L15 with NO final else branch of any kind. A database product that matched
- * none of the three therefore left the dialect NEVER ASSIGNED and start-up
- * failed. `.env.example:L121-L125` carries that behaviour forward by giving
- * `DB_DIALECT` no default at all: production configuration is REQUIRED, with a
- * hard error and no silent fallback. This flag is the opposite by design -
- * test-only, optional, and explicitly defaulted.
+ * L15 with NO final else branch of any kind. A database product that matched none
+ * of the three therefore left the dialect NEVER ASSIGNED and execution
+ * CONTINUED; only a datasource probe that threw aborted the request
+ * [config/configORM.cfm:L4-L7]. `slatwall-ts/.env.example` carries the absence of
+ * a guess forward by giving `DB_DIALECT` no default at all, and
+ * `src/repositories/mysql/dialect.ts` goes one step further than the legacy on
+ * purpose: an unrecognized value is a hard startup error rather than a silent
+ * unset state. Production configuration is REQUIRED, with no fallback. This flag
+ * is the opposite by design - test-only, optional, and explicitly defaulted.
  *
  * A PRESENT BUT UNRECOGNISED value throws rather than degrading to disabled. A
  * typo must not silently skip the very suites it was set to enable; that would
@@ -240,11 +258,14 @@ const FLAG_DISABLED_LITERALS: readonly string[] = ['false', '0', 'no', ''];
  * WHAT THE FLAG IS FOR, stated plainly so it is not misread as an invitation:
  * the suites under `tests/integration/repositories/` must not require a
  * live MySQL server at all. They assert generated SQL text and bound parameters
- * against a recording test double substituted for the pool or executor, which
- * is exactly what `vitest.config.ts:L190-L194` and `.env.example:L205-L209`
- * both state. This flag exists as a documented escape hatch for any suite that
- * would ever genuinely need a real database - it is not a licence to write one,
- * and it is never a substitute for gating on a connection written into source.
+ * against a recording test double substituted for the pool or executor - which
+ * is why not one of them consults this flag, and why setting it changes nothing
+ * about what they prove. `vitest.config.ts` states the same thing where it
+ * declares the `include` globs for the two tiers, and `.env.example` states it
+ * where it documents `TEST_LIVE_DATABASE` itself. This flag exists as a
+ * documented escape hatch for any suite that would ever genuinely need a real
+ * database - it is not a licence to write one, and it is never a substitute for
+ * gating on a connection written into source.
  *
  * @param raw - the unnormalised environment value, or `undefined` when unset
  * @returns `true` only for an explicitly enabling value
@@ -310,7 +331,7 @@ afterEach(() => {
 //     boundary stops `src/domain/**` from importing outward, and the test tier
 //     must not become a back door around it. A setup file reaching into
 //     adapters would be exactly such a back door - and would also drag the
-//     composition root in `src/handlers/bootstrap.ts` (planned) into every unit test.
+//     composition root in `src/handlers/bootstrap.ts` into every unit test.
 //   * No process-level unhandled-rejection or uncaught-exception handler is
 //     installed. Vitest reports both itself, and a hand-rolled handler risks
 //     swallowing that reporting.

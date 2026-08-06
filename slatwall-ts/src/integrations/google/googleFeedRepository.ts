@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring order
-// "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/handlers/bootstrap.ts                    composition root (wiring)
 //   src/integrations/google/googleFeedService.ts  feed orchestration
@@ -22,8 +20,8 @@
 //   The data-access half of the Google product-feed adapter. It reads the
 //   existing `Sw*` MySQL schema UNCHANGED and returns a flat, read-only
 //   FEED-ROW PROJECTION - one entry per SKU that qualifies for the feed - which
-//   `src/integrations/google/rssFeedRenderer.ts` (planned) renders and
-//   `src/integrations/google/googleFeedService.ts` (planned) orchestrates.
+//   `src/integrations/google/rssFeedRenderer.ts` renders and
+//   `src/integrations/google/googleFeedService.ts` orchestrates.
 //
 //   It owns exactly three things: the statement text, the bound parameters, and
 //   the hydration of driver rows into the projection. It does not render, does
@@ -155,7 +153,7 @@
 //   NET-NEW IN ITS ENTIRETY, and never to be presented as parity: `meta/tests/**`
 //   contains nothing for the Google subsystem - no controller test, no DAO test,
 //   no view test. Every method here consequently owes coverage that has no legacy
-//   antecedent. The suites live at `tests/unit/integrations/google` (planned) and
+//   antecedent. The suites live at `tests/unit/integrations/google` and
 //   belong to another author; this file creates the obligation and deliberately
 //   authors no test file of its own. What it does instead is stay assertable
 //   without a database: the executor is a constructor parameter, so a suite can
@@ -226,7 +224,7 @@ import type { RoundingRuleService } from '../../services/roundingRuleService.js'
  *     [model/service/SettingService.cfc:L178].
  *
  *   What remains is the honest boundary: the composition root at
- *   `src/handlers/bootstrap.ts` (planned) already owns settings resolution, so it
+ *   `src/handlers/bootstrap.ts` already owns settings resolution, so it
  *   resolves these three once and passes them in. The projection then carries
  *   fully-resolved values, which is what lets the renderer emit them without ever
  *   reaching for a setting itself.
@@ -623,16 +621,26 @@ export interface GoogleProductFeedRow {
    * unresized [model/service/ImageService.cfc:L93-L95]. So the legacy emitted the
    * stored path or a missing-image path, and never nothing.
    *
-   * THE OBSERVABLE TRIGGER IS A NULL COLUMN, NOT A FILESYSTEM PROBE, and that is the
-   * one place this port cannot follow the legacy exactly. The legacy substitutes when
-   * `fileExists(expandPath(imagePath))` is false, which a Lambda cannot evaluate
-   * against an asset host. What it CAN detect is the case that made the probe fail in
-   * the first place: a SKU whose `SwSku.imageFile` is SQL `NULL` interpolates to
-   * `#baseImageURL#/product/default/` [model/entity/Sku.cfc:L145-L147], a path naming
-   * no file, so the legacy substitution fired for exactly that row. Those rows now
-   * carry {@link ResolvedFeedSettingValues.missingImagePath}. A row whose column IS
-   * set carries its stored path unprobed - the faithful subset, stated rather than
-   * papered over.
+   * ★★★ THE TRIGGER IS "THIS PATH CANNOT ADDRESS A FILE", NOT "THIS COLUMN IS NULL"
+   * (F41). QUOTE-THEN-REVISE: this paragraph read "THE OBSERVABLE TRIGGER IS A NULL
+   * COLUMN, NOT A FILESYSTEM PROBE ... What it CAN detect is the case that made the
+   * probe fail in the first place: a SKU whose `SwSku.imageFile` is SQL `NULL`
+   * interpolates to `#baseImageURL#/product/default/`, a path naming no file ... A row
+   * whose column IS set carries its stored path unprobed - the faithful subset, stated
+   * rather than papered over." The reasoning was right and the SUBSET WAS DRAWN TOO
+   * NARROWLY. `NULL` is not the only column value that interpolates to a path naming no
+   * file: `''` and `'   '` do exactly the same thing, and those are STORED values whose
+   * asset is just as absent - precisely the "stored-but-missing asset" the legacy probe
+   * was there to catch. Under the old test those rows kept their stored path and the feed
+   * published `g:image_link` pointing at a directory, which Google Merchant Center
+   * rejects.
+   *
+   * The trigger now covers every input for which `fileExists(expandPath(...))` is
+   * provably false without a filesystem, on every component the path interpolates. See
+   * {@link isUnusablePathComponent}, which states it once for both image paths and
+   * records the one residual case - a well-formed path to an asset that has since been
+   * deleted - as an acknowledged gap in `tests/traceability/legacyTestMap.ts` rather than
+   * as parity.
    *
    * NO RESIZING IS PERFORMED and none is invented: the view passes no dimensions, so
    * the legacy performed none either.
@@ -675,7 +683,8 @@ export interface GoogleProductFeedRow {
    * `g:additional_image_link` per member of the association and routes each through
    * `Image.getResizedImagePath()` [model/entity/Image.cfc:L120-L128], which performs
    * the same missing-image substitution as the SKU path. An image row whose
-   * `directory` or `imageFile` column is SQL `NULL` therefore produced an ELEMENT
+   * `directory` or `imageFile` column cannot address a file - SQL `NULL`, empty, or
+   * whitespace only ({@link isUnusablePathComponent}) - therefore produced an ELEMENT
    * CARRYING THE FALLBACK PATH, not a skipped element, so a row missing a component
    * contributes {@link ResolvedFeedSettingValues.missingImagePath} here rather than
    * contributing nothing. The array's length is the number of image rows the product
@@ -1943,6 +1952,42 @@ function buildProductUrlPath(
 }
 
 /**
+ * Whether an interpolated path component can address a stored asset at all.
+ *
+ * ★★★ THE MISSING-IMAGE TRIGGER, STATED ONCE (F41). The legacy substitutes when
+ * `!fileExists(expandPath(imagePath))` [model/service/ImageService.cfc:L81], and the two path
+ * builders below each carried their OWN trigger - `=== undefined`, one component at a time. That
+ * tested for a NULL column, which is a STRICT SUBSET of what the legacy tested: a column holding
+ * `''` or `'   '` is a stored value whose asset is just as absent, and it interpolated into a path
+ * ending in a separator, which `fileExists` could never satisfy. Those rows kept their stored path
+ * and the feed published a link to a directory.
+ *
+ * So the trigger is now: a component is unusable when it is ABSENT or when it holds NOTHING BUT
+ * WHITESPACE. That is exactly the set of inputs for which `fileExists(expandPath(...))` is provably
+ * false without a filesystem, and it is checked on every component the path interpolates - the SKU's
+ * `imageFile`, and both an image row's `directory` and `imageFile` - because any one of them being
+ * blank collapses the path.
+ *
+ * WHITESPACE IS NOT TRIMMED INTO THE PATH, ONLY TESTED. A component that survives this test is
+ * interpolated verbatim, because the legacy interpolated the stored column verbatim too and a path
+ * this port silently rewrote would address something the storefront does not serve.
+ *
+ * ⚠ THE RESIDUAL GAP, DECLARED RATHER THAN CLOSED. A WELL-FORMED path naming a file that has since
+ * been deleted still passes this test and is still published, where the legacy would have
+ * substituted. That case requires asking the asset store whether an object exists, and there is no
+ * store to ask: the images live behind an asset host, a Lambda has no `expandPath` filesystem, and a
+ * per-row HTTP probe would make one feed request issue one network call per SKU and make the feed
+ * depend on the storefront being reachable. This is registered in
+ * `tests/traceability/legacyTestMap.ts` as an acknowledged gap rather than described as parity.
+ *
+ * @param component the raw column value the path would interpolate.
+ * @returns `true` when the component cannot address a file.
+ */
+function isUnusablePathComponent(component: string | undefined): boolean {
+  return component === undefined || component.trim().length === 0;
+}
+
+/**
  * The host-relative path segment of a SKU's `g:image_link`.
  *
  * CFML parity [model/entity/Sku.cfc:L145-L147]:
@@ -1950,18 +1995,19 @@ function buildProductUrlPath(
  * middle segment is a literal of the legacy source, which is why it is
  * {@link SKU_IMAGE_PATH_SEGMENT} here and not configuration.
  *
- * @returns the stored path when `SwSku.imageFile` is set, and `missingImagePath`
- *   when it is SQL `NULL` - reproducing the legacy resizer's substitution
- *   [model/service/ImageService.cfc:L82-L89] at the one trigger this port can
- *   observe. Never `undefined`; see {@link GoogleProductFeedRow.imageLinkPath} for
- *   the full argument, including why a filesystem probe has no equivalent here.
+ * @returns the stored path when `SwSku.imageFile` can address a file, and `missingImagePath`
+ *   when it cannot - reproducing the legacy resizer's substitution
+ *   [model/service/ImageService.cfc:L82-L89] at every trigger this port can determine. See
+ *   {@link isUnusablePathComponent} for what "cannot" means and for the one case that remains
+ *   out of reach. Never `undefined`; see {@link GoogleProductFeedRow.imageLinkPath} for the rest
+ *   of the argument.
  */
 function buildSkuImagePath(
   baseImageURL: string,
   skuImageFile: string | undefined,
   missingImagePath: string,
 ): string {
-  if (skuImageFile === undefined) {
+  if (isUnusablePathComponent(skuImageFile)) {
     return missingImagePath;
   }
 
@@ -1975,18 +2021,20 @@ function buildSkuImagePath(
  * `"#baseImageURL#/#getDirectory()#/#getImageFile()#"`. Unlike the SKU path, the
  * middle segment is the image row's OWN `directory` column.
  *
- * @returns the stored path when both components are set, and `missingImagePath` when
- *   either is SQL `NULL`. The legacy loop routes every image through
- *   `Image.getResizedImagePath()` [model/entity/Image.cfc:L120-L128], which performs
- *   the same substitution as the SKU path, so an image row with a null component
- *   produced an element carrying the fallback rather than no element at all.
+ * @returns the stored path when BOTH components can address a file, and `missingImagePath` when
+ *   either cannot - the same trigger the SKU path uses, for the same reason
+ *   ({@link isUnusablePathComponent}). Both are tested, not just the file: a blank `directory`
+ *   collapses the middle of the path just as surely. The legacy loop routes every image through
+ *   `Image.getResizedImagePath()` [model/entity/Image.cfc:L120-L128], which performs the same
+ *   substitution as the SKU path, so an image row with an unusable component produced an element
+ *   carrying the fallback rather than no element at all.
  */
 function buildProductImagePath(
   baseImageURL: string,
   image: ProductImageColumns,
   missingImagePath: string,
 ): string {
-  if (image.imageDirectory === undefined || image.imageFile === undefined) {
+  if (isUnusablePathComponent(image.imageDirectory) || isUnusablePathComponent(image.imageFile)) {
     return missingImagePath;
   }
 
@@ -2181,8 +2229,8 @@ function hydrateFeedRow(
  * Reads the qualifying product-feed rows out of the existing `Sw*` MySQL schema.
  *
  * THE PRINCIPAL EXPORTED UNIT of this module. It is the data-access half of the
- * Google product-feed adapter: `rssFeedRenderer.ts` (planned) turns what this
- * returns into an RSS document, and `googleFeedService.ts` (planned) orchestrates
+ * Google product-feed adapter: `rssFeedRenderer.ts` turns what this
+ * returns into an RSS document, and `googleFeedService.ts` orchestrates
  * the two. Nothing here renders, and nothing here decides what the feed looks
  * like - it decides only WHICH SKUs qualify and WHAT is true of each one.
  *
@@ -2214,7 +2262,7 @@ function hydrateFeedRow(
  * wiring the compiler checks. The legacy controller received `productService` and
  * `skuService` by that scan [integrationServices/google/controllers/feed.cfc:L51-L52]
  * and resolved them at runtime; here the composition root at
- * `src/handlers/bootstrap.ts` (planned) constructs this class once with an executor,
+ * `src/handlers/bootstrap.ts` constructs this class once with an executor,
  * the resolved setting values and the three collaborators below, and a missing or
  * mistyped one is a compile error rather than a runtime lookup failure. It is
  * hand-wiring on purpose: no container is built, because removing the container is the

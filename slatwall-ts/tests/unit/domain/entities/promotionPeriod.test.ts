@@ -27,8 +27,10 @@
 // describe at the foot of the file audits that mechanically.
 //
 // TWO LOCATOR CORRECTIONS, source over any secondary note. THE SHIPPED isCurrent PARAMETER IS
-// REQUIRED, NOT OPTIONAL - `isCurrent(now: Date)` - so no arity lets the ambient clock leak in, and
-// the agreement check below is agreement BETWEEN PREDICATES at one instant. THE ROLLUP CALL SITE IS
+// OPTIONAL - `isCurrent(now?: Date)` - so the legacy zero-argument call form
+// [model/entity/PromotionPeriod.cfc:L78] stays callable, and omitting it reads the INJECTED clock,
+// which is a constructor collaborator rather than an ambient one. Both arities are asserted below:
+// the argument form for determinism, and the defaulted form for parity. THE ROLLUP CALL SITE IS
 // `model/entity/Promotion.cfc:L99`, NOT L98: L95 declares getCurrentPromotionPeriodFlag, L96 is the
 // memo guard, L97 seeds false, L98 is the `for`, L99 is
 // `if(getPromotionPeriods()[i].getCurrentFlag())`, L100 assigns true and L101 breaks - recorded in
@@ -362,11 +364,11 @@ describe('isCurrent(now) treats the start bound as inclusive and the end bound a
     expect(period.isCurrent(new Date(end.getTime() + 1))).toBe(false);
   });
 
-  it('reads ONLY its argument and never the injected clock', () => {
-    // The agreement check, against the SHIPPED arity: `now` is MANDATORY, not OPTIONAL, so there is
-    // no second arity to compare and what is provable is stronger - the injected clock has NO
-    // influence here. Pinned far past the window, `isCurrent(now: Date)` still answers purely from
-    // the instant handed to it while the clock-reading predicates answer from the clock.
+  it('reads ONLY its argument, and never the injected clock, WHEN one is supplied', () => {
+    // The agreement check against the argument form. Pinned far past the window, the supplied
+    // instant is the only thing that decides the answer, while the clock-reading predicates answer
+    // from the clock - so a call that passes an instant cannot be influenced by the container's
+    // notion of now. That is the determinism AAP 0.4.2 asks the widening to buy.
     const clockWellPastTheWindow = fixedClock(instant('2025-01-01T00:00:00.000Z'));
     const period = makePeriod({ now: clockWellPastTheWindow });
 
@@ -374,6 +376,42 @@ describe('isCurrent(now) treats the start bound as inclusive and the end bound a
     expect(period.isExpired()).toBe(true);
 
     expect(period.isCurrent(instant('2025-01-01T00:00:00.000Z'))).toBe(false);
+  });
+
+  it('★★ answers from the INJECTED clock when the instant is omitted, which is the legacy call form', () => {
+    // The other arity, and the reason the parameter is optional: [model/entity/PromotionPeriod.cfc:L78]
+    // declares `isCurrent()` with no arguments, so the zero-argument form has to remain callable for
+    // the ported surface to be diffable against the source method for method.
+    //
+    // ★ WHAT IT READS IS THE POINT. The default is `this.now()`, the clock handed to the constructor
+    // - NOT `Date.now()`, not a module-level clock and not a request scope reached through an
+    // accessor. Two periods differing only in their injected clock therefore answer differently,
+    // which is what proves the collaborator is the source and no ambient state leaked in.
+    const insideTheWindow = makePeriod({ now: fixedClock(instant(NOW_UTC)) });
+    const afterTheWindow = makePeriod({ now: fixedClock(instant('2025-01-01T00:00:00.000Z')) });
+
+    expect(insideTheWindow.isCurrent()).toBe(true);
+    expect(afterTheWindow.isCurrent()).toBe(false);
+
+    // And the two arities agree when handed the same instant, so the default is a default rather
+    // than a second implementation.
+    expect(insideTheWindow.isCurrent()).toBe(insideTheWindow.isCurrent(instant(NOW_UTC)));
+  });
+
+  it('reads the injected clock ONCE on the defaulted path, as the legacy local capture did', () => {
+    // CFML parity [model/entity/PromotionPeriod.cfc:L79]: `var currentDateTime = now();` captures the
+    // instant once and both comparisons on L80 read that local. The defaulted path must not read the
+    // clock twice, or a period could be observed as started-but-already-ended across a tick.
+    // Contrast `getCurrentFlag()` [L140], which really does read twice and is asserted to.
+    let reads = 0;
+    const countingClock = (): Date => {
+      reads += 1;
+      return instant(NOW_UTC);
+    };
+    const period = makePeriod({ now: countingClock });
+
+    expect(period.isCurrent()).toBe(true);
+    expect(reads).toBe(1);
   });
 
   it('compares on absolute epoch milliseconds, so an equal instant in another offset matches', () => {
@@ -597,6 +635,12 @@ describe('getCurrentFlag seeds true, narrows to false, and never rejects an abse
 describe('isExpired examines the end bound only, and keeps its legacy zero arity', () => {
   it('takes no parameters, so the one authorized widening was not spent twice', () => {
     expect(PromotionPeriod.prototype.isExpired.length).toBe(0);
+
+    // `isCurrent` still reports ONE parameter, and that is worth pinning rather than glossing:
+    // TypeScript's `now?: Date` emits a plain positional parameter with no initializer, so the
+    // declared arity is 1 while a zero-argument call is legal and reads the injected clock. Both
+    // halves are asserted - the count here, the omitted-argument behaviour in the isCurrent suite
+    // above - because the pair is what makes the widening real AND the legacy call form callable.
     expect(PromotionPeriod.prototype.isCurrent.length).toBe(1);
   });
 
@@ -2015,8 +2059,15 @@ describe('exactly one entity-layer signature widening was spent, and no second o
     // lint.
     //
     // THE WIDENING. [model/entity/PromotionPeriod.cfc:L78] declares `isCurrent()` with NO
-    // parameters; the target takes the instant explicitly. This is the only `1` below with no
-    // legacy counterpart.
+    // parameters; the target ACCEPTS one instant, OPTIONALLY, so a caller that wants determinism can
+    // pin it while the legacy zero-argument call form stays callable. This is the only `1` below
+    // with no legacy counterpart.
+    //
+    // `.length` IS 1 EVEN THOUGH THE PARAMETER IS OPTIONAL, and that is a property of the emit
+    // rather than an inconsistency: `now?: Date` compiles to a plain positional parameter with no
+    // initializer, so the declared arity is 1 while `period.isCurrent()` is still legal. A default
+    // VALUE - `now = someDate` - would have reported 0 and hidden the widening from this audit,
+    // which is one reason the defaulting is written as `now ?? this.now()` inside the body instead.
     expect(PromotionPeriod.prototype.isCurrent.length).toBe(1);
 
     // Legacy zero-argument members, every one unchanged. Each is referenced DIRECTLY rather than by
@@ -2054,11 +2105,13 @@ describe('exactly one entity-layer signature widening was spent, and no second o
     expect(Object.getOwnPropertyNames(PromotionPeriod.prototype)).toHaveLength(29);
   });
 
-  it('accepts a Date for the widened parameter and nothing looser', () => {
+  it('accepts a Date for the widened parameter, or nothing at all, and nothing looser', () => {
     const period = makePeriod();
 
-    // The supported form.
+    // The two supported forms: the explicit instant, and the legacy zero-argument call whose answer
+    // comes from the injected clock. Both are part of the surface; only the first is deterministic.
     expect(period.isCurrent(instant(NOW_UTC))).toBe(true);
+    expect(period.isCurrent()).toBe(true);
 
     // The `@ts-expect-error` IS the compile-time half of this assertion: `tsc --noEmit` fails if
     // the line ever STOPS being a type error, so the parameter cannot be loosened without breaking

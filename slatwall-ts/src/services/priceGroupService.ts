@@ -105,6 +105,7 @@ import type { PriceGroup } from '../domain/entities/priceGroup.js';
 import type { PriceGroupRateAmountType } from '../domain/entities/priceGroupRate.js';
 import type { Product } from '../domain/entities/product.js';
 import type { ProductType } from '../domain/entities/productType.js';
+import type { RoundingRule } from '../domain/entities/roundingRule.js';
 import type { Sku, SkuPriceGroupResolver } from '../domain/entities/sku.js';
 import type {
   CurrentAccountContext,
@@ -277,13 +278,73 @@ export interface PriceGroupRateSaveInput {
   readonly priceGroupRateId: string;
 
   /**
-   * The submitted amount, present only on the `"new amount"` path.
+   * The submitted amount.
    *
-   * CFML parity [model/service/PriceGroupService.cfc:L190]: absent on every other path because
-   * legacy deletes it. Persistence of the amount is the repository's business, so the key is
-   * carried for payload fidelity and deliberately not consumed here.
+   * CFML parity [model/service/PriceGroupService.cfc:L190]: absent on the paths where the in-slice
+   * caller deletes it. It IS populated onto the entity - see `populatePriceGroupRateFromPayload` -
+   * and it is a DECIMAL STRING rather than a `Money`, because populate copied the request context's
+   * raw simple value and the numeric rule of [model/validation/PriceGroupRate.json] then judged it.
+   * Accepting an already-parsed `Money` would make the numeric rule unfailable and would move the
+   * refusal out of the tier the source puts it in.
    */
   readonly amount?: string;
+
+  /**
+   * `amountType` [model/entity/PriceGroupRate.cfc:L55].
+   *
+   * ★★★ THE MEMBER WHOSE ABSENCE MADE THIS METHOD UNABLE TO CREATE A VALID RATE. The save context
+   * declares `amountType` `{"contexts":"save","required":true}`
+   * [model/validation/PriceGroupRate.json], so a payload that could not set it could never produce a
+   * rate that passes validation - which is the defect code review recorded as the payload being
+   * "narrowed to ID/amount". It also selects the arithmetic branch at
+   * [model/service/PriceGroupService.cfc:L321-L336].
+   *
+   * TYPED TO THE THREE-LITERAL VOCABULARY. An unrecognised value stored in `SwPriceGroupRate` is a
+   * reachable state the cascade's defaultless `switch` handles, but it is not one a typed caller may
+   * submit; the schema declares no `inList` rule, so the constraint is the port's, not the source's,
+   * and it is recorded as such.
+   */
+  readonly amountType?: PriceGroupRateAmountType;
+
+  /**
+   * `globalFlag` [model/entity/PriceGroupRate.cfc:L53].
+   *
+   * ★ IT IS READ BY THE RECONCILIATION BLOCK IMMEDIATELY AFTER POPULATE, which is why omitting it
+   * from the payload was consequential rather than cosmetic: [L429] demotes every sibling when THIS
+   * rate is global and [L436-L442] then strips this rate's own include/exclude collections, and both
+   * read the value populate had just written. A caller that could not set it could not reach either
+   * branch.
+   *
+   * A resolved `boolean`, on the same terms `setGlobalFlag` documents: the ENTITY field is
+   * {@link CfBooleanInput} because `SwPriceGroupRate.globalFlag` may be SQL NULL, but a value
+   * arriving from a caller has already been decided.
+   */
+  readonly globalFlag?: boolean;
+
+  /**
+   * `remoteID` [model/entity/PriceGroupRate.cfc:L58] - the integration-identity column.
+   *
+   * In the populate set because the legacy reflection reached it like any other scalar column. No
+   * save rule is declared on it.
+   */
+  readonly remoteID?: string;
+
+  /**
+   * `roundingRule` [model/entity/PriceGroupRate.cfc:L68], AS THE RESOLVED ENTITY.
+   *
+   * ★★ THE ONE ASSOCIATION IN THE POPULATE SET, AND IT IS HERE BECAUSE IT DECIDES MONEY.
+   * `calculateSkuPriceBasedOnPriceGroupRate` [model/service/PriceGroupService.cfc:L316-L340] applies
+   * this rule to the `percentageOff` branch, so a rate saved without the rule the caller chose
+   * silently prices differently. Every other association the legacy populate could reach -
+   * `priceGroup`, and the six include/exclude collections - is out of this payload for the reason
+   * `populatePriceGroupRateFromPayload` records.
+   *
+   * AN ENTITY RATHER THAN AN IDENTIFIER, because resolving one would mean a service tier loading
+   * entities by ID through a locator no in-scope port publishes. `null` CLEARS the rule, which the
+   * admin form's own `hb_optionsNullRBKey="define.none"` option makes a first-class choice; `undefined`
+   * means the key was absent and the stored rule is left alone. The two are NOT the same instruction.
+   */
+  readonly roundingRule?: RoundingRule | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -549,8 +610,29 @@ interface PriceGroupRatePopulationOutcome {
 
 /**
  * Reproduces the population step that `super.save` performs internally
- * [org/Hibachi/HibachiService.cfc:L143-L148], for the ONE payload key
+ * [org/Hibachi/HibachiService.cfc:L143-L148], for every key
  * [model/service/PriceGroupService.cfc:L397]'s declared input carries.
+ *
+ * ★★★ IT USED TO POPULATE ONE KEY, AND THAT WAS THE DEFECT. Code review recorded
+ * `PriceGroupRateSaveInput` as "narrowed to ID/amount, omitting `amountType`, `globalFlag`, rounding
+ * rule, and other source-populated properties". The sharpest consequence was not omission but
+ * IMPOSSIBILITY: `amountType` carries `{"contexts":"save","required":true}`
+ * [model/validation/PriceGroupRate.json], so no payload could ever produce a rate that passes
+ * validation, and the method could not create a rate at all. `globalFlag` was next: the
+ * reconciliation block reads it at [L429] and [L436] immediately after this step, so a caller that
+ * could not set it could not reach either branch. And `roundingRule` decides money, at
+ * [L316-L340].
+ *
+ * ⛔ WHAT IS STILL NOT POPULATED, AND WHY. `priceGroupRateID` is the SELECTOR the caller used to reach
+ * this rate - [L399] reads it to detect the `"new amount"` sentinel - and populating a primary key
+ * from a request payload would let a save reassign the row it writes. `priceGroup` and the six
+ * include/exclude collections are ASSOCIATIONS the legacy populate resolved from structs through the
+ * ORM's own loaders, which would mean a service tier loading entities by identifier through a locator
+ * no in-scope port publishes; the six collections are in any case REPLACED WHOLESALE by the
+ * reconciliation block below when the rate is global [L436-L442]. `roundingRule` is the one
+ * association here, and it arrives ALREADY RESOLVED rather than as an identifier - see its payload
+ * member. The four audit properties declare `hb_populateEnabled="false"`
+ * [model/entity/PriceGroupRate.cfc:L61-L64].
  *
  * ★ WHY THIS EXISTS. `savePriceGroupRate` [model/service/PriceGroupService.cfc:L404] delegates to
  * `super.save(entity=arguments.priceGroupRate, data=arguments.data)`, and the framework base runs
@@ -580,6 +662,35 @@ function populatePriceGroupRateFromPayload(
   priceGroupRate: PriceGroupRate,
   data: PriceGroupRateSaveInput,
 ): PriceGroupRatePopulationOutcome {
+  // ★ EVERY BRANCH IS `!== undefined`, NEVER A TRUTHINESS TEST. Populate's guard is
+  // `structKeyExists(arguments.data, name)` [org/Hibachi/HibachiTransient.cfc], so an ABSENT key
+  // leaves the stored value alone while a PRESENT falsy one - `globalFlag: false`, `amount: ''` - is a
+  // submitted value that must land. Conflating the two would make it impossible to demote a global
+  // rate or to clear an amount.
+
+  // `amountType` [model/entity/PriceGroupRate.cfc:L55] - the property the save context requires.
+  if (data.amountType !== undefined) {
+    priceGroupRate.setAmountType(data.amountType);
+  }
+
+  // `globalFlag` [model/entity/PriceGroupRate.cfc:L53] - read by the reconciliation block that runs
+  // immediately after this step.
+  if (data.globalFlag !== undefined) {
+    priceGroupRate.setGlobalFlag(data.globalFlag);
+  }
+
+  // `remoteID` [model/entity/PriceGroupRate.cfc:L58].
+  if (data.remoteID !== undefined) {
+    priceGroupRate.setRemoteID(data.remoteID);
+  }
+
+  // `roundingRule` [model/entity/PriceGroupRate.cfc:L68]. `null` CLEARS, `undefined` leaves alone -
+  // the distinction the payload member documents, and the reason `!== undefined` rather than a
+  // nullish test is the guard here.
+  if (data.roundingRule !== undefined) {
+    priceGroupRate.setRoundingRule(data.roundingRule ?? undefined);
+  }
+
   const submittedAmount = data.amount;
 
   // UNCONDITIONAL ON PRESENCE, never conditional on emptiness: populate copied whatever the key
@@ -2568,11 +2679,14 @@ export class PriceGroupService implements SkuPriceGroupResolver {
     //
     // Legacy [L407]: `if(!arguments.priceGroupRate.hasErrors())`.
     //
-    // `hasErrors()` is a framework affordance from `HibachiEntity`, and the ported entities publish no
-    // error collection - the migration replaced declarative validation with typed checks rather than
-    // with an entity-carried error bag, and NO ERROR-BAG AFFORDANCE IS INVENTED on the entity or on
-    // the port. The accumulator below is what stands in for it, exactly as `saveProduct` and
-    // `saveProductType` do in `src/services/productService.ts`.
+    // `hasErrors()` is a framework affordance from `HibachiEntity`, and the ported `PriceGroupRate` NOW
+    // PUBLISHES IT - the five-member register of [org/Hibachi/HibachiTransient.cfc:L30-L64]. This note
+    // used to read "the ported entities publish no error collection... and NO ERROR-BAG AFFORDANCE IS
+    // INVENTED on the entity or on the port", which was an accurate description of the code and the
+    // wrong conclusion to draw from it: the register is how `HibachiService.save` DELIVERS a refusal
+    // [L151-L167], so a port without it could not report one. The accumulator below still decides
+    // WHICH rules failed; the entity carries the answer, exactly as `saveProduct` and
+    // `saveProductType` now do in `src/services/productService.ts`.
     //
     // ★★ AN EARLIER REVISION READ THE GATE AS ALREADY SATISFIED, on the premise that "a rejected save
     // propagates and never reaches this line, so control arriving here IS the legacy no-errors
@@ -2588,11 +2702,20 @@ export class PriceGroupService implements SkuPriceGroupResolver {
     const errors = collectPriceGroupRateSaveContextErrors(priceGroupRate, population);
 
     if (errors.length > 0) {
-      // Legacy [org/Hibachi/HibachiService.cfc:L154-L155] and [L168]: the DAO call is SKIPPED when the
+      // Legacy [org/Hibachi/HibachiService.cfc:L153-L155] and [L167]: the DAO call is SKIPPED when the
       // entity has errors and the framework returns the entity anyway, so [L445] hands back an
       // UNPERSISTED rate rather than raising. And legacy [L407]: the WHOLE exclusivity block
       // [L408-L443] is inside the same gate, so an invalid rate performs no sibling reconciliation, no
       // demote and no clearing either. Returning here reproduces all of that at once.
+      //
+      // ★★★ AND THE RULES ARE RECORDED ON THE ENTITY ON THE WAY OUT, which is the half that was
+      // missing. The framework left them there for [L407] to read; without them a caller received an
+      // unpersisted rate that looked exactly like a persisted one, with no way to ask why. Ask
+      // `hasErrors()` / `getErrors()`.
+      for (const error of errors) {
+        priceGroupRate.addError(error.propertyIdentifier, error.errorMessage);
+      }
+
       return priceGroupRate;
     }
     // ---------------------------------------------------------------------

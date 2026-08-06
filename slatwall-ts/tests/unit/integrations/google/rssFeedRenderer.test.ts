@@ -99,6 +99,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderGoogleProductFeed } from '../../../../src/integrations/google/rssFeedRenderer.js';
 import type { GoogleProductFeedRow } from '../../../../src/integrations/google/googleFeedRepository.js';
 import { Money } from '../../../../src/domain/valueObjects/money.js';
+// Imported so the anti-divergence case can assert the SHARED grammar directly, rather than only
+// through the renderer that consumes it.
+import { parseHostAuthority } from '../../../../src/lib/config.js';
 
 // Three specifiers, and the list is exhaustive. An intervening revision made it four by importing
 // a `FeedUrlScheme` type from `src/lib/config.js`; that type no longer exists and the subject reads
@@ -1685,20 +1688,28 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
     expect(noSalePrice).not.toContain('g:sale_price');
   });
 
-  it('omits both elements when the expiration instant is absent', () => {
+  it('★★★ still advertises the sale when the expiration instant is absent (F42)', () => {
     const document = renderOneRow({
       skuPrice: Money.fromDecimalString('19.99'),
       skuSalePrice: Money.fromDecimalString('9.5'),
       salePriceExpirationDateTime: undefined,
     });
 
-    // An interval has two ends; with only one the pair cannot be emitted truthfully, so neither
-    // element is emitted - and the price element is never emitted alone, because the legacy holds
-    // both inside one conditional.
-    expect(document).not.toContain('g:sale_price');
+    // QUOTE-THEN-REVISE. Titled "omits both elements when the expiration instant is absent" and
+    // annotated "An interval has two ends; with only one the pair cannot be emitted truthfully, so
+    // neither element is emitted - and the price element is never emitted alone, because the legacy
+    // holds both inside one conditional." The last clause is the error: the legacy conditional gates
+    // on `getPrice() gt getSalePrice()` [integrationServices/google/views/feed/product.cfm:L28] and
+    // NOTHING about the expiration, and an endless sale is reachable - a promotion period with a
+    // null end date qualifies as current [model/dao/PromotionDAO.cfc:L319] and projects a null
+    // expiration [:L344]. So a live sale silently stopped being advertised. The interval argument
+    // is sound and now applies only to the element that IS an interval.
+    expect(itemElementBody(document, 'g:sale_price')).toBe('9.50');
+    expect(itemElementNames(document)).toContain('g:sale_price');
+    expect(itemElementNames(document)).not.toContain('g:sale_price_effective_date');
   });
 
-  it('omits both elements when the supplied instant cannot be rendered', () => {
+  it('★★★ still advertises the sale when the request instant cannot be rendered (F42)', () => {
     const document = renderGoogleProductFeed(
       [
         makeFeedRow({
@@ -1711,25 +1722,60 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
       new Date(Number.NaN),
     );
 
-    // JUDGMENT CALL: an unrenderable instant fails CLOSED rather than raising or emitting a
-    // placeholder. A renderer that cannot state a sale window truthfully declines to advertise one,
-    // and the document is still complete and well-formed.
-    expect(document).not.toContain('g:sale_price');
+    // QUOTE-THEN-REVISE. Titled "omits both elements when the supplied instant cannot be rendered"
+    // and defended as failing "CLOSED rather than raising or emitting a placeholder". The
+    // fail-closed reasoning holds for the INTERVAL and not for the price: an unrenderable range
+    // START is still no reason to withdraw a sale the price comparison decided. What must not appear
+    // is a placeholder, and none does.
+    expect(itemElementBody(document, 'g:sale_price')).toBe('9.50');
+    expect(itemElementNames(document)).not.toContain('g:sale_price_effective_date');
     expect(document).not.toContain('NaN');
     expect(document).not.toContain('Invalid Date');
     expect(document.endsWith('</rss>')).toBe(true);
     expect(itemElementNames(document)).toContain('g:price');
   });
 
-  it('omits the expiration element rather than emitting an unrenderable one', () => {
+  it('omits the expiration element rather than emitting an unrenderable one, keeping the sale', () => {
     const document = renderOneRow({
       skuPrice: Money.fromDecimalString('19.99'),
       skuSalePrice: Money.fromDecimalString('9.5'),
       salePriceExpirationDateTime: new Date(Number.NaN),
     });
 
-    expect(document).not.toContain('g:sale_price');
+    expect(itemElementBody(document, 'g:sale_price')).toBe('9.50');
+    expect(itemElementNames(document)).not.toContain('g:sale_price_effective_date');
     expect(document).not.toContain('NaN');
+  });
+
+  it('emits BOTH elements, in order, when the whole window is renderable', () => {
+    // The unchanged happy path, asserted alongside the three degraded ones so the restructured gate
+    // cannot quietly stop emitting the interval it still owes.
+    const document = renderOneRow({
+      skuPrice: Money.fromDecimalString('19.99'),
+      skuSalePrice: Money.fromDecimalString('9.5'),
+      salePriceExpirationDateTime: SALE_EXPIRATION_INSTANT,
+    });
+    const names = itemElementNames(document);
+
+    expect(names).toContain('g:sale_price');
+    expect(names).toContain('g:sale_price_effective_date');
+    expect(names.indexOf('g:sale_price')).toBeLessThan(
+      names.indexOf('g:sale_price_effective_date'),
+    );
+  });
+
+  it('emits NEITHER element when the price comparison itself does not hold', () => {
+    // The gate that remains is the legacy's only gate, so an equal or lower stored price withdraws
+    // both elements - which is what makes the restructuring a NARROWING of the added condition
+    // rather than a removal of the source one.
+    const notOnSale = renderOneRow({
+      skuPrice: Money.fromDecimalString('9.5'),
+      skuSalePrice: Money.fromDecimalString('9.5'),
+      salePriceExpirationDateTime: SALE_EXPIRATION_INSTANT,
+    });
+
+    expect(notOnSale).not.toContain('g:sale_price');
+    expect(itemElementNames(notOnSale)).not.toContain('g:sale_price_effective_date');
   });
 });
 
@@ -2296,6 +2342,99 @@ describe('renderGoogleProductFeed - feed origin validation', () => {
     expect(documentLines(document)[4]).toBe(
       '    <link>http://feed_internal.example.invalid</link>',
     );
+  });
+
+  it('★★★ REFUSES A PORT OUTSIDE 1 TO 65535, which neither grammar used to check', () => {
+    // ★★★ THE PORT RANGE, AND IT WAS UNCHECKED ON BOTH SIDES. This module's retired
+    // `FEED_HOST_SHAPE` and `src/lib/config.ts`'s retired `FEED_ALLOWED_HOST_AUTHORITY` both
+    // spelled the port as `\d{1,5}`, which is `0` through `99999`: every value below renders a
+    // URL naming a port that cannot be listened on, and `:0` in particular names no port at all
+    // while still producing `http://host:0/...` in five places of a published merchant feed.
+    for (const outOfRange of [
+      'shop.example.invalid:0',
+      'shop.example.invalid:00000',
+      'shop.example.invalid:65536',
+      'shop.example.invalid:99999',
+    ]) {
+      expect(captureOriginRefusal(outOfRange).message).toContain('between 1 and 65535');
+    }
+  });
+
+  it('★★ refuses a LEADING-ZERO port, because one port must have one spelling', () => {
+    // `:065535` and `:65535` denote the same port to a resolver and are different strings to
+    // every comparison this subtree makes - so an allow-list entry written one way would not
+    // match a feed host written the other. Refusing removes the ambiguity; normalizing would
+    // silently change a value the deployment wrote.
+    expect(captureOriginRefusal('shop.example.invalid:08443').message).toContain('no leading zero');
+    expect(captureOriginRefusal('shop.example.invalid:0443').message).toContain('no leading zero');
+  });
+
+  it('accepts the boundary ports, so the range is a range and not an off-by-one', () => {
+    for (const port of ['1', '80', '8443', '65535']) {
+      const document = renderGoogleProductFeed(
+        [makeFeedRow()],
+        `shop.example.invalid:${port}`,
+        RANGE_START_INSTANT,
+      );
+
+      expect(documentLines(document)[4]).toBe(
+        `    <link>http://shop.example.invalid:${port}</link>`,
+      );
+    }
+  });
+
+  it('★★ DECIDES THROUGH THE SAME PARSER `src/lib/config.ts` USES, not through a copy of it', () => {
+    // ★★ THE ANTI-DIVERGENCE ASSERTION, AND IT IS THE REASON THE GRAMMAR MOVED. The two modules
+    // used to hold separate patterns whose docblock claimed they were "deliberately identical".
+    // They were not: config's was lowercase-only, admitted no underscore and had no bracketed
+    // IPv6 alternative, so each value below was REFUSED as deployment configuration and ACCEPTED
+    // here. A value a deployment cannot authorize but this module will publish is a divergence
+    // in the dangerous direction, whichever way round it points.
+    //
+    // Asserted against the shared parser directly as well as through the renderer, so the case
+    // fails if either side is ever given a grammar of its own again.
+    for (const previouslyDivergent of [
+      'SHOP.example.invalid',
+      'feed_internal.example.invalid',
+      '[::1]',
+    ]) {
+      expect(parseHostAuthority(previouslyDivergent)).toBeDefined();
+      expect(() =>
+        renderGoogleProductFeed([makeFeedRow()], previouslyDivergent, RANGE_START_INSTANT),
+      ).not.toThrow();
+    }
+
+    // And the converse: everything the renderer refuses, the parser refuses too.
+    for (const refused of [
+      'http://shop.example.invalid',
+      'shop.example.invalid/checkout',
+      'user:secret@evil.invalid',
+      'shop.example.invalid:0',
+      'shop.example.invalid:65536',
+      'shop.example.invalid:08443',
+      '',
+      `${'a'.repeat(300)}.invalid`,
+    ]) {
+      expect(parseHostAuthority(refused)).toBeUndefined();
+    }
+  });
+
+  it('splits the authority into its host and port halves', () => {
+    // The parser answers a parsed value rather than a boolean, so a caller that needs the two
+    // halves has them without re-splitting the string. Bracket retention matters: the brackets
+    // are part of the authority as it must be written into a URL.
+    expect(parseHostAuthority('shop.example.invalid')).toStrictEqual({
+      host: 'shop.example.invalid',
+      port: undefined,
+    });
+    expect(parseHostAuthority('shop.example.invalid:8443')).toStrictEqual({
+      host: 'shop.example.invalid',
+      port: 8443,
+    });
+    expect(parseHostAuthority('[2001:db8::1]:8443')).toStrictEqual({
+      host: '[2001:db8::1]',
+      port: 8443,
+    });
   });
 
   it('refuses a shape-valid host only on shape, never on reputation', () => {

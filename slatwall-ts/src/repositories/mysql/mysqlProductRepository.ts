@@ -4,8 +4,8 @@
  * Ported from `model/dao/ProductDAO.cfc` (441 lines, cfscript throughout, the largest of the six
  * in-scope DAOs) with the entity-lifecycle surface the service tier needs now that Hibernate is
  * gone. It is the concrete side of `../../domain/ports/productRepository.js`; the composition root
- * at `src/handlers/bootstrap.ts` (planned) constructs it and hands it to
- * `src/services/productService.ts` (planned).
+ * at `src/handlers/bootstrap.ts` constructs it and hands it to
+ * `src/services/productService.ts`.
  *
  * ★ THE PORT DECLARES SIX METHODS AND THIS CLASS IMPLEMENTS SIX. The arithmetic is the port's
  * own: four functions are declared in `model/dao/ProductDAO.cfc`, minus the `private`
@@ -38,11 +38,15 @@
  * still constructed here only as the eager many-to-one association of a product graph row - a read,
  * never a write.
  *
- * JUDGMENT CALL: where the authoring brief for this file and the port disagree, the PORT WINS,
- * and one disagreement is live. The brief describes `searchProductsByProductType` as returning
- * the legacy two-key `{"id","value"}` structure; the port publishes `Promise<Product[]>` and
- * assigns hydration to this adapter. It is recorded here rather than silently resolved, and
- * annotated again at the method that carries it.
+ * JUDGMENT CALL: where the authoring brief for this file and the port disagree, the PORT WINS - and
+ * the one disagreement that was live is now RESOLVED IN THE BRIEF'S FAVOUR (F38). It read: "The brief
+ * describes `searchProductsByProductType` as returning the legacy two-key `{"id","value"}` structure;
+ * the port publishes `Promise<Product[]>` and assigns hydration to this adapter." Code review recorded
+ * what that cost - a two-column source query [model/dao/ProductDAO.cfc:L421] became a graph read, a
+ * SKU read, an option read and one sale-price resolution per match, to answer with entities whose only
+ * consumed members were the identifier and the name - and the port was corrected rather than the
+ * brief. The precedence itself is unchanged and remains worth stating: the port wins over the brief,
+ * and the AAP wins over both.
  *
  * NO USER RULES GOVERN THIS FILE. `review_rules` reports that no user rules were provided for this
  * project, so nothing here is written to satisfy a rule and no rule is invented to justify a
@@ -136,16 +140,18 @@ import type { SkuHydrationInput } from '../../domain/entities/sku.js';
 import { Sku } from '../../domain/entities/sku.js';
 import type {
   AttributeSetSummary,
-  ProductMaterializationWindow,
   ProductRepository,
   ProductSavePayload,
   ProductSearchMatches,
+  ProductSearchRow,
+  ProductSearchWindow,
 } from '../../domain/ports/productRepository.js';
 import type { ProductTypeRepository } from '../../domain/ports/productTypeRepository.js';
 import type { SalePriceDetail } from '../../domain/ports/promotionRepository.js';
 import { Money } from '../../domain/valueObjects/money.js';
 import { listToArray } from '../../lib/cfml/list.js';
 import type { CfStruct } from '../../lib/cfml/struct.js';
+import { cfFoldKey } from '../../lib/cfml/struct.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { AuditActorContext, PreparedStatementExecutor, SqlRow } from './connection.js';
@@ -161,13 +167,15 @@ import {
 } from './connection.js';
 import type { DatabaseDialect } from './dialect.js';
 import { assertMySqlDialect } from './dialect.js';
-// The DEFAULT for the `productTypeRepository` collaborator, imported as a VALUE because it is
-// constructed here when the composition root supplied none. Same layer, so no boundary is crossed -
-// `eslint.config.mjs` forbids `src/domain/**` from importing outward and says nothing about one
-// adapter holding another, which this file already does through `ProductSkuCascadeWriter`. The edge
-// is one-directional: `./mysqlProductTypeRepository.js` imports nothing from this module, so no
-// cycle is closed. See {@link ProductHydrationCollaborators} for why the default exists at all.
-import { MysqlProductTypeRepository } from './mysqlProductTypeRepository.js';
+// ★ NO SIBLING ADAPTER IS IMPORTED AS A VALUE HERE, AND THAT ABSENCE IS THE POINT. An earlier
+// revision imported `./mysqlProductTypeRepository.js` as a VALUE so the constructor could build one
+// when the composition root supplied none. A code review recorded that as a second composition root:
+// AAP 0.3.3 and 0.9.5 put ALL wiring in `src/handlers/bootstrap.ts`, and an adapter that can
+// construct its own collaborator both duplicates that root and HIDES incomplete wiring behind a
+// plausible default. The collaborator is now a mandatory constructor argument - see
+// {@link ProductHydrationCollaborators} - so the only `new MysqlProductTypeRepository(...)` in the
+// subtree is the one the composition root writes. `ProductTypeRepository` remains a TYPE-ONLY import
+// above, which erases at compile time and therefore adds no runtime edge at all.
 
 // ---------------------------------------------------------------------------
 // Dialect
@@ -247,6 +255,30 @@ class ProductPersistenceError extends Error {
   constructor(detail: string) {
     super(`Cannot persist this product: ${detail}.`);
     this.name = 'ProductPersistenceError';
+  }
+}
+
+/**
+ * A mandatory collaborator was not supplied at construction.
+ *
+ * ★ IT EXISTS SO THAT INCOMPLETE WIRING CANNOT BE MISTAKEN FOR WORKING WIRING. A code review recorded
+ * this adapter constructing its own `MysqlProductTypeRepository` whenever the collaborator bag omitted
+ * one, which made it a second composition root (AAP 0.3.3, 0.9.5 reserve that role for
+ * `src/handlers/bootstrap.ts` alone) and hid the omission behind an adapter that happened to work. The
+ * collaborator is mandatory now, so a typed caller cannot omit it at all; this refusal is what an
+ * UNTYPED caller of the CommonJS bundle gets instead of a plausible default.
+ *
+ * NAMES THE MEMBER AND NOTHING ELSE. No value, identifier or connection detail is carried, so the
+ * message is safe for `src/handlers/errorMapper.ts` to log and for an operator to read.
+ */
+class ProductWiringError extends Error {
+  constructor(collaboratorName: string) {
+    super(
+      `MysqlProductRepository was constructed without its '${collaboratorName}' collaborator. It is ` +
+        'mandatory: this adapter constructs no collaborator of its own, and the composition root ' +
+        'src/handlers/bootstrap.ts is the only place the dependency graph is assembled.',
+    );
+    this.name = 'ProductWiringError';
   }
 }
 
@@ -1194,11 +1226,11 @@ ${ATTRIBUTE_SET_ORDER_BY}`;
  * REAL and is one of the four listed at the method below; no subquery is introduced here to make the
  * two look alike.
  *
- * `productName` is selected and never read. The legacy projects `productID, productName` into a
- * two-key autocomplete structure [model/dao/ProductDAO.cfc:L429-L436], and the port returns
- * `ProductSearchMatches` whose `records` are materialized products, so only the identifier is
- * consumed - but the projection is the ported statement's text and is carried over unchanged rather
- * than trimmed to what this adapter happens to need.
+ * BOTH PROJECTED COLUMNS ARE NOW READ (F38). This note used to say "`productName` is selected and
+ * never read … the port returns `ProductSearchMatches` whose `records` are materialized products, so
+ * only the identifier is consumed". The port now publishes the legacy's own two-key structure
+ * [model/dao/ProductDAO.cfc:L429-L436], so the projection and the answer are the same two columns and
+ * neither is carried unread. The statement text is unchanged either way - it always was the legacy's.
  *
  * NO `ORDER BY`, NO `DISTINCT` AND NO `LIMIT` - the legacy has none, so none is added.
  *
@@ -1873,14 +1905,15 @@ type MaterializedSkus = {
  * name. Nothing is cached across the boundary; the entity memoises on itself and entities are
  * request-scoped.
  *
- * // JUDGMENT CALL: the bag is a SECOND constructor parameter defaulting to `{}`, matching
- * // `mysqlSkuRepository.ts` and `mysqlProductTypeRepository.ts`. The default is what lets a SQL-shape
- * // test construct this class with a capturing executor alone, which is the whole point of §0.8's
- * // injected-executor mandate. Its effect on behaviour is precise and bounded, and each absence is
- * // documented at the entity method that notices it - `getProductURL()` and `getBaseProductType()`
- * // need the settings provider, `getUnusedProductOptions()` needs the option repository,
- * // `getSkusBySelectedOptions()` needs the SKU repository, and each raises its own documented error
- * // when its port is absent rather than substituting a plausible answer.
+ * // JUDGMENT CALL: the bag is a REQUIRED constructor parameter whose members are individually
+ * // optional EXCEPT `productTypeRepository`. Every optional member's effect on behaviour is precise
+ * // and bounded, and each absence is documented at the entity method that notices it -
+ * // `getProductURL()` and `getBaseProductType()` need the settings provider,
+ * // `getUnusedProductOptions()` needs the option repository, `getSkusBySelectedOptions()` needs the
+ * // SKU repository, and each raises its own documented error when its port is absent rather than
+ * // substituting a plausible answer. A SQL-shape test therefore still names ONE port and nothing
+ * // else. The bag itself lost its `= {}` default when the product-type port became mandatory,
+ * // because a defaulted bag is exactly the shape through which omitted wiring used to pass silently.
  *
  * The real wiring happens once, in `src/handlers/bootstrap.ts` - the composition root that replaced
  * DI/1's convention scan (T1). This type is the shape that root must satisfy.
@@ -1889,6 +1922,7 @@ type ProductHydrationCollaborators = Readonly<
   Pick<
     ProductHydrationInput,
     | 'settingsProvider'
+    | 'productPresentationSettingsProvider'
     | 'skuRepository'
     | 'optionRepository'
     | 'subscriptionTermProvider'
@@ -1903,7 +1937,7 @@ type ProductHydrationCollaborators = Readonly<
 
   /**
    * The product-type load-by-identifier port forwarded into every `ProductType` this adapter
-   * hydrates.
+   * hydrates. REQUIRED.
    *
    * ★★★ ADDED IN RESPONSE TO A RUNTIME FINDING, AND THE FINDING IS WHY IT IS DOCUMENTED AT LENGTH.
    * QA testing drove `POST /promotions/application` with ordinary catalogue data and received a
@@ -1919,25 +1953,27 @@ type ProductHydrationCollaborators = Readonly<
    * [model/validation/Product.json] and turn a hard failure into a WRONG ANSWER. The defect was
    * that the port never arrived, so the port is what is fixed.
    *
-   * ★ IT IS OPTIONAL ON THE BAG AND YET NEVER ABSENT ON A HYDRATED ENTITY. Every other member here
-   * is optional because a SQL-shape suite constructs this class with a capturing executor alone, and
-   * this one keeps that property. What it does NOT keep is the consequence of absence:
-   * {@link MysqlProductRepository} resolves it ONCE in its constructor and falls back to a
-   * `MysqlProductTypeRepository` over ITS OWN executor and audit actor, so a product type this
-   * adapter builds always carries a working port. That is deliberate and is not a service locator:
-   * the fallback is a DEFAULT for one constructor argument, over the same seam this instance was
-   * handed, and the composition root still supplies the instance it wired (T1). Nothing is resolved
-   * by name, nothing is scanned, and no module-scope singleton is reached.
+   * ★★★ IT IS THE ONE MANDATORY MEMBER OF THIS BAG, AND IT BECAME MANDATORY BECAUSE THE ALTERNATIVE
+   * WAS A SECOND COMPOSITION ROOT. An earlier revision declared it optional and had
+   * {@link MysqlProductRepository}'s constructor fall back to `new MysqlProductTypeRepository(...)`
+   * over its own executor and audit actor. A code review recorded that as two distinct failures in
+   * one line: it made this adapter a composition root alongside `src/handlers/bootstrap.ts`, which
+   * AAP 0.3.3 and 0.9.5 reserve as the SOLE place the dependency graph is assembled, and it HID
+   * incomplete wiring - a construction site that forgot the port got a working-looking adapter
+   * instead of a refusal, which is how the 500 above reached production code in the first place.
+   * Requiring the member closes both: omitted wiring is now a COMPILE ERROR for a typed caller and a
+   * named refusal for an untyped one, and the only `new MysqlProductTypeRepository(...)` in the
+   * subtree is the one the composition root writes.
    *
-   * WHY A DEFAULT RATHER THAN A REQUIRED PARAMETER. Making the bag member required would be the
-   * stricter choice and is the wrong one here: it would leave the 123 construction sites in
-   * `tests/integration/repositories/mysqlProductRepository.test.ts` unable to build the subject, and
-   * the alternative to "no port" is not "a better port" - it is a hundred suites that can no longer
-   * assert emitted SQL. A default over the executor already in hand gives the guarantee without the
-   * cost, and it cannot diverge from the wired instance in any way a caller can observe: both read
-   * the same rows through the same executor and neither holds state.
+   * WHY THE COST IS ACCEPTABLE. Making it required means every construction site NAMES a port,
+   * including the SQL-shape suites in `tests/integration/repositories/mysqlProductRepository.test.ts`
+   * that never reach one. That is a feature rather than a tax: a suite that states which
+   * collaborators its subject has is a suite whose expectations can be read, and a suite that must
+   * state them cannot silently inherit a default that production does not use. Where such a suite
+   * genuinely exercises the product-type read it supplies a real adapter over the SAME recording
+   * executor, so what it asserts is unchanged.
    */
-  readonly productTypeRepository?: ProductTypeRepository;
+  readonly productTypeRepository: ProductTypeRepository;
 };
 
 /**
@@ -2938,6 +2974,10 @@ function rebuildProduct(
     draft.modifiedByAccountID = modifiedByAccountID;
   }
 
+  if (collaborators.productPresentationSettingsProvider !== undefined) {
+    draft.productPresentationSettingsProvider = collaborators.productPresentationSettingsProvider;
+  }
+
   if (collaborators.settingsProvider !== undefined) {
     draft.settingsProvider = collaborators.settingsProvider;
   }
@@ -3053,11 +3093,11 @@ async function executeInIdentifierBatches(
  */
 export class MysqlProductRepository implements ProductRepository {
   /**
-   * ★ THE THIRD PARAMETER IS OPTIONAL BY CONSTRUCTION AND MANDATORY BY BEHAVIOUR, WHICH IS NOT A
+   * ★ THE FOURTH PARAMETER IS OPTIONAL BY CONSTRUCTION AND MANDATORY BY BEHAVIOUR, WHICH IS NOT A
    * CONTRADICTION. Most of this class never needs it: every read path, every brand write, the delete,
    * and any product save whose SKU collection holds nothing transient all proceed without it, which is
-   * what keeps a SQL-shape test able to construct the class with a capturing executor alone. But a save
-   * that DOES carry transient SKUs cannot honour `cascade="all-delete-orphan"`
+   * what keeps a SQL-shape test able to construct the class with a capturing executor and one named
+   * port. But a save that DOES carry transient SKUs cannot honour `cascade="all-delete-orphan"`
    * [model/entity/Product.cfc:L73] without it, and the one thing it must not do then is proceed quietly:
    * writing the product row and silently dropping its SKUs is precisely the failure this parameter
    * exists to end. {@link MysqlProductRepository.saveProduct} therefore RAISES when a cascade is needed
@@ -3072,36 +3112,50 @@ export class MysqlProductRepository implements ProductRepository {
    *   Being a constructor argument also means no port method grew a channel through which a caller
    *   could name an actor - there is nothing to validate, because there is nothing to submit.
    * @param collaborators the ports forwarded into every hydrated entity; see
-   *   {@link ProductHydrationCollaborators}. Defaults to `{}` so a SQL-shape test can construct this
-   *   class with a capturing executor alone.
+   *   {@link ProductHydrationCollaborators}. REQUIRED, because its `productTypeRepository` member is:
+   *   this adapter no longer builds a collaborator of its own, so the bag is the only way one arrives.
    * @param skuCascadeWriter the sibling adapter that writes a SKU row and its option membership on this
    *   adapter's transaction; see {@link ProductSkuCascadeWriter}.
+   * @throws An error named `ProductWiringError` when `productTypeRepository` is absent at run time.
+   *   Unreachable for a typed caller - the member is required - and reachable for the untyped
+   *   JavaScript consumers the CommonJS bundle is loaded by, which is exactly the population that
+   *   used to receive a silently defaulted collaborator.
    */
   public constructor(
     private readonly executor: PreparedStatementExecutor,
     private readonly auditActor: AuditActorContext,
-    private readonly collaborators: ProductHydrationCollaborators = {},
+    private readonly collaborators: ProductHydrationCollaborators,
     private readonly skuCascadeWriter?: ProductSkuCascadeWriter,
   ) {
-    this.productTypeRepository =
-      collaborators.productTypeRepository ?? new MysqlProductTypeRepository(executor, auditActor);
+    // ★ FAIL AT CONSTRUCTION, NOT AT THE FIRST PRODUCT TYPE. The runtime finding this guard replaces
+    // surfaced as a 500 from `Product.getBaseProductType()` - arbitrarily far from the wiring mistake
+    // that caused it, and only for the leaf product types that carry no system code of their own. A
+    // refusal here names the omission at the site that made it, before a single statement is issued.
+    if (
+      collaborators.productTypeRepository === undefined ||
+      collaborators.productTypeRepository === null
+    ) {
+      throw new ProductWiringError('productTypeRepository');
+    }
+
+    this.productTypeRepository = collaborators.productTypeRepository;
   }
 
   /**
    * The port every `ProductType` this adapter hydrates is constructed with.
    *
-   * Resolved ONCE, in the constructor, from the collaborators bag when the composition root wired one
-   * and from a sibling adapter over THIS instance's executor and audit actor otherwise. It is a
-   * `readonly` field rather than a lazily-memoised getter because construction reads nothing, issues
-   * no statement and touches no executor - the suites that assert "constructing the adapter must not
-   * touch the executor at all" stay true - so there is nothing to defer.
+   * Resolved ONCE, in the constructor, from the collaborators bag - which is now the ONLY place it can
+   * come from, because this adapter constructs no collaborator of its own. It is a `readonly` field
+   * rather than a lazily-memoised getter because construction reads nothing, issues no statement and
+   * touches no executor - the suites that assert "constructing the adapter must not touch the executor
+   * at all" stay true - so there is nothing to defer.
    *
    * NOT A CACHE. It holds no row and no answer; it is a collaborator reference, and the adapter it
    * points at holds no state either. Request scoping is unaffected: this instance is built per
    * request in `src/handlers/bootstrap.ts` and discarded with it.
    *
    * See {@link ProductHydrationCollaborators} for the runtime finding that made this field necessary
-   * and for why the bag member is optional while this field is not.
+   * and for why the bag member is the one mandatory member of that bag.
    */
   private readonly productTypeRepository: ProductTypeRepository;
 
@@ -3227,9 +3281,11 @@ export class MysqlProductRepository implements ProductRepository {
    * // worse - a caller would believe an import had happened. The EXECUTION-MODEL MISMATCH is a platform
    * // fact, stated as one: the calling service raises the request timeout to 3600 seconds immediately
    * // before delegating here [model/service/ProductService.cfc:L65-L68], and that budget does not exist
-   * // in this runtime - AWS Lambda caps a single invocation at 15 minutes and API Gateway caps a request
-   * // at 29 seconds. Those are published platform limits, not a performance judgement about the legacy
-   * // code, and no latency, throughput or availability claim is made or implied (B7).
+   * // in this runtime - AWS Lambda caps a single invocation at 15 minutes, and API Gateway bounds an
+   * // integration per API type (30 s for an HTTP API; 29 s by default for a REST API, raisable only for
+   * // Regional and private REST APIs). Those are published platform limits rather than one universal
+   * // cap, not a performance judgement about the legacy code, and no latency, throughput or
+   * // availability claim is made or implied (B7).
    *
    * NOTHING IS INVENTED TO WORK AROUND IT. No batching, no chunking, no offset, cursor or resume
    * parameter, no streaming handle, no queue or worker hand-off, no progress callback, no idempotency
@@ -3311,12 +3367,21 @@ export class MysqlProductRepository implements ProductRepository {
    * this statement, so it is mandatory. An empty parsed list omits the predicate entirely rather than
    * emitting `IN ()`, which is exactly what the legacy guard at [model/dao/ProductDAO.cfc:L423] does.
    *
-   * T3, FETCH SHAPE: the port returns `ProductSearchMatches`, whose `records` hydrate the selected
-   * identifiers through this module's single product graph loader and whose `matchedCount` retains
-   * the complete pre-window match count. Each record carries its eager `brand` and `productType`, its
-   * `skus`, each SKU's `options`, and its `defaultSku`. Records come back IN THE ORDER THE SEARCH
-   * PRODUCED THEM, and the search statement carries no `ORDER BY` because the legacy carries none;
-   * no ordering is invented on either side of the hydration.
+   * ★★★ T3, FETCH SHAPE: NOTHING IS HYDRATED, WHICH IS A CORRECTION (F38). This paragraph used to read
+   * "the port returns `ProductSearchMatches`, whose `records` hydrate the selected identifiers through
+   * this module's single product graph loader … Each record carries its eager `brand` and
+   * `productType`, its `skus`, each SKU's `options`, and its `defaultSku`." Code review recorded the
+   * amplification that description admits to: a two-column source query became a graph read, a SKU
+   * read, an option read and one sale-price resolution per match, and the caller then published the
+   * identifier and the name. The port now publishes {@link ProductSearchRow} - the legacy's own
+   * `{"id","value"}` structure [model/dao/ProductDAO.cfc:L429-L436] - and this method returns the rows
+   * its single statement selected. `matchedCount` still retains the complete pre-window match count.
+   * Records come back IN THE ORDER THE STATEMENT PRODUCED THEM, and the statement carries no
+   * `ORDER BY` because the legacy carries none; no ordering is invented.
+   *
+   * ⚠ THE MODULE HEADER'S "LIVE DISAGREEMENT" IS SETTLED BY THIS. It recorded that the authoring brief
+   * described this method as returning the two-key structure while the port published `Product[]`, and
+   * that the port won. The AAP is the authority over both, and it is the brief that matched it.
    *
    * NET-NEW COVERAGE OBLIGATIONS: a term plus a two-element list emits the product-type predicate with
    * two placeholders and binds `%term%` first; an empty or whitespace-only `productTypeIDs` string is
@@ -3336,7 +3401,7 @@ export class MysqlProductRepository implements ProductRepository {
   public async searchProductsByProductType(
     term?: string,
     productTypeIDs?: string,
-    materializationWindow?: ProductMaterializationWindow,
+    window?: ProductSearchWindow,
   ): Promise<ProductSearchMatches> {
     // [model/dao/ProductDAO.cfc:L422] the unconditional bind. See ProductUndefinedArgumentError.
     if (term === undefined) {
@@ -3367,37 +3432,48 @@ export class MysqlProductRepository implements ProductRepository {
       ...boundProductTypeIDs,
     ]);
 
-    // EVERY MATCHED IDENTIFIER IS PROJECTED, however many there are, and that is deliberate: the
-    // projection is the legacy's own two-column read [model/dao/ProductDAO.cfc:L421] and its size is the
-    // honest `matchedCount`. An earlier revision refused a match set above 2,000 here, which made a
-    // search the legacy answered fail outright; that refusal is not reinstated.
-    const matchedProductIDs = rows.map((row: SqlRow) =>
-      readIdentifier(row, 'productID', PRODUCT_SEARCH_LABEL),
-    );
+    // ★★★ THE TWO PROJECTED COLUMNS ARE THE ANSWER, AND NOTHING IS HYDRATED (F38). This used to read
+    // the identifier out of each row, window the identifier list and then call
+    // {@link MysqlProductRepository.materializeProducts} on it - three more statements plus one
+    // sale-price resolution per surviving match - to answer with entities whose only consumed members
+    // were the identifier and the name. [model/dao/ProductDAO.cfc:L419-L436] issues ONE statement and
+    // returns `{"id","value"}` per row; that is what this method now does, and the statement text above
+    // is unchanged, so `productName` stops being "selected and never read".
+    //
+    // Three things follow, all of them improvements the source already had. The answer comes from ONE
+    // read, so it cannot be internally inconsistent with itself the way a multi-statement assembly can.
+    // A search for a common term costs the same whether the catalogue holds ten products or ten
+    // thousand graphs. And `matchedCount` is still the honest pre-window total, because it counts the
+    // rows this very statement returned.
+    //
+    // EVERY MATCHED ROW IS PROJECTED, however many there are: an earlier revision refused a match set
+    // above 2,000 here, which made a search the legacy answered fail outright, and that refusal is not
+    // reinstated.
+    const matchedRows: readonly ProductSearchRow[] = rows.map((row: SqlRow): ProductSearchRow => {
+      const id = readIdentifier(row, 'productID', PRODUCT_SEARCH_LABEL);
 
-    // ★★ THE WINDOW IS APPLIED HERE, BETWEEN THE PROJECTION AND THE GRAPH MATERIALIZATION, and that
-    // placement is the fix for a resource finding (MAJOR, CWE-400): the caller's paging window used to
-    // be applied AFTER every matched graph had been hydrated, so it bounded the response and not the
-    // work. The amplification is real and is exactly here - the legacy read two columns per match and
-    // this port materializes a product graph, its SKUs and each SKU's options per match - so bounding
-    // the identifier list bounds the three statements that do the work while leaving the ported
-    // statement text above byte-identical and `matchedCount` truthful. See
+      // `SwProduct.productName` is nullable [model/entity/Product.cfc:L55]. The member is OMITTED
+      // rather than set to `''`, because CFML's `records.productName[i]` would have yielded an empty
+      // string for a NULL and this port refuses to make "no name" and "an empty name" the same answer.
+      const value = readOptionalText(row, 'productName', PRODUCT_SEARCH_LABEL);
+
+      return value === undefined ? { id } : { id, value };
+    });
+
+    // ★★ THE WINDOW IS A SLICE OF THE ROWS. It was applied at this same point before - between the
+    // projection and the graph materialization - and the materialization is what is gone; the slice
+    // stays because a paged caller still asked for a page. See
     // `ProductRepository.searchProductsByProductType` for why this is not a `LIMIT`.
     //
     // AN ABSENT WINDOW MEANS EVERY MATCH, exactly as before. `slice` is total on both bounds - a start
     // past the end yields an empty list and an over-long count is clamped by the array - so a window the
-    // service already validated cannot produce a partial statement or an out-of-range read.
-    const windowedProductIDs =
-      materializationWindow === undefined
-        ? matchedProductIDs
-        : matchedProductIDs.slice(
-            materializationWindow.start,
-            materializationWindow.start + materializationWindow.count,
-          );
-
+    // service already validated cannot produce an out-of-range read.
     return {
-      records: await this.materializeProducts(windowedProductIDs),
-      matchedCount: matchedProductIDs.length,
+      records:
+        window === undefined
+          ? matchedRows
+          : matchedRows.slice(window.start, window.start + window.count),
+      matchedCount: matchedRows.length,
     };
   }
 
@@ -3485,6 +3561,65 @@ export class MysqlProductRepository implements ProductRepository {
     const products = await this.materializeProducts([productID]);
 
     return products[0];
+  }
+
+  // =========================================================================
+  // NOT A PORT METHOD - the set-based form of the by-key load (F5)
+  // =========================================================================
+
+  /**
+   * Load a SET of products by identifier, in the SAME statements one product costs.
+   *
+   * ★★★ NOT ON `ProductRepository`, AND THAT IS DELIBERATE. The port publishes six members and the
+   * plan freezes them; this is the set-based twin of `getProductByProductID`, published on the ADAPTER
+   * for the composition root to compose with - exactly as
+   * {@link MySqlPriceGroupRepository.getPriceGroupsByID} is the set-based twin of `getPriceGroup`, and
+   * satisfied at the root through a structural contract rather than through a widened port. Nothing
+   * about the port's surface changes and no service gains a new capability.
+   *
+   * ★★★ THE FINDING IT CLOSES (F5). `bootstrap.ts`'s order-document hydration called
+   * `getProductByProductID` ONCE PER DISTINCT PRODUCT the document named. Each of those calls is a
+   * graph read, a SKU read, an option read and one sale-price resolution, so a ten-product order paid
+   * for up to forty statements to hydrate ten products - and every one of those statement groups was
+   * already capable of carrying the whole set, because {@link MysqlProductRepository.materializeProducts}
+   * has always taken a LIST. The N+1 was in the CALLER, not in the loader, and this method is the
+   * loader's list-shaped door.
+   *
+   * ★★ IT ADDS NO NEW SQL AND NO NEW FETCH SHAPE. It is `materializeProducts` with a keyed index over
+   * the result, so a product loaded here is byte-for-byte the product `getProductByProductID` answers -
+   * same three statements, same eager `brand` and `productType`, same `skus`, same options, same
+   * `defaultSku`, same sale-price map. A caller cannot tell which door it came through, which is the
+   * property that makes the substitution safe.
+   *
+   * ★★ AND IT IS STRICTLY BETTER ON ENTITY IDENTITY, for the reason the price-group twin records: N
+   * separate singular reads hand back N separately-materialized copies of any SHARED association,
+   * which Hibernate's session could never do. One batched read shares them.
+   *
+   * ★ KEYED BY CASE-FOLDED IDENTIFIER, AND THE CALLER REBUILDS ITS OWN ORDER. CFML identifiers are
+   * case-INSENSITIVE and MySQL's default collation matches them that way, so a caller asking for
+   * `'ABC'` must find the row stored as `'abc'`. The map is UNORDERED by construction, which is the
+   * honest shape: `IN (...)` does not preserve list order. An absent key is simply ABSENT - whether a
+   * miss is a broken reference to refuse or a variation to skip is the CALLER'S question, and the
+   * order-document loader answers it by refusing with the member path of the order item that named it.
+   *
+   * ★ AN EMPTY REQUEST ISSUES NO STATEMENT, which is parity rather than an optimisation: zero singular
+   * calls issued zero statements too. It also mechanically prevents `IN ()`, a MySQL syntax error.
+   *
+   * @param productIDs the identifiers to load, in whatever order and with whatever repetition the
+   *   caller holds them.
+   * @returns the products that exist, keyed by case-folded identifier.
+   */
+  public async getProductsByProductID(
+    productIDs: readonly string[],
+  ): Promise<ReadonlyMap<string, Product>> {
+    const products = await this.materializeProducts(productIDs);
+    const productsByFoldedID = new Map<string, Product>();
+
+    for (const product of products) {
+      productsByFoldedID.set(cfFoldKey(product.getProductID()), product);
+    }
+
+    return productsByFoldedID;
   }
 
   // =========================================================================
@@ -3911,15 +4046,21 @@ export class MysqlProductRepository implements ProductRepository {
     // {@link ProductSalePriceResolver}.
     const salePriceDetails = await this.readSalePriceDetails(foundProductIDs);
 
+    // ★ KEYED BY THE FOLDED IDENTIFIER. The map is built from the identifier the DATABASE
+    // returned and read back with the identifier the CALLER supplied, and `productID IN (...)`
+    // matches under MySQL's case-insensitive default collation - so a caller spelling that differs
+    // in case from the stored column found no entry and the product was silently DROPPED from the
+    // answer, turning a found row into a missing one. Folding both sides restores the CFML struct
+    // identity the ORM-backed lookup had.
     const productsByID = new Map<string, Product>();
     for (const row of graphRows) {
       const product = this.buildProduct(row, materializedSkus, salePriceDetails);
-      productsByID.set(product.getProductID(), product);
+      productsByID.set(cfFoldKey(product.getProductID()), product);
     }
 
     const ordered: Product[] = [];
     for (const productID of productIDs) {
-      const product = productsByID.get(productID);
+      const product = productsByID.get(cfFoldKey(productID));
       if (product !== undefined) {
         ordered.push(product);
       }
@@ -4028,7 +4169,22 @@ export class MysqlProductRepository implements ProductRepository {
       return indexed;
     }
 
-    const distinctProductIDs = [...new Set(productIDs)];
+    // ★ DISTINCTNESS AND INDEX IDENTITY ARE BOTH FOLDED. `new Set` and `Map` compare
+    // case-SENSITIVELY, so two spellings of one product identifier counted as two products: the
+    // resolver was asked TWICE for the same row - a duplicate read on the money path - and the
+    // lookup at {@link buildProduct} could then miss the entry entirely and hydrate a product whose
+    // sale-price map is silently empty, which reads downstream as "this product has no sale". The
+    // identifier passed to the resolver is the FIRST spelling encountered, unchanged, because that
+    // is what the legacy would have bound.
+    const distinctProductIDs: string[] = [];
+    const seenProductIdentities = new Set<string>();
+    for (const productID of productIDs) {
+      const identity = cfFoldKey(productID);
+      if (!seenProductIdentities.has(identity)) {
+        seenProductIdentities.add(identity);
+        distinctProductIDs.push(productID);
+      }
+    }
 
     const resolved = await Promise.all(
       distinctProductIDs.map(
@@ -4040,7 +4196,7 @@ export class MysqlProductRepository implements ProductRepository {
     );
 
     for (const [productID, details] of resolved) {
-      indexed.set(productID, details);
+      indexed.set(cfFoldKey(productID), details);
     }
 
     return indexed;
@@ -4336,6 +4492,11 @@ export class MysqlProductRepository implements ProductRepository {
     // The remaining collaborator ports, forwarded exactly as injected. Each is optional on the entity, so
     // each is assigned only when present - see {@link ProductHydrationCollaborators} for what each absence
     // costs and where it is documented.
+    if (this.collaborators.productPresentationSettingsProvider !== undefined) {
+      draft.productPresentationSettingsProvider =
+        this.collaborators.productPresentationSettingsProvider;
+    }
+
     if (this.collaborators.settingsProvider !== undefined) {
       draft.settingsProvider = this.collaborators.settingsProvider;
     }
@@ -4358,7 +4519,7 @@ export class MysqlProductRepository implements ProductRepository {
     // and `exactOptionalPropertyTypes` refuses an explicit `undefined`. An absent entry and an empty map
     // are indistinguishable to every reader - [model/entity/Sku.cfc:L547] and [L554] both probe with
     // `structKeyExists` first - which is why omitting is safe and not merely convenient.
-    const productSalePriceDetails = salePriceDetails.get(productID);
+    const productSalePriceDetails = salePriceDetails.get(cfFoldKey(productID));
     if (productSalePriceDetails !== undefined) {
       draft.salePriceDetailsForSkus = productSalePriceDetails;
     }
@@ -4800,8 +4961,10 @@ export class MysqlProductRepository implements ProductRepository {
 // would be worse than the throw: a caller would believe an import had happened. The execution-model
 // mismatch is a PLATFORM FACT and is stated as one - the calling service raises the request timeout to
 // 3600 seconds immediately before delegating [model/service/ProductService.cfc:L65-L68], AWS Lambda
-// caps a single invocation at 15 minutes, and API Gateway caps a request at 29 seconds. Those are
-// published platform limits, not a performance judgement about the legacy code, and NO LATENCY,
+// caps a single invocation at 15 minutes, and API Gateway bounds an integration per API type - 30 s for
+// an HTTP API, 29 s by default for a REST API and raisable only for Regional and private REST APIs.
+// Those are published platform limits rather than one universal cap, not a performance judgement about
+// the legacy code, and NO LATENCY,
 // THROUGHPUT, AVAILABILITY OR UPTIME CLAIM IS MADE OR IMPLIED ANYWHERE IN THIS MODULE (B7).
 //
 // Nothing is invented to work around it: no batching, no chunking, no offset, cursor or resume

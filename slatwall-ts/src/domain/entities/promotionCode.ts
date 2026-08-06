@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/domain/entities/promotion.ts                  Promotion entity
 //   tests/traceability/legacyTestMap.ts               structural coverage map
@@ -748,7 +746,7 @@ export class PromotionCode {
    * time through the engine's `now()` built-in, which depended on the server's timezone and could
    * not be controlled from a test. Injecting it makes `getCurrentFlag()` deterministic while
    * leaving that method's signature at ZERO ARGUMENTS - the entity-layer signature-widening budget
-   * is fully spent on `PromotionPeriod.isCurrent(now: Date)` and nothing here widens anything.
+   * is fully spent on `PromotionPeriod.isCurrent(now?: Date)` and nothing here widens anything.
    */
   private readonly now: () => Date;
 
@@ -1090,7 +1088,7 @@ export class PromotionCode {
    *
    * ZERO ARGUMENTS, matching the legacy arity exactly. Current time arrives through the injected
    * clock, so the method stays deterministic without widening its signature - the entity-layer
-   * widening budget is fully spent on `PromotionPeriod.isCurrent(now: Date)` and nothing is spent
+   * widening budget is fully spent on `PromotionPeriod.isCurrent(now?: Date)` and nothing is spent
    * here.
    *
    * THE FOUR SEMANTICS REPRODUCED EXACTLY, each traceable to
@@ -1900,7 +1898,7 @@ export class PromotionCode {
   // from the persistence tier - and that is a directed transformation the AAP mandates for all four
   // hook-bearing entities, not a discretionary choice made here. It changes who calls the method, not
   // what the method is. The transformation plan's sole entity-layer signature spend remains
-  // `PromotionPeriod.isCurrent(now: Date)`, and this file does not add a second one.
+  // `PromotionPeriod.isCurrent(now?: Date)`, and this file does not add a second one.
   //
   // The mandate reaches the METHOD, which is why it is authored. It does not by itself supply the
   // CALLER, and the caller is where the four hook-bearing entities part company. TWO of them have a
@@ -1991,7 +1989,7 @@ export class PromotionCode {
 // ---------------------------------------------------------------------------
 // CANONICAL FAR-SIDE CONTRACT REQUIRED OF `./promotion.js`
 //
-// `slatwall-ts/src/domain/entities/promotion.ts` (planned) is authored separately, so the requirements this
+// `slatwall-ts/src/domain/entities/promotion.ts` is authored separately, so the requirements this
 // file places on it are stated here as CANONICAL and must not be renamed later. All four are read
 // straight off the verbatim legacy source, not inferred.
 //
@@ -2138,10 +2136,10 @@ export class PromotionCode {
 // ---------------------------------------------------------------------------
 // TEST CONTRACT - NET-NEW COVERAGE, NEVER PARITY.
 //
-// `tests/unit/domain/entities/promotionCode.test.ts` (planned) is authored separately; that tier is owned
+// `tests/unit/domain/entities/promotionCode.test.ts` is authored separately; that tier is owned
 // elsewhere and NO test file is created from here. `PromotionCode` has NO legacy test whatsoever, so
 // its coverage is one of the SIXTEEN NET-NEW entity suites and must be labelled NET-NEW - presenting
-// it as parity fails the coverage gate. It must also appear in `tests/traceability/legacyTestMap.ts` (planned),
+// it as parity fails the coverage gate. It must also appear in `tests/traceability/legacyTestMap.ts`,
 // flagged net-new, because that map fails the suite when an in-scope module has no test. Regression
 // tests follow the `issue_<ticket#>` convention carried over from meta/tests/unit/IssuesTest.cfc.
 //

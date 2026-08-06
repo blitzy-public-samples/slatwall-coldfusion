@@ -123,7 +123,7 @@ import type {
   UrlTitleGenerator,
   UrlTitleTableName,
 } from '../../../src/domain/ports/urlTitleGenerator.js';
-import { BrandService, BrandValidationError } from '../../../src/services/brandService.js';
+import { BrandService } from '../../../src/services/brandService.js';
 import type { BrandFrameworkWrites, BrandSaveInput } from '../../../src/services/brandService.js';
 
 /**
@@ -173,6 +173,26 @@ const PERSISTED_AUDIT_ACCOUNT_ID = 'audit-actor-account';
  */
 class RecordingBrandFrameworkWrites implements BrandFrameworkWrites {
   readonly saves: Brand[] = [];
+
+  /** The uniqueness probes the service made, in order. */
+  readonly uniquenessProbes: { urlTitle: string; brandID: string }[] = [];
+
+  /**
+   * Titles the double reports as ALREADY TAKEN, matched case-insensitively.
+   *
+   * MySQL's default collation is case-insensitive and the real probe is a `WHERE urlTitle = ?`, so a
+   * double that compared case-sensitively would let a case-only collision pass a test the datastore
+   * would refuse.
+   */
+  takenUrlTitles: readonly string[] = [];
+
+  isUrlTitleUnique(urlTitle: string, brandID: string): Promise<boolean> {
+    this.uniquenessProbes.push({ urlTitle, brandID });
+
+    const wanted = urlTitle.toLowerCase();
+
+    return Promise.resolve(!this.takenUrlTitles.some((taken) => taken.toLowerCase() === wanted));
+  }
 
   saveBrand(brand: Brand): Promise<Brand> {
     this.saves.push(brand);
@@ -514,19 +534,37 @@ describe('BrandService', () => {
       // required, so a port that evaluated the rules in a different order would report
       // the other one - which is exactly why the property is asserted rather than just
       // the class.
-      await expect(service.saveBrand(brand, data)).rejects.toBeInstanceOf(BrandValidationError);
-      await expect(service.saveBrand(brand, data)).rejects.toMatchObject({
-        propertyName: 'brandName',
-      });
+      // ★★★ THE REFUSAL COMES BACK ON THE ENTITY, AND THAT IS THE THIRD READING OF THIS CASE. It
+      // asserted `rejects.toBeInstanceOf(BrandValidationError)` and
+      // `rejects.toMatchObject({propertyName: 'brandName'})` - a throw. Code review recorded the
+      // throw itself as the divergence: `HibachiService.save`
+      // [org/Hibachi/HibachiService.cfc:L151-L167] leaves the errors on the entity, skips the flush,
+      // and RETURNS THE ENTITY. `src/domain/entities/brand.ts` now publishes that register, so the
+      // refusal is read off the answer rather than caught.
+      const refused = await service.saveBrand(brand, data);
+
+      expect(refused.hasErrors()).toBe(true);
+      expect(refused.hasError('brandName')).toBe(true);
+      expect(refused.getError('brandName')).toStrictEqual(['brandName is required']);
+
+      // ★ BOTH FAILED RULES ARE REPORTED, not just the first - `validate()` accumulated every one
+      // through `addError` [org/Hibachi/HibachiTransient.cfc:L61-L64] before the flush asked
+      // `hasErrors()` once. `urlTitle` is unset and also required, and the ORDER is the JSON's own
+      // listed order, which is why the names are asserted as a sequence.
+      expect(Object.keys(refused.getErrors())).toStrictEqual(['brandName', 'urlTitle']);
 
       expect(urlTitleGenerator.requests).toStrictEqual([]);
       expect(Object.hasOwn(data, 'urlTitle')).toBe(false);
       expect(data).toStrictEqual({});
 
       // ★ AND NO ROW WAS WRITTEN, which is the assertion that makes the refusal mean
-      // something. `rejects` alone would also be satisfied by a method that wrote the row
-      // and then threw on the way out.
+      // something. An answered entity alone would also be satisfied by a method that wrote the row
+      // and reported errors anyway.
       expect(frameworkWrites.saves).toStrictEqual([]);
+
+      // ★ NOR WAS THE UNIQUENESS PROBE MADE. It is gated on the `required` half of the SAME rule
+      // passing, because probing for an empty candidate would match every row whose title is null.
+      expect(frameworkWrites.uniquenessProbes).toStrictEqual([]);
     });
 
     it('treats an empty payload urlTitle as absent and generates', async () => {
@@ -786,6 +824,87 @@ describe('BrandService', () => {
       expect(brand.getBrandID()).toBe('brand-with-a-full-payload');
       expect(brand.getBrandName()).toBeUndefined();
       expect(brand.getRemoteID()).toBeUndefined();
+    });
+
+    // -----------------------------------------------------------------------
+    // THE `unique` HALF OF THE `urlTitle` RULE, NOW A VALIDATION RULE RATHER THAN A WRITE ERROR
+    //
+    // ★★★ WHY THESE CASES ARE HERE AND NOT IN THE COMPOSITION-ROOT SUITE. The probe used to run
+    // inside the writer, which threw `BrandUrlTitleNotUniqueError` on a collision - so a rule
+    // declared in [model/validation/Brand.json] alongside `required` was reported by a different
+    // mechanism from its own sibling. The legacy evaluated it in `validate`
+    // [org/Hibachi/HibachiService.cfc:L151], reaching `HibachiDAO.isUniqueProperty`
+    // [org/Hibachi/HibachiDAO.cfc:L130-L147] from there, so the service is where it belongs and the
+    // service's suite is where it is asserted.
+    // -----------------------------------------------------------------------
+
+    it('★ REFUSES on the entity when the resolved urlTitle is already taken', async () => {
+      frameworkWrites.takenUrlTitles = [PAYLOAD_DERIVED_URL_TITLE];
+
+      const brand = new Brand({ brandID: 'brand-whose-slug-collides' });
+      const data: BrandSaveInput = { brandName: PAYLOAD_BRAND_NAME };
+
+      const refused = await service.saveBrand(brand, data);
+
+      // The title WAS generated - the collision is discovered after generation, exactly as the legacy
+      // discovers it after populate - and the rule then refuses.
+      expect(urlTitleGenerator.requests).toStrictEqual([
+        { titleString: PAYLOAD_BRAND_NAME, tableName: 'SwBrand' },
+      ]);
+      expect(refused.hasErrors()).toBe(true);
+      expect(refused.getError('urlTitle')).toStrictEqual([
+        'urlTitle is already held by another brand and must be unique',
+      ]);
+
+      // ★ AND NOTHING WAS WRITTEN. This is the assertion the old throw-in-the-writer shape could not
+      // make honestly: the writer had already begun its work before it decided to refuse.
+      expect(frameworkWrites.saves).toStrictEqual([]);
+    });
+
+    it('★ EXCLUDES the saving brand from the uniqueness probe, so re-saving is not a self-collision', async () => {
+      const brand = new Brand({
+        brandID: 'already-persisted-brand',
+        urlTitle: 'a-title-this-brand-already-holds',
+        brandName: 'Entity Brand',
+      });
+
+      await runSave(service, brand, {});
+
+      // `HibachiDAO.isUniqueProperty` [org/Hibachi/HibachiDAO.cfc:L130-L147] excludes the entity's own
+      // row, which is what lets an update keep its existing title. The probe therefore carries BOTH
+      // the candidate and the identifier to exclude.
+      expect(frameworkWrites.uniquenessProbes).toStrictEqual([
+        { urlTitle: 'a-title-this-brand-already-holds', brandID: 'already-persisted-brand' },
+      ]);
+      expect(frameworkWrites.saves).toHaveLength(1);
+    });
+
+    it('★ probes with the EMPTY identifier for a new brand, which excludes nothing', async () => {
+      // A new brand's identifier is the empty string [model/entity/Brand.cfc:L52, `unsavedvalue=""`],
+      // which matches no stored row - so nothing is excluded, which is exactly right for an entity
+      // that has no row yet.
+      const brand = new Brand({ brandID: '' });
+      const data: BrandSaveInput = { brandName: PAYLOAD_BRAND_NAME };
+
+      await runSave(service, brand, data);
+
+      expect(frameworkWrites.uniquenessProbes).toStrictEqual([
+        { urlTitle: PAYLOAD_DERIVED_URL_TITLE, brandID: '' },
+      ]);
+    });
+
+    it('★ treats a CASE-DIFFERING stored title as a collision, because MySQL does', async () => {
+      // The real probe is `WHERE urlTitle = ?` against a column under MySQL's default
+      // case-insensitive collation, so a stored `ACME` collides with a candidate `acme`. A port that
+      // compared case-sensitively would report the save as clean and then hit the column constraint.
+      frameworkWrites.takenUrlTitles = [PAYLOAD_DERIVED_URL_TITLE.toUpperCase()];
+
+      const brand = new Brand({ brandID: 'brand-with-a-case-differing-collision' });
+
+      const refused = await service.saveBrand(brand, { brandName: PAYLOAD_BRAND_NAME });
+
+      expect(refused.hasErrors()).toBe(true);
+      expect(frameworkWrites.saves).toStrictEqual([]);
     });
 
     it('reaches BOTH collaborators only through the constructor, never through a locator', async () => {

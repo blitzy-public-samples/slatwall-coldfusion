@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/domain/entities/promotion.ts                     Promotion entity
 //   tests/traceability/legacyTestMap.ts                  structural coverage map
@@ -121,7 +119,7 @@
 import type { Promotion } from './promotion.js';
 
 // LEGACY-NOTE [model/entity/PromotionAccount.cfc:L92-L93] - FAR-SIDE ANTI-CONTRACT, DO NOT "FIX":
-// `slatwall-ts/src/domain/entities/promotion.ts` (planned) MUST NOT gain a `promotionAccounts` collection,
+// `slatwall-ts/src/domain/entities/promotion.ts` MUST NOT gain a `promotionAccounts` collection,
 // MUST NOT expose `getPromotionAccounts()`, and MUST NOT expose `hasPromotionAccount()`.
 // model/entity/Promotion.cfc declares exactly three collections - L62 `promotionPeriods`, L63
 // `promotionCodes`, L64 `appliedPromotions` - and none of them is `promotionAccounts`. That was
@@ -665,11 +663,11 @@ export class PromotionAccount {
 
 // TEST CONTRACT - NET-NEW COVERAGE, NEVER PARITY.
 //
-// `tests/unit/domain/entities/promotionAccount.test.ts` (planned) is authored separately; the test tier is
+// `tests/unit/domain/entities/promotionAccount.test.ts` is authored separately; the test tier is
 // owned elsewhere and no test file is created from here. `PromotionAccount` has NO legacy test
 // whatsoever, so its coverage is one of the sixteen net-new entity suites and must be labelled as
 // such - presenting it as parity fails the coverage gate. It must also appear in
-// `tests/traceability/legacyTestMap.ts` (planned), flagged net-new, because that map fails the suite when an
+// `tests/traceability/legacyTestMap.ts`, flagged net-new, because that map fails the suite when an
 // in-scope module has no test. Regression tests in this project follow the `issue_<ticket#>`
 // convention carried over from meta/tests/unit/IssuesTest.cfc.
 //

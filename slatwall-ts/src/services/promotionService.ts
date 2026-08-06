@@ -211,7 +211,7 @@
 //   entity parameter to an opaque identifier - `Account` to `accountID: string` - is sanctioned and
 //   is NOT a reshaping.
 //
-// SIGNATURE WIDENINGS: one project-wide, already spent on `isCurrent(now: Date)` in
+// SIGNATURE WIDENINGS: one project-wide, already spent on `isCurrent(now?: Date)` in
 //   `src/domain/entities/promotionPeriod.ts`. ZERO REMAIN, and no method here gained a parameter.
 //   This ledger is distinct from the visibility ledger above.
 //
@@ -220,6 +220,14 @@
 //   (b) register entry 12, the `amountOff` float gap - closed by routing through `Money`.
 //   (c) register entry 19's entity memo bug in `src/domain/entities/product.ts` - already spent.
 //   THERE IS NO FOURTH. Every other finding is reproduced, not repaired.
+//
+//   ONE NEIGHBOURING DECISION IS DELIBERATELY NOT COUNTED HERE, and a code review asked for it to
+//   be stated where the budget is stated. `src/services/productService.ts` refuses a
+//   caller-supplied default-image path [model/service/ProductService.cfc:L241-L250]. That is a
+//   security refusal on a method AAP 0.2.2 ports as a thin pass-through to a stub port, it repairs
+//   no numbered register entry, and AAP 0.6.7's budget is a register-repair budget - so it is
+//   registered in `tests/traceability/legacyTestMap.ts` under `outOfScopeSecurityRefusals`, with a
+//   gate of its own, rather than counted against the three above. The budget here stays at three.
 //
 //   LEGACY-DEFECT [model/service/PromotionService.cfc:L1007, L1009, L1014]: `discountAmount` is
 //   assigned without `var` at THREE sites - not the two the specification cites - leaking into the

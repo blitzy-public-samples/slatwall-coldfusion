@@ -483,6 +483,17 @@ export type SkuHydrationInput = {
   readonly calculatedQATS?: number;
 
   // Remote property [L90] and audit properties [L93-L96].
+  //
+  // ★★★ THE FOUR AUDIT MEMBERS ARE REPOSITORY-CONTROLLED DATA, NOT A CALLER-FACING CHANNEL, AND THAT
+  // DISTINCTION IS ENFORCED WHERE WRITES HAPPEN RATHER THAN HERE. They are accepted because a hydration
+  // input has to be able to PROJECT A ROW - `src/repositories/mysql/mysqlSkuRepository.ts` reads all
+  // four out of `SwSku` and constructs the entity from them - and no handler maps external input into
+  // any of them. What a code review flagged is what would follow if a write seam were ever exposed, so
+  // the write side is where it is closed: S-07 makes the UPDATE resolve `createdByAccountID` and
+  // `modifiedByAccountID` against the STORED values through `COALESCE`, and the same review closed the
+  // timestamp half by removing `createdDateTime` from the UPDATE assignment list outright. A
+  // hand-built `Sku` therefore cannot rewrite an existing row's creation chronology or its actors, no
+  // matter what these members claim.
   readonly remoteID?: string;
   readonly createdDateTime?: Date;
   readonly createdByAccountID?: string;

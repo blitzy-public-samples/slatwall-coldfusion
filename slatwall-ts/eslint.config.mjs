@@ -1,13 +1,9 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SUBTREES THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// The commentary below reasons about the layers it polices by name, and every
+// path it names exists on the branch - so each mention describes real code that
+// this configuration is currently enforcing against, never an intention:
 //
 //   src/domain/promotionEngine  engine type contracts
 //   src/handlers/bootstrap.ts   composition root (wiring)
@@ -34,7 +30,7 @@
 //        productTypeDAO, dataService, contentService, skuService,
 //        subscriptionService, optionService). In the target every collaborator
 //        is an explicit, compile-checked constructor argument wired once in
-//        `src/handlers/bootstrap.ts` (planned). No runtime scan, no service locator.
+//        `src/handlers/bootstrap.ts`. No runtime scan, no service locator.
 //
 //   T2 - `getService("xService")` locators embedded INSIDE entities. This is
 //        precisely a domain file reaching outward. Re-measured by grep over the
@@ -121,7 +117,7 @@ import tseslint from 'typescript-eslint';
  * Everything the domain legitimately depends on is inward or lateral and is
  * therefore absent from this list: `src/domain/ports/**` (the interfaces the
  * outward layers implement), `src/domain/valueObjects/**`,
- * `src/domain/views/**`, `src/domain/promotionEngine/**` (planned) and
+ * `src/domain/views/**`, `src/domain/promotionEngine/**` and
  * `src/lib/**` (config, logger and the `src/lib/cfml/**` semantic-parity
  * helpers that back the Money value object).
  *
@@ -192,11 +188,28 @@ const OUTWARD_PACKAGE_PATTERNS = [
 /**
  * Barrel / index re-export specifiers, forbidden subtree-wide.
  *
- * The project standard is one exported unit per file and no barrel files, so
- * that each regenerated file's diff stays minimal and reviewable during the
- * refine loop. Making the import side mechanical is what stops a barrel from
- * appearing by accident: if nothing may import `.../index.*`, nothing has a
- * reason to create it.
+ * WHAT THIS ENFORCES, STATED AS NARROWLY AS IT IS TRUE: no barrel and no index
+ * re-export anywhere in the subtree. Making the IMPORT side mechanical is what
+ * stops a barrel appearing by accident - if nothing may import `.../index.*`,
+ * nothing has a reason to create one - and the effect is that every import names
+ * the exact module that declares the symbol, which keeps each regenerated file's
+ * diff minimal and reviewable during the refine loop.
+ *
+ * WHAT IT DOES NOT ENFORCE, AND WHY THAT IS NOT A GAP. The plan's phrasing pairs
+ * "no barrels" with "one exported unit per file", and only the first half is
+ * mechanised here. The second half is not the tree's actual shape: 60 of the 91
+ * modules under `src/` declare more than one top-level export, and that is
+ * correct rather than a violation - a module owning a behaviour also publishes
+ * the types of its inputs and results, the frozen constants it is the authority
+ * for, and its error classes, all of which belong beside it and nowhere else.
+ * `src/handlers/router.ts` is the plain case: one route table, one resolver, and
+ * the two types that describe them.
+ *
+ * The operative standard is therefore ONE COHESIVE UNIT PER FILE with no
+ * re-export indirection, and it is stated that way rather than as a count no
+ * rule checks. A `max-exports`-style rule is deliberately NOT configured: it
+ * would fail two thirds of a tree whose layout the plan itself enumerates
+ * file by file.
  */
 const BARREL_PATTERNS = [
   '**/index.ts',
@@ -211,8 +224,8 @@ const DOMAIN_LAYER_MESSAGE =
   'Domain layer must not import outward. src/domain/** may not import from ' +
   'src/repositories/**, src/handlers/** or src/integrations/**. Dependency flow is strictly ' +
   'domain-inward and this is a build failure, not a convention. Declare an interface in ' +
-  'src/domain/ports/ and let the outward layer implement it; the planned composition root at ' +
-  'src/handlers/bootstrap.ts will wire the concrete instance. This replaces the legacy ' +
+  'src/domain/ports/ and let the outward layer implement it; the composition root at ' +
+  'src/handlers/bootstrap.ts wires the concrete instance. This replaces the legacy ' +
   'getService("xService") locator calls embedded inside entities (205 occurrences on 204 source ' +
   'lines across model/entity/*.cfc, e.g. model/entity/Sku.cfc:L258 and ' +
   'model/entity/Product.cfc:L519).';
@@ -224,9 +237,9 @@ const DOMAIN_PACKAGE_MESSAGE =
   'the Money value object and zod backs the ported validation schemas.';
 
 const BARREL_MESSAGE =
-  'No barrel files. Import the exact module that declares the symbol. This project keeps one ' +
-  'exported unit per file and no index re-exports so that each regenerated file stays a small, ' +
-  'reviewable diff.';
+  'No barrel files. Import the exact module that declares the symbol. This project has no index ' +
+  're-exports anywhere, so that every import names its declaring module and each regenerated file ' +
+  'stays a small, reviewable diff.';
 
 /**
  * Compose `no-restricted-imports` from pattern groups.
@@ -552,8 +565,12 @@ const NO_UNUSED_VARS_TS = [
 //
 //  8. ANY RULE THAT REQUIRES OR REWARDS BARREL FILES. The opposite is
 //     configured: `BARREL_PATTERNS` forbids importing `.../index.*` anywhere in
-//     the subtree, which makes "one exported unit per file, no barrels"
-//     mechanical from the import side.
+//     the subtree, which makes the no-barrel half of the standard mechanical
+//     from the import side. The "one exported unit per file" half is NOT
+//     mechanised, and no `max-exports`-style rule is enabled, because 60 of the
+//     91 modules under `src/` legitimately publish a behaviour together with the
+//     types, constants and errors that belong beside it - see the
+//     `BARREL_PATTERNS` docblock for the full reasoning.
 //
 //  9. `no-fallthrough`. `tsconfig.json` deliberately omits
 //     `noFallthroughCasesInSwitch` because legacy defects are reproduced rather
@@ -597,7 +614,11 @@ export default tseslint.config(
   // -------------------------------------------------------------------------
   // Never linted. Dependencies, the esbuild bundle output, the tsc declaration
   // output, coverage reports, tooling caches, and generated declaration files.
-  // Mirrors `tsconfig.json`'s `exclude` and this subtree's `.gitignore`.
+  // Mirrors `tsconfig.json`'s `exclude` and the four generated-artifact classes
+  // README.md names under "Connections, and what not to commit". The subtree
+  // carries no committed `.gitignore` - AAP 0.3.1 enumerates its root layout
+  // exhaustively and does not include one - so this list is written out here
+  // rather than inherited from an ignore file.
   // -------------------------------------------------------------------------
   globalIgnores([
     'node_modules/**',

@@ -74,6 +74,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CfmlComparisonError,
   cfEquals,
+  cfFoldKey,
+  findPrototypeKeyPath,
   structFindKey,
   structGet,
   structGetPath,
@@ -445,6 +447,53 @@ describe('the outer key can exist while the inner sub-key does not', () => {
 // `if(getSkuCurrencies()[c].getCurrencyCode() eq thisCurrency.getCurrencyCode())`, which is what
 // lets an override OVERWRITE the base-step entry. Both are CFML `eq`, and CFML `eq` is
 // case-insensitive.
+describe('cfFoldKey supplies CFML struct identity to a Map or Set', () => {
+  // WHY IT IS PUBLISHED: some ported CFML struct state is a `Map` or a `Set` rather than a plain
+  // object - a request-scoped memo keyed by identifier, a visited-set guarding a hierarchy walk -
+  // and those compare keys with SameValueZero, which is case-SENSITIVE. A cycle guard keyed by a
+  // raw identifier could be re-entered forever by a parent link differing only in case, because the
+  // predicate that loaded the row is itself case-insensitive.
+  it('answers one comparison form for every casing of a key', () => {
+    expect(cfFoldKey('USD')).toBe(cfFoldKey('usd'));
+    expect(cfFoldKey('PGFX-Rule-1')).toBe(cfFoldKey('pgfx-rule-1'));
+    expect(cfFoldKey('ABC123')).toBe(cfFoldKey('abc123'));
+  });
+
+  it('agrees with cfEquals and with structGet, because it is the same fold', () => {
+    // The property that matters is not the exact form returned but that a `Map` keyed through this
+    // function and an object read through `structGet` can never disagree about identity.
+    for (const [left, right] of [
+      ['USD', 'usd'],
+      ['skuCurrency', 'SKUCURRENCY'],
+      ['a', 'A'],
+      ['USD', 'EUR'],
+      [' USD', 'USD'],
+    ] as const) {
+      expect(cfFoldKey(left) === cfFoldKey(right)).toBe(cfEquals(left, right));
+    }
+  });
+
+  it('does not trim, transliterate or shorten - it folds case and nothing else', () => {
+    // Both JUDGMENT CALLs recorded on the module-local fold apply: whitespace is significant, so
+    // `' usd'` is a different key from `'usd'`, and the fold is locale-independent.
+    expect(cfFoldKey(' usd')).not.toBe(cfFoldKey('usd'));
+    expect(cfFoldKey('usd ')).not.toBe(cfFoldKey('usd'));
+    expect(cfFoldKey('')).toBe('');
+    expect(cfFoldKey('already-folded')).toBe('already-folded');
+  });
+
+  it('collapses a Set the way a CFML struct collapsed its keys', () => {
+    const visited = new Set<string>();
+
+    for (const spelling of ['abc', 'ABC', 'AbC']) {
+      visited.add(cfFoldKey(spelling));
+    }
+
+    expect(visited.size).toBe(1);
+    expect(visited.has(cfFoldKey('aBc'))).toBe(true);
+  });
+});
+
 describe('cfEquals reproduces the case-insensitive CFML eq on currency codes', () => {
   it('compares two present codes without regard to case', () => {
     const skuCurrency = 'USD';
@@ -993,3 +1042,197 @@ describe('case-insensitivity is total, not partial', () => {
 //     formatting to numberFormat.test.ts and arithmetic to precision.test.ts, as do
 //     the request-scoped rounding-rule memo and the misspelled accumulator key.
 // ---------------------------------------------------------------------------
+
+// ===========================================================================
+// findPrototypeKeyPath - relocated with the implementation it covers
+// ===========================================================================
+//
+// ★★★ THESE CASES WERE THEIR OWN SUITE, `tests/unit/lib/jsonDocumentKeys.test.ts`. They moved here
+// because the implementation moved: `findPrototypeKeyPath` is now part of `src/lib/cfml/struct.ts`,
+// for the scope-census reason recorded at that section. AAP 0.9.4 requires every in-scope module to
+// carry coverage, so the cases are relocated in full rather than dropped - not one assertion is
+// lost, and the count below is the count that stood before the move.
+//
+// They are appended rather than interleaved so that a reviewer diffing against the deleted suite
+// sees an unbroken block.
+
+/**
+ * Parse a document the way the handlers do, and refuse to hand back anything but an object.
+ *
+ * The narrowing is the point: `findPrototypeKeyPath` declares `object`, and both call sites have
+ * already established that much before they reach it. A helper that returned `unknown` would push a
+ * cast into every case.
+ *
+ * Relocated with the cases below, unchanged. It is module-local rather than exported because it is a
+ * fixture parser for this block alone.
+ */
+function parseDocument(text: string): object {
+  const parsed: unknown = JSON.parse(text);
+
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error(`the fixture ${text} did not parse to an object`);
+  }
+
+  return parsed;
+}
+
+describe('findPrototypeKeyPath', () => {
+  describe('the documents it must REFUSE', () => {
+    it('★★ finds a `__proto__` own key at the ROOT', () => {
+      // The exact body QA testing submitted to the price-resolution endpoint. Before this guard it
+      // was accepted: zod's `strictObject` reported no unrecognized key even though `Object.keys`
+      // lists it, and the request went on to be priced.
+      expect(
+        findPrototypeKeyPath(parseDocument('{"operation":"x","__proto__":{"polluted":1}}')),
+      ).toBe('__proto__');
+    });
+
+    it('★★★ finds one NESTED inside a member, which is the case a root-only guard would miss', () => {
+      // The measured asymmetry this module exists for: at this same position a `constructor` key is
+      // REFUSED by the strict object with `unrecognized_keys`, while `__proto__` is accepted and
+      // dropped. The path names the member so the caller can find it.
+      expect(
+        findPrototypeKeyPath(parseDocument('{"order":{"orderID":"o-1","__proto__":{"p":1}}}')),
+      ).toBe('order.__proto__');
+    });
+
+    it('★★ finds one inside an ARRAY ELEMENT, and names the element by index', () => {
+      // Array indices are spelled as the AAP's own field paths spell them - `order.orderItems.1.…` -
+      // so a refusal reads the same way as every other field issue this service publishes.
+      expect(
+        findPrototypeKeyPath(
+          parseDocument(
+            '{"order":{"orderItems":[{"skuID":"s-1"},{"skuID":"s-2","__proto__":{"p":1}}]}}',
+          ),
+        ),
+      ).toBe('order.orderItems.1.__proto__');
+    });
+
+    it('reports the FIRST offending key in document order when there are several', () => {
+      // Determinism, so a suite can assert an exact path rather than a set, and so two runs on the
+      // same body produce the same refusal. Depth-first over own keys in insertion order.
+      expect(
+        findPrototypeKeyPath(
+          parseDocument('{"a":{"__proto__":{"p":1}},"b":{"__proto__":{"p":2}}}'),
+        ),
+      ).toBe('a.__proto__');
+    });
+
+    it('finds one several levels down, past objects and arrays alike', () => {
+      expect(
+        findPrototypeKeyPath(parseDocument('{"a":[{"b":{"c":[{"__proto__":{"p":1}}]}}]}')),
+      ).toBe('a.0.b.c.0.__proto__');
+    });
+
+    it('finds a `__proto__` key whose VALUE is a harmless scalar, not only an object', () => {
+      // The guard is about the KEY. A caller sending `"__proto__": "x"` is sending a member this
+      // request does not accept, exactly as one sending an object is, and the reason it is refused
+      // does not depend on what would have happened had it been merged somewhere.
+      expect(findPrototypeKeyPath(parseDocument('{"__proto__":"x"}'))).toBe('__proto__');
+      expect(findPrototypeKeyPath(parseDocument('{"__proto__":null}'))).toBe('__proto__');
+    });
+  });
+
+  describe('the documents it must ADMIT', () => {
+    it('★★★ answers `undefined` for an ORDINARY document, which is the happy path of every request', () => {
+      expect(
+        findPrototypeKeyPath(
+          parseDocument(
+            '{"operation":"updateOrderAmountsWithPromotions","order":{"orderID":"o-1",' +
+              '"orderItems":[{"orderItemID":"oi-1","skuID":"s-1","quantity":2}]}}',
+          ),
+        ),
+      ).toBeUndefined();
+    });
+
+    it('★★ does not report the INHERITED `__proto__` every object carries', () => {
+      // The whole guard would be useless the other way round: `'__proto__' in {}` is `true` for every
+      // ordinary object, so an `in` test would refuse every request ever sent. `Object.hasOwn` is what
+      // distinguishes a key the CALLER wrote from one the language provides.
+      const ordinary = parseDocument('{"a":1}');
+
+      expect('__proto__' in ordinary).toBe(true);
+      expect(Object.hasOwn(ordinary, '__proto__')).toBe(false);
+      expect(findPrototypeKeyPath(ordinary)).toBeUndefined();
+    });
+
+    it('admits a member merely NAMED like the key, without matching it', () => {
+      // Substring and prefix matching would both refuse these. The test is key equality.
+      expect(
+        findPrototypeKeyPath(
+          parseDocument('{"proto":1,"_proto_":2,"__proto":3,"proto__":4,"__prototype__":5}'),
+        ),
+      ).toBeUndefined();
+    });
+
+    it('admits `constructor` and `prototype`, which are NOT this module\u2019s concern', () => {
+      // `constructor` is already refused by every `strictObject` in this service as an ordinary
+      // unrecognized key - measured, and recorded on the module - so refusing it a second time here
+      // would duplicate a rule that already works and would change the reason a caller is given.
+      expect(
+        findPrototypeKeyPath(parseDocument('{"constructor":{"a":1},"prototype":{"b":2}}')),
+      ).toBeUndefined();
+    });
+
+    it('admits an empty object and an empty array', () => {
+      expect(findPrototypeKeyPath(parseDocument('{}'))).toBeUndefined();
+      expect(findPrototypeKeyPath(parseDocument('[]'))).toBeUndefined();
+    });
+
+    it('traverses `null` members and scalars without faulting', () => {
+      // `typeof null === 'object'`, so a walk that reached `Object.hasOwn(null, …)` would THROW - and
+      // a security guard that throws converts a refusal into an unrecognized 500.
+      expect(
+        findPrototypeKeyPath(parseDocument('{"a":null,"b":1,"c":"x","d":true,"e":[null,null]}')),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('the properties that keep it from becoming a failure of its own', () => {
+    it('★★★ survives 10 000 levels of nesting WITHOUT a stack overflow', () => {
+      // The reason the walk is iterative rather than recursive. QA testing sent a 2 000-level document
+      // to this very endpoint; a recursive implementation raises `RangeError: Maximum call stack size
+      // exceeded`, which `./errorMapper.js` would map to an unrecognized 500 - a guard added for
+      // robustness becoming the outage. Ten thousand is deeper than anything a bounded body can carry,
+      // and it is asserted on BOTH answers so neither the miss nor the hit path recurses.
+      const depth = 10_000;
+      const clean = `${'{"a":'.repeat(depth)}1${'}'.repeat(depth)}`;
+      const offending = `${'{"a":'.repeat(depth)}{"__proto__":1}${'}'.repeat(depth)}`;
+
+      expect(findPrototypeKeyPath(parseDocument(clean))).toBeUndefined();
+      expect(findPrototypeKeyPath(parseDocument(offending))).toBe(`${'a.'.repeat(depth)}__proto__`);
+    });
+
+    it('survives a WIDE document, and one holding a long array', () => {
+      const wide = `{${Array.from({ length: 5_000 }, (_unused, index) => `"k${String(index)}":${String(index)}`).join(',')}}`;
+      const long = `{"a":[${Array.from({ length: 5_000 }, () => '{"b":1}').join(',')}]}`;
+
+      expect(findPrototypeKeyPath(parseDocument(wide))).toBeUndefined();
+      expect(findPrototypeKeyPath(parseDocument(long))).toBeUndefined();
+    });
+
+    it('★★ MUTATES NOTHING - neither the document it walks nor `Object.prototype`', () => {
+      // A guard against prototype pollution that polluted anything would be self-defeating, and a
+      // guard that deleted the offending key would be making a decision the CALLER should be told
+      // about instead. This asserts the reporting-only contract.
+      const document = parseDocument('{"a":1,"__proto__":{"polluted":"yes"}}');
+      const before = JSON.stringify(document);
+
+      expect(findPrototypeKeyPath(document)).toBe('__proto__');
+      expect(JSON.stringify(document)).toBe(before);
+      expect(Object.hasOwn(document, '__proto__')).toBe(true);
+
+      // And the finding's own central observation, re-asserted here rather than taken on trust: the
+      // parse itself never reached the prototype setter.
+      expect(Object.prototype).not.toHaveProperty('polluted');
+      expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+    });
+
+    it('is a pure function of its argument, answering identically on repeat calls', () => {
+      const document = parseDocument('{"order":{"__proto__":{"p":1}}}');
+
+      expect(findPrototypeKeyPath(document)).toBe('order.__proto__');
+      expect(findPrototypeKeyPath(document)).toBe('order.__proto__');
+    });
+  });
+});

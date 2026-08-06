@@ -179,7 +179,7 @@
 
 import { listAppend, listLen } from '../../lib/cfml/list.js';
 import { cfNumberToString, numberFormat } from '../../lib/cfml/numberFormat.js';
-import { cfEquals } from '../../lib/cfml/struct.js';
+import { cfEquals, cfFoldKey } from '../../lib/cfml/struct.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { Money } from '../valueObjects/money.js';
@@ -365,7 +365,7 @@ export class PriceGroupRate {
    * option list rather than a free-text box, which is the schema's own statement that the value
    * space is closed.
    */
-  private readonly amountType: PriceGroupRateAmountType | undefined;
+  private amountType: PriceGroupRateAmountType | undefined;
 
   // --- Remote properties [model/entity/PriceGroupRate.cfc:L57-L58] -------------------------------
 
@@ -376,7 +376,7 @@ export class PriceGroupRate {
    * but `PriceGroupRate` does. An inert persisted column preserved for schema continuity: no
    * behaviour in the in-scope slice reads or writes it, and none is invented for it.
    */
-  private readonly remoteID: string | undefined;
+  private remoteID: string | undefined;
 
   // --- Audit properties [model/entity/PriceGroupRate.cfc:L60-L64] --------------------------------
   //
@@ -457,7 +457,7 @@ export class PriceGroupRate {
    * model/entity/PromotionReward.cfc references the same `RoundingRule` entity, which is why
    * `RoundingRule` is in scope at all.
    */
-  private readonly roundingRule: RoundingRule | undefined;
+  private roundingRule: RoundingRule | undefined;
 
   // --- Related object properties, many-to-many OWNER [model/entity/PriceGroupRate.cfc:L70-L77] ---
   //
@@ -863,6 +863,88 @@ export class PriceGroupRate {
     return this.priceGroupRateID === '';
   }
 
+  // ===========================================================================
+  // THE ERROR REGISTER - THE FRAMEWORK'S REFUSAL CHANNEL
+  //
+  // ★★★ THE FULL REASONING IS RECORDED ONCE, ON `src/domain/entities/product.ts`, and is not
+  // restated here. In one paragraph: `HibachiService.save`
+  // [org/Hibachi/HibachiService.cfc:L133-L169] populates, validates, and writes ONLY when
+  // `!arguments.entity.hasErrors()` [L153] - RETURNING THE ENTITY EITHER WAY [L167]. It never throws
+  // for a validation refusal, so the legacy refusal channel IS the entity and a caller inspects it.
+  // Without these members the ported service had nowhere to put a refusal and threw instead, which
+  // code review recorded as a behaviour defect: a legacy caller inspecting `hasErrors()` is sent
+  // into an exception path it has no handler for, losing both the populated entity and the reasons.
+  //
+  // PORTED SHAPE: `getErrors()` [org/Hibachi/HibachiTransient.cfc:L30-L32] is a STRUCT keyed by error
+  // name whose values are ARRAYS of messages; `hasErrors()` [L47-L53] is `structCount(...)`;
+  // `hasError(name)` [L57-L59] is `structKeyExists`; `addError(name, message)` [L61-L64] APPENDS, so
+  // two messages under one name accumulate. Keys are matched without regard to case, because a CFML
+  // struct key is. The register is transient instance state: never a column, never read by a
+  // repository, never populated by hydration.
+  // ===========================================================================
+
+  /**
+   * The accumulated errors, keyed by FOLDED error name and carrying each name's ORIGINAL spelling.
+   *
+   * ★ TWO PIECES OF STATE PER ENTRY, BECAUSE A CFML STRUCT CARRIES BOTH. `variables.errors[errorName]`
+   * [org/Hibachi/HibachiErrors.cfc:L15-L19] LOOKS UP case-insensitively but REMEMBERS the case of the
+   * key as first written, so a second `addError('URLTITLE', ...)` appends to the entry created by
+   * `addError('urlTitle', ...)` and `getErrors()` still reports it as `urlTitle`. Folding the stored
+   * key alone would have lower-cased every property identifier a caller reads back.
+   *
+   * Mutable; `addError` is the only writer.
+   */
+  private readonly errors = new Map<
+    string,
+    { readonly name: string; readonly messages: string[] }
+  >();
+
+  /** Every error, keyed by error name [org/Hibachi/HibachiTransient.cfc:L30-L32]. Frozen projection. */
+  getErrors(): Readonly<Record<string, readonly string[]>> {
+    const projected: Record<string, readonly string[]> = {};
+
+    for (const entry of this.errors.values()) {
+      // `defineProperty` rather than assignment: an error name is server-authored here, but the
+      // projection is a plain object and `__proto__` must never be interceptable on one.
+      Object.defineProperty(projected, entry.name, {
+        value: Object.freeze([...entry.messages]),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+
+    return Object.freeze(projected);
+  }
+
+  /** Whether this entity carries any error [org/Hibachi/HibachiTransient.cfc:L47-L53]. */
+  hasErrors(): boolean {
+    return this.errors.size > 0;
+  }
+
+  /** Whether one named error is present [org/Hibachi/HibachiTransient.cfc:L57-L59]. */
+  hasError(errorName: string): boolean {
+    return this.errors.has(cfFoldKey(errorName));
+  }
+
+  /** The messages under one name, or an EMPTY ARRAY [org/Hibachi/HibachiTransient.cfc:L34-L43]. */
+  getError(errorName: string): readonly string[] {
+    return Object.freeze([...(this.errors.get(cfFoldKey(errorName))?.messages ?? [])]);
+  }
+
+  /** Record one error; messages ACCUMULATE [org/Hibachi/HibachiTransient.cfc:L61-L64]. */
+  addError(errorName: string, errorMessage: string): void {
+    const key = cfFoldKey(errorName);
+    const existing = this.errors.get(key);
+
+    if (existing === undefined) {
+      this.errors.set(key, { name: errorName, messages: [errorMessage] });
+      return;
+    }
+
+    existing.messages.push(errorMessage);
+  }
+
   // ============  END: Framework-Generated Members =======================
 
   // ============ START: ORM-Generated Property Setters ===================
@@ -938,6 +1020,64 @@ export class PriceGroupRate {
    */
   setGlobalFlag(globalFlag: boolean): void {
     this.globalFlag = globalFlag;
+  }
+
+  // ===========================================================================
+  // THE REMAINING ORM-GENERATED SCALAR SETTERS - THE `populate` TARGETS
+  // ===========================================================================
+  //
+  // ★★★ WHY THEY ARE AUTHORED. `savePriceGroupRate` reaches persistence through
+  // `super.save(entity=..., data=...)` [model/service/PriceGroupService.cfc:L404], whose first step is
+  // `arguments.entity.populate(arguments.data)` [org/Hibachi/HibachiService.cfc:L145] - and populate
+  // copied EVERY matching persistent property from the admin form's request context before `validate`
+  // [L150] read it. Code review recorded the port's payload as "narrowed to ID/amount, omitting
+  // `amountType`, `globalFlag`, rounding rule, and other source-populated properties", which meant a
+  // caller could not set the very field the save context REQUIRES: `amountType` carries
+  // `{"contexts":"save","required":true}` [model/validation/PriceGroupRate.json], so a new rate could
+  // never be made valid through this method.
+  //
+  // THE SET IS FOUR SCALARS PLUS ONE ASSOCIATION, taken from the entity's own metadata rather than
+  // chosen: `globalFlag` [model/entity/PriceGroupRate.cfc:L53] (setter above, because the
+  // reconciliation block also writes it), `amount` [L54] (setter above, because `clearAmounts` needs
+  // it), `amountType` [L55], `remoteID` [L58] and the `roundingRule` many-to-one [L68]. The four audit
+  // properties each declare `hb_populateEnabled="false"` [L61-L64] - the framework's own instruction
+  // to skip them - and `priceGroupRateID` is UUID-minted [L52].
+
+  /**
+   * [model/entity/PriceGroupRate.cfc:L55] The ORM-generated `setAmountType()`. Populate target.
+   *
+   * ★ IT IS THE PROPERTY THE SAVE CONTEXT REQUIRES, so without this setter no payload could produce a
+   * valid new rate. It also selects the arithmetic branch at
+   * [model/service/PriceGroupService.cfc:L321-L336], which is why the parameter is the published
+   * three-literal union rather than a bare string: an unrecognised value is a REACHABLE stored state
+   * that the cascade's defaultless `switch` handles, but it is not a value a typed caller may submit.
+   */
+  setAmountType(amountType: PriceGroupRateAmountType): void {
+    this.amountType = amountType;
+  }
+
+  /** [model/entity/PriceGroupRate.cfc:L58] The ORM-generated `setRemoteID()`. Populate target. */
+  setRemoteID(remoteID: string): void {
+    this.remoteID = remoteID;
+  }
+
+  /**
+   * [model/entity/PriceGroupRate.cfc:L68] The ORM-generated `setRoundingRule()`. Populate target.
+   *
+   * ★★ IT TAKES THE RESOLVED ENTITY, NOT AN IDENTIFIER, AND `undefined` CLEARS IT. The legacy
+   * populate resolved `data.roundingRule` from a struct through the ORM's own loaders; reproducing
+   * that here would mean a service tier loading arbitrary entities by identifier through a locator no
+   * in-scope port publishes, which is the T1/T3 machinery this migration removes. So the caller
+   * supplies the resolved rule - the same "entity becomes an input" pattern
+   * `src/services/priceGroupService.ts` already applies to `resolvedSku`.
+   *
+   * CLEARING IS EXPRESSIBLE because the legacy makes it so: the property declares
+   * `hb_optionsNullRBKey="define.none"` [model/entity/PriceGroupRate.cfc:L68], which is the admin
+   * form's "no rounding rule" option, and a rate with no rule simply skips rounding at
+   * [model/service/PriceGroupService.cfc:L322].
+   */
+  setRoundingRule(roundingRule: RoundingRule | undefined): void {
+    this.roundingRule = roundingRule;
   }
 
   /** [model/service/PriceGroupService.cfc:L438] replaces the included-product-type collection. */

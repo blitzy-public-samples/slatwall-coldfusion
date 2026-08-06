@@ -87,12 +87,16 @@
 //     adapter reproduces the legacy comparison literally, and the legacy comparison IS
 //     `<cfif results[1] eq 0>` [model/dao/SkuDAO.cfc:L93]. The two agree on every count, which the
 //     `C-7` block asserts rather than assumes.
-//   * `tests/traceability/` DOES NOT EXIST and `tests/unit/` is fully populated, contrary to the
-//     brief's inventory. Neither changes anything here: this file imports from neither, which is what
-//     the brief actually requires.
-//   * THIS IS THE SIXTH SUITE IN THIS FOLDER, not the seventh, and `mysqlPromotionRepository.test.ts`
-//     does not exist yet. Cross-references to it are forward-looking, and nothing here depends on it.
-//   * THERE ARE THREE FIXTURE MODULES, not five. Only the two this file genuinely needs are imported.
+//   * `tests/traceability/` AND `tests/unit/` BOTH EXIST AND ARE POPULATED. Neither changes anything
+//     here: this file imports from neither, which is what the brief actually requires. An earlier
+//     revision of this bullet reported `tests/traceability/` as absent, which was true when it was
+//     written and is not now.
+//   * THIS FOLDER HOLDS SEVEN SUITES, this one among them, and `mysqlPromotionRepository.test.ts` is
+//     one of the other six. Cross-references to it resolve; nothing here depends on it either way. An
+//     earlier revision called this the sixth of six and that suite unwritten - both have since moved.
+//   * THERE ARE FIVE FIXTURE MODULES, not three. Only the two this file genuinely needs are imported
+//     (`productFixtures` and `skuFixtures`); the count is stated because an earlier revision stated a
+//     smaller one, not because the extra modules are wanted here.
 //   * ONE IMPORT SITS OUTSIDE THIS FILE'S DECLARED DEPENDENCY LIST, and it is here on purpose:
 //     `appConfig` from `src/lib/config.ts`. `src/repositories/mysql/dialect.ts` — which IS declared —
 //     consumes it and is the only owner of the dialect decision, so `appConfig.reset()` is the only way
@@ -179,6 +183,9 @@ import {
 // nothing. The case named "★ branches correctly for a product hydrated by the REAL product adapter"
 // closes that gap and is the only consumer of this import.
 import { MysqlProductRepository } from '../../../src/repositories/mysql/mysqlProductRepository.js';
+// Supplied to the product adapter's now-REQUIRED `productTypeRepository` collaborator (F16); it
+// used to be constructed inside that adapter, which hid a concrete dependency (T1).
+import { MysqlProductTypeRepository } from '../../../src/repositories/mysql/mysqlProductTypeRepository.js';
 import { MysqlSkuRepository } from '../../../src/repositories/mysql/mysqlSkuRepository.js';
 // Imported for exactly one read-totality case: the proof that neither the adapter nor the
 // contractually total builder beneath it counts the elements of a selected-option list.
@@ -388,7 +395,7 @@ const EXPECTED_INSERT_SKU_SQL =
 const EXPECTED_UPDATE_SKU_SQL =
   'update SwSku set activeFlag = ?, skuCode = ?, listPrice = ?, price = ?, renewalPrice = ?, ' +
   'imageFile = ?, userDefinedPriceFlag = ?, calculatedQATS = ?, productID = ?, ' +
-  'subscriptionTermID = ?, remoteID = ?, createdDateTime = ?, ' +
+  'subscriptionTermID = ?, remoteID = ?, ' +
   'createdByAccountID = COALESCE(?, createdByAccountID), ' +
   'modifiedDateTime = ?, modifiedByAccountID = COALESCE(?, modifiedByAccountID) where skuID = ?';
 
@@ -862,10 +869,18 @@ function makeSkuOptionRow(overrides: Readonly<Record<string, unknown>> = {}): Sq
 const PLACEHOLDER_VALUE = 'unused-by-this-suite';
 
 const CONFIGURED_DIALECT_ENVIRONMENT: readonly (readonly [string, string])[] = Object.freeze([
-  Object.freeze(['DB_HOST', 'unused-by-this-suite.invalid'] as const),
+  // A NAMED host, because `DB_TLS_MODE` below is `verify-identity` and `src/lib/config.ts` refuses
+  // that mode against an IP LITERAL (F47) - a certificate binds to names, so an address would reduce
+  // the mode to a chain-only check. `.invalid` never resolves [RFC 2606] and nothing here connects.
+  Object.freeze(['DB_HOST', 'slatwall-database.invalid'] as const),
   Object.freeze(['DB_USER', PLACEHOLDER_VALUE] as const),
   Object.freeze(['DB_PASSWORD', PLACEHOLDER_VALUE] as const),
-  Object.freeze(['DB_TLS_MODE', 'disabled'] as const),
+  // F48: this fixture paired a non-loopback host with `disabled` transport, which the configuration
+  // contract refuses outright - cleartext is admitted only for a provable loopback destination, in
+  // every environment. The fixture describes a suite that never connects, so the mode is raised to
+  // the recommended `verify-identity`, which the NAMED host above satisfies and which needs no trust
+  // anchor.
+  Object.freeze(['DB_TLS_MODE', 'verify-identity'] as const),
   Object.freeze(['DB_DIALECT', 'mysql'] as const),
 ]);
 
@@ -1634,10 +1649,12 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
         NO_ROWS,
         [REAL_ROOT_PRODUCT_TYPE_ROW],
       ]);
-      const product = await new MysqlProductRepository(
-        productExecutor,
-        TEST_AUDIT_ACTOR,
-      ).getProductByProductID(PRODUCT_ID);
+      // The product-type port is supplied EXPLICITLY, over the product adapter's own executor and
+      // actor. That is what the adapter used to construct for itself, and supplying it here is what
+      // keeps the third canned row - the ROOT product-type read - reachable on that same executor.
+      const product = await new MysqlProductRepository(productExecutor, TEST_AUDIT_ACTOR, {
+        productTypeRepository: new MysqlProductTypeRepository(productExecutor, TEST_AUDIT_ACTOR),
+      }).getProductByProductID(PRODUCT_ID);
 
       if (product === undefined) {
         throw new Error('the suite expected the product adapter to hydrate a product');
@@ -1729,6 +1746,97 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       );
       expect(statement.sql).toContain('INNER JOIN SwSkuSubsBenefit sb on sb.skuID = sku.skuID');
       expect(statement.params).toStrictEqual([PRODUCT_ID]);
+    });
+
+    // =======================================================================
+    // ★★★ THE SET-BASED TWIN (F5)
+    //
+    // The composition root's order-document hydration called `getProductSkus` once per product, and
+    // each call issues the SKU read plus the two association reads the hydration performs - so P
+    // products cost 3P statements to answer what four can. `getProductSkusForProducts` is the twin
+    // that answers the whole set. The two cases below pin the only two things that could go wrong in
+    // making that substitution: the statement must still be the one each product's OWN base type
+    // selects, and each SKU must still come back under its OWN product.
+    // =======================================================================
+
+    it('★★★ reads a SET of same-branch products in ONE statement, with the branch statement unchanged', async () => {
+      const secondProductID = '999df2f7ea9c87e60051f3cd87b435a9';
+      const executor = new RecordingExecutor([NO_ROWS]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getProductSkusForProducts(
+        [
+          new StubbedBaseTypeProduct(PRODUCT_ID, 'merchandise'),
+          new StubbedBaseTypeProduct(secondProductID, 'merchandise'),
+        ],
+        true,
+      );
+
+      // ONE statement for two products - and it is the MERCHANDISE statement, with its one fetch join,
+      // differing from the singular form only in the predicate the extra identifier requires.
+      const statement = onlyStatement(executor.calls);
+
+      expect(statement.sql).toBe(
+        EXPECTED_MERCHANDISE_PRODUCT_SKUS_SQL.replace(
+          'WHERE sku.productID = ?',
+          'WHERE sku.productID IN (?, ?)',
+        ),
+      );
+      expect(statement.params).toStrictEqual([PRODUCT_ID, secondProductID]);
+    });
+
+    it('★★★ issues ONE statement PER BRANCH when the set spans base types, never one flattened read', async () => {
+      // ★★ THIS IS THE CASE THAT KEEPS THE BATCHING FAITHFUL. The eager-fetch join is chosen from each
+      // product's own base type [model/dao/SkuDAO.cfc:L150-L168], so a `contentAccess` product must NOT
+      // be read with the merchandise join - its `accessContentIDs` would go unmaterialized and its rows
+      // would be filtered by the wrong INNER JOIN. Flattening three base types into one statement would
+      // be faster and wrong; grouping by branch is neither.
+      const contentAccessID = 'aaadf2f7ea9c87e60051f3cd87b435aa';
+      const subscriptionID = 'bbbdf2f7ea9c87e60051f3cd87b435bb';
+      const executor = new RecordingExecutor([NO_ROWS, NO_ROWS, NO_ROWS]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getProductSkusForProducts(
+        [
+          new StubbedBaseTypeProduct(PRODUCT_ID, 'merchandise'),
+          new StubbedBaseTypeProduct(contentAccessID, 'contentAccess'),
+          new StubbedBaseTypeProduct(subscriptionID, 'subscription'),
+        ],
+        true,
+      );
+
+      // THREE statements for three base types - one per branch, in the order the products asked for
+      // them - and each is its own branch's statement bound to its own product.
+      expect(executor.calls).toHaveLength(3);
+      expect(executor.calls[0]?.sql).toContain('INNER JOIN SwSkuOption');
+      expect(executor.calls[0]?.params).toStrictEqual([PRODUCT_ID]);
+      expect(executor.calls[1]?.sql).toContain('INNER JOIN SwSkuAccessContent');
+      expect(executor.calls[1]?.params).toStrictEqual([contentAccessID]);
+      expect(executor.calls[2]?.sql).toContain('INNER JOIN SwSubscriptionTerm');
+      expect(executor.calls[2]?.params).toStrictEqual([subscriptionID]);
+    });
+
+    it('issues NO statement for an empty product set, and collapses a repeated product', async () => {
+      const emptyExecutor = new RecordingExecutor([]);
+
+      expect(
+        (
+          await new MysqlSkuRepository(emptyExecutor, TEST_AUDIT_ACTOR).getProductSkusForProducts(
+            [],
+            true,
+          )
+        ).size,
+      ).toBe(0);
+      expect(emptyExecutor.calls).toHaveLength(0);
+
+      // A product named twice is bound ONCE, so the statement never asks the database for a row twice.
+      const executor = new RecordingExecutor([NO_ROWS]);
+      const product = new StubbedBaseTypeProduct(PRODUCT_ID, 'merchandise');
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getProductSkusForProducts(
+        [product, product],
+        true,
+      );
+
+      expect(onlyStatement(executor.calls).params).toStrictEqual([PRODUCT_ID]);
     });
 
     it('adds NO join for an unrecognized base product type, emitting the same statement as the falsy case', async () => {
@@ -2126,6 +2234,13 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
     // No environment stubbing: every case here drives `getSortedProductSkusID`, whose statement builder
     // now takes the dialect as an argument instead of reading `process.env`.
     it('issues the aggregate with an empty parameter array, because there is nothing to bind', async () => {
+      // LEGACY-DEFECT [model/dao/SkuDAO.cfc:L211-L215]: `getNextOptionGroupSortOrder` seeds its memo
+      // to 1 at [L206] and then overwrites it with `max + 1` whenever `recordCount` is truthy. An
+      // aggregate with no GROUP BY always returns exactly one row, so the guard can never be false and
+      // the seed is dead in every case it was written for. The statement asserted below is that same
+      // ungrouped aggregate, reproduced verbatim rather than rewritten into something that could
+      // return no row.
+      // Preserved deliberately; do not fix without a product decision.
       const executor = new RecordingExecutor([[Object.freeze({ max: 4 })], NO_ROWS]);
 
       await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getSortedProductSkusID(PRODUCT_ID);
@@ -2584,6 +2699,89 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(currency.getRenewalPrice()).toBeUndefined();
     });
 
+    it('★★ round-trips a POPULATED remoteID: bound at its own ordinal, hydrated back off the row', async () => {
+      // ★★★ EVERY CANNED ROW IN THIS FILE HYDRATED `remoteID` AS `null`, and no case ever read the
+      // written one, which a code review measured. The column is named in both statements and counted
+      // in both parameter lists, so the shape was covered - but a hydration that dropped it, a bind at
+      // the wrong ordinal, or an accessor wired to a neighbouring column would every one have passed.
+      // It is the external-system correlation column [model/entity/Sku.cfc:L90]: the value an ERP or a
+      // prior Slatwall installation uses to recognise a row it already owns, so losing it corrupts
+      // reconciliation silently rather than loudly.
+      const remoteID = 'legacy-erp-SKU-00417';
+
+      // THE WRITE HALF. `remoteID` is the twelfth of the sixteen insert columns - skuID, activeFlag,
+      // skuCode, listPrice, price, renewalPrice, imageFile, userDefinedPriceFlag, calculatedQATS,
+      // productID, subscriptionTermID, then this one - and the ordinal is asserted rather than the
+      // mere presence of the value, so a statement that bound it over `subscriptionTermID` fails.
+      const INSERT_REMOTE_ID_POSITION = 11;
+      const writeExecutor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(writeExecutor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: true, remoteID }),
+      );
+
+      const insert = statementAt(writeExecutor.mutationCalls, 0);
+
+      expect(insert.params[INSERT_REMOTE_ID_POSITION]).toBe(remoteID);
+      expect(insert.sql).not.toContain(remoteID);
+      expect(insert.sql).toContain('remoteID');
+
+      // AND AN ABSENT ONE BECOMES SQL NULL rather than the empty string or a placeholder, because the
+      // column is nullable with no default and a bound `''` would be a value an ERP could match on.
+      const absentExecutor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(absentExecutor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: true, remoteID: undefined }),
+      );
+
+      expect(statementAt(absentExecutor.mutationCalls, 0).params[INSERT_REMOTE_ID_POSITION]).toBe(
+        null,
+      );
+
+      // THE READ HALF, through the ordinary hydration path, with every other column left as the
+      // canned row has it so nothing else can account for the value.
+      const readExecutor = new RecordingExecutor([
+        [makeSkuRow({ remoteID })],
+        [makeSkuCurrencyRow()],
+        [makeSkuOptionRow()],
+      ]);
+
+      const hydrated = await new MysqlSkuRepository(readExecutor, TEST_AUDIT_ACTOR).getSkuBySkuCode(
+        SKU_CODE,
+      );
+
+      if (hydrated === undefined) {
+        throw new Error('the canned single-row result should have hydrated a sku');
+      }
+
+      expect(hydrated.getRemoteID()).toBe(remoteID);
+      expect(hydrated.getSkuCode()).toBe(SKU_CODE);
+
+      // The association hydrated beside it keeps its OWN remoteID, which the canned row leaves null -
+      // so the sku's value cannot have come from a shared read of the wrong column.
+      const currency = hydrated.getSkuCurrencies()[0];
+
+      if (currency === undefined) {
+        throw new Error('the canned currency row should have hydrated a SkuCurrency');
+      }
+
+      expect(currency.getRemoteID()).toBeUndefined();
+
+      // AND SQL NULL STILL MEANS ABSENT on the sku itself, so the populated case is not defaulting.
+      const nullExecutor = new RecordingExecutor([
+        [makeSkuRow()],
+        [makeSkuCurrencyRow()],
+        [makeSkuOptionRow()],
+      ]);
+
+      const withoutRemote = await new MysqlSkuRepository(
+        nullExecutor,
+        TEST_AUDIT_ACTOR,
+      ).getSkuBySkuCode(SKU_CODE);
+
+      expect(withoutRemote?.getRemoteID()).toBeUndefined();
+    });
+
     it('mints an identifier and writes all sixteen columns on the insert path', async () => {
       // The write side of the same schema contract. `Sku.isNew()` selects the path, exactly as the
       // legacy ORM did, and the insert names every one of the sixteen persistent columns.
@@ -2629,9 +2827,17 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
     /** The insert binds sixteen values; the two accounts follow their matching date stamp. */
     const INSERT_CREATED_BY_POSITION = 13;
     const INSERT_MODIFIED_BY_POSITION = 15;
-    /** The update binds fifteen set values then the key, so the accounts sit at 12 and 14. */
-    const UPDATE_CREATED_BY_POSITION = 12;
-    const UPDATE_MODIFIED_BY_POSITION = 14;
+    /**
+     * The update binds FOURTEEN set values then the key, so the accounts sit at 11 and 13.
+     *
+     * ★ IT USED TO BE FIFTEEN, AT 12 AND 14. `createdDateTime` left the assignment list when a code
+     * review closed the audit-integrity half of S-07 that this block's own text had recorded as out of
+     * scope: the update no longer emits a clause for the creation timestamp at all, so every later
+     * placeholder shifted down by one. The dedicated case at the foot of this block asserts the
+     * absence directly rather than leaving it implied by these numbers.
+     */
+    const UPDATE_CREATED_BY_POSITION = 11;
+    const UPDATE_MODIFIED_BY_POSITION = 13;
 
     it('★★ STAMPS THE REQUEST ACTOR on insert and ignores the accounts the entity carries', async () => {
       // A plain executor, NOT the zero-row one: the insert path raises when nothing was written,
@@ -2725,10 +2931,56 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(saved.getModifiedByAccountID()).toBe(sku.getModifiedByAccountID());
     });
 
+    it('★★★ NEVER WRITES createdDateTime ON AN UPDATE, so a forged creation stamp cannot land', async () => {
+      // ★★★ THE REGRESSION TEST A CODE REVIEW ASKED FOR, AGAINST THE HALF OF S-07 THIS BLOCK ONCE
+      // DECLARED OUT OF SCOPE. The UPDATE used to bind `createdDateTime` from the ENTITY, mirroring
+      // Hibernate's whole-entity flush - harmless while the value came from the row it was loaded from,
+      // and an audit-chronology rewrite for a HAND-BUILT `Sku`, which is the same class of defect S-07
+      // closed for the creating ACCOUNT. It is closed here by removing the column from the assignment
+      // list outright, which is stronger than a `COALESCE` a bound `null` could still slip past.
+      const executor = new RecordingExecutor([], ONE_ROW_WRITTEN);
+
+      // ★ THE FIXTURE'S OWN CREATION STAMP IS THE FORGERY, exactly as this block's header says it was
+      // for the two account columns: `makeSkuFixture` invents `AUDIT_INSTANT_UTC` and nothing loaded it
+      // from a row, so an entity carrying it is precisely the hand-built `Sku` the finding is about.
+      const sku = makeSkuFixture();
+
+      expect(sku.getCreatedDateTime()?.toISOString()).toBe(AUDIT_INSTANT_UTC.toISOString());
+      expect(sku.isNew()).toBe(false);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(sku);
+
+      const mutation = statementAt(executor.mutationCalls, 0);
+
+      // ★ NO CLAUSE, therefore no placeholder, therefore nothing to bind: the column cannot be reached
+      // from this statement at all, whatever the entity carries.
+      expect(mutation.sql).not.toContain('createdDateTime');
+
+      for (const parameter of mutation.params) {
+        if (parameter instanceof Date) {
+          expect(parameter.getTime()).not.toBe(AUDIT_INSTANT_UTC.getTime());
+        }
+      }
+
+      // ★ AND THE INSERT IS UNAFFECTED, which is the other half of the claim: a NEW row is still
+      // stamped, because there is no stored value there for a caller to overwrite.
+      const insertExecutor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(insertExecutor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: true }),
+      );
+
+      expect(statementAt(insertExecutor.mutationCalls, 0).sql).toContain('createdDateTime');
+    });
+
     it('binds the key LAST on the update path', async () => {
-      // The update names the fifteen non-key columns and carries the key in the WHERE clause, so the
+      // The update names the FOURTEEN assignable columns and carries the key in the WHERE clause, so the
       // identifier is the final bound value rather than the first. Read at index 0 for the same
       // reason as the insert case above.
+      //
+      // ★ FOURTEEN, NOT FIFTEEN, SINCE `createdDateTime` LEFT THE ASSIGNMENT LIST - the audit-integrity
+      // change a code review required. The insert still binds sixteen values, which is what makes the
+      // two counts differ by two rather than one.
       const executor = new RecordingExecutor([], ONE_ROW_WRITTEN);
 
       const saved = await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
@@ -2737,8 +2989,8 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
 
       const mutation = statementAt(executor.mutationCalls, 0);
       expect(mutation.sql).toBe(EXPECTED_UPDATE_SKU_SQL);
-      expect(mutation.params).toHaveLength(16);
-      expect(mutation.params[15]).toBe(saved.getSkuID());
+      expect(mutation.params).toHaveLength(15);
+      expect(mutation.params[14]).toBe(saved.getSkuID());
       expect(mutation.sql).not.toContain(saved.getSkuID());
       expect(saved.getSkuID()).toBe(makeSkuFixture().getSkuID());
     });
@@ -3295,7 +3547,7 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       await repository.saveSku(makeSkuFixture({ skuID: 'via-the-port-2' }), 'a-parent-key');
     });
 
-    it('is NOT accompanied by any other public member, which is the seven-method contract', () => {
+    it('is accompanied by exactly ONE public member off the port, and it is named here (F5)', () => {
       // ★ THE STRUCTURAL ASSERTION THE REVIEW FINDING TURNED ON. The authority fixes this
       // class's PUBLIC SURFACE at the port's seven members, not merely its port conformance -
       // so a public member that is deliberately OFF the port is still a violation. This class
@@ -3317,7 +3569,27 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       // `never` exactly when the class publishes nothing beyond the port's seven, and
       // `AssertNever` fails its own constraint the moment it does not. THIS IS PRECISELY THE
       // CHECK THAT WOULD HAVE CAUGHT `saveSkuForProduct`, and the build is the assertion.
-      type ExtraPublicMembers = Exclude<keyof MysqlSkuRepository, keyof SkuRepository>;
+      // ★★★ QUOTE-THEN-REVISE: THE GATE NOW ADMITS ONE NAMED EXTRA, AND ONLY BY NAME (F5). This case
+      // was titled "is NOT accompanied by any other public member, which is the seven-method contract"
+      // and its `Exclude` had no third term. `getProductSkusForProducts` is now published: it is the
+      // SET-BASED TWIN of `getProductSkus`, added because the composition root's order-document
+      // hydration was calling the singular form once per product - a SKU read plus two association
+      // reads for each - which code review recorded as an N+1. It is deliberately NOT a port member:
+      // `SkuRepository` is locked at seven and its header records the removal of an eighth, so the
+      // capability is published on the ADAPTER and composed at the root through a structural contract,
+      // exactly as `MysqlProductRepository.getProductsByProductID` and
+      // `MySqlPriceGroupRepository.getPriceGroupsByID` are.
+      //
+      // THE GATE KEEPS ITS FORCE BECAUSE THE EXEMPTION IS A LITERAL. Any OTHER public member - a
+      // second `saveSkuForProduct` - still widens `ExtraPublicMembers` beyond the named union and still
+      // fails `AssertNever` at build time. Exempting by name rather than relaxing the check is the same
+      // discipline the composition root's completeness walk uses for its one optional binding.
+      type DeliberateExtraPublicMembers = 'getProductSkusForProducts';
+
+      type ExtraPublicMembers = Exclude<
+        keyof MysqlSkuRepository,
+        keyof SkuRepository | DeliberateExtraPublicMembers
+      >;
 
       type AssertNever<T extends never> = T;
       type NoExtraPublicMembers = AssertNever<ExtraPublicMembers>;
@@ -3325,6 +3597,12 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       const extraPublicMembers: NoExtraPublicMembers[] = [];
 
       expect(extraPublicMembers).toStrictEqual([]);
+
+      // And the exemption is real rather than notional: the member exists, and it is a function.
+      expect(
+        typeof new MysqlSkuRepository(new RecordingExecutor([]), TEST_AUDIT_ACTOR)
+          .getProductSkusForProducts,
+      ).toBe('function');
 
       // And the port itself is exactly seven, enumerated exhaustively so that a member added
       // to the port - which would widen the `Exclude` above and hide behind it - still has to
@@ -3690,26 +3968,35 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       // no fake timers of its own — a global clock override would make the whole folder's behaviour
       // depend on load order. Instead an explicit UTC instant is bound and round-tripped: the value that
       // comes out is the value that went in, with no local-time reinterpretation on the way.
-      const executor = new RecordingExecutor([]);
+      const executor = new RecordingExecutor([], ONE_ROW_WRITTEN);
 
-      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(makeSkuFixture());
+      const saved = await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture(),
+      );
 
       // Index 0 is the row statement; the two membership statements bind no temporal value, and
       // the loop at the foot of this case still sweeps every bound parameter of the row write.
       const mutation = statementAt(executor.mutationCalls, 0);
 
-      // Index 11 is `createdDateTime` in the fifteen-column update list, and the sku fixture records it
-      // as exactly this instant.
-      const createdDateTime = mutation.params[11];
+      // ★ THE INSTANT UNDER TEST IS `modifiedDateTime`, AND THE SUBSTITUTION IS THE AUDIT-INTEGRITY FIX
+      // RATHER THAN A WEAKENING. This case used to read the fixture's `createdDateTime` back out of
+      // index 11 of a fifteen-column update; that column left the assignment list when a code review
+      // required the stored creation stamp to survive an update, so there is no creation timestamp bound
+      // on this path to round-trip. `modifiedDateTime` - index 12 of the fourteen assignable columns - is
+      // the temporal value the statement DOES carry, and it is RE-CAPTURED by the adapter rather than
+      // taken from the entity, so the claim is stated against what the adapter reports rather than
+      // against a fixture constant: the bound value is a `Date`, and it is the very instant the returned
+      // entity now describes. The insert path's own creation stamp is asserted by the S-07 cases above.
+      const modifiedDateTime = mutation.params[12];
 
-      if (!(createdDateTime instanceof Date)) {
+      if (!(modifiedDateTime instanceof Date)) {
         throw new Error(
-          'createdDateTime should be bound as a Date rather than as pre-formatted text',
+          'modifiedDateTime should be bound as a Date rather than as pre-formatted text',
         );
       }
 
-      expect(createdDateTime.toISOString()).toBe(AUDIT_INSTANT_UTC.toISOString());
-      expect(createdDateTime.getTime()).toBe(AUDIT_INSTANT_UTC.getTime());
+      expect(modifiedDateTime.toISOString()).toBe(saved.getModifiedDateTime()?.toISOString());
+      expect(modifiedDateTime.toISOString().endsWith('Z')).toBe(true);
 
       // And every other bound temporal value is a Date carrying the UTC designator, never a local-time
       // string the driver would have to guess at.

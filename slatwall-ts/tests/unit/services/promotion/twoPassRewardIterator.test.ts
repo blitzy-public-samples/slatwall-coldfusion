@@ -296,7 +296,7 @@ const L200_REWARD_TYPES: readonly string[] = L200_REWARD_TYPE_LIST.split(',').ma
 //
 // Every double below is declared IN THIS FILE, is constructed fresh in `beforeEach`, and holds no
 // module-level mutable state. No assertion library, no mocking library and no builder library is
-// introduced: the fourteen pinned packages are fixed, and `vi` is not needed here because nothing
+// introduced: the thirteen pinned packages are fixed, and `vi` is not needed here because nothing
 // is spied on.
 // ---------------------------------------------------------------------------
 

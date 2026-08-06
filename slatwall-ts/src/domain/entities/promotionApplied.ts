@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/services/promotion/promotionApplication.ts       promotion decomposition module
 //   tests/traceability/legacyTestMap.ts                  structural coverage map
@@ -328,7 +326,7 @@ import type { Promotion } from './promotion.js';
  * no fourth value and no sentinel.
  *
  * The union is exported because a downstream consumer genuinely needs the
- * literal type - `src/services/promotion/promotionApplication.ts` (planned) emits these
+ * literal type - `src/services/promotion/promotionApplication.ts` emits these
  * intents - and this mirrors the single precedent already set by
  * `PriceGroupRateAmountType`. It is the ONLY export in this module besides the
  * class itself.
@@ -565,14 +563,14 @@ export class PromotionApplied {
 // ---------------------------------------------------------------------------
 // TEST CONTRACT - NET-NEW COVERAGE, NEVER PARITY.
 //
-// `tests/unit/domain/entities/promotionApplied.test.ts` (planned) is authored separately;
+// `tests/unit/domain/entities/promotionApplied.test.ts` is authored separately;
 // that tier is owned elsewhere and NO test file is created from here.
 // `PromotionApplied` has NO legacy test whatsoever - nothing under meta/tests
 // touches it - so its coverage is one of the SIXTEEN NET-NEW entity suites and
 // must be LABELLED NET-NEW. Presenting it as parity fails the coverage gate.
 // Only two of the eighteen in-scope entities extend legacy coverage:
 // meta/tests/unit/entity/BrandTest.cfc and meta/tests/unit/entity/ProductTest.cfc.
-// The suite must also appear in `tests/traceability/legacyTestMap.ts` (planned) flagged
+// The suite must also appear in `tests/traceability/legacyTestMap.ts` flagged
 // net-new, because that map fails the run when an in-scope module has no test -
 // mirroring the structural floor of
 // meta/tests/coverage/EntityCoverageTest.cfc:all_entities_have_test_cases().

@@ -915,16 +915,29 @@ export class PromotionPeriodQualificationEvaluator implements PromotionPeriodQua
             !this.orderItemMembership.getOrderItemInQualifier(qualifier, thisOrderItem) ||
             // [L808] Clause 2: sku identity. `sku` is non-nullable on the view, matching the legacy
             // site, which dereferences it without a guard.
+            //
+            // ★★ THE FOUR IDENTITY CLAUSES BELOW NEGATE `cfEquals`, NEVER `!==`. Legacy [L808],
+            // [L810], [L812] and [L818] compare with CFML `!=`, which on strings is
+            // CASE-INSENSITIVE. With `!==`, a sku/product/productType/brand identifier stored in a
+            // different case on the two order items compared UNEQUAL, this clause fired, the
+            // qualifier count for the item was zeroed - and a promotion the legacy system applies
+            // silently stopped applying. That is money, and it is exactly the class of comparison
+            // AAP 0.1.1 requires to be audited rather than assumed. The `rewardMatchingType` gate
+            // itself already went through `cfEquals`; these did not.
             (matchesRewardMatchingType(rewardMatchingType, 'sku') &&
-              thisOrderItem.sku.getSkuID() !== orderItem.sku.getSkuID()) ||
+              !cfEquals(thisOrderItem.sku.getSkuID(), orderItem.sku.getSkuID())) ||
             // [L810] Clause 3: product identity. Unguarded in the legacy; raises on an absent product.
             (matchesRewardMatchingType(rewardMatchingType, 'product') &&
-              requireProduct(thisOrderItem).getProductID() !==
-                requireProduct(orderItem).getProductID()) ||
+              !cfEquals(
+                requireProduct(thisOrderItem).getProductID(),
+                requireProduct(orderItem).getProductID(),
+              )) ||
             // [L812] Clause 4: product-type identity. Unguarded in the legacy at both dereferences.
             (matchesRewardMatchingType(rewardMatchingType, 'productType') &&
-              requireProductType(thisOrderItem).getProductTypeID() !==
-                requireProductType(orderItem).getProductTypeID()) ||
+              !cfEquals(
+                requireProductType(thisOrderItem).getProductTypeID(),
+                requireProductType(orderItem).getProductTypeID(),
+              )) ||
             // [L814] Clause 5: the examined item has no brand. FIRST of the order-critical trio.
             (matchesRewardMatchingType(rewardMatchingType, 'brand') &&
               isAbsent(requireProduct(thisOrderItem).getBrand())) ||
@@ -934,7 +947,10 @@ export class PromotionPeriodQualificationEvaluator implements PromotionPeriodQua
             // [L818] Clause 7: brand identity. Its double dereference is safe only because clauses 5
             // and 6 already answered false.
             (matchesRewardMatchingType(rewardMatchingType, 'brand') &&
-              requireBrand(thisOrderItem).getBrandID() !== requireBrand(orderItem).getBrandID())
+              !cfEquals(
+                requireBrand(thisOrderItem).getBrandID(),
+                requireBrand(orderItem).getBrandID(),
+              ))
           ) {
             // [L821]
             orderItemQualifierCount = 0;

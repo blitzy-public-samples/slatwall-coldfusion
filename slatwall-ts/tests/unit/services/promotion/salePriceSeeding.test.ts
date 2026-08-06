@@ -3,7 +3,7 @@
 // SUBJECT: the ported sale-price seeding pass, [model/service/PromotionService.cfc:L144-L162]. It
 // is the FIRST loop inside `updateOrderAmountsWithPromotions`, it runs BEFORE the reward iteration
 // that opens at [L164], and it pre-loads the qualified-discount accumulator declared at [L142].
-// This suite owns NO entry in the twenty-item legacy defect register; what it owns is the ORDERING
+// This suite owns NO entry in the thirty-item legacy defect register; what it owns is the ORDERING
 // CONSEQUENCE of running first, and the empty-string sentinel that makes a seeded record
 // structurally unreachable by use-limit stripping. Both are direct money effects.
 //

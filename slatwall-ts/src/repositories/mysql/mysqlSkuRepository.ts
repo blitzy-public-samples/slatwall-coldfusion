@@ -85,7 +85,7 @@ import { isCurrencyCode } from '../../domain/valueObjects/currencyCode.js';
 import { Money } from '../../domain/valueObjects/money.js';
 import { listToArray } from '../../lib/cfml/list.js';
 import type { CfStruct } from '../../lib/cfml/struct.js';
-import { cfEquals, structGet } from '../../lib/cfml/struct.js';
+import { cfEquals, cfFoldKey, structGet } from '../../lib/cfml/struct.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { cfTruthy, isNullish } from '../../lib/cfml/truthiness.js';
 import type {
@@ -306,15 +306,30 @@ const SKU_COLUMNS = Object.freeze([
 ]);
 
 /**
- * The columns an UPDATE assigns: every column except the primary key.
+ * The columns an UPDATE assigns: every column except the primary key and the creation timestamp.
  *
- * Derived from {@link SKU_COLUMNS} rather than restated, so the two can never disagree. `skuID` is
- * excluded because it is `fieldtype="id" generator="uuid"` [model/entity/Sku.cfc:L52] - an
+ * Derived from {@link SKU_COLUMNS} rather than restated, so the two can never disagree.
+ *
+ * `skuID` is excluded because it is `fieldtype="id" generator="uuid"` [model/entity/Sku.cfc:L52] - an
  * application-minted key that identifies the row being updated and is never itself updated. It is
  * bound separately, as the trailing `WHERE` parameter.
+ *
+ * ★★★ `createdDateTime` IS EXCLUDED BECAUSE OF A CODE-REVIEW FINDING, AND THE EXCLUSION IS THE FIX.
+ * Hibernate flushed the WHOLE dirty entity rather than a computed delta, so this column was rewritten
+ * on every update with the value the entity had been LOADED with - which was harmless precisely
+ * because the value came from the row. A hand-built `Sku` does not get its value from a row, so
+ * binding the entity's value let a caller REWRITE CREATION CHRONOLOGY on any update: the same class of
+ * defect S-07 closed for `createdByAccountID`, differing only in that a timestamp rather than an actor
+ * is forged. An earlier revision recorded it as "outside this finding" and kept the column; the review
+ * that followed rated it an audit-integrity concern to be closed rather than noted, so the stored value
+ * is now what survives an update - and it survives because NO ASSIGNMENT IS EMITTED for it at all,
+ * which is stronger than a `COALESCE` that a `null` could still slip past.
+ *
+ * ★ THE INSERT IS UNAFFECTED. {@link SKU_COLUMNS} still carries the column, so a new row is stamped
+ * exactly as before; there is no previous value on that path for a caller to overwrite.
  */
 const UPDATED_SKU_COLUMNS = Object.freeze(
-  SKU_COLUMNS.filter((columnName) => columnName !== 'skuID'),
+  SKU_COLUMNS.filter((columnName) => columnName !== 'skuID' && columnName !== 'createdDateTime'),
 );
 
 /**
@@ -1030,6 +1045,25 @@ function buildProductSkusSql(fetchJoin: string): string {
   return `SELECT sku.* FROM SwSku sku ${fetchJoin}WHERE sku.productID = ?`;
 }
 
+/**
+ * The same statement, keyed to a SET of products.
+ *
+ * ★★★ ONE STATEMENT FOR MANY PRODUCTS, WHICH IS THE ONLY DIFFERENCE (F5). The projection, the fetch
+ * join and the table are `buildProductSkusSql`'s, unchanged; the equality predicate becomes an `IN`
+ * list over the same column. `SwSku.productID` is the one-to-many key
+ * [model/entity/Sku.cfc:L65, model/entity/Product.cfc:L73], so the union of N single-product reads and
+ * one N-product read are the same row set - which is what makes the substitution safe rather than
+ * merely faster. Each identifier is bound as its own parameter; nothing is interpolated (E5).
+ *
+ * @param fetchJoin the branch's eager-fetch join text, exactly as the singular form receives it.
+ * @param productIDCount how many identifiers will be bound.
+ */
+function buildProductSkusForProductsSql(fetchJoin: string, productIDCount: number): string {
+  return `SELECT sku.* FROM SwSku sku ${fetchJoin}WHERE sku.productID IN (${sqlPlaceholderList(
+    productIDCount,
+  )})`;
+}
+
 // LEGACY-DEFECT [model/dao/SkuDAO.cfc:L65-L85]: all TEN `EXISTS` subqueries use UNQUALIFIED
 // association paths - `sku.skuID` in the first and `stock.sku.skuID`, `fromStock.sku.skuID` or
 // `toStock.sku.skuID` in the other nine - with no `a.` prefix, even though `a` is the alias each
@@ -1192,20 +1226,23 @@ const INSERT_SKU_SQL = `insert into SwSku (${SKU_COLUMNS.join(', ')}) values (${
 /**
  * Updates one `SwSku` row.
  *
- * The assignment list is {@link UPDATED_SKU_COLUMNS} - every column except the key - and the key is
- * bound last, as the `WHERE` parameter. Both lists derive from {@link SKU_COLUMNS}.
+ * The assignment list is {@link UPDATED_SKU_COLUMNS} - every column except the key and the creation
+ * timestamp - and the key is bound last, as the `WHERE` parameter. Both lists derive from
+ * {@link SKU_COLUMNS}.
  *
- * ★ THIS SET LIST KEEPS THE CREATED PAIR, UNLIKE ITS SIBLING ADAPTERS, AND DELIBERATELY. Hibernate
- * flushed the WHOLE dirty entity rather than a computed delta, so `createdDateTime` and
- * `createdByAccountID` were rewritten on every update with the values the entity had been loaded
- * with. Excluding them would be the tidier statement and the wrong one.
+ * ★ THIS SET LIST KEEPS `createdByAccountID`, WHICH IS NOT THE SAME AS TRUSTING IT. Hibernate flushed
+ * the WHOLE dirty entity rather than a computed delta, so the created pair was rewritten on every
+ * update with the values the entity had been loaded with - harmless there because the values came from
+ * the ROW. S-07 closed the actor half by rendering both account columns through `sqlUpdateAssignment`,
+ * whose `COALESCE(?, column)` resolves against the STORED value while the update binds `undefined`, so
+ * a hand-built entity's claimed creator can never be written.
  *
- * S-07: that faithfulness is exactly why both account columns are rendered through
- * `sqlUpdateAssignment`. Hibernate's rewrite was harmless because the value came from the ROW; a
- * hand-built entity's value does not, so the columns resolve against the stored value in SQL and
- * the entity's own is never bound. `createdDateTime` is NOT given the same treatment here, because
- * it is a timestamp rather than an actor identifier and therefore outside this finding - recorded
- * as a discovered-not-fixed item rather than changed on S-07's authority.
+ * ★★ AND A LATER CODE REVIEW CLOSED THE TIMESTAMP HALF, WHICH THIS DOCBLOCK PREVIOUSLY DECLARED OUT OF
+ * SCOPE. `createdDateTime` was bound from the entity, so a hand-built `Sku` could rewrite creation
+ * chronology on any update. It is now absent from the assignment list entirely - see
+ * {@link UPDATED_SKU_COLUMNS} - so the statement emits no clause for it and the stored value survives
+ * unconditionally. The sentence that used to end "recorded as a discovered-not-fixed item" is gone
+ * because the item is fixed.
  */
 const UPDATE_SKU_SQL = `update SwSku set ${UPDATED_SKU_COLUMNS.map((columnName) =>
   sqlUpdateAssignment(columnName),
@@ -1311,6 +1348,21 @@ type SkuFetchShape = {
   readonly product: Product | undefined;
 
   /**
+   * The products a MULTI-PRODUCT read is hydrating, keyed by case-folded identifier.
+   *
+   * ★★ SUPPLIED ONLY BY `getProductSkusForProducts`, AND IT IS THE MULTI-PRODUCT FORM OF `product`
+   * ABOVE (F5). The singular read is handed ONE product and every row belongs to it; the set-based read
+   * is handed several, so the owning product has to be resolved per row - from the row's own
+   * `productID` column, against this map. Folded because CFML identifiers are case-insensitive and
+   * MySQL's default collation matches them that way, so a row whose stored spelling differs in case
+   * from the caller's must still find its product.
+   *
+   * `product` WINS WHEN BOTH ARE PRESENT, which never happens: the two are set by different callers.
+   * Absent on every other path, so no existing fetch shape changes.
+   */
+  readonly productsByFoldedID?: ReadonlyMap<string, Product>;
+
+  /**
    * Whether to materialize `accessContentIDs` from `SwSkuAccessContent`.
    *
    * True only on the `contentAccess` branch of `getProductSkus`, which is the one place the legacy
@@ -1407,6 +1459,32 @@ const BARE_SKU_FETCH_SHAPE: SkuFetchShape = Object.freeze({
  * The `sku` back-reference is deliberately left `undefined`: populating it would make the SKU and
  * its currency rows mutually referential, and step 2 reaches the collection from the SKU side only.
  */
+/**
+ * The product a SKU row belongs to, when a multi-product read supplied the candidates.
+ *
+ * Reads the row's own `productID` - NULLABLE on `SwSku` [model/entity/Sku.cfc:L65], so absence is a
+ * legitimate answer and never an error - and looks it up folded. Answers `undefined` when no map was
+ * supplied, when the column is NULL, or when the owner is not among the candidates; each of those
+ * leaves the SKU's `product` association exactly as unset as it is on every other read path.
+ *
+ * @param row one SKU row.
+ * @param statementLabel the statement's label, for a column-read failure.
+ * @param productsByFoldedID the candidates, keyed by case-folded identifier.
+ */
+function resolveOwningProduct(
+  row: SqlRow,
+  statementLabel: string,
+  productsByFoldedID: ReadonlyMap<string, Product> | undefined,
+): Product | undefined {
+  if (productsByFoldedID === undefined) {
+    return undefined;
+  }
+
+  const productID = readOptionalText(row, 'productID', statementLabel);
+
+  return productID === undefined ? undefined : productsByFoldedID.get(cfFoldKey(productID));
+}
+
 function toSkuCurrency(row: SqlRow, statementLabel: string): SkuCurrency | undefined {
   const currencyCodeValue = readOptionalText(row, 'currencyCode', statementLabel);
 
@@ -1953,6 +2031,167 @@ export class MysqlSkuRepository implements SkuRepository {
       accessContents: fetchJoin === CONTENT_ACCESS_FETCH_JOIN,
       subscriptionBenefits: fetchJoin === SUBSCRIPTION_FETCH_JOINS,
     });
+  }
+
+  // =========================================================================
+  // NOT A PORT METHOD - the set-based form of getProductSkus (F5)
+  // =========================================================================
+
+  /**
+   * Every SKU of a SET of products, grouped by the branch each product's base type selects.
+   *
+   * ★★★ NOT ON `SkuRepository`, AND THAT IS DELIBERATE. That port is locked at seven members - its
+   * header records the removal of an eighth - so this is published on the ADAPTER for the composition
+   * root to compose with, the same arrangement `MysqlProductRepository.getProductsByProductID` and
+   * `MySqlPriceGroupRepository.getPriceGroupsByID` use. No service gains a capability and no port
+   * changes shape.
+   *
+   * ★★★ THE FINDING IT CLOSES (F5). `bootstrap.ts`'s order-document hydration called
+   * `getProductSkus(product, true)` ONCE PER DISTINCT PRODUCT the document named. Each call is a SKU
+   * read plus the two association reads {@link MysqlSkuRepository.hydrateSkus} issues - currencies and
+   * options - so a ten-product order paid for thirty statements to answer what four can. The row set
+   * is identical either way, because `SwSku.productID` is the one-to-many key and the union of N
+   * single-key reads IS the N-key read.
+   *
+   * ★★ THE FETCH SHAPE IS DECIDED PER PRODUCT AND THE STATEMENT IS ISSUED PER SHAPE, which is what
+   * keeps this faithful rather than merely fewer. `getProductSkus` chooses its eager-fetch join from
+   * `await product.getBaseProductType()` [model/dao/SkuDAO.cfc:L150-L168], and products of different
+   * base types therefore need DIFFERENT statements - a `contentAccess` product must not be read with
+   * the merchandise join, and vice versa. The products are grouped by the join their own base type
+   * selects and one statement is issued per group, so at most FOUR statements serve any number of
+   * products and each product is read with exactly the statement the singular form would have used.
+   * The base-type resolution itself stays per product, exactly as it is today - it is a read on the
+   * ENTITY, and nothing here changes when or whether it happens.
+   *
+   * ★ THE OWNING PRODUCT IS RESOLVED PER ROW, from the row's `productID` against the candidate map -
+   * see `SkuFetchShape.productsByFoldedID`. A SKU whose `productID` is NULL cannot appear here at all,
+   * because the predicate is an `IN` over that column.
+   *
+   * ★ AN EMPTY REQUEST ISSUES NO STATEMENT, which is parity rather than an optimisation: zero singular
+   * calls issued zero statements. It also mechanically prevents `IN ()`, a MySQL syntax error.
+   *
+   * @param products the products whose SKUs are wanted. Repeated products are collapsed by identifier.
+   * @param fetchOptions the legacy eager-fetch flag, applied to every product exactly as the singular
+   *   form applies it to one.
+   * @returns each product's SKUs, keyed by the product's case-folded identifier. A product with no
+   *   SKUs is absent from the map, which a caller reads as the empty collection it is.
+   */
+  public async getProductSkusForProducts(
+    products: readonly Product[],
+    fetchOptions: boolean,
+  ): Promise<ReadonlyMap<string, Sku[]>> {
+    const skusByFoldedProductID = new Map<string, Sku[]>();
+
+    // Grouped by the fetch join each product's own base type selects, keyed by the join text itself so
+    // the grouping cannot drift from the branch that produced it. Insertion-ordered, so the statements
+    // are issued in the order the caller's products first asked for them.
+    const productsByFetchJoin = new Map<string, Product[]>();
+    const seenFoldedProductIDs = new Set<string>();
+
+    for (const product of products) {
+      const foldedProductID = cfFoldKey(product.getProductID());
+
+      if (seenFoldedProductIDs.has(foldedProductID)) {
+        continue;
+      }
+
+      seenFoldedProductIDs.add(foldedProductID);
+
+      const fetchJoin = await this.resolveProductSkusFetchJoin(product, fetchOptions);
+      const group = productsByFetchJoin.get(fetchJoin);
+
+      if (group === undefined) {
+        productsByFetchJoin.set(fetchJoin, [product]);
+      } else {
+        group.push(product);
+      }
+    }
+
+    for (const [fetchJoin, group] of productsByFetchJoin) {
+      const productsByFoldedID = new Map<string, Product>();
+      const productIDs: string[] = [];
+
+      for (const product of group) {
+        productsByFoldedID.set(cfFoldKey(product.getProductID()), product);
+        productIDs.push(product.getProductID());
+      }
+
+      // Chunked under the driver's placeholder limit, exactly as every other identifier list in this
+      // adapter is - a set of products large enough to exceed it must not fail one layer down.
+      const rows: SqlRow[] = [];
+
+      for (const batch of chunkTupleRows(productIDs)) {
+        rows.push(
+          ...(await this.executor.execute(
+            buildProductSkusForProductsSql(fetchJoin, batch.length),
+            batch,
+          )),
+        );
+      }
+
+      const hydrated = await this.hydrateSkus(rows, SELECT_PRODUCT_SKUS, {
+        product: undefined,
+        productsByFoldedID,
+        accessContents: fetchJoin === CONTENT_ACCESS_FETCH_JOIN,
+        subscriptionBenefits: fetchJoin === SUBSCRIPTION_FETCH_JOINS,
+      });
+
+      for (const sku of hydrated) {
+        const owningProductID = sku.getProduct()?.getProductID();
+
+        if (owningProductID === undefined) {
+          continue;
+        }
+
+        const foldedProductID = cfFoldKey(owningProductID);
+        const collection = skusByFoldedProductID.get(foldedProductID);
+
+        if (collection === undefined) {
+          skusByFoldedProductID.set(foldedProductID, [sku]);
+        } else {
+          collection.push(sku);
+        }
+      }
+    }
+
+    return skusByFoldedProductID;
+  }
+
+  /**
+   * The eager-fetch join one product's base type selects.
+   *
+   * Extracted verbatim from {@link MysqlSkuRepository.getProductSkus} so the singular and set-based
+   * reads cannot drift apart on the one decision that distinguishes their statements. The branch shape
+   * - including the missing `else` arm that LEGACY-DEFECT [model/dao/SkuDAO.cfc:L150-L168] records - is
+   * unchanged.
+   *
+   * @param product the product whose base type decides the branch.
+   * @param fetchOptions the legacy flag; falsy short-circuits to the bare statement.
+   */
+  private async resolveProductSkusFetchJoin(
+    product: Product,
+    fetchOptions: boolean,
+  ): Promise<string> {
+    if (!cfTruthy(fetchOptions)) {
+      return NO_FETCH_JOIN;
+    }
+
+    const baseProductType = await product.getBaseProductType();
+
+    if (cfEquals(baseProductType, 'contentAccess')) {
+      return CONTENT_ACCESS_FETCH_JOIN;
+    }
+
+    if (cfEquals(baseProductType, 'merchandise')) {
+      return MERCHANDISE_FETCH_JOIN;
+    }
+
+    if (cfEquals(baseProductType, 'subscription')) {
+      return SUBSCRIPTION_FETCH_JOINS;
+    }
+
+    // NO `else`. The fifth path lands here and emits the bare statement.
+    return NO_FETCH_JOIN;
   }
 
   // MUST-PRESERVE BEHAVIOUR: THE OPTION-GROUP POSITIONAL-WEIGHT ODOMETER ORDERING (B2).
@@ -2622,8 +2861,16 @@ export class MysqlSkuRepository implements SkuRepository {
       draft.modifiedByAccountID = modifiedByAccountID;
     }
 
-    if (fetchShape.product !== undefined) {
-      draft.product = fetchShape.product;
+    // ★ THE OWNING PRODUCT, FROM WHICHEVER OF THE TWO FORMS THE CALLER SUPPLIED (F5). A singular read
+    // was handed the product itself; a set-based read was handed the set, and the row names its owner.
+    // A row whose `productID` is NULL - which `SwSku.productID` permits - or whose owner is not in the
+    // map simply carries no product, exactly as every other path leaves it.
+    const owningProduct =
+      fetchShape.product ??
+      resolveOwningProduct(row, statementLabel, fetchShape.productsByFoldedID);
+
+    if (owningProduct !== undefined) {
+      draft.product = owningProduct;
     }
 
     if (associations.accessContentIDs !== undefined) {
@@ -2778,9 +3025,10 @@ export class MysqlSkuRepository implements SkuRepository {
   /**
    * Updates one `SwSku` row.
    *
-   * The created stamp is carried over from the entity rather than re-captured - an update must not
-   * rewrite when a row was created - and the key is bound LAST, after the assignment list, matching
-   * where it appears in {@link UPDATE_SKU_SQL}.
+   * The created stamp is NEITHER re-captured NOR bound - an update must not rewrite when a row was
+   * created, and the assignment list no longer names the column, so the stored value survives whatever
+   * the entity happens to claim (see {@link UPDATED_SKU_COLUMNS}). The key is bound LAST, after the
+   * assignment list, matching where it appears in {@link UPDATE_SKU_SQL}.
    *
    * ★★★ IT REFUSES AN UPDATE THAT MATCHED NO ROW, AND THAT GUARD IS A RUNTIME FINDING. QA testing
    * called `saveSku` with a SKU whose `isNew()` was false and whose key named nothing, and the method
@@ -2798,6 +3046,13 @@ export class MysqlSkuRepository implements SkuRepository {
   ): Promise<Sku> {
     const skuID = sku.getSkuID();
     const stamps: SkuAuditStamps = {
+      // ★ NOT BOUND BY THIS STATEMENT AT ALL. `createdDateTime` is absent from
+      // {@link UPDATED_SKU_COLUMNS}, so this member reaches no placeholder on the update path; it is
+      // carried only so that {@link MysqlSkuRepository.rehydrateSavedSku} can DESCRIBE the row, and the
+      // row's own stored value is authoritative and unchanged. For an entity that was read from a row -
+      // every ordinary caller - the two are the same value. For a hand-built entity they may differ,
+      // and the difference is confined to the returned instance's description of one field: the stored
+      // chronology cannot be rewritten, which is the property the code review asked for.
       createdDateTime: sku.getCreatedDateTime(),
       // ★ S-07. `undefined`, NOT the entity's value - and this adapter is the one where that
       // distinction bites. Its SET list KEEPS `createdByAccountID` (see {@link UPDATE_SKU_SQL}),

@@ -239,10 +239,12 @@ import { z } from 'zod';
 
 import { bootstrapCompositionRoot, OrderViewDocumentDataError } from './bootstrap.js';
 import {
+  containsPrototypeMemberKey,
   invalidRequestResponse,
   jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
   mapZodErrorFields,
+  PROTOTYPE_MEMBER_FIELD_ISSUE,
   resolveRequestPrincipal,
   resolveServerRequestId,
   routeDiagnosticLabel,
@@ -256,7 +258,6 @@ import { logger as defaultLogger } from '../lib/logger.js';
 // publishes the refusal an unidentified outcome earns.
 import { cfEquals } from '../lib/cfml/struct.js';
 import { toDecimalString } from '../lib/cfml/numberFormat.js';
-import { findPrototypeKeyPath } from '../lib/jsonDocumentKeys.js';
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 import type {
@@ -434,7 +435,7 @@ export interface PromotionApplicationDependencies {
    * A `Date` IS an absolute instant, so UTC is a property of the value and the policy is discharged
    * by threading one rather than by formatting anything - every rendering on the response body uses
    * `toISOString()`, which is UTC by definition. Threading it is what makes the mandated widening
-   * `PromotionPeriod.isCurrent(now: Date)` [model/entity/PromotionPeriod.cfc:L78] deterministic,
+   * `PromotionPeriod.isCurrent(now?: Date)` [model/entity/PromotionPeriod.cfc:L78] deterministic,
    * along with the promotion-period window and the sale-price expiration comparison. That widening is
    * ALREADY ALLOCATED to the entities tier and no second widening is introduced here.
    *
@@ -2103,20 +2104,24 @@ function decodeRequestEnvelope(
   // halves: the key is admitted, and `Object.prototype` is left unmodified. This closes the
   // INCONSISTENCY - the caller is now told about that key exactly as it is told about any other - and
   // it would also close the vulnerability if a merge-style consumer were ever added downstream. The
-  // reasoning, the measurements and the reason the walk is deep and iterative are all recorded on
-  // `../lib/jsonDocumentKeys.js`.
+  // reasoning, the measurements and the reason the walk is deep, iterative and PREDICATE-SHAPED are
+  // all recorded on `./errorMapper.js`.
   //
   // It runs BEFORE the schema, so an offending key is reported as itself rather than as whatever
-  // downstream shape error it happens to coincide with. The path is a KEY THE CALLER SENT, never a
-  // value: nothing the caller submitted is echoed, which is the invariant the whole error surface
-  // holds to.
-  const prototypeKeyPath = findPrototypeKeyPath(document);
-
-  if (prototypeKeyPath !== undefined) {
+  // downstream shape error it happens to coincide with.
+  //
+  // ★★★ THE PUBLISHED ISSUE IS A FROZEN CONSTANT OF THE MAPPER, AND THIS RECORDS WHY IT IS NO LONGER
+  // A PATH. This branch used to publish the offending key's full dotted location, and the comment here
+  // defended it on the ground that a KEY is not a VALUE. A security review rejected that ground
+  // (MAJOR, CWE-209/CWE-532), and rightly: every ancestor segment of that path was a member name the
+  // CALLER chose, so a body such as `{"api_token_value":{"__proto__":{}}}` had `api_token_value`
+  // echoed into a 400 and persisted in the logs. Nothing the caller wrote is published now - the
+  // refusal names the one member name the caller did not choose.
+  if (containsPrototypeMemberKey(document)) {
     return {
       ok: false,
       reason: 'unusableRequestInput',
-      fields: [{ path: prototypeKeyPath, message: 'is not a member this request accepts' }],
+      fields: [PROTOTYPE_MEMBER_FIELD_ISSUE],
     };
   }
 

@@ -146,12 +146,15 @@
  * and it declares no I/O mechanism of any kind - no file system, no stream, no HTTP client -
  * even though `loadDataFromFile` below makes all three tempting. This port is the seam that lets
  * the boundary hold: the outward layer implements the interface, and the composition root in
- * `src/handlers/bootstrap.ts` (planned) wires the concrete instance.
+ * `src/handlers/bootstrap.ts` wires the concrete instance.
  *
  * THESE NAMES ARE CANONICAL
- * Every subtree that will consume this file is empty at the time of writing, so the names, method
- * names and signatures published here are the canonical ones. They are published deliberately and
- * precisely, and they are not to be renamed later.
+ * Five modules now consume this file - `src/domain/entities/product.ts`,
+ * `src/services/productService.ts`, `src/services/priceGroupService.ts`,
+ * `src/repositories/mysql/mysqlProductRepository.ts` and the composition root
+ * `src/handlers/bootstrap.ts` - and each is written against the names, method names and
+ * signatures published here. They were published deliberately and precisely before any consumer
+ * existed, which is why none needed a rename; they are not to be renamed now either.
  *
  * TEST COVERAGE IS NET-NEW, NOT LEGACY PARITY
  * Nothing in the legacy suite covers this DAO: `meta/tests/unit/dao/` contains only
@@ -181,7 +184,7 @@
  *      invent a working bulk importer, and must not introduce a batching, chunking or
  *      job-orchestration mechanism the legacy system did not have.
  *
- * `src/handlers/bootstrap.ts` (planned) wires this port to that adapter; it does not implement it.
+ * `src/handlers/bootstrap.ts` wires this port to that adapter; it does not implement it.
  *
  * Schema continuity is absolute: the adapter reads and writes the existing `Sw*` MySQL schema
  * unchanged - no migration, no rename, no new table, no column change - and no table name,
@@ -194,11 +197,12 @@
 /*
  * The only import this file may have, and it is type-only.
  *
- * `src/domain/entities/` is empty at the time of writing, so this specifier does not resolve yet
- * and `tsc` reports it. That is expected and sanctioned: the authoring order across the subtree
- * is a compile-order convenience, not a schedule, and it carries no milestone. The specifier is
- * NOT to be "fixed" by deleting the import, declaring a local `Product` stand-in, or relaxing
- * `tsconfig.json`.
+ * `src/domain/entities/product.ts` is on the branch, so this specifier resolves and `tsc` reports
+ * nothing. It did not always: this port was authored before that entity existed, and the
+ * unresolved specifier was left in place deliberately rather than "fixed" by deleting the import,
+ * declaring a local `Product` stand-in, or relaxing `tsconfig.json`. That decision is recorded
+ * because it is the one that made this import correct the moment the entity landed, with no edit
+ * here at all.
  *
  * The asymmetry that justifies publishing ports before entities: an entity body actually calls
  * port methods - the legacy locator sites at [model/entity/Product.cfc:L341] and
@@ -417,7 +421,7 @@ export interface ProductSavePayload {
  * folder leave it no home here. The block above this interface states the removal and its reasoning
  * in full. A `getBrandByBrandID`, a `saveBrand` or a `deleteBrand` here would each be a seventh
  * member, and publishing port surface beyond the locked budget is the same class of defect as the
- * three collaborator interfaces this checkpoint already deleted.
+ * three collaborator interfaces that were deleted from this folder to bring it back to thirteen.
  *
  * The product side does carry a loader, a save and a delete, because `ProductService.cfc` genuinely
  * declares `deleteProduct` [L317] and load-bearing process methods that reach `getHibachiDAO().save`
@@ -429,7 +433,7 @@ export interface ProductSavePayload {
  * root wires it. Nothing here names a driver, a connection, a statement or a table.
  */
 /**
- * A window over a matched identifier list, applied before product graphs are materialized.
+ * A window over a matched row list.
  *
  * Both members are ZERO-BASED and COUNTED, matching `ProductQueryCriteria.pageRecordsStart` and
  * `pageRecordsShow` in `src/services/productService.ts`, which is the only caller that supplies one.
@@ -438,13 +442,42 @@ export interface ProductSavePayload {
  *
  * The adapter is entitled to assume both are non-negative safe integers, because the service checks
  * them - and refuses - before any statement runs.
+ *
+ * ★★★ QUOTE-THEN-REVISE: THIS WAS `ProductMaterializationWindow`, "applied before product graphs are
+ * materialized" (F38). There are no product graphs on this path any more - the search answers the two
+ * columns its statement selects - so a name and a sentence that promised to bound a materialization
+ * would both have been describing work that no longer happens. What the window bounds now is the ROW
+ * SET the caller receives, which is what a paging window means.
  */
-export interface ProductMaterializationWindow {
-  /** Zero-based index of the first matched identifier to materialize. */
+export interface ProductSearchWindow {
+  /** Zero-based index of the first matched row to return. */
   readonly start: number;
 
-  /** How many matched identifiers to materialize from `start`. */
+  /** How many matched rows to return from `start`. */
   readonly count: number;
+}
+
+/**
+ * One matched product row: the two columns [model/dao/ProductDAO.cfc:L421] selects, and nothing else.
+ *
+ * ★★★ THE MEMBER NAMES ARE THE LEGACY'S OWN, WHICH IS WHY THEY ARE `id` AND `value` (F38).
+ * [model/dao/ProductDAO.cfc:L429-L436] loops the two-column result and builds
+ * `result[i] = {"id" = records.productID[i], "value" = records.productName[i]}`. That structure IS the
+ * method's return type in the source, so it is the return type here. Renaming the keys to
+ * `productID`/`productName` would have been a quiet reinterpretation of a shape the source publishes;
+ * the HTTP projection in `src/handlers/catalogQueryHandler.ts` maps them onto its own published names,
+ * which is where a wire-name decision belongs.
+ *
+ * `value` is OPTIONAL because `SwProduct.productName` is a nullable column
+ * [model/entity/Product.cfc:L55] and absence is never substituted with an empty string - the
+ * distinction between "no name recorded" and "an empty name" is preserved all the way to the response.
+ */
+export interface ProductSearchRow {
+  /** `SwProduct.productID`, the legacy `"id"` key. */
+  readonly id: string;
+
+  /** `SwProduct.productName`, the legacy `"value"` key; omitted when the column is NULL. */
+  readonly value?: string;
 }
 
 /**
@@ -453,14 +486,27 @@ export interface ProductMaterializationWindow {
  * TWO MEMBERS RATHER THAN A BARE ARRAY, because a windowed search has to report both what it returned
  * and how much matched: an array alone cannot distinguish "these are all of them" from "these are the
  * first twenty of nine hundred", and a caller publishing a page needs the second fact. See the widening
- * note on `searchProductsByProductType` for why the count comes from the identifier projection rather
+ * note on `searchProductsByProductType` for why the count comes from the row projection rather
  * than from a second `COUNT(*)` statement.
+ *
+ * ★★★ `records` CARRIES ROWS, NOT ENTITIES, AND THAT IS THE CORRECTION (F38). It was declared
+ * `readonly Product[]`, and `src/repositories/mysql/mysqlProductRepository.ts` opened with a standing
+ * note that this was a LIVE DISAGREEMENT: "The brief describes `searchProductsByProductType` as
+ * returning the legacy two-key `{"id","value"}` structure; the port publishes `Promise<Product[]>` and
+ * assigns hydration to this adapter." Code review resolved it against the port, and the AAP is why:
+ * [model/dao/ProductDAO.cfc:L419-L436] issues ONE statement selecting TWO columns and returns them,
+ * while the entity-shaped port turned each match into a product graph, its SKUs, each SKU's options and
+ * a per-product sale-price resolution - after which the only members any caller read were the
+ * identifier and the name. Hydration is not free and it was not asked for; it also made the answer
+ * assembled from several statements, so a concurrent write could leave the page internally
+ * inconsistent. Graph hydration remains available, deliberately, through `getProductByProductID` -
+ * the explicit entity load - which is the path that means to pay for it.
  */
 export interface ProductSearchMatches {
-  /** The materialized products: the window when one was supplied, every match otherwise. */
-  readonly records: readonly Product[];
+  /** The matched rows: the window when one was supplied, every match otherwise. */
+  readonly records: readonly ProductSearchRow[];
 
-  /** How many identifiers matched, BEFORE any window was applied. */
+  /** How many rows matched, BEFORE any window was applied. */
   readonly matchedCount: number;
 }
 
@@ -527,8 +573,10 @@ export interface ProductRepository {
    * WARNING - EXECUTION-MODEL MISMATCH. The calling service raises the request timeout to 3600
    * seconds, one hour, immediately before delegating here
    * [model/service/ProductService.cfc:L65-L68]. That budget is structurally unavailable in the
-   * target: AWS Lambda caps a single invocation at 15 minutes, and API Gateway caps a request at 29
-   * seconds. The legacy body is shaped for exactly the budget it asked for - it fetches the whole
+   * target: AWS Lambda caps a single invocation at 15 minutes, and API Gateway bounds an integration
+   * per API type - 30 s for an HTTP API, 29 s by default for a REST API, raisable beyond that only for
+   * Regional and private REST APIs - so there is no one universal cap to quote, and this subtree
+   * configures none of them. The legacy body is shaped for exactly the budget it asked for - it fetches the whole
    * file over HTTP [model/dao/ProductDAO.cfc:L87], classifies every column by its `product_`,
    * `sku_`, `option_` or `attribute_` prefix [model/dao/ProductDAO.cfc:L130-L140], resolves option
    * groups with one lookup each [model/dao/ProductDAO.cfc:L159-L172], then walks every row of the
@@ -578,22 +626,29 @@ export interface ProductRepository {
    *
    * The legacy body declares `returntype="any"` and projects each row into a two-key structure
    * keyed `id` and `value` for autocomplete consumption [model/dao/ProductDAO.cfc:L429-L436]. The
-   * strict profile admits no `any`, and the plan's interface mapping types this method's result as
-   * the entity it searches, so the port publishes `Product[]` and the adapter owns hydration -
-   * including the fetch shape this file's header requires. A repository-wide search finds no caller
-   * of this DAO function in the legacy tree (its SKU sibling is reached through
-   * `SkuService.searchSkusByProductType` [model/service/SkuService.cfc:L271-L272]), so the
-   * signature published here derives from the declaration itself.
+   * strict profile admits no `any`, so the port publishes that same two-key structure as the typed
+   * {@link ProductSearchRow}. A repository-wide search finds no caller of this DAO function in the
+   * legacy tree (its SKU sibling is reached through `SkuService.searchSkusByProductType`
+   * [model/service/SkuService.cfc:L271-L272]), so the signature published here derives from the
+   * declaration itself.
    *
-   * ★★ THE THIRD PARAMETER AND THE RESULT SHAPE ARE A DELIBERATE, DOCUMENTED WIDENING OF A LEGACY-PARITY
-   * SIGNATURE, added to close a resource finding. A security review recorded (MAJOR, CWE-400) that
-   * `ProductService.findProducts` materialized EVERY matched product graph and only then applied its
-   * paging window in memory, so the window bounded the RESPONSE and not the WORK: one keyword could ask
-   * the adapter to hydrate the entire catalog.
+   * ★★★ QUOTE-THEN-REVISE ON THE RESULT SHAPE (F38). This paragraph used to continue "and the plan's
+   * interface mapping types this method's result as the entity it searches, so the port publishes
+   * `Product[]` and the adapter owns hydration - including the fetch shape this file's header
+   * requires." Code review recorded the consequence: a two-column source query became a full graph
+   * hydration plus a per-product sale-price fan-out, and then the only members any caller read were
+   * the identifier and the name. The adapter itself carried a standing note that the brief and the
+   * port disagreed on exactly this point. The disagreement is resolved in the brief's favour, which is
+   * also the source's: rows in, rows out, one statement. Entity hydration is reached deliberately,
+   * through `getProductByProductID`.
    *
-   * The window is applied to the MATCHED IDENTIFIER LIST, between the row projection and the graph
-   * materialization, and NOT as a `LIMIT`/`OFFSET` on the ported statement. That placement is the whole
-   * of the design and it is chosen for two reasons a reviewer can check:
+   * ★★ THE THIRD PARAMETER IS A DELIBERATE, DOCUMENTED WIDENING OF A LEGACY-PARITY SIGNATURE, added to
+   * close a resource finding. A security review recorded (MAJOR, CWE-400) that
+   * `ProductService.findProducts` applied its paging window in memory only after every matched product
+   * graph had been materialized, so the window bounded the RESPONSE and not the WORK.
+   *
+   * The window is applied to the MATCHED ROW LIST and NOT as a `LIMIT`/`OFFSET` on the ported
+   * statement. That placement is chosen for two reasons a reviewer can check:
    *
    *   1. THE PORTED STATEMENT TEXT STAYS BYTE-IDENTICAL. [model/dao/ProductDAO.cfc:L421] declares no
    *      `ORDER BY`, no `DISTINCT` and no `LIMIT`, and the adapter's note says "the legacy has none, so
@@ -601,25 +656,25 @@ export interface ProductRepository {
    *      would have meant inventing an ordering the source does not declare in order to make the bound
    *      meaningful - a behavioural change disguised as a resource fix.
    *   2. `recordsCount` KEEPS ITS MEANING. `ProductPage.recordsCount` is documented as the total number
-   *      of matches BEFORE the window. The projection statement returns two columns per match and is
-   *      therefore the cheap half; it is what yields the honest total. A `LIMIT` would have destroyed
-   *      that total and forced a second `COUNT(*)` statement to recover it.
+   *      of matches BEFORE the window, and the projection is what yields that honest total. A `LIMIT`
+   *      would have destroyed it and forced a second `COUNT(*)` statement to recover it.
    *
-   * What the window bounds is the expensive half: the three graph-materialization statements, which
-   * hydrate a product, its SKUs and each SKU's options. AN ABSENT WINDOW MEANS EVERY MATCH, exactly as
-   * before, so no existing caller's behaviour changes and the method stays total.
+   * ★ WHAT THE WINDOW BOUNDS IS NOW SMALLER, AND SO IS WHAT IT NEEDED TO BOUND. It used to bound "the
+   * three graph-materialization statements, which hydrate a product, its SKUs and each SKU's options";
+   * those statements are gone from this path, so it bounds the returned ROW SET. The CWE-400 exposure
+   * the window was added for is closed twice over: the expensive half no longer exists, and the cheap
+   * half is still windowed. AN ABSENT WINDOW MEANS EVERY MATCH, exactly as before.
    *
    * @param term Optional name fragment, as the legacy signature names it.
    * @param productTypeIDs Optional comma-delimited product-type identifiers.
-   * @param materializationWindow Optional window applied to the matched identifiers before their graphs
-   *   are materialized. Absent means materialize every match.
-   * @returns The matched products - windowed when a window was supplied - together with how many
+   * @param window Optional window applied to the matched rows. Absent means every match.
+   * @returns The matched rows - windowed when a window was supplied - together with how many
    *   matched BEFORE the window, which is the count a paged caller has to publish.
    */
   searchProductsByProductType(
     term?: string,
     productTypeIDs?: string,
-    materializationWindow?: ProductMaterializationWindow,
+    window?: ProductSearchWindow,
   ): Promise<ProductSearchMatches>;
 
   /**

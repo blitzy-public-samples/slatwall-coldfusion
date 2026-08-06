@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// WHO CONSUMES THESE TYPES, AND THE ONE CONSUMER THAT IS STILL ABSENT
+// WHO CONSUMES THESE TYPES - ALL OF THEM, ALL PRESENT
 //
 // Every module named in the commentary below is present in the subtree today and
 // can be opened while reading this file - the six decomposition modules under
@@ -9,16 +9,19 @@
 // modules `rewardUsageTypes.ts` and `qualificationTypes.ts`, which this file
 // deliberately does not import.
 //
-// ONE NAMED CONSUMER IS STILL ABSENT: `src/services/promotionService.ts`, the
-// facade that would return the intents this module types, is an AAP target the
-// subtree does not yet contain. Nothing below depends on it - this module's only
+// THE NINTH CONSUMER IS PRESENT TOO: `src/services/promotionService.ts`, the
+// facade that returns the intents this module types, ships and can be opened
+// alongside the rest. Nothing below depends on it either way - this module's only
 // imports are two shipped siblings - so no declaration here asserts a capability
 // that does not run.
 //
-// An earlier revision of this header listed all nine modules as forward
-// references that "DO NOT EXIST YET". Eight of the nine had already shipped when
-// it was written, and the claim is corrected rather than carried, because a
-// header that misreports the folder it sits in is worse than no header.
+// This header has now been corrected twice, and the arithmetic is recorded rather
+// than quietly overwritten. A first revision listed all nine modules as forward
+// references that "DO NOT EXIST YET"; eight had in fact already shipped. A second
+// revision fixed those eight but kept the ninth as "STILL ABSENT ... the subtree
+// does not yet contain", which the facade's arrival then falsified in turn. Nine
+// of nine are present, and no module of the target layout is named here as absent,
+// because a header that misreports the folder it sits in is worse than no header.
 // ---------------------------------------------------------------------------
 
 /**

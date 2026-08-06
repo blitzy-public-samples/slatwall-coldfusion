@@ -1,14 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring order
-// "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no declaration below depends on
-// one - every import below resolves against a shipped module, verified by
-// compiling this file. The complete set named below, with the role each plays:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/services/promotionService.ts                the facade that owns the
 //                                                   reward loop and CALLS this
@@ -137,7 +134,7 @@
  * [model/service/PromotionService.cfc:L139], and the port keeps it that way by
  * making the ledger an INSTANCE field of this class. There is no module-level
  * mutable state in this file, and the class is deliberately NOT a singleton
- * wired in the composition root `src/handlers/bootstrap.ts` (planned): one
+ * wired in the composition root `src/handlers/bootstrap.ts`: one
  * `RewardUsageLedger` is constructed per invocation of the promotion pass.
  *
  * That is a CORRECTNESS requirement, not housekeeping. A module-level or
@@ -409,7 +406,7 @@ function putOwnStructKey<TValue>(target: Record<string, TValue>, key: string, va
  * ZERO INTRA-FOLDER IMPORTS. This module imports nothing from
  * `src/services/promotion/**` and nothing from `src/services/**`, and in
  * particular it never imports the facade `src/services/promotionService.ts`
- * (planned) - the dependency is DIRECTIONAL, the facade may import the
+ * - the dependency is DIRECTIONAL, the facade may import the
  * decomposition modules, and a cycle back would be a gate failure. Its only
  * imports are four `import type`s from `src/domain/**` and two runtime helpers
  * from `src/lib/cfml/**`. It imports no repository, no handler and no

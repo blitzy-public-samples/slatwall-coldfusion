@@ -60,15 +60,25 @@
 //   the instant is captured once by the caller and passed in, so one document cannot straddle two
 //   clock readings and a suite can pin it.
 //
-// AN INSTANCE REPRESENTS ONE FEED REQUEST. Both of those values are request-scoped and are held on
-// the instance, so `src/handlers/bootstrap.ts` constructs this class inside the per-invocation
-// request scope. Hoisting an instance to module scope would let a warm container serve one request's
-// host and instant to every later request.
+// ★★★ QUOTE-THEN-REVISE: AN INSTANCE IS STATELESS AND BOTH REQUEST-SCOPED VALUES ARRIVE AS THE
+// METHOD ARGUMENT. This header used to read: "AN INSTANCE REPRESENTS ONE FEED REQUEST. Both of those
+// values are request-scoped and are held on the instance, so `src/handlers/bootstrap.ts` constructs
+// this class inside the per-invocation request scope. Hoisting an instance to module scope would let
+// a warm container serve one request's host and instant to every later request."
+//
+// The HAZARD it names was real; the DESIGN that avoided it was the wrong one. AAP 0.4.2 freezes the
+// ported signature as `async generateProductFeed(criteria: FeedCriteria): Promise<string>` and AAP
+// 0.9.2 gates on it, so the host and the instant belong on the CALL. Once they do, the hazard cannot
+// arise at all rather than being avoided by a construction discipline: an instance holds no
+// request-scoped state to leak, so a warm container may reuse one safely and two concurrent
+// invocations cannot see each other's origin. The per-request FACTORY the old design forced into the
+// composition root - `createProductFeedPort: (feedHost: string) => ProductFeedPort` - is removed
+// along with it.
 //
 // THE CONSUMERS. `src/handlers/router.ts` owns the route - `GET /feeds/google/products`, capability
-// `productFeed`, action `generateProductFeed` - and `src/handlers/bootstrap.ts` is the only place
-// this class is constructed, from the candidate host and allow-list it is given. There is no
-// separate feed handler module in the subtree.
+// `productFeed`, action `generateProductFeed` - `src/handlers/bootstrap.ts` is the only place this
+// class is constructed, and `src/handlers/productFeedHandler.ts` is the Lambda entrypoint that
+// supplies the criteria.
 //
 // AN EXECUTION-MODEL DIFFERENCE. The legacy template raised its own request timeout to 360 seconds
 // [integrationServices/google/views/feed/product.cfm:L9]. There is no per-template equivalent here
@@ -100,7 +110,7 @@ import { renderGoogleProductFeed } from './rssFeedRenderer.js';
 // NOTHING IS IMPORTED FROM `src/lib/config.ts`. An intervening revision imported a
 // `FeedUrlScheme` type from there; the type no longer exists and this adapter holds no
 // configuration edge. See the scheme record on this class's field block.
-import type { ProductFeedPort } from '../../domain/ports/productFeedPort.js';
+import type { FeedCriteria, ProductFeedPort } from '../../domain/ports/productFeedPort.js';
 import type { GoogleFeedRepository } from './googleFeedRepository.js';
 
 export type GoogleProductFeedRenderer = typeof renderGoogleProductFeed;
@@ -231,22 +241,23 @@ export type GoogleProductFeedRowSource = Pick<GoogleFeedRepository, 'fetchProduc
  * The row source has no default and must not acquire one: there is no sensible production instance
  * of it to name from here.
  *
- * AN INSTANCE REPRESENTS ONE FEED REQUEST. The feed host and the range-start instant are
- * request-scoped values held on the instance, so the composition root must construct this class per
- * invocation and must not hoist an instance to module scope, where a warm container would share one
- * request's host and instant with every later request. Both fields are read-only and this class
- * holds nothing else, so two instances never interfere.
+ * ★★★ AN INSTANCE IS STATELESS WITH RESPECT TO A REQUEST, WHICH IS WHY IT MAY BE REUSED.
+ * QUOTE-THEN-REVISE: this block used to read "AN INSTANCE REPRESENTS ONE FEED REQUEST. The feed
+ * host and the range-start instant are request-scoped values held on the instance, so the
+ * composition root must construct this class per invocation and must not hoist an instance to
+ * module scope, where a warm container would share one request's host and instant with every later
+ * request." Those two values are now the METHOD ARGUMENT that AAP 0.4.2 declares, so the instance
+ * holds no request-scoped state at all: the leak it warned about is structurally impossible rather
+ * than avoided by discipline, and a warm container may hold one instance for many invocations.
  *
  * WHAT THE INSTANCE OWNS, EXHAUSTIVELY - the constructor is
- * `(repository, feedHost, now, renderFeed = renderGoogleProductFeed)` and there is no fifth
- * parameter:
+ * `(repository, renderFeed = renderGoogleProductFeed)` and there is no third parameter:
  *
  * * `repository` - the row source. A collaborator, injected, never constructed here.
- * * `feedHost` - the AUTHORITY half of the feed origin only, and a CONFIGURED one. The
- *   composition root owns its provenance; the renderer validates its shape. See the field.
- * * `now` - the clock, passed as a value rather than read from `Date.now()`, which is what
- *   makes the rendered document deterministic.
  * * `renderFeed` - the renderer seam, defaulted to the real renderer.
+ *
+ * Both are process-lifetime collaborators, both are read-only, and this class holds nothing else -
+ * no host, no clock, no cache, no counter and no mutable field of any kind.
  *
  * THE SCHEME IS NOT AMONG THEM, and it is not this class's to own. It is the frozen legacy
  * `http://` literal inside `src/integrations/google/rssFeedRenderer.ts`. An intervening
@@ -263,112 +274,65 @@ export type GoogleProductFeedRowSource = Pick<GoogleFeedRepository, 'fetchProduc
  *
  * @example
  * ```ts
- * // In the composition root, once per invocation, with the host taken from
- * // CONFIGURATION and never from the incoming request's `Host` header - see the
- * // constructor's own note on that obligation - and the instant taken at the start
- * // of handling:
- * const feedService = new GoogleFeedService(rowSource, configuredFeedHost, invocationInstant);
- * const feedDocument = await feedService.generateProductFeed();
+ * // Constructed once, from collaborators alone:
+ * const feedService = new GoogleFeedService(rowSource);
+ *
+ * // Then called per request, with the origin authority taken from an ALLOW-LISTED source and
+ * // never from an unchecked `Host` header - see `generateProductFeed`'s own note on that
+ * // obligation - and the instant taken once at the start of handling:
+ * const feedDocument = await feedService.generateProductFeed({
+ *   feedHost: allowListedFeedHost,
+ *   now: invocationInstant,
+ * });
  * ```
  */
 export class GoogleFeedService implements ProductFeedPort {
   private readonly repository: GoogleProductFeedRowSource;
 
-  /**
-   * The host written into the document's links.
-   *
-   * NOT parsed, trimmed, lower-cased, prefixed with a scheme or defaulted here. Those
-   * omissions are deliberate and are each a different decision from validating: the
-   * scheme is the renderer's own literal, trimming would silently accept a padded value
-   * and change it, and there is no host this class could sensibly default to. Escaping
-   * is the renderer's job and happens exactly once, there.
-   *
-   * NOT SHAPE-CHECKED HERE EITHER, and that is not the same as unchecked. `./rssFeedRenderer.js`
-   * refuses a scheme, a path, credentials, a query, a fragment, whitespace, control
-   * characters and emptiness, and it THROWS rather than emitting a document whose every
-   * link points somewhere else. Since this class passes the value to the renderer and
-   * does nothing else with it, a second copy of that grammar here would refuse the same
-   * inputs a few microseconds earlier and add an exported surface to this module to do
-   * it - see the record above the class for the revision that tried exactly that.
-   *
-   * WHERE IT MUST COME FROM is stated on the constructor parameter, because provenance
-   * is the one part of this contract no check in this file could answer.
-   *
-   * ONE MORE REASON NOT TO RE-NORMALISE HERE, carried over from a comments review whose
-   * surrounding text described a withdrawn in-module allow-list: the composition root
-   * TRIMS AND LOWER-CASES the candidate in order to compare it against the list, and
-   * hands over the normalised form. Trimming or re-casing again here could only make the
-   * emitted host differ from the one that was actually matched, which would quietly
-   * publish an origin the allow-list never approved.
-   */
-  private readonly feedHost: string;
-
-  // THERE IS NO SCHEME FIELD, DELIBERATELY. An intervening revision held
-  // `private readonly feedScheme: FeedUrlScheme` here, took it from deployment
-  // configuration, and forwarded it to the renderer - accepting security finding S-09,
-  // CWE-319. It is removed: the scheme is the frozen legacy `http://` literal owned by
-  // `FEED_ORIGIN_SCHEME_PREFIX` in `./rssFeedRenderer.js`, because AAP 0.1.1 and 0.8.1
-  // freeze the product-feed integration contract and AAP 0.6.7 admits no fourth
-  // divergence. This class therefore holds only the AUTHORITY half of the origin.
-
-  /**
-   * The instant that opens each item's sale-price effective-date range. Held rather than read, so
-   * this class has no clock; handed to the renderer unchanged and never mutated here.
-   */
-  private readonly now: Date;
+  // ★★★ THERE IS NO `feedHost` FIELD AND NO `now` FIELD, AND THAT IS THE MAPPED SIGNATURE.
+  // QUOTE-THEN-REVISE. Two private fields stood here across roughly forty lines of docblock: a
+  // `feedHost: string` documented as "The host written into the document's links" together with a
+  // long account of where it must come from, and a `now: Date` documented as "The instant that opens
+  // each item's sale-price effective-date range. Held rather than read, so this class has no clock".
+  // Both are now members of the {@link FeedCriteria} argument, because AAP 0.4.2 freezes the ported
+  // method as `generateProductFeed(criteria: FeedCriteria)` and AAP 0.9.2 gates on that row.
+  //
+  // NOTHING IN THAT RECORD IS LOST. Its two substantive obligations moved to where their subject now
+  // is: the PROVENANCE obligation on the origin authority is restated in full on
+  // `generateProductFeed` below, which is the one place a caller reads before supplying the value,
+  // and the shape of the criteria is documented on the type itself in
+  // `../../domain/ports/productFeedPort.js`. The division of labour is unchanged - GRAMMAR belongs
+  // to `./rssFeedRenderer.js`, which is the only thing that concatenates the value and which throws
+  // rather than emitting a document; MEMBERSHIP belongs to `../../handlers/bootstrap.js`, against
+  // `AppConfig.feed.allowedHosts`. Neither check is performed here, and neither may be moved here.
+  //
+  // THERE IS STILL NO SCHEME ANYWHERE IN THIS CLASS. An intervening revision held
+  // `private readonly feedScheme: FeedUrlScheme`, took it from deployment configuration and
+  // forwarded it to the renderer, accepting security finding S-09 (CWE-319). It stays removed: the
+  // scheme is the frozen legacy `http://` literal owned by `FEED_ORIGIN_SCHEME_PREFIX` in
+  // `./rssFeedRenderer.js`, because AAP 0.1.1 and 0.8.1 freeze the product-feed integration contract
+  // and AAP 0.6.7 admits no fourth divergence. {@link FeedCriteria} carries the AUTHORITY only.
 
   private readonly renderFeed: GoogleProductFeedRenderer;
 
   /**
-   * Constructs one feed request.
+   * Constructs the feed generator from its collaborators alone.
+   *
+   * QUOTE-THEN-REVISE: this used to read "Constructs one feed request" and took four parameters,
+   * `(repository, feedHost, now, renderFeed)`. The two request-scoped ones are now members of the
+   * {@link FeedCriteria} argument of {@link GoogleFeedService.generateProductFeed}, per AAP 0.4.2,
+   * and the whole provenance obligation that lived on the old `feedHost` parameter is restated on
+   * that method - which is now the one place a caller reads before supplying the value. What remains
+   * here is process-lifetime wiring, so ONE INSTANCE MAY SERVE MANY REQUESTS.
    *
    * @param repository the sole route to feed data.
-   * @param feedHost the origin host written into all five URL sites of the rendered
-   *   document.
-   *
-   *   ★★★ IT MUST COME FROM CONFIGURATION AND NEVER FROM A REQUEST, AND THAT IS AN
-   *   OBLIGATION ON THE CALLER RATHER THAN A CHECK PERFORMED HERE. The legacy read
-   *   `CGI.HTTP_HOST` [integrationServices/google/views/feed/product.cfm:L14, L15,
-   *   L22, L23, L24] - the request's own `Host` header, which a client chooses - so a
-   *   caller that forwards an event header here reproduces a client-steerable catalog
-   *   origin in a document a third party fetches and follows. No check in this file
-   *   could catch that: provenance is not a property of the string, and `evil.test` is
-   *   a perfectly well-formed host. `./rssFeedRenderer.js` refuses a MALFORMED origin
-   *   and cannot refuse a well-formed untrusted one either.
-   *
-   *   So it is written here, on the parameter, in the one place a caller reads before
-   *   supplying the value. The legacy endpoint is public and unauthenticated as a
-   *   matter of source fact [integrationServices/google/controllers/feed.cfc:L54-L56],
-   *   no allow-list belongs in this subtree, and origin policy - if a deployment wants
-   *   one - is an API Gateway concern owned outside it.
-   *
-   *   THE COMPOSITION ROOT DOES HONOUR IT, and naming where keeps this paragraph checkable:
-   *   `src/handlers/bootstrap.ts` refuses a host that is not on the DEPLOYMENT-OWNED allow-list
-   *   in `AppConfig.feed.allowedHosts` before it ever constructs this service, which is the
-   *   configuration boundary this parameter defers to. That check is NOT in this file and must
-   *   not be moved into it: this module may hold no allow-list, and a request may not supply one.
-   *
-   *   WHICH MAKES A FORWARDED HEADER SAFE WITHOUT MAKING IT TRUSTED, and a comments review
-   *   put that distinction better than the paragraph above did: where a deployment has
-   *   supplied a list, the header can only SELECT AMONG ALREADY-APPROVED ORIGINS AND CAN
-   *   NEVER INTRODUCE ONE. The obligation on this parameter is unchanged - a caller that
-   *   forwards a header is relying entirely on that list being configured - but the failure
-   *   mode is a refusal at the root, not a poisoned document.
-   *
-   *   THERE IS NO SCHEME PARAMETER BETWEEN THIS ONE AND `now`. An intervening revision had
-   *   one; the record above this constructor's field block says why it is gone.
-   * @param now the instant that opens each item's sale-price effective-date range.
    * @param renderFeed the document renderer, defaulted to the real one.
    */
   constructor(
     repository: GoogleProductFeedRowSource,
-    feedHost: string,
-    now: Date,
     renderFeed: GoogleProductFeedRenderer = renderGoogleProductFeed,
   ) {
     this.repository = repository;
-    this.feedHost = feedHost;
-    this.now = now;
     this.renderFeed = renderFeed;
   }
 
@@ -381,7 +345,7 @@ export class GoogleFeedService implements ProductFeedPort {
    *
    *   LEGACY  `public void function product(required struct rc)`
    *           [integrationServices/google/controllers/feed.cfc:L58]
-   *   TARGET  `async generateProductFeed(): Promise<string>`
+   *   TARGET  `async generateProductFeed(criteria: FeedCriteria): Promise<string>`
    *
    *   The legacy method returned `void` and produced its result as a SIDE EFFECT: it wrote the
    *   selection onto the request context [integrationServices/google/controllers/feed.cfc:L63] and
@@ -391,14 +355,57 @@ export class GoogleFeedService implements ProductFeedPort {
    *   follows from it: `product` was a framework ACTION name, meaningful only as half of a routing
    *   pair.
    *
-   * JUDGMENT CALL: NO PARAMETERS, and no criteria type is invented to carry any. Settled by reading
-   * [integrationServices/google/controllers/feed.cfc:L58-L73]: every reference to the request context
-   * in that body is a WRITE, nothing is read back out of it, and the selection factory was called
-   * with no arguments, so the legacy action took no caller-supplied narrowing at all.
-   * {@link ProductFeedPort} declares this method with no parameters and this class matches it rather
-   * than widening it. The four selection conditions are consequently unreachable from a caller,
-   * which is what makes them invariants of the feed rather than defaults of a query; they are
-   * enforced in `./googleFeedRepository.js`.
+   * ★★★ ONE PARAMETER, AND IT NARROWS NOTHING. QUOTE-THEN-REVISE: this paragraph used to open
+   * "JUDGMENT CALL: NO PARAMETERS, and no criteria type is invented to carry any", settled by the
+   * observation that "every reference to the request context in that body is a WRITE, nothing is read
+   * back out of it, and the selection factory was called with no arguments, so the legacy action took
+   * no caller-supplied narrowing at all."
+   *
+   *   THAT OBSERVATION IS CORRECT AND IS RE-VERIFIED HERE, so the four selection conditions remain
+   *   unreachable from a caller and {@link FeedCriteria} carries no selection member of any kind -
+   *   they are invariants of the feed rather than defaults of a query, enforced in
+   *   `./googleFeedRepository.js`.
+   *
+   *   THE CONCLUSION DID NOT FOLLOW. AAP 0.4.2 maps this method as
+   *   `async generateProductFeed(criteria: FeedCriteria): Promise<string>` and records the reshaping
+   *   in that exact form; AAP 0.9.2 makes every row of the table a parity gate and admits no fourth
+   *   reshaping beyond the three it lists. Deleting the declared parameter was a fourth. What the
+   *   criteria actually carries is the PER-REQUEST CONTEXT the legacy took from CGI scope and the
+   *   clock - the origin authority and the instant - which is exactly what the FW/1 `rc` struct stood
+   *   for. Those two values used to be constructor fields, which forced the composition root to
+   *   publish a per-request port FACTORY; they now enter on the call, which is both the mapped shape
+   *   and the simpler one.
+   *
+   * ★★★ THE ORIGIN AUTHORITY MUST COME FROM AN ALLOW-LISTED SOURCE AND NEVER FROM AN UNCHECKED
+   * REQUEST HEADER. This obligation moved here from the old `feedHost` constructor parameter, because
+   * this is now the one place a caller reads before supplying the value. It is an OBLIGATION ON THE
+   * CALLER, not a check performed here.
+   *
+   *   The legacy read `CGI.HTTP_HOST` [integrationServices/google/views/feed/product.cfm:L14, L15,
+   *   L22, L23, L24] - the request's own `Host` header, which a client chooses - so a caller that
+   *   forwards an event header straight into `criteria.feedHost` reproduces a client-steerable
+   *   catalog origin inside a document a third party fetches and follows. No check in this file could
+   *   catch that: provenance is not a property of the string, and `evil.test` is a perfectly
+   *   well-formed host. `./rssFeedRenderer.js` refuses a MALFORMED origin and cannot refuse a
+   *   well-formed untrusted one.
+   *
+   *   THE COMPOSITION ROOT DOES HONOUR IT, and naming where keeps this paragraph checkable:
+   *   `../../handlers/bootstrap.js` refuses a host that is not on the DEPLOYMENT-OWNED allow-list in
+   *   `AppConfig.feed.allowedHosts` before it will hand any criteria to this method, and the value
+   *   that reaches here is the NORMALISED form that check produced - trimmed and case-folded - so the
+   *   emitted origin is byte for byte the one the allow-list approved. That check is NOT in this file
+   *   and must not be moved into it: this module may hold no allow-list, and a request may not supply
+   *   one.
+   *
+   *   WHICH MAKES A FORWARDED HEADER SAFE WITHOUT MAKING IT TRUSTED: where a deployment has supplied
+   *   a list, the header can only SELECT AMONG ALREADY-APPROVED ORIGINS AND CAN NEVER INTRODUCE ONE.
+   *   An empty allow-list refuses everything, which is the safe failure and not a bypass. The legacy
+   *   endpoint is public and unauthenticated as a matter of source fact
+   *   [integrationServices/google/controllers/feed.cfc:L54-L56], and that is unchanged.
+   *
+   *   NO SCHEME CROSSES THIS BOUNDARY. `criteria.feedHost` is the AUTHORITY only; the scheme is the
+   *   frozen legacy `http://` literal owned by `FEED_ORIGIN_SCHEME_PREFIX` in
+   *   `./rssFeedRenderer.js`.
    *
    * JUDGMENT CALL: the dead collaborator is NOT carried forward.
    * [integrationServices/google/controllers/feed.cfc:L51] declares a `productService` property that
@@ -418,6 +425,8 @@ export class GoogleFeedService implements ProductFeedPort {
    * NOTHING IS CAUGHT AND NOTHING IS DEFAULTED. Swallowing a failure here would mean returning a
    * document that silently omitted products a merchant is advertising.
    *
+   * @param criteria the per-request context of this one generation: the origin authority, subject to
+   *   the obligation above, and the instant. It carries no selection member and narrows nothing.
    * @returns the whole feed as a single RSS 2.0 document string, for machine consumption by Google
    *   Merchant Center. It is the renderer's string, returned unchanged: not wrapped, trimmed,
    *   re-encoded, compressed or post-processed.
@@ -426,18 +435,23 @@ export class GoogleFeedService implements ProductFeedPort {
    *   a host or field validation failure from the renderer. This method adds no failure mode of its
    *   own and maps none: the layer that owns the request maps them to a response.
    */
-  async generateProductFeed(): Promise<string> {
+  async generateProductFeed(criteria: FeedCriteria): Promise<string> {
     // CFML parity [integrationServices/google/controllers/feed.cfc:L58-L73]: the legacy performed
     // one selection and then rendered it once, in that order, for one request. The same two steps
     // in the same order, with the row order left exactly as the source returns it - the legacy
     // applied no ordering, so imposing one here would be a repair rather than a port.
     //
+    // The criteria is NOT consulted here and must not be: the selection is invariant, so nothing
+    // about this read depends on which request asked for it.
+    //
     // "Create the product feed" [integrationServices/google/controllers/feed.cfc:L62].
     const rows = await this.repository.fetchProductFeedRows();
 
     // Straight through: the rows are neither filtered, sorted, sliced, mapped nor copied, and the
-    // origin's authority and the instant are forwarded exactly as they were supplied. The origin's
-    // scheme is not forwarded because it is not held: it is the renderer's frozen literal.
-    return this.renderFeed(rows, this.feedHost, this.now);
+    // origin's authority and the instant are forwarded exactly as they were supplied - destructured
+    // in the argument list rather than copied to locals, so there is no opportunity to substitute
+    // either. The origin's scheme is not forwarded because it is not held anywhere in this class: it
+    // is the renderer's frozen literal.
+    return this.renderFeed(rows, criteria.feedHost, criteria.now);
   }
 }

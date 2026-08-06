@@ -788,6 +788,15 @@ const OVERRIDING_PRODUCT_TYPE_NAME = 'A Name The Payload Supplied';
 /** Where `urlTitle` sits in {@link EXPECTED_INSERT_STATEMENT}'s bound parameters. */
 const INSERT_URL_TITLE_POSITION = 4;
 
+/**
+ * Where `productTypeDescription` sits in {@link EXPECTED_INSERT_STATEMENT}'s bound parameters.
+ *
+ * Stated as an ordinal rather than searched for, because the whole point of the assertion that uses
+ * it is that the value lands in ITS OWN column: finding it anywhere in the array would pass for a
+ * statement that bound it over `productTypeName`.
+ */
+const INSERT_PRODUCT_TYPE_DESCRIPTION_POSITION = 6;
+
 /** Where `productTypeName` sits in {@link EXPECTED_INSERT_STATEMENT}'s bound parameters. */
 const INSERT_PRODUCT_TYPE_NAME_POSITION = 5;
 
@@ -956,17 +965,26 @@ const MEMBERS_THAT_BELONG_ELSEWHERE: readonly string[] = [
 
 // The names `Object.getOwnPropertyNames` reports on the adapter's prototype.
 //
-// Four are the port's methods; `readProductTypeRow`, `insertProductType` and `updateProductType`
-// are TypeScript-private helpers, and `private` is a COMPILE-TIME modifier that leaves the method
-// on the runtime prototype. Pinning all seven plus the constructor is what makes this a
-// closed-surface assertion: four names would be wrong, and "at least four" would never notice a
-// method being added.
+// Four are the port's methods; `readAncestryRowsByPath`, `readProductTypeRow`, `insertProductType`
+// and `updateProductType` are TypeScript-private helpers, and `private` is a COMPILE-TIME modifier
+// that leaves the method on the runtime prototype. Pinning all eight plus the constructor is what
+// makes this a closed-surface assertion: four names would be wrong, and "at least four" would never
+// notice a method being added.
+//
+// QUOTE-THEN-REVISE. This note previously read "`readProductTypeRow`, `insertProductType` and
+// `updateProductType` are TypeScript-private helpers ... Pinning all seven plus the constructor",
+// and the list below held seven names. `readAncestryRowsByPath` is the eighth, added for F37: the
+// ancestry walk in `getProductTypeByProductTypeID` used to resolve each ancestor through its own
+// `readProductTypeRow` call, and it now reads the whole ancestry in ONE statement off the stored
+// `productTypeIDPath` [model/entity/ProductType.cfc:L53]. The name is added rather than the
+// assertion relaxed: a closed surface that admits "at least" would stop being closed.
 const EXPECTED_PROTOTYPE_MEMBERS: readonly string[] = [
   'constructor',
   'getProductTypeByProductTypeID',
   'getProductTypeQuery',
   'getProductTypesByProductTypeIDPath',
   'insertProductType',
+  'readAncestryRowsByPath',
   'readProductTypeRow',
   'saveProductType',
   'updateProductType',
@@ -1014,7 +1032,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       expect(typeof repository.saveProductType).toBe('function');
     });
 
-    it('exposes exactly the four port methods and three private helpers, and nothing else', () => {
+    it('exposes exactly the four port methods and four private helpers, and nothing else', () => {
       const prototypeMembers = Object.getOwnPropertyNames(
         MysqlProductTypeRepository.prototype,
       ).sort();
@@ -1562,9 +1580,75 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       expect(found).toBeUndefined();
     });
 
-    it('walks the ancestry one statement per hop, binding each parent key in turn', async () => {
+    it('★★★ walks a three-level ancestry in TWO statements, not one per hop (F37)', async () => {
+      // QUOTE-THEN-REVISE. This case was titled "walks the ancestry one statement per hop, binding
+      // each parent key in turn" and asserted THREE statements, all
+      // `EXPECTED_BY_ID_STATEMENT`, binding `[GRANDCHILD]`, `[CHILD]`, `[ROOT]` in turn. It was an
+      // accurate characterization of a walk that re-asked the database for each ancestor
+      // individually - and F37 is the finding that says a stored materialized path makes that
+      // fan-out unnecessary. The assertion is restaged rather than relaxed: the count is still
+      // pinned exactly, and it is now pinned to TWO for a chain of THREE.
+      //
+      // The path result set deliberately arrives in an order that DISAGREES with the walk - root
+      // first, and with the target's own row included, exactly as the unanchored `LIKE` would
+      // return it - so what builds the chain has to be the PARENT POINTERS on the rows, not the
+      // order the server happened to answer in.
       const executor = new RecordingExecutor([
         [hydrationRow(GRANDCHILD_PRODUCT_TYPE_ID, CHILD_PRODUCT_TYPE_ID, GRANDCHILD_PATH)],
+        [
+          hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH),
+          hydrationRow(GRANDCHILD_PRODUCT_TYPE_ID, CHILD_PRODUCT_TYPE_ID, GRANDCHILD_PATH),
+          hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH),
+        ],
+      ]);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
+
+      const loaded = await repository.getProductTypeByProductTypeID(GRANDCHILD_PRODUCT_TYPE_ID);
+      const grandchild = requireProductType(loaded, 'the grandchild product type');
+
+      // Three levels, TWO statements: the row read that found the target, then ONE path read that
+      // answered for every ancestor at once. The count no longer grows with the depth of the tree,
+      // which is the whole of F37 - and it is still an explicit, countable sequence of reads rather
+      // than a proxy dereference nobody can see, which is the whole of the ORM replacement.
+      expect(executor.calls).toHaveLength(2);
+      expect(statementAt(executor.calls, 0).sql).toBe(EXPECTED_BY_ID_STATEMENT);
+      expect(statementAt(executor.calls, 0).params).toEqual([GRANDCHILD_PRODUCT_TYPE_ID]);
+      expect(statementAt(executor.calls, 1).sql).toBe(EXPECTED_BY_ID_PATH_STATEMENT);
+      expect(statementAt(executor.calls, 1).params).toEqual([GRANDCHILD_PATH]);
+
+      const child = requireProductType(grandchild.getParentProductType(), 'the child product type');
+      const root = requireProductType(child.getParentProductType(), 'the root product type');
+
+      expect(child.getProductTypeID()).toBe(CHILD_PRODUCT_TYPE_ID);
+      expect(root.getProductTypeID()).toBe(ROOT_PRODUCT_TYPE_ID);
+      expect(root.getParentProductType()).toBeUndefined();
+    });
+
+    it('★★★ reads no path at all for a root, so the common case costs ONE statement (F37)', async () => {
+      const executor = new RecordingExecutor([
+        [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
+      ]);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
+
+      const loaded = await repository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID);
+      const root = requireProductType(loaded, 'the root product type');
+
+      // The path read is LAZY: it happens at the first hop that needs a parent, and a root has no
+      // such hop. `ROOT_PATH` is non-empty - it names the root itself - so an eager read would have
+      // issued a second statement here for an ancestry that does not exist.
+      expect(executor.calls).toHaveLength(1);
+      expect(onlyStatement(executor.calls).sql).toBe(EXPECTED_BY_ID_STATEMENT);
+      expect(root.getParentProductType()).toBeUndefined();
+    });
+
+    it('falls back to a read per hop when the stored path does not name the ancestor', async () => {
+      // A STALE PATH. Nothing in the legacy rewrites a descendant's `productTypeIDPath` when an
+      // ancestor is reparented - `preInsert`/`preUpdate` [model/entity/ProductType.cfc:L305, L310]
+      // maintain only the row being written - so a path naming nothing but itself while the row
+      // still points at a parent is reachable data, not a hypothetical.
+      const stalePath = GRANDCHILD_PRODUCT_TYPE_ID;
+      const executor = new RecordingExecutor([
+        [hydrationRow(GRANDCHILD_PRODUCT_TYPE_ID, CHILD_PRODUCT_TYPE_ID, stalePath)],
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH)],
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
       ]);
@@ -1573,22 +1657,61 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const loaded = await repository.getProductTypeByProductTypeID(GRANDCHILD_PRODUCT_TYPE_ID);
       const grandchild = requireProductType(loaded, 'the grandchild product type');
 
-      // Three hops, three statements, all the same text with a different bound key. That is the
-      // ORM-laziness replacement made visible: the graph walk is a sequence of explicit reads
-      // rather than a proxy dereference nobody can see, so the count is bounded by the depth of the
-      // tree.
+      // The gate refuses to ask for ancestors by a path that does not mention them - a statement
+      // that provably cannot answer is not issued - so both hops take their own read and the
+      // ANSWER IS THE SAME FULL CHAIN the per-hop walk produced. Three statements, all by
+      // identifier, and no path read among them.
       expect(executor.calls).toHaveLength(3);
       expect(statementAt(executor.calls, 0).params).toEqual([GRANDCHILD_PRODUCT_TYPE_ID]);
-      expect(statementAt(executor.calls, 1).params).toEqual([CHILD_PRODUCT_TYPE_ID]);
-      expect(statementAt(executor.calls, 2).params).toEqual([ROOT_PRODUCT_TYPE_ID]);
       expect(statementAt(executor.calls, 1).sql).toBe(EXPECTED_BY_ID_STATEMENT);
+      expect(statementAt(executor.calls, 1).params).toEqual([CHILD_PRODUCT_TYPE_ID]);
+      expect(statementAt(executor.calls, 2).sql).toBe(EXPECTED_BY_ID_STATEMENT);
+      expect(statementAt(executor.calls, 2).params).toEqual([ROOT_PRODUCT_TYPE_ID]);
 
       const child = requireProductType(grandchild.getParentProductType(), 'the child product type');
       const root = requireProductType(child.getParentProductType(), 'the root product type');
 
       expect(child.getProductTypeID()).toBe(CHILD_PRODUCT_TYPE_ID);
       expect(root.getProductTypeID()).toBe(ROOT_PRODUCT_TYPE_ID);
-      expect(root.getParentProductType()).toBeUndefined();
+    });
+
+    it('matches a path element whatever case it is stored in, and issues one path read at most', async () => {
+      // CFML list membership is CASE-INSENSITIVE, and the gate uses `listFindNoCase` for exactly
+      // that reason: a path recorded in one casing and a `parentProductTypeID` recorded in another
+      // are the SAME identifier to the legacy, so a case-sensitive gate would send both hops down
+      // the fallback and quietly restore the per-hop fan-out this finding removed.
+      const executor = new RecordingExecutor([
+        [
+          hydrationRow(
+            GRANDCHILD_PRODUCT_TYPE_ID,
+            CHILD_PRODUCT_TYPE_ID,
+            [
+              ROOT_PRODUCT_TYPE_ID.toUpperCase(),
+              CHILD_PRODUCT_TYPE_ID.toUpperCase(),
+              GRANDCHILD_PRODUCT_TYPE_ID,
+            ].join(PATH_DELIMITER),
+          ),
+        ],
+        [
+          hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH),
+          hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH),
+        ],
+      ]);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
+
+      const loaded = await repository.getProductTypeByProductTypeID(GRANDCHILD_PRODUCT_TYPE_ID);
+      const grandchild = requireProductType(loaded, 'the grandchild product type');
+
+      // TWO statements for TWO hops' worth of ancestry, and the second hop reuses the map the first
+      // hop populated rather than reading the path again.
+      expect(executor.calls).toHaveLength(2);
+      expect(statementAt(executor.calls, 1).sql).toBe(EXPECTED_BY_ID_PATH_STATEMENT);
+
+      const child = requireProductType(grandchild.getParentProductType(), 'the child product type');
+      const root = requireProductType(child.getParentProductType(), 'the root product type');
+
+      expect(child.getProductTypeID()).toBe(CHILD_PRODUCT_TYPE_ID);
+      expect(root.getProductTypeID()).toBe(ROOT_PRODUCT_TYPE_ID);
     });
 
     it('materializes exactly the declared fetch shape and nothing else', async () => {
@@ -2756,6 +2879,72 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
       expect(error.name).toBe('ProductTypeColumnError');
       expect(error.message).toContain('Column "activeFlag"');
+    });
+
+    it('★★ round-trips a POPULATED productTypeDescription, binding it and hydrating it back', async () => {
+      // ★★★ EVERY ROW BUILDER IN THIS FILE HYDRATED THIS COLUMN AS `null`, which a code review
+      // measured: the statement text named it, the column count included it, and not one case ever
+      // carried a value through it. A projection that dropped the column, a hydration that mapped it
+      // to the wrong field, or a bind at the wrong ordinal would all have passed - and the Google
+      // feed reads this value, so the failure would have surfaced as silently description-less feed
+      // entries rather than as a test failure.
+      //
+      // A 4,000-character value, because that is the declared width
+      // [model/entity/ProductType.cfc:L58] and a bind that truncated would be invisible at any
+      // shorter length.
+      const description = `Decorated apparel. ${'D'.repeat(3981)}`;
+
+      expect(description).toHaveLength(4000);
+
+      // THE WRITE HALF: bound as a parameter, at its own ordinal, and never interpolated into SQL.
+      const writeExecutor = new RecordingExecutor([]);
+      const writeRepository = new MysqlProductTypeRepository(writeExecutor, TEST_AUDIT_ACTOR);
+
+      await writeRepository.saveProductType(
+        new ProductType({
+          productTypeID: '',
+          productTypeName: ROOT_PRODUCT_TYPE_NAME,
+          productTypeDescription: description,
+        }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const { sql, params } = onlyStatement(writeExecutor.mutationCalls);
+
+      expect(parameterAt(params, INSERT_PRODUCT_TYPE_DESCRIPTION_POSITION)).toBe(description);
+      expect(sql).not.toContain(description);
+      expect(sql).toContain('  productTypeDescription,');
+
+      // THE READ HALF: the same value comes back off the row, on the accessor that names it, and no
+      // neighbouring column absorbs it.
+      const readExecutor = new RecordingExecutor([
+        [
+          hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH, {
+            productTypeDescription: description,
+          }),
+        ],
+      ]);
+      const readRepository = new MysqlProductTypeRepository(readExecutor, TEST_AUDIT_ACTOR);
+      const hydrated = requireProductType(
+        await readRepository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID),
+        'the product type whose description was projected',
+      );
+
+      expect(hydrated.getProductTypeDescription()).toBe(description);
+      expect(hydrated.getProductTypeName()).toBe(ROOT_PRODUCT_TYPE_NAME);
+      expect(hydrated.getSystemCode()).toBeUndefined();
+
+      // AND SQL NULL STILL MEANS ABSENT, so the populated case above is not achieved by defaulting.
+      const nullExecutor = new RecordingExecutor([
+        [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
+      ]);
+      const nullRepository = new MysqlProductTypeRepository(nullExecutor, TEST_AUDIT_ACTOR);
+      const withoutDescription = requireProductType(
+        await nullRepository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID),
+        'the product type whose description is null',
+      );
+
+      expect(withoutDescription.getProductTypeDescription()).toBeUndefined();
     });
 
     it('reads a flag column whatever casing its label arrives in', async () => {

@@ -48,7 +48,10 @@ import type {
   ProductHydrationInput,
   ProductUnusedOption,
 } from '../../../../src/domain/entities/product.js';
+import { PriceGroupRate } from '../../../../src/domain/entities/priceGroupRate.js';
 import { ProductType } from '../../../../src/domain/entities/productType.js';
+import { PromotionQualifier } from '../../../../src/domain/entities/promotionQualifier.js';
+import { PromotionReward } from '../../../../src/domain/entities/promotionReward.js';
 import type { Sku } from '../../../../src/domain/entities/sku.js';
 import { Money } from '../../../../src/domain/valueObjects/money.js';
 import { listLen, listToArray } from '../../../../src/lib/cfml/list.js';
@@ -579,13 +582,33 @@ describe('LEGACY-EXTENDED: the five cases Product inherits and adds', () => {
     // `productName`, `productCode`, `productType` and `urlTitle` - and `newProduct()` supplies none
     // of them.
     //
-    // CFML parity [model/entity/Product.cfc:L49]: `validate()` and `hasErrors()` were never
-    // Product's own members. They came from the framework base reached through the unqualified
-    // `extends="HibachiEntity"`, and that base is deliberately not ported - validation is
-    // redistributed to service-tier schemas driven by model/validation/Product.json.
-    for (const absent of ['validate', 'hasErrors', 'hasError', 'getErrors', 'addError']) {
-      expect(declaresMember(absent)).toBe(false);
+    // CFML parity [model/entity/Product.cfc:L49]: neither `validate()` nor the error register was
+    // Product's own member - both came from the framework base reached through the unqualified
+    // `extends="HibachiEntity"`. THE TWO ARE NOT PORTED ALIKE, and this case used to assert the
+    // absence of all five members as though they were one thing.
+    //
+    // `validate` is metadata-driven DISPATCH over `model/validation/Product.json` through
+    // `HibachiValidationService`, and it stays unported - the rules are transcribed by the service
+    // that needs them, which is what "redistributed to service-tier schemas" meant.
+    //
+    // ★★★ THE FIVE-MEMBER REGISTER [org/Hibachi/HibachiTransient.cfc:L30-L64] IS PORTED, AND ITS
+    // ABSENCE WAS A DEFECT. `HibachiService.save` [org/Hibachi/HibachiService.cfc:L151-L167] and
+    // `saveProduct` [model/service/ProductService.cfc:L276, L286, L291] both read `hasErrors()` off
+    // the entity and both RETURN that entity - so with no register the ported save had nowhere to put
+    // a refusal, returned an entity indistinguishable from a persisted one, and was changed to throw
+    // instead. Code review recorded the throw as the divergence. THE LEGACY CASE THIS BLOCK PORTS IS
+    // NOW ASSERTABLE AS WRITTEN.
+    expect(declaresMember('validate')).toBe(false);
+
+    for (const present of ['hasErrors', 'hasError', 'getErrors', 'getError', 'addError']) {
+      expect(declaresMember(present)).toBe(true);
     }
+
+    // `assert(variables.entity.hasErrors())` is the legacy assertion, and it needs the SERVICE to run
+    // the rules - the entity carries the answer, it does not compute it. A bare product therefore
+    // starts clean here, and `tests/unit/services/productService.test.ts` is where the refusal is
+    // asserted end to end.
+    expect(new Product({ productID: '' }).hasErrors()).toBe(false);
 
     const bare = new Product({ productID: '' });
 
@@ -1749,6 +1772,24 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
     expect(subject.getSkuByID('sku-wanted')).not.toBeInstanceOf(Promise);
 
     expect(new Product({ productID: 'product-2' }).getSkuByID('sku-wanted')).toBeUndefined();
+  });
+
+  it('★ B7.6b - matches WITHOUT REGARD TO CASE, because CFML `==` on strings does [L164]', () => {
+    // [model/entity/Product.cfc:L164] is `skus[i].getSkuID() == arguments.skuID`, and CFML `==` on
+    // two strings is case-INSENSITIVE. A `===` port answered `undefined` for a SKU the product
+    // genuinely owns whenever the caller's spelling differed in case from the stored column - and
+    // the identifiers are database-generated, read back through a predicate that is itself
+    // case-insensitive under MySQL's default collation, so the two spellings are one key.
+    const wanted = makeSkuFixture({ skuID: 'sku-wanted' });
+    const subject = new Product({ productID: 'product-1', skus: [wanted] });
+
+    expect(subject.getSkuByID('SKU-WANTED')).toBe(wanted);
+    expect(subject.getSkuByID('Sku-Wanted')).toBe(wanted);
+
+    // Identity only: a padded spelling is a different string in CFML too, and a genuine miss is
+    // still an absence rather than the first SKU.
+    expect(subject.getSkuByID(' sku-wanted')).toBeUndefined();
+    expect(subject.getSkuByID('sku-other')).toBeUndefined();
   });
 });
 
@@ -3066,13 +3107,25 @@ describe('remaining delegations, warts and accessors', () => {
 
   it('B13.4 / C3 - getTitle is OMITTED because hibachiUtilityService is NOT a port', () => {
     // C3 - A PROMPT-CLAIMED MEMBER THAT DOES NOT SHIP, for ONE reason.
-    // `productTitleString` setting. That setting IS among the seven keys `settingsProvider`
-    // publishes [model/service/SettingService.cfc:L193] and this entity holds the provider that
-    // resolves it, so the setting is not the obstacle. What is missing is the RENDERER: [L542]
-    // hands the template to `getService("hibachiUtilityService").replaceStringTemplate(...)`, a
-    // framework utility under `org/Hibachi/` that this migration never ports, so the `${...}`
-    // markers in the value have nothing to resolve them.
-    expect(declaresMember('getTitle')).toBe(false);
+    // ★★★ QUOTE-THEN-REVISE - `getTitle` NOW SHIPS, AND THE ARGUMENT AGAINST IT WAS ONE STEP TOO
+    // SHORT. It read: "That setting IS among the keys `settingsProvider` publishes
+    // [model/service/SettingService.cfc:L193] and this entity holds the provider that resolves it, so
+    // the setting is not the obstacle. What is missing is the RENDERER: [L542] hands the template to
+    // `getService("hibachiUtilityService").replaceStringTemplate(...)`, a framework utility under
+    // `org/Hibachi/` that this migration never ports, so the `${...}` markers have nothing to resolve
+    // them."
+    //
+    // Every factual clause there is true. The conclusion does not follow, because AAP 0.2.2 says the
+    // framework is not PORTED while AAP 0.5.3 says its responsibilities are REDISTRIBUTED EXPLICITLY -
+    // and `replaceStringTemplate` [org/Hibachi/HibachiUtilityService.cfc:L70-L100] has exactly ONE
+    // in-scope consumer, this method. So the renderer's behaviour is reproduced AT that consumer
+    // instead of resurrecting a framework utility module the plan's layout does not contain.
+    //
+    // Code review recorded what the omission cost: `saveProduct` substituted
+    // `getCalculatedTitle()` at [model/service/ProductService.cfc:L269], an ORM-maintained snapshot
+    // that a NEW product does not have and a STALE one has out of date - so slug generation received
+    // an empty or obsolete candidate.
+    expect(declaresMember('getTitle')).toBe(true);
 
     expect(declaresMember('getCalculatedTitle')).toBe(true);
 
@@ -3732,8 +3785,17 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
     expect(bare.getPrice()).toBeUndefined();
     expect(bare.getPrice()).not.toBe(0);
 
+    // ★ THE ENTITY STILL CANNOT VALIDATE ITSELF, which is what made the legacy case unassertable
+    // here: `validate` is absent, so "a bare product fails the save context" is a claim only
+    // `src/services/productService.ts` can make - and it does, in its own suite. The entity carries the
+    // VERDICT (`hasErrors`) and does not reach it, and a bare product has not been told anything yet.
     expect(declaresMember('validate')).toBe(false);
-    expect(declaresMember('hasErrors')).toBe(false);
+
+    // ★ `hasErrors` SHIPS - see the LEGACY-EXTENDED case for the full record. What matters here is
+    // unchanged: the entity does not COMPUTE the five unmet requirements, it only carries whatever a
+    // service recorded, and a bare product has recorded nothing.
+    expect(declaresMember('hasErrors')).toBe(true);
+    expect(bare.hasErrors()).toBe(false);
   });
 
   it('issue_1690_2 - constructing a bare Product and reading its state does not throw', () => {
@@ -4126,11 +4188,22 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
     //   removePromotionQualifierExclusion -> ...removeExcludedProduct(this)             [L759-L761]
     //   addPriceGroupRate               -> priceGroupRate.addProduct(this)              [L764-L766]
     //   removePriceGroupRate            -> priceGroupRate.removeProduct(this)           [L767-L769]
-    // DEPENDENCY BOUNDARY, AND IT IS WHY THESE TEN ARE ASSERTED STRUCTURALLY RATHER THAN
-    // BEHAVIOURALLY. `PromotionReward`, `PromotionQualifier` and `PriceGroupRate` are NOT in this
-    // suite's dependency whitelist, and all three are classes with private state, so no structural
-    // stand-in can satisfy their parameter types: constructing one would mean either importing
-    // outside the whitelist or reaching for a cast.
+    // ★★★ THIS CASE IS THE STRUCTURAL HALF ONLY, AND IT USED TO BE THE WHOLE THING. It once carried
+    // this justification: "`PromotionReward`, `PromotionQualifier` and `PriceGroupRate` are NOT in
+    // this suite's dependency whitelist, and all three are classes with private state, so no
+    // structural stand-in can satisfy their parameter types: constructing one would mean either
+    // importing outside the whitelist or reaching for a cast."
+    //
+    // A CODE REVIEW REJECTED THAT, AND IT WAS RIGHT: there is no such whitelist. `eslint.config.mjs`
+    // restricts imports for `src/domain/**` - outward layers and barrels - and imposes nothing of the
+    // kind on `tests/**`, and this suite already imports five sibling entity classes for exactly this
+    // purpose. All three far-side classes take a single required identifier, so a real one costs one
+    // line and no cast. Ten delegations and six probes were therefore never called at all: an
+    // inverted add/remove, a dropped guard or an include/exclude swap would all have passed.
+    //
+    // The arity and existence loop below still earns its place - it is what keeps a delegation from
+    // silently gaining a second parameter, and it pairs with the omission case that follows - but the
+    // BEHAVIOUR is asserted in the round-trip block after it, against real instances.
     const delegations = [
       'addPromotionReward',
       'removePromotionReward',
@@ -4229,6 +4302,239 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
   });
 });
 
+// =========================================================================================
+// B16.6, BEHAVIOURALLY: the ten delegations and six probes, against REAL far sides.
+//
+// ★★★ WHY THIS BLOCK EXISTS. The structural case above asserts that ten members exist and take
+// one argument each. A code review measured that as the ONLY coverage they had: not one of them
+// was ever called, so an inverted add/remove, a dropped duplicate guard or an include list wired
+// to the exclusion collection would all have passed. The three far-side classes each take a
+// single required identifier, so every case here constructs real ones - no cast, no stand-in.
+//
+// WHAT EACH ROUND TRIP HAS TO SHOW, because the legacy helpers are BIDIRECTIONAL
+// [model/entity/PromotionReward.cfc:L258-L275, PromotionQualifier.cfc:L301-L306,
+// PriceGroupRate.cfc:L216-L236]: after an add, BOTH collections hold the counterpart; after a
+// remove, NEITHER does; a second add adds nothing more for a SAVED product; and the include and
+// exclude collections never see each other's members.
+// =========================================================================================
+describe('B16.6 behaviour - the promotion and price-group delegations, as two-sided round trips', () => {
+  /** A saved product, which is what makes the far side's `hasProduct` guard reachable. */
+  const savedProduct = (): Product => new Product({ productID: 'product-1' });
+
+  const aReward = (promotionRewardID = 'reward-1'): PromotionReward =>
+    new PromotionReward({ promotionRewardID });
+
+  const aQualifier = (promotionQualifierID = 'qualifier-1'): PromotionQualifier =>
+    new PromotionQualifier({ promotionQualifierID });
+
+  const aRate = (priceGroupRateID = 'rate-1'): PriceGroupRate =>
+    new PriceGroupRate({ priceGroupRateID });
+
+  it('★★ addPromotionReward wires BOTH sides, and removePromotionReward unwires both', () => {
+    const product = savedProduct();
+    const reward = aReward();
+
+    product.addPromotionReward(reward);
+
+    // The delegation is `promotionReward.addProduct(this)` [model/entity/Product.cfc:L732-L734], and
+    // the far side pushes onto both collections - so a one-sided implementation fails here.
+    expect(reward.getProducts()).toContain(product);
+    expect(product.getPromotionRewards()).toContain(reward);
+
+    product.removePromotionReward(reward);
+
+    expect(reward.getProducts()).toHaveLength(0);
+    expect(product.getPromotionRewards()).toHaveLength(0);
+  });
+
+  it('★★ and the exclusion pair wires the EXCLUSION collections, never the include ones', () => {
+    const product = savedProduct();
+    const reward = aReward();
+
+    product.addPromotionRewardExclusion(reward);
+
+    expect(reward.getExcludedProducts()).toContain(product);
+    expect(product.getPromotionRewardExclusions()).toContain(reward);
+
+    // ISOLATION, which is the half a structural assertion cannot reach: a delegation wired to the
+    // wrong collection would exclude a product from a reward that also grants it.
+    expect(reward.getProducts()).toHaveLength(0);
+    expect(product.getPromotionRewards()).toHaveLength(0);
+
+    product.removePromotionRewardExclusion(reward);
+
+    expect(reward.getExcludedProducts()).toHaveLength(0);
+    expect(product.getPromotionRewardExclusions()).toHaveLength(0);
+  });
+
+  it('★★ addPromotionQualifier and its exclusion behave the same way, on their own collections', () => {
+    const product = savedProduct();
+    const qualifier = aQualifier();
+    const excludedQualifier = aQualifier('qualifier-2');
+
+    product.addPromotionQualifier(qualifier);
+    product.addPromotionQualifierExclusion(excludedQualifier);
+
+    expect(qualifier.getProducts()).toContain(product);
+    expect(product.getPromotionQualifiers()).toEqual([qualifier]);
+    expect(excludedQualifier.getExcludedProducts()).toContain(product);
+    expect(product.getPromotionQualifierExclusions()).toEqual([excludedQualifier]);
+
+    // Neither collection leaked into the other, even with both wired at once.
+    expect(qualifier.getExcludedProducts()).toHaveLength(0);
+    expect(excludedQualifier.getProducts()).toHaveLength(0);
+
+    product.removePromotionQualifier(qualifier);
+    product.removePromotionQualifierExclusion(excludedQualifier);
+
+    expect(product.getPromotionQualifiers()).toHaveLength(0);
+    expect(product.getPromotionQualifierExclusions()).toHaveLength(0);
+    expect(qualifier.getProducts()).toHaveLength(0);
+    expect(excludedQualifier.getExcludedProducts()).toHaveLength(0);
+  });
+
+  it('★★ addPriceGroupRate and removePriceGroupRate wire and unwire both sides', () => {
+    const product = savedProduct();
+    const rate = aRate();
+
+    product.addPriceGroupRate(rate);
+
+    expect(rate.getProducts()).toContain(product);
+    expect(product.getPriceGroupRates()).toEqual([rate]);
+
+    product.removePriceGroupRate(rate);
+
+    expect(rate.getProducts()).toHaveLength(0);
+    expect(product.getPriceGroupRates()).toHaveLength(0);
+  });
+
+  it('★★ a SECOND add adds nothing more for a SAVED product - the guard is by identifier', () => {
+    const product = savedProduct();
+    const reward = aReward();
+
+    product.addPromotionReward(reward);
+    product.addPromotionReward(reward);
+
+    // Guard L259 + L262: `if(product.isNew() or !hasProduct(product))`. A saved product is compared
+    // by identifier, so the second add is a no-op on both sides.
+    expect(reward.getProducts()).toHaveLength(1);
+    expect(product.getPromotionRewards()).toHaveLength(1);
+  });
+
+  it('★★ but a NEW product is admitted TWICE, which is the legacy guard reproduced literally', () => {
+    // `isNew()` is `productID === ''` [model/entity/Product.cfc], and the legacy guard SHORT-CIRCUITS
+    // on it: an unsaved row has no identifier to compare, so the guard admits it unconditionally. The
+    // duplicate is therefore legacy behaviour rather than a defect in the delegation, and pinning it
+    // is what keeps a well-meant `includes()` check from being added later.
+    const draft = new Product({ productID: '' });
+    const reward = aReward();
+
+    expect(draft.isNew()).toBe(true);
+
+    draft.addPromotionReward(reward);
+    draft.addPromotionReward(reward);
+
+    expect(reward.getProducts()).toHaveLength(2);
+
+    // The PRODUCT side is guarded differently - by `product.hasPromotionReward(reward)`, which for a
+    // reward carrying a real identifier compares identifiers - so it holds one.
+    expect(draft.getPromotionRewards()).toHaveLength(1);
+  });
+
+  it('★★ the six probes match by IDENTIFIER, so a re-hydrated instance is recognised', () => {
+    // The property that matters at a repository boundary: two instances describing the SAME row are
+    // the same association member, because hydration produces a fresh object per read.
+    const product = savedProduct();
+    const reward = aReward('reward-1');
+
+    product.addPromotionReward(reward);
+
+    expect(product.hasPromotionReward(new PromotionReward({ promotionRewardID: 'reward-1' }))).toBe(
+      true,
+    );
+    expect(product.hasPromotionReward(new PromotionReward({ promotionRewardID: 'reward-2' }))).toBe(
+      false,
+    );
+
+    // And the probes are per-collection: an included reward is not an excluded one.
+    expect(product.hasPromotionRewardExclusion(reward)).toBe(false);
+
+    const qualifier = aQualifier('qualifier-1');
+    product.addPromotionQualifierExclusion(qualifier);
+
+    expect(
+      product.hasPromotionQualifierExclusion(
+        new PromotionQualifier({ promotionQualifierID: 'qualifier-1' }),
+      ),
+    ).toBe(true);
+    expect(product.hasPromotionQualifier(qualifier)).toBe(false);
+  });
+
+  it('★★ an UNSAVED far side falls back to IDENTITY on every probe this entity owns', () => {
+    // A far side with no identifier cannot be compared by one, so each probe on THIS entity falls
+    // back to `includes(...)`: the same instance is held, a different unsaved instance is not. All
+    // six behave alike, which is worth pinning because the far sides do not - see the next case.
+    const product = savedProduct();
+    const draftReward = aReward('');
+    const draftRate = aRate('');
+    const draftQualifier = aQualifier('');
+
+    product.addPromotionReward(draftReward);
+    product.addPriceGroupRate(draftRate);
+    product.addPromotionQualifierExclusion(draftQualifier);
+
+    expect(product.hasPromotionReward(draftReward)).toBe(true);
+    expect(product.hasPromotionReward(aReward(''))).toBe(false);
+    expect(product.hasPriceGroupRate(draftRate)).toBe(true);
+    expect(product.hasPriceGroupRate(aRate(''))).toBe(false);
+    expect(product.hasPromotionQualifierExclusion(draftQualifier)).toBe(true);
+    expect(product.hasPromotionQualifierExclusion(aQualifier(''))).toBe(false);
+  });
+
+  it('★★ and the FAR SIDES disagree about that - PriceGroupRate.hasProduct has no such fallback', () => {
+    // THE ASYMMETRY, ASSERTED WHERE IT ACTUALLY LIVES. `PromotionReward.hasProduct` and
+    // `PromotionQualifier.hasProduct` (through its shared `indexOfEntity` helper) both take the
+    // identity branch for an unsaved candidate; `PriceGroupRate.hasProduct` compares `productID`
+    // unconditionally, so with two unsaved products it answers TRUE for one it has never held -
+    // `'' === ''`. Reproduced rather than smoothed over: the guard that consults it short-circuits on
+    // `product.isNew()` first [model/entity/PriceGroupRate.cfc:L216-L223], so no shipped path depends
+    // on the difference, and a repository mints an identifier before anything is associated.
+    const draft = new Product({ productID: '' });
+    const otherDraft = new Product({ productID: '' });
+
+    const reward = aReward();
+    const qualifier = aQualifier();
+    const rate = aRate();
+
+    draft.addPromotionReward(reward);
+    draft.addPromotionQualifier(qualifier);
+    draft.addPriceGroupRate(rate);
+
+    expect(reward.hasProduct(draft)).toBe(true);
+    expect(reward.hasProduct(otherDraft)).toBe(false);
+    expect(qualifier.hasProduct(draft)).toBe(true);
+    expect(qualifier.hasProduct(otherDraft)).toBe(false);
+
+    expect(rate.hasProduct(draft)).toBe(true);
+    expect(rate.hasProduct(otherDraft)).toBe(true);
+  });
+
+  it('removing something never added leaves both sides untouched rather than throwing', () => {
+    // `splice` is guarded by an `indexOf` test on both sides, so a remove is idempotent - which is
+    // what makes it safe in a reconciliation loop that does not track what it has already done.
+    const product = savedProduct();
+    const reward = aReward();
+
+    expect(() => {
+      product.removePromotionReward(reward);
+      product.removePromotionRewardExclusion(reward);
+    }).not.toThrow();
+
+    expect(reward.getProducts()).toHaveLength(0);
+    expect(product.getPromotionRewards()).toHaveLength(0);
+  });
+});
+
 // --- the inherited-base behaviours - documented, not fabricated --------------------------------
 //
 // No Hibachi base class is ported: `Product.cfc` extends `HibachiEntity`, which extends
@@ -4310,6 +4616,10 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
     // Where the legacy used a hook for real work - the materialized-path maintenance at
     // [model/entity/PriceGroup.cfc:L206, L211] - it becomes REPOSITORY-INVOKED EXPLICIT MAINTENANCE
     // rather than entity behaviour.
+    // ★ `getErrors` LEFT THIS LIST, AND `writeDump(getErrors())` STILL IS NOT PORTED IN ANY FORM. The
+    // member exists because the save-refusal protocol answers through it (see the block at the foot of
+    // this file); what remains absent is the HOOK that dumped it to the response, and nothing in the
+    // subtree writes an error collection to a stream, a console or a log line.
     for (const absent of [
       'preInsert',
       'preUpdate',
@@ -4318,11 +4628,18 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
       'preDelete',
       'postDelete',
       'isPersistable',
-      'getErrors',
       'logHibachi',
     ]) {
       expect(declaresMember(absent)).toBe(false);
     }
+
+    // ★ `getErrors` USED TO BE ON THAT LIST AND NO LONGER BELONGS THERE. This case is about the ORM
+    // EVENT HOOKS and the raw `writeDump(getErrors())` debug output
+    // [org/Hibachi/HibachiEntity.cfc:L605] - not about the register the dump happened to read. The
+    // register is ported [org/Hibachi/HibachiTransient.cfc:L30-L32]; the dump is not, and keeping the
+    // two apart is the point.
+    expect(declaresMember('getErrors')).toBe(true);
+    expect(declaresMember('writeDump')).toBe(false);
 
     const stamped = new Product({
       productID: 'product-1',
@@ -4460,6 +4777,144 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
 // inconsistent `getSlatwallScope()` at [model/service/PriceGroupService.cfc:L262-L268] - becomes an
 // explicit context parameter.
 
+describe('getTitle: the productTitleString template, rendered (F13)', () => {
+  // ★★★ WHY THIS BLOCK EXISTS. `getTitle()` [model/entity/Product.cfc:L540-L545] was deliberately
+  // omitted from an earlier revision of the port, and `src/services/productService.ts` substituted
+  // `getCalculatedTitle()` at the one site that needs it - the URL-slug derivation at
+  // [model/service/ProductService.cfc:L269]. Code review recorded the cost: `calculatedTitle`
+  // [model/entity/Product.cfc:L65] is an ORM-maintained snapshot, so a NEW product has none and a
+  // STALE one carries a title from before this save populated a new name. The template must be
+  // evaluated against CURRENT state, which is what these cases pin.
+  //
+  // THE RENDERER IS `replaceStringTemplate` [org/Hibachi/HibachiUtilityService.cfc:L70-L100],
+  // reproduced at its single in-scope consumer rather than as a framework utility module - AAP 0.5.3
+  // redistributes framework responsibilities explicitly, and this one has exactly one consumer.
+
+  it('renders the LEGACY DEFAULT template, both markers resolved', () => {
+    // `productTitleString = {fieldType="text", defaultValue="${brand.brandName} ${productName}"}`
+    // [model/service/SettingService.cfc:L193]. The fixture's brand and product name are distinct
+    // known values, so this also proves the single separating space survives.
+    const subject = makeProductFixture();
+
+    expect(subject.getTitle()).toBe('Test Brand Test Product');
+  });
+
+  it('★ resolves a marker whose PATH cannot be walked to the EMPTY STRING, not to the marker', () => {
+    // `getValueByPropertyIdentifier` ends `return "";` [org/Hibachi/HibachiTransient.cfc:L480] and
+    // `getLastObjectByPropertyIdentifier` [L483-L491] answers nothing when an intermediate is null.
+    // So an UNBRANDED product renders the default template's first marker empty - which leaves a
+    // LEADING SPACE, and that is the legacy's own output rather than a defect of the port.
+    const unbranded = makeProductFixture({ brand: undefined });
+
+    expect(unbranded.getTitle()).toBe(' Test Product');
+  });
+
+  it('★★ leaves a marker naming NO PROPERTY literally in place', () => {
+    // The two outcomes are NOT interchangeable, and this is the case that separates them.
+    // `replaceDetails.value` is seeded to the marker itself [org/Hibachi/HibachiUtilityService.cfc:L78]
+    // and the `removeMissingKeys` arm [L89] is not taken, because `Product.getTitle()` passes only
+    // `template` and `object` [model/entity/Product.cfc:L542] and that flag defaults to `false`.
+    const subject = makeProductFixture({ productTitleString: 'A ${nonsense} B' });
+
+    expect(subject.getTitle()).toBe('A ${nonsense} B');
+  });
+
+  it('resolves EVERY occurrence of a repeated marker, because replace() is called with "all"', () => {
+    // [org/Hibachi/HibachiUtilityService.cfc:L96] is `replace(returnString, key, value, "all")`.
+    const subject = makeProductFixture({ productTitleString: '${productName} / ${productName}' });
+
+    expect(subject.getTitle()).toBe('Test Product / Test Product');
+  });
+
+  it('matches the marker identifier WITHOUT REGARD TO CASE, as CFML property lookup does', () => {
+    const subject = makeProductFixture({ productTitleString: '${PRODUCTNAME}' });
+
+    expect(subject.getTitle()).toBe('Test Product');
+  });
+
+  it('★ accepts `_` as a path delimiter as well as `.`, because listLast uses "._"', () => {
+    // `listLast(propertyIdentifier, '._')` and `listFirst(..., '._')`
+    // [org/Hibachi/HibachiTransient.cfc:L467, L485] make BOTH characters delimit a path, so
+    // `brand_brandName` names the same property as `brand.brandName`.
+    const subject = makeProductFixture({ productTitleString: '${brand_brandName}' });
+
+    expect(subject.getTitle()).toBe('Test Brand');
+  });
+
+  it('renders a template with NO markers verbatim', () => {
+    const subject = makeProductFixture({ productTitleString: 'A Fixed Title' });
+
+    expect(subject.getTitle()).toBe('A Fixed Title');
+  });
+
+  it('★ does not treat `${}` as a marker, because the regex body cannot be empty', () => {
+    // `\${[^}]+}` [org/Hibachi/HibachiUtilityService.cfc:L71] requires at least one character
+    // between the braces.
+    const subject = makeProductFixture({ productTitleString: 'A ${} B' });
+
+    expect(subject.getTitle()).toBe('A ${} B');
+  });
+
+  it('★★ does not let a `$`-bearing property value inject itself back into the title', () => {
+    // THE ONE PLACE THE PORT MUST ADD SOMETHING CFML DID NOT NEED. `String.prototype.replaceAll`
+    // interprets `$$`, `$&`, `` $` ``, `$'` and `$<name>` inside the REPLACEMENT, whereas CFML's
+    // `replace()` has no substitution syntax at all - so a product name legitimately containing `$&`
+    // would otherwise re-insert the matched marker into its own title.
+    const subject = makeProductFixture({
+      productName: 'Half $& Half',
+      productTitleString: '${productName}',
+    });
+
+    expect(subject.getTitle()).toBe('Half $& Half');
+  });
+
+  it('MEMOIZES per instance, and caches an EMPTY render rather than repeating it', () => {
+    // The legacy guard is `!structKeyExists(variables, "title")` [model/entity/Product.cfc:L541] -
+    // key EXISTENCE, not truthiness - so a template that renders EMPTY is cached. Testing the string
+    // instead would re-render on every call, re-reading the setting and re-walking the graph.
+    let settingReads = 0;
+    const countingProvider = {
+      setting: (): string => {
+        settingReads += 1;
+
+        return '${brand.brandName}';
+      },
+    };
+
+    const unbranded = makeProductFixture({
+      brand: undefined,
+      productPresentationSettingsProvider: countingProvider,
+    });
+
+    expect(unbranded.getTitle()).toBe('');
+    expect(unbranded.getTitle()).toBe('');
+    expect(settingReads).toBe(1);
+  });
+
+  it('★ REFUSES rather than inventing a title when the presentation provider is absent', () => {
+    // The same discipline `getProductURL()` follows: the collaborator is optional at construction so
+    // hydration can build a product for paths that never read a setting, and a path that DOES read one
+    // says so instead of substituting a plausible answer.
+    const unwired = makeProductFixture({ productPresentationSettingsProvider: undefined });
+
+    expect(() => unwired.getTitle()).toThrow(/product presentation settings provider/);
+  });
+
+  it('resolves the two OTHER fetch="join" associations, not only the brand', () => {
+    // The declared identifier table covers every scalar column of this component and of the three
+    // `fetch="join"` associations [model/entity/Product.cfc:L68-L70], which is the set a title
+    // template can name.
+    const subject = makeProductFixture({
+      productTitleString: '${productType.productTypeName} :: ${productCode}',
+    });
+
+    expect(subject.getTitle()).toBe(
+      `${subject.getProductType()?.getProductTypeName() ?? ''} :: ${subject.getProductCode() ?? ''}`,
+    );
+    expect(subject.getTitle()).not.toContain('${');
+  });
+});
+
 describe('ports, not locators: the composition surface this entity actually has', () => {
   it('B18.2 - NO service locator survives: the whole `getService` family is absent', () => {
     // THE EIGHTEEN LEGACY SITES ON THIS ENTITY, EVERY ONE VERIFIED FIRST-HAND, WITH ITS PORTED
@@ -4561,10 +5016,15 @@ describe('ports, not locators: the composition surface this entity actually has'
       'getOptionRepository',
       'getProductRepository',
       'getSubscriptionTermProvider',
-      'getTitle',
     ]) {
       expect(declaresMember(absent)).toBe(false);
     }
+
+    // ★ `getTitle` WAS ON THAT LIST AND HAS SHIPPED - see the B13.4 case for the full record. It is
+    // not a port ACCESSOR, which is what this case is actually about: no `get<Port>` member exists,
+    // so a caller cannot reach a collaborator through the entity.
+    expect(declaresMember('getTitle')).toBe(true);
+    expect(declaresMember('getProductPresentationSettingsProvider')).toBe(false);
   });
 
   it('B18.4 - a missing port produces a NAMED REFUSAL that cites its own legacy locator', () => {
@@ -4922,7 +5382,20 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
     // THE `salePriceDetailsForSkus` MEMO [L518-L521] IS DELIBERATELY NOT ON THIS LIST. It ships,
     // under the branch-(a) decision recorded at B12.1, and its per-instance isolation is asserted in
     // the case immediately below rather than as an absence here.
-    expect(declaresMember('getTitle')).toBe(false);
+    //
+    // ★★ NOR IS THE TITLE MEMO [L541] ANY LONGER. `getTitle` ships, so its memo is a memo that must be
+    // PER-INSTANCE rather than one that does not exist - which is what this describe block is for.
+    // Two products render independently, and the guard is key EXISTENCE not truthiness, so an entity
+    // whose template renders EMPTY caches that empty answer instead of re-rendering forever.
+    expect(declaresMember('getTitle')).toBe(true);
+
+    const firstTitled = makeProductFixture({ productName: 'First Product' });
+    const secondTitled = makeProductFixture({ productName: 'Second Product' });
+
+    expect(firstTitled.getTitle()).toBe('Test Brand First Product');
+    expect(secondTitled.getTitle()).toBe('Test Brand Second Product');
+    // Re-reading answers the memo, not a fresh render, and the two never share one.
+    expect(firstTitled.getTitle()).toBe('Test Brand First Product');
 
     // The second DOES ship - it refuses instead of memoizing, so there is no cached rejection to
     const first = new Product({ productID: 'product-1' });
@@ -5447,5 +5920,167 @@ describe('empty-collection semantics: five rules, named individually', () => {
 
     expect(viaFarSide.getSkus()).toHaveLength(1);
     expect(viaFarSide.isNew()).toBe(false);
+  });
+  // =========================================================================
+  // THE SAVE-REFUSAL CHANNEL - addError / hasErrors / getErrors
+  //
+  // NET-NEW COVERAGE (AAP 0.6.6). The legacy antecedent is a FRAMEWORK base class this port does not
+  // carry - [org/Hibachi/HibachiEntity.cfc:L134, L151] over [org/Hibachi/HibachiErrors.cfc:L14-L60] -
+  // and `meta/tests/unit/entity/ProductTest.cfc` asserts nothing about it. The three members exist
+  // because `ProductService.saveProduct` answers a REFUSED save by returning this entity with its
+  // failed rules recorded on it [model/service/ProductService.cfc:L286-L291], which is the protocol a
+  // code review required restored, so the channel is exercised here as its own contract rather than
+  // only through the service.
+  // =========================================================================
+
+  it('reports NO errors on a freshly constructed product, so a clean save is distinguishable', () => {
+    const product = makeProductFixture({});
+
+    expect(product.hasErrors()).toBe(false);
+    expect(product.getErrors()).toStrictEqual({});
+  });
+
+  it('records a failed rule under the property it is declared on', () => {
+    const product = makeProductFixture({});
+
+    product.addError('productName', 'productName is required');
+
+    expect(product.hasErrors()).toBe(true);
+    expect(product.getErrors()).toStrictEqual({ productName: ['productName is required'] });
+  });
+
+  it('APPENDS a second message for the same property, as the legacy error bean does', () => {
+    // [org/Hibachi/HibachiErrors.cfc:L14-L21] creates the entry on first use and appends afterwards, so
+    // two failed rules on one property are two messages under one key rather than a replacement.
+    const product = makeProductFixture({});
+
+    product.addError('productCode', 'productCode is required');
+    product.addError('productCode', 'productCode contains an unsupported character');
+
+    expect(product.getErrors()).toStrictEqual({
+      productCode: ['productCode is required', 'productCode contains an unsupported character'],
+    });
+  });
+
+  it('folds the error name like a CFML struct key, keeping the FIRST spelling it was given', () => {
+    // A CFML struct key is case-insensitive, so `addError("urlTitle", …)` and `addError("URLTitle", …)`
+    // wrote to ONE key there. The fold is `toLowerCase()` and nothing else, matching
+    // `src/lib/cfml/struct.ts`; what is reported back is the spelling first supplied.
+    const product = makeProductFixture({});
+
+    product.addError('urlTitle', 'urlTitle is required');
+    product.addError('URLTITLE', 'urlTitle must be unique');
+
+    expect(Object.keys(product.getErrors())).toStrictEqual(['urlTitle']);
+    expect(product.getErrors()).toStrictEqual({
+      urlTitle: ['urlTitle is required', 'urlTitle must be unique'],
+    });
+  });
+
+  it('hands back a SNAPSHOT, so a caller cannot mutate the entity’s error state', () => {
+    const product = makeProductFixture({});
+    product.addError('productName', 'productName is required');
+
+    const errors = product.getErrors();
+    const messages = errors['productName'];
+
+    expect(messages).toStrictEqual(['productName is required']);
+
+    // ★ THE PROJECTION IS FROZEN, NOT MERELY COPIED, so the write is REFUSED rather than absorbed
+    // into a throwaway array. This case originally pushed onto the result and then asserted the
+    // entity was unchanged, which a mutable defensive copy would also satisfy; `getErrors()` freezes
+    // both the projection and each message array, so the stronger property is available and is what
+    // is asserted. The intent is unchanged - a caller cannot reach the entity's error state - and the
+    // guarantee is now checked at the point of the write instead of after it.
+    expect(() => {
+      (messages as string[]).push('injected by a caller');
+    }).toThrow(TypeError);
+    expect(Object.isFrozen(messages)).toBe(true);
+    expect(Object.isFrozen(errors)).toBe(true);
+
+    expect(product.getErrors()).toStrictEqual({ productName: ['productName is required'] });
+  });
+
+  it('keeps an error name of `__proto__` as an OWN key and never reaches the prototype', () => {
+    // The store is a `Map` and the snapshot is built with `Object.fromEntries`, so this name cannot
+    // become an assignment to `Object.prototype`. No ported call site supplies it - every error name is
+    // a property identifier from `model/validation/Product.json` - and the property is asserted anyway,
+    // because "no caller does that today" is not a guarantee.
+    const product = makeProductFixture({});
+
+    product.addError('__proto__', 'a rule reported against an unusual property name');
+
+    const errors = product.getErrors();
+
+    expect(Object.hasOwn(errors, '__proto__')).toBe(true);
+    expect(product.hasErrors()).toBe(true);
+    expect(Object.prototype).not.toHaveProperty('polluted');
+    expect(
+      ({} as Record<string, unknown>)['a rule reported against an unusual property name'],
+    ).toBeUndefined();
+  });
+
+  it('is PER INSTANCE: one product’s refusal is invisible on another', () => {
+    const refused = makeProductFixture({ productID: 'refused-product' });
+    const clean = makeProductFixture({ productID: 'clean-product' });
+
+    refused.addError('productName', 'productName is required');
+
+    expect(refused.hasErrors()).toBe(true);
+    expect(clean.hasErrors()).toBe(false);
+    expect(clean.getErrors()).toStrictEqual({});
+  });
+});
+
+// ===========================================================================
+// The error register, invoked directly on this entity
+// ===========================================================================
+//
+// ★★★ ADDED BECAUSE A MECHANICAL INVENTORY FOUND THESE MEMBERS NAMED BUT NEVER CALLED HERE. A code
+// review reported that "nine public methods have no invocation in any test AST", which is a sharper
+// question than whether a name appears somewhere: a method mentioned only in a comment is a method
+// nothing exercises. The register's behaviour WAS covered - through the service suites, where a refused
+// save is observed - but not at the entity that declares it, so the per-entity contract rested on
+// another tier's assertions. Gate `A24` now requires an actual invocation.
+//
+// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees and
+// that the save-refusal semantics depend on: a MISS yields an empty array rather than undefined,
+// messages ACCUMULATE under one name rather than replacing, and lookup is CASE-INSENSITIVE while the
+// key remembers the case it was FIRST written with.
+
+describe('Product: the inherited error register', () => {
+  it('returns an empty array for a name that was never recorded, never undefined', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent name
+    // has to be safe to iterate - `undefined` here would turn a clean validation pass into a crash.
+    const subject = new Product({ productID: 'product-errors-1' });
+
+    expect(subject.getError('noSuchRule')).toStrictEqual([]);
+    expect(subject.hasErrors()).toBe(false);
+    expect(subject.getErrors()).toStrictEqual({});
+  });
+
+  it('★★ accumulates messages under one name instead of replacing them', () => {
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after the
+    // first, which is how a partially invalid entity comes to look like a singly invalid one.
+    const subject = new Product({ productID: 'product-errors-1' });
+
+    subject.addError('urlTitle', 'is required');
+    subject.addError('urlTitle', 'must be unique');
+
+    expect(subject.getError('urlTitle')).toStrictEqual(['is required', 'must be unique']);
+    expect(subject.hasErrors()).toBe(true);
+  });
+
+  it('★★ looks a name up case-insensitively, and keeps the case it was first written with', () => {
+    // CFML struct keys are case-insensitive, so `getError('URLTITLE')` must find what `addError`
+    // recorded as `urlTitle` - while [org/Hibachi/HibachiErrors.cfc:L14-L31] REMEMBERS the first
+    // spelling, so the published key is the one the first write used.
+    const subject = new Product({ productID: 'product-errors-1' });
+
+    subject.addError('urlTitle', 'first');
+    subject.addError('URLTITLE', 'second');
+
+    expect(subject.getError('UrlTitle')).toStrictEqual(['first', 'second']);
+    expect(Object.keys(subject.getErrors())).toStrictEqual(['urlTitle']);
   });
 });

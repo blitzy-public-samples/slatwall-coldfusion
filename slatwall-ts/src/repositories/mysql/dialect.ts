@@ -63,8 +63,10 @@ class UnrecognizedDialectError extends Error {
         `Accepted values are ${ACCEPTED_DIALECTS_TEXT}, matched without regard to case and then`,
         'normalized to that exact spelling.',
         'There is deliberately no default and no fallback: the legacy dialect chain at',
-        'config/configORM.cfm:L9-L15 ends with no <cfelse>, and its datasource probe aborted',
-        'outright at config/configORM.cfm:L4-L7.',
+        'config/configORM.cfm:L9-L15 ends with no <cfelse>, so an unrecognized product name left',
+        'the dialect unset and execution continued. Refusing it outright here is a deliberate',
+        'improvement on that silent state, not a port of the abort at config/configORM.cfm:L4-L7,',
+        'which guarded only the datasource probe.',
         `The contract for ${DIALECT_VARIABLE_NAME} is committed in slatwall-ts/.env.example.`,
       ].join(' '),
     );
@@ -158,9 +160,13 @@ function requireSqlIdentifierReference(
  * Resolve a configured dialect name.
  *
  * Matching ignores case and then normalizes to the legacy spelling. There is deliberately no
- * default: the legacy chain ends without an `<cfelse>` [config/configORM.cfm:L9-L15] and its probe
- * aborted the request outright when the datasource could not be read
- * [config/configORM.cfm:L4-L7].
+ * default, and the refusal is stronger than the legacy in one stated respect: the legacy chain ends
+ * without an `<cfelse>` [config/configORM.cfm:L9-L15], so an unrecognized product name left
+ * `this.ormSettings.dialect` UNSET and the request CONTINUED. Only the datasource probe aborted
+ * [config/configORM.cfm:L4-L7], and that abort is a different failure. What is carried over is the
+ * absence of a guess; refusing the value outright is a deliberate target improvement on a silent
+ * unset state, recorded here in the same terms `src/handlers/bootstrap.ts` uses at its one dialect
+ * decision.
  *
  * @throws when the value names no known dialect.
  */

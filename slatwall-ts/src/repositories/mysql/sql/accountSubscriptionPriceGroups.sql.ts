@@ -12,10 +12,14 @@
 //
 //   It owns the statement text and its bind values, and nothing else. Row
 //   hydration, the `PriceGroup` entity factory, association materialization and
-//   fetch-shape commentary belong to `mysqlPriceGroupRepository.ts` (planned)
-//   under transformation rule T3 - not here. `(planned)` means exactly: a target
-//   named by the Agent Action Plan that is ABSENT from the subtree at this
-//   checkpoint. Nothing in this file depends on one existing.
+//   fetch-shape commentary belong to `mysqlPriceGroupRepository.ts` under
+//   transformation rule T3 - not here. That adapter SHIPS, as do the other five.
+//   An earlier revision of this block carried a `(planned)` marker against the
+//   name and defined the marker as "a target named by the Agent Action Plan that
+//   is ABSENT from the subtree at this checkpoint"; that stopped being true the
+//   moment the adapter was authored, so both the marker and its definition are
+//   gone. The division of labour they described is unchanged and is the point:
+//   this file owns statement text and bind values, that one owns hydration.
 //
 // LOCATOR VERIFICATION - THERE IS NO DRIFT IN THIS SPAN
 //   Every locator cited in this file was opened in the legacy tree and matched
@@ -84,11 +88,11 @@
 // re-read on their behalf: it returns the collection the legacy query returns, and the defects stay where
 // they are, to be reproduced and annotated by the modules that own them.
 
-// JUDGMENT CALL: the consuming adapter `mysqlPriceGroupRepository.ts` is ABSENT from the subtree at this
-// checkpoint, so its import name could not be read from it. The export shape is therefore the specified
-// default — ONE frozen const object grouping the two stage builders — rather than a shape inferred from a
-// file that does not exist. Both member names carry the folder's `build…Statement` convention, so an
-// adapter can consume them without a rename either way.
+// JUDGMENT CALL, AND HOW IT TURNED OUT: the export shape here is the specified default — ONE frozen
+// const object grouping the two stage builders — chosen so that it did not depend on an import name
+// read out of the consuming adapter. `mysqlPriceGroupRepository.ts` now exists and consumes both
+// members under that shape without a rename, so the choice cost nothing and the decision is recorded
+// rather than quietly dropped. Both member names carry the folder's `build…Statement` convention.
 
 import { listToArray } from '../../../lib/cfml/list.js';
 import type { DatabaseDialect } from '../dialect.js';

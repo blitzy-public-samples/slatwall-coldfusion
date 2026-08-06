@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/handlers/bootstrap.ts  composition root (wiring)
 // ---------------------------------------------------------------------------
@@ -202,7 +200,7 @@
 //   Six of the thirteen ports are implemented under src/repositories/mysql/**.
 //   This is NOT one of them: it has no adapter file anywhere in the target
 //   layout, so its only implementation home is the composition root at
-//   src/handlers/bootstrap.ts (planned), which wires the single concrete instance.
+//   src/handlers/bootstrap.ts, which wires the single concrete instance.
 //
 //   Three obligations fall on that implementation. Two are drawn from the
 //   legacy body: compare all four fields case-insensitively, and treat a zone
@@ -215,15 +213,16 @@
 //   state is materialized before the call, never fetched inside it.
 //
 // THE PUBLISHED NAMES ARE CANONICAL
-//   Every subtree that will consume this contract - entities, services,
-//   repositories, handlers and the integration adapter - is currently empty.
-//   The type names, the method name, the parameter names and the parameter
-//   order published here are therefore the definition all of them will be
-//   written against. `isAddressInZone`, `address` and `addressZone` are
-//   carried over verbatim from the CFML declaration because method-level
-//   interface parity is the acceptance contract for this migration, and that
-//   is why no naming-convention lint rule is enabled anywhere in this project.
-//   Do not rename any of them later.
+//   FOUR modules now consume this contract - `src/services/promotionService.ts`,
+//   `src/services/promotion/qualifierQualification.ts`,
+//   `src/handlers/promotionApplicationHandler.ts` and the composition root
+//   `src/handlers/bootstrap.ts` - and every one of them is written against the
+//   names below. A rename here is therefore no longer a local edit: it changes
+//   four call sites and the acceptance contract at the same time.
+//   `isAddressInZone`, `address` and `addressZone` are carried over verbatim
+//   from the CFML declaration because method-level interface parity IS the
+//   acceptance contract for this migration, and that is why no naming-convention
+//   lint rule is enabled anywhere in this project. Do not rename any of them.
 //
 // NO USER RULES WERE PROVIDED
 //   The project rules document says exactly that, and it was re-read to
@@ -333,7 +332,7 @@ export interface AddressZoneProjection {
  *
  * This contract replaces the legacy DI/1 collaborator declared at
  * [model/service/PromotionService.cfc:L53]. It has no adapter file in the
- * target layout, so the composition root at src/handlers/bootstrap.ts (planned) is its
+ * target layout, so the composition root at src/handlers/bootstrap.ts is its
  * only implementation home.
  */
 export interface AddressZoneEvaluator {

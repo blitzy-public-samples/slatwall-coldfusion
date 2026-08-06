@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/domain/entities/product.ts             Product entity
 //   src/domain/entities/promotionQualifier.ts  PromotionQualifier entity
@@ -34,9 +32,9 @@
 //
 // So `getProducts()` returning an EMPTY ARRAY on a bare construction is not a
 // convenience, it is a pinned legacy contract - and
-// `tests/unit/domain/entities/brand.test.ts` (planned) must therefore be labelled
+// `tests/unit/domain/entities/brand.test.ts` must therefore be labelled
 // LEGACY-EXTENDED (PARITY), never net-new, in
-// `tests/traceability/legacyTestMap.ts` (planned). The full ruling and the
+// `tests/traceability/legacyTestMap.ts`. The full ruling and the
 // enumerated obligations for that suite are in the TEST CONTRACT section at the
 // foot of this file. No test file is authored from here.
 //
@@ -152,6 +150,7 @@
 // ---------------------------------------------------------------------------
 
 import { cfBoolean } from '../../lib/cfml/truthiness.js';
+import { cfFoldKey } from '../../lib/cfml/struct.js';
 
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import type { Product } from './product.js';
@@ -162,14 +161,14 @@ import type { PromotionReward } from './promotionReward.js';
 // sibling entity modules. The bidirectional helpers at the foot of this class delegate OUTWARD, so
 // the members below are a genuine cross-module requirement and not a preference. Each traces to a
 // verbatim legacy declaration:
-//   * `src/domain/entities/product.ts` (planned) MUST expose `setBrand` and `removeBrand`
+//   * `src/domain/entities/product.ts` MUST expose `setBrand` and `removeBrand`
 //     [model/entity/Product.cfc:L662 and L668 respectively]. Note L668 declares `any brand` - an
 //     OPTIONAL parameter - while L662 declares `required any brand`; passing an argument satisfies
 //     both, and this file always passes one.
-//   * `src/domain/entities/promotionReward.ts` (planned) MUST expose `addBrand`, `removeBrand`,
+//   * `src/domain/entities/promotionReward.ts` MUST expose `addBrand`, `removeBrand`,
 //     `addExcludedBrand` and `removeExcludedBrand` [model/entity/PromotionReward.cfc:L198, L206,
 //     L298, L306], backing the `brands` and `excludedBrands` collections at L80 and L86.
-//   * `src/domain/entities/promotionQualifier.ts` (planned) MUST expose the same four names
+//   * `src/domain/entities/promotionQualifier.ts` MUST expose the same four names
 //     [model/entity/PromotionQualifier.cfc:L140, L148, L240, L248], backing L77 and L83.
 // Those types are imported with `import type` ONLY and are ERASED AT EMIT, so the mutual cycles
 // between these entity modules are safe: an entity class never instantiates a sibling, because
@@ -962,6 +961,88 @@ export class Brand {
     return this.brandID === '';
   }
 
+  // ===========================================================================
+  // THE ERROR REGISTER - THE FRAMEWORK'S REFUSAL CHANNEL
+  //
+  // ★★★ THE FULL REASONING IS RECORDED ONCE, ON `src/domain/entities/product.ts`, and is not
+  // restated here. In one paragraph: `HibachiService.save`
+  // [org/Hibachi/HibachiService.cfc:L133-L169] populates, validates, and writes ONLY when
+  // `!arguments.entity.hasErrors()` [L153] - RETURNING THE ENTITY EITHER WAY [L167]. It never throws
+  // for a validation refusal, so the legacy refusal channel IS the entity and a caller inspects it.
+  // Without these members the ported service had nowhere to put a refusal and threw instead, which
+  // code review recorded as a behaviour defect: a legacy caller inspecting `hasErrors()` is sent
+  // into an exception path it has no handler for, losing both the populated entity and the reasons.
+  //
+  // PORTED SHAPE: `getErrors()` [org/Hibachi/HibachiTransient.cfc:L30-L32] is a STRUCT keyed by error
+  // name whose values are ARRAYS of messages; `hasErrors()` [L47-L53] is `structCount(...)`;
+  // `hasError(name)` [L57-L59] is `structKeyExists`; `addError(name, message)` [L61-L64] APPENDS, so
+  // two messages under one name accumulate. Keys are matched without regard to case, because a CFML
+  // struct key is. The register is transient instance state: never a column, never read by a
+  // repository, never populated by hydration.
+  // ===========================================================================
+
+  /**
+   * The accumulated errors, keyed by FOLDED error name and carrying each name's ORIGINAL spelling.
+   *
+   * ★ TWO PIECES OF STATE PER ENTRY, BECAUSE A CFML STRUCT CARRIES BOTH. `variables.errors[errorName]`
+   * [org/Hibachi/HibachiErrors.cfc:L15-L19] LOOKS UP case-insensitively but REMEMBERS the case of the
+   * key as first written, so a second `addError('URLTITLE', ...)` appends to the entry created by
+   * `addError('urlTitle', ...)` and `getErrors()` still reports it as `urlTitle`. Folding the stored
+   * key alone would have lower-cased every property identifier a caller reads back.
+   *
+   * Mutable; `addError` is the only writer.
+   */
+  private readonly errors = new Map<
+    string,
+    { readonly name: string; readonly messages: string[] }
+  >();
+
+  /** Every error, keyed by error name [org/Hibachi/HibachiTransient.cfc:L30-L32]. Frozen projection. */
+  getErrors(): Readonly<Record<string, readonly string[]>> {
+    const projected: Record<string, readonly string[]> = {};
+
+    for (const entry of this.errors.values()) {
+      // `defineProperty` rather than assignment: an error name is server-authored here, but the
+      // projection is a plain object and `__proto__` must never be interceptable on one.
+      Object.defineProperty(projected, entry.name, {
+        value: Object.freeze([...entry.messages]),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+
+    return Object.freeze(projected);
+  }
+
+  /** Whether this entity carries any error [org/Hibachi/HibachiTransient.cfc:L47-L53]. */
+  hasErrors(): boolean {
+    return this.errors.size > 0;
+  }
+
+  /** Whether one named error is present [org/Hibachi/HibachiTransient.cfc:L57-L59]. */
+  hasError(errorName: string): boolean {
+    return this.errors.has(cfFoldKey(errorName));
+  }
+
+  /** The messages under one name, or an EMPTY ARRAY [org/Hibachi/HibachiTransient.cfc:L34-L43]. */
+  getError(errorName: string): readonly string[] {
+    return Object.freeze([...(this.errors.get(cfFoldKey(errorName))?.messages ?? [])]);
+  }
+
+  /** Record one error; messages ACCUMULATE [org/Hibachi/HibachiTransient.cfc:L61-L64]. */
+  addError(errorName: string, errorMessage: string): void {
+    const key = cfFoldKey(errorName);
+    const existing = this.errors.get(key);
+
+    if (existing === undefined) {
+      this.errors.set(key, { name: errorName, messages: [errorMessage] });
+      return;
+    }
+
+    existing.messages.push(errorMessage);
+  }
+
   // ============ START: Containment Probes ==============================
   // FIVE probes, none with a hand-written legacy body: all are synthesised by the dispatcher at
   // [org/Hibachi/HibachiEntity.cfc:L507-L565], whose CFML semantics are Hibernate's
@@ -1365,13 +1446,13 @@ export class Brand {
 // ---------------------------------------------------------------------------
 // TEST CONTRACT - LEGACY-EXTENDED (PARITY), NOT NET-NEW.
 //
-// `tests/unit/domain/entities/brand.test.ts` (planned) is owed and is authored elsewhere; the test tier is
+// `tests/unit/domain/entities/brand.test.ts` is owed and is authored elsewhere; the test tier is
 // owned by another agent and `slatwall-ts/tests` holds no entity suite yet. NO test file is created
 // from here.
 //
 // ★ Brand is one of only TWO in-scope entities whose coverage may be labelled PARITY - the other is
 // Product. The remaining sixteen are net-new. That distinction has to be recorded accurately in
-// `tests/traceability/legacyTestMap.ts` (planned), which fails the suite when an in-scope module has no test,
+// `tests/traceability/legacyTestMap.ts`, which fails the suite when an in-scope module has no test,
 // and presenting net-new coverage as parity fails the coverage gate. Regression tests in this
 // project follow the `issue_<ticket#>` convention carried over from meta/tests/unit/IssuesTest.cfc.
 //

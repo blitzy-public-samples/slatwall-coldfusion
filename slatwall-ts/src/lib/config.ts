@@ -2,13 +2,32 @@
 // slatwall-ts - static, environment-driven process configuration
 //
 // WHAT THIS MODULE IS
-//   The one place this service reads its process environment. It resolves,
-//   validates, freezes and memoizes the values needed to reach the existing
-//   `Sw*` MySQL schema, and it fails the process outright the moment any of
-//   them is missing or malformed. It contains no credential of its own: every
-//   value originates in the environment, and the committed contract for that
-//   environment is `slatwall-ts/.env.example`, which this module consumes
-//   key-for-key - adding no variable and omitting none that is assigned to it.
+//   The owner of SEVENTEEN of the nineteen keys in the committed environment
+//   contract, and the only module under `src/**` that reads more than one of
+//   them. It resolves, validates, freezes and memoizes the values needed to
+//   reach the existing `Sw*` MySQL schema, and it fails the process outright the
+//   moment any of them is missing or malformed. It contains no credential of its
+//   own: every value originates in the environment, and the committed contract
+//   for that environment is `slatwall-ts/.env.example`, which this module
+//   consumes key-for-key - adding no variable and omitting none that is assigned
+//   to it.
+//
+//   THE OTHER TWO KEYS ARE OWNED ELSEWHERE, AND SAYING SO EXACTLY MATTERS,
+//   because an earlier revision of this header and of `slatwall-ts/README.md`
+//   both claimed this module was the SOLE reader of `process.env` - a claim a
+//   reviewer can falsify with one grep, and which would have made the two real
+//   readers look like violations of a rule rather than the documented design
+//   they are:
+//
+//     LOG_LEVEL           `src/lib/logger.ts`, which must be able to emit before
+//                         configuration has resolved and therefore cannot depend
+//                         on this module. See the note above `appConfig`.
+//     TEST_LIVE_DATABASE  `tests/setup.ts`. Test-only, read by nothing under
+//                         `src/**`, and deliberately absent from this module so
+//                         that a unit test needs no populated environment.
+//
+//   Seventeen plus those two is the whole contract, and no other module under
+//   `src/**` touches `process.env` at all.
 //
 // WHERE THE CONTRACT COMES FROM
 //   The legacy CFML host published its datasource configuration as application
@@ -53,10 +72,15 @@
 //     generation and rejects the branches this port does not implement. Keeping
 //     the two apart is why a value this module accepts can still be refused
 //     downstream.
-//   * The log level. `src/lib/logger.ts` reads it directly and independently -
-//     see the note on module independence above `appConfig`.
-//   * The test-only live-database flag, which `slatwall-ts/.env.example` records
-//     as read by `tests/setup.ts` and by nothing under `src/**`.
+//   * The test-only live-database flag `TEST_LIVE_DATABASE`, which
+//     `slatwall-ts/.env.example` records as read by `tests/setup.ts` and by
+//     nothing under `src/**`. It is the ONE key of the nineteen-key contract this
+//     module does not resolve, and the reason is that it does not describe the
+//     service: it selects whether an integration suite talks to a real server.
+//     Resolving it here would put a test-harness switch on the production
+//     configuration surface, where a handler could read it. `LOG_LEVEL` used to
+//     be listed alongside it as a second exemption; it no longer is - see
+//     `resolveLogging` and {@link LoggingConfig}.
 //   * Any cloud access key, session token or region variable; any product-feed
 //     credential (that adapter is a stub and makes no outbound call); any
 //     schema-management or data-loading switch (the `Sw*` tables are used
@@ -144,6 +168,43 @@ const RUNTIME_ENVIRONMENTS = ['development', 'test', 'production'] as const;
 export type RuntimeEnvironment = (typeof RUNTIME_ENVIRONMENTS)[number];
 
 /**
+ * The accepted values of `LOG_LEVEL`, ordered least to most severe, taken from the
+ * `LOG_LEVEL` entry in `slatwall-ts/.env.example`.
+ *
+ * ★ THE UNION IS DELIBERATELY DUPLICATED, NOT IMPORTED. `src/lib/logger.ts` declares
+ * the same four literals as its `LogLevel`, and neither file imports the other: this
+ * module must be able to raise its own startup failure without anything else having
+ * loaded, and the logger must be able to report THAT failure without depending on
+ * configuration. Duplication is the price of that mutual independence, and it is not
+ * a silent one - the two unions meet at the adoption call in
+ * `src/handlers/bootstrap.ts`, where a divergence between them is a compile error
+ * rather than a runtime surprise.
+ */
+const LOG_THRESHOLDS = ['debug', 'info', 'warn', 'error'] as const;
+
+/** The resolved emission threshold. Structurally identical to the logger's `LogLevel`. */
+export type LogThreshold = (typeof LOG_THRESHOLDS)[number];
+
+/**
+ * How the resolved threshold was arrived at.
+ *
+ * The classifier exists so that the one-time operator warning about a mistyped
+ * `LOG_LEVEL` can be emitted from a FIXED vocabulary. It replaces an earlier
+ * arrangement in which the logger echoed the raw configured token back onto the log
+ * stream and retained it in a process-global set: any value shaped like an
+ * identifier was published verbatim, and an access key, a short token or a password
+ * pasted into the wrong variable fits that shape exactly. Nothing here carries the
+ * rejected value - only which of three things happened to it.
+ */
+export type LogThresholdSource =
+  /** `LOG_LEVEL` named one of the four accepted values; that value is in force. */
+  | 'configured'
+  /** `LOG_LEVEL` was unset or blank, which is the documented way to accept the default. */
+  | 'defaulted-unset'
+  /** `LOG_LEVEL` held something else. The default is in force and the value is discarded. */
+  | 'defaulted-unrecognized';
+
+/**
  * The TLS protocol versions this port is willing to floor at.
  *
  * Deliberately only the two current ones. TLS 1.0 and 1.1 are deprecated and are
@@ -179,8 +240,12 @@ const DATABASE_TLS_MODES = ['disabled', 'verify-ca', 'verify-identity'] as const
  * * `verify-ca` - chain verified, host name not checked. Strictly weaker, and
  *   present only for the structural cases where identity cannot be checked: an
  *   IP-literal host, or a proxy whose certificate names a different host.
- * * `disabled` - no TLS. Rejected outright in production; see
- *   `resolveDatabaseTls`.
+ * * `disabled` - no TLS. Requires `DB_HOST` to be a loopback address, in EVERY
+ *   environment, and is additionally rejected outright when `NODE_ENV` is
+ *   `production`. The host rule is the one that carries the guarantee: `NODE_ENV`
+ *   defaults to `development`, so the production rule alone let an environment that
+ *   merely omitted it send credentials to a remote server in cleartext. See
+ *   `resolveDatabaseTls` and `isLoopbackHost`.
  *
  * Certificate verification is never disabled in either verifying mode. This
  * module offers no value that would relax it, and none may be added.
@@ -191,8 +256,10 @@ export type DatabaseTlsMode = (typeof DATABASE_TLS_MODES)[number];
  * How to reach the MySQL server that holds the existing `Sw*` schema.
  *
  * `password` is deliberately absent from anything this object serializes to, and
- * `host` and `user` are redacted from it; see `toJSON` and the implementing class
- * for how each of those is guaranteed rather than merely intended.
+ * every other member - host, port, schema name and account - is redacted from it;
+ * see `toJSON` and the implementing class for how each of those is guaranteed
+ * rather than merely intended, and for why the schema name and the port are on the
+ * redacted side rather than published as diagnostics.
  */
 export interface DatabaseConnectionConfig {
   /** Server host name. Required; no default, and never echoed in diagnostics. */
@@ -215,14 +282,12 @@ export interface DatabaseConnectionConfig {
    */
   readonly password: string;
   /**
-   * A projection safe to log or serialize: identical to this object except that
-   * every member documented above as never echoed - the credential, the host and
-   * the account - is replaced by a redaction marker. The port and the schema name
-   * remain visible, because those two are what make a misconfiguration
-   * diagnosable and neither carries a never-echoed promise. See the implementing
-   * class for the three citations that fix which fields fall on which side.
+   * A projection safe to log or serialize: every member is replaced by a redaction
+   * marker, so the shape is visible and no value is. See the implementing class for
+   * why the schema name and the port joined the credential, the host and the
+   * account rather than staying visible as "diagnostic".
    */
-  toJSON(): Readonly<Record<string, string | number>>;
+  toJSON(): Readonly<Record<string, string>>;
 }
 
 /**
@@ -329,6 +394,38 @@ export interface AppConfig {
   readonly feed: FeedConfig;
   /** Currency-conversion reference data. */
   readonly currency: CurrencyConfig;
+  /** Emission threshold for `src/lib/logger.ts`, and how it was arrived at. */
+  readonly logging: LoggingConfig;
+}
+
+/**
+ * The resolved emission threshold, and the classification of how it was resolved.
+ *
+ * ★ THIS MEMBER EXISTS TO MAKE THIS MODULE'S OWN HEADER TRUE. The header states that
+ * this is "the one place this service reads its process environment", and for one
+ * variable it used not to be: `src/lib/logger.ts` read `LOG_LEVEL` out of
+ * `process.env` itself, on every emission, so the subtree had two configuration
+ * authorities and the documented single-authority claim was false. The variable is
+ * now resolved, validated and frozen here with every other one, and the logger reads
+ * no environment at all - it is HANDED the resolved threshold by the composition
+ * root.
+ *
+ * ★★ RESOLUTION IS LENIENT, AND THAT ASYMMETRY IS STRUCTURAL RATHER THAN A
+ * CONCESSION. Every other value in this file fails the process closed when it is
+ * malformed. This one must not, because this module reports its own fatal failure
+ * THROUGH the logger: a threshold that could abort a cold start would produce a
+ * service that can neither start nor say why. So a malformed `LOG_LEVEL` records no
+ * problem, contributes nothing to the aggregate throw, and falls back to `info` -
+ * exactly the behaviour the logger had before, relocated so that the value passes
+ * through validation on its way to being used. The mistyped value is not silently
+ * swallowed either: {@link LogThresholdSource} carries the fact of the coercion, and
+ * `src/handlers/bootstrap.ts` announces it once per container.
+ */
+export interface LoggingConfig {
+  /** The threshold in force. `info` whenever `LOG_LEVEL` was unset, blank or unrecognized. */
+  readonly level: LogThreshold;
+  /** Which of the three resolution outcomes produced {@link LoggingConfig.level}. */
+  readonly levelSource: LogThresholdSource;
 }
 
 /**
@@ -440,15 +537,43 @@ export interface CurrencyConfig {
  */
 export interface FeedConfig {
   /**
-   * The hosts a product feed may be published for, normalized and de-duplicated.
+   * The hosts a product feed may be published for, normalized and de-duplicated -
+   * or `undefined` when this deployment configured no host policy at all.
    *
-   * EMPTY IS THE SAFE DEFAULT AND THE DEFAULT: `toTrustedFeedHost` refuses every
-   * candidate against an empty list, so a deployment that never configured a feed
-   * cannot publish one. That is a refusal, not a bypass, and it is why this key is
-   * optional - adding a sixth REQUIRED variable would break every existing
-   * deployment and every test that supplies only the five the database needs.
+   * ★★★ ABSENT AND EMPTY ARE DIFFERENT ANSWERS, AND CONFLATING THEM DISABLED THE FEED
+   * (F40). QUOTE-THEN-REVISE. This member was typed `readonly string[]` and documented:
+   * "EMPTY IS THE SAFE DEFAULT AND THE DEFAULT: `toTrustedFeedHost` refuses every
+   * candidate against an empty list, so a deployment that never configured a feed cannot
+   * publish one. That is a refusal, not a bypass, and it is why this key is optional -
+   * adding a sixth REQUIRED variable would break every existing deployment and every test
+   * that supplies only the five the database needs."
+   *
+   * The last clause was right and the first was wrong. `FEED_ALLOWED_HOSTS` is optional,
+   * so the OVERWHELMING majority of deployments never set it - and resolving that absence
+   * to an empty list made `assertAllowedFeedHost` refuse EVERY request, which turns a
+   * capability the source publishes into one that answers nothing until an operator
+   * discovers a variable the legacy never had. The legacy controller declares
+   * `this.publicMethods="product"` [integrationServices/google/controllers/feed.cfc:L54]
+   * with NO allow-list of any kind, and takes its authority from `CGI.HTTP_HOST` - that
+   * is, from the request. Defaulting to deny-all is not a hardening of that contract, it
+   * is a withdrawal of it.
+   *
+   * SO THE THREE STATES ARE NOW DISTINCT, exactly as the empty-versus-absent discipline
+   * this migration applies to `skuEligibleCurrencies` requires:
+   *
+   *   * `undefined` - the variable is UNSET. No host policy is configured, and the feed
+   *     answers on the authority the request carries, which is the source behaviour. The
+   *     host is still normalized, and the renderer still refuses a malformed authority
+   *     before it composes an origin, so "no allow-list" is not "no validation".
+   *   * a NON-EMPTY list - a policy IS configured. Only those authorities are served. This
+   *     is the S-15 remedy and it is unchanged: the list is process configuration, fixed
+   *     for the container's lifetime and unreachable from any request, so a caller cannot
+   *     write the list it is checked against.
+   *   * an EMPTY list - reachable only by setting the variable to a value that names no
+   *     host. That is an explicit operator decision to publish no feed, and it still
+   *     refuses everything. Deny-all remains available; it is no longer the default.
    */
-  readonly allowedHosts: readonly string[];
+  readonly allowedHosts: readonly string[] | undefined;
 }
 
 // --- Defaults ---------------------------------------------------------------
@@ -480,6 +605,14 @@ const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 
 /** Matches the template value of `NODE_ENV` in `slatwall-ts/.env.example`. */
 const DEFAULT_RUNTIME_ENVIRONMENT: RuntimeEnvironment = 'development';
+
+/**
+ * Matches the template value of `LOG_LEVEL` in `slatwall-ts/.env.example`, and the
+ * fallback `src/lib/logger.ts` applies when no threshold has been adopted. The two
+ * must agree: a process that fails before the composition root adopts a threshold
+ * still logs, and it logs at this level.
+ */
+const DEFAULT_LOG_THRESHOLD: LogThreshold = 'info';
 
 /** Highest port number expressible in a 16-bit TCP port field. */
 const MAX_TCP_PORT = 65_535;
@@ -743,13 +876,20 @@ function resolveCredential(
  * Three semantics are carried over from [config/configORM.cfm:L1-L15], and all
  * three are load-bearing:
  *
- *  1. REQUIRED, WITH NO FALLBACK. The legacy conditional chain runs from
- *     [config/configORM.cfm:L9] to [config/configORM.cfm:L15] and ends at a bare
- *     closing tag with NO `<cfelse>`: an unrecognized product name left the
- *     dialect unset rather than guessing. The probe's own failure path was even
- *     blunter, ending in an outright abort at [config/configORM.cfm:L4-L7].
- *     Preserving that means an unset or unrecognized value is a hard startup
- *     error here - never a default, never a fallback, never a warn-and-continue.
+ *  1. REQUIRED, WITH NO FALLBACK - AND THE HARD REFUSAL IS A DELIBERATE
+ *     IMPROVEMENT ON THE LEGACY RATHER THAN A PORT OF IT. The distinction is
+ *     easy to blur and this paragraph used to blur it, so it is stated exactly.
+ *     The legacy `<cfabort />` at [config/configORM.cfm:L6] guards the DATASOURCE
+ *     PROBE's `<cfcatch>` [config/configORM.cfm:L2-L8] and nothing else. The
+ *     DIALECT chain that follows runs from [config/configORM.cfm:L9] to
+ *     [config/configORM.cfm:L15] and ends at a bare closing tag with NO
+ *     `<cfelse>`, so an unrecognized product name left `this.ormSettings.dialect`
+ *     SILENTLY UNSET and execution CONTINUED. What is carried over is the ABSENCE
+ *     OF A GUESS - no fourth branch, no default; what is deliberately better is
+ *     that the unset state cannot be reached at all: an unset or unrecognized
+ *     value is a hard startup error here, never a default, never a fallback,
+ *     never a warn-and-continue. `src/handlers/bootstrap.ts` records the same
+ *     distinction at its one dialect decision, and the two must not drift apart.
  *
  *  2. CASE-INSENSITIVE ACCEPTANCE, CANONICAL RESULT. The legacy tests at
  *     [config/configORM.cfm:L9], [config/configORM.cfm:L11] and
@@ -781,7 +921,7 @@ function resolveDatabaseDialect(
   problems: string[],
 ): DatabaseDialect | undefined {
   const accepted = DATABASE_DIALECTS.join(', ');
-  const guidance = `Accepted values are ${accepted} (matched without regard to case, then normalized to that exact spelling). There is deliberately no default and no fallback: the legacy dialect chain at config/configORM.cfm:L9-L15 ends with no <cfelse>, and its datasource probe aborted outright at config/configORM.cfm:L4-L7.`;
+  const guidance = `Accepted values are ${accepted} (matched without regard to case, then normalized to that exact spelling). There is deliberately no default and no fallback: the legacy dialect chain at config/configORM.cfm:L9-L15 ends with no <cfelse>, so an unrecognized product name left the dialect unset and the request continued. Refusing the value outright here is a deliberate improvement on that silent state rather than a port of the abort at config/configORM.cfm:L4-L7, which guarded only the datasource probe.`;
 
   const raw = readTrimmed(source, 'DB_DIALECT');
   if (raw === undefined) {
@@ -837,6 +977,302 @@ function resolveRuntimeEnvironment(
   return canonical;
 }
 
+// --- The delivery-size contract --------------------------------------------
+//
+// ★★★ THE ENVIRONMENT THIS MODULE READS HAS TO FIT IN THE ONE THAT DELIVERS IT, AND
+// THAT IS A HARD PLATFORM LIMIT RATHER THAN A STYLE PREFERENCE. AWS Lambda caps the
+// ENTIRE environment-variable map at 4 KB - 4096 bytes, keys and values together - and
+// the quota is not adjustable: a function whose configuration exceeds it is REFUSED at
+// `UpdateFunctionConfiguration`, before a cold start ever happens, so the deployment
+// simply does not go out.
+//
+// Two of the nineteen contract variables had no upper bound of any kind: `DB_TLS_CA`
+// accepts "one or more PEM blocks" and `ECB_REFERENCE_RATES` accepts an arbitrarily long
+// rate list. An otherwise perfectly valid configuration could therefore be undeployable,
+// and the first anyone would learn of it is a deployment failure naming a byte count.
+//
+// SO THE BUDGET IS PART OF THE CONTRACT, AND IT IS CHECKED WHERE THE VALUES ARE AUTHORED.
+// Every variable carries a documented maximum, the maxima provably sum to less than the
+// platform cap (see {@link MAX_DELIVERABLE_ENVIRONMENT_BYTES} and the arithmetic on
+// {@link CONTRACT_KEY_MAX_VALUE_BYTES}), and a configuration that breaches either the
+// per-variable maximum or the aggregate is refused at start-up. That refusal is
+// deliberately most useful OUTSIDE Lambda - locally and in CI, where a value is written
+// and where a failure can still be fixed cheaply - because inside Lambda the platform has
+// already refused the deployment and this code never runs.
+//
+// ONLY THE NINETEEN CONTRACT KEYS ARE MEASURED, AND THAT IS A CORRECTNESS REQUIREMENT
+// RATHER THAN AN ECONOMY. Two categories of variable must not be counted: the `AWS_*`
+// variables the Lambda runtime injects itself, which are not part of the function's
+// configured map and which a caller cannot shrink; and everything else in a developer's
+// shell, which numbers in the hundreds and would make the budget unreachable on every
+// local run. The list below is exactly the contract `slatwall-ts/.env.example` publishes.
+
+/**
+ * The platform ceiling on the whole environment map, in bytes: AWS Lambda's 4 KB quota.
+ *
+ * Not adjustable through Service Quotas, which is why the contract is written to fit
+ * inside it rather than to request more.
+ */
+const MAX_DELIVERABLE_ENVIRONMENT_BYTES = 4_096;
+
+/**
+ * Bytes charged per delivered variable beyond its key and value, as a conservative
+ * allowance.
+ *
+ * AWS does not publish the exact accounting of its 4 KB quota beyond "the total size of
+ * all environment variables", so one byte per entry is reserved for whatever separator or
+ * per-entry overhead the encoding carries. Over-reserving is the safe direction: the
+ * consequence is a contract marginally tighter than the platform's, not a configuration
+ * that passes here and is refused at deployment.
+ */
+const ENVIRONMENT_ENTRY_OVERHEAD_BYTES = 1;
+
+/**
+ * The documented maximum value size of every variable in the contract, in UTF-8 bytes.
+ *
+ * ★ THE ARITHMETIC, WRITTEN OUT, BECAUSE A BUDGET NOBODY CAN CHECK IS NOT A BUDGET. The
+ * nineteen key names total 250 bytes and the per-entry allowance adds 19, so 269 bytes are
+ * spoken for before any value. The eighteen values other than `DB_TLS_CA` total 1,733,
+ * bringing the fixed part to 2,002. With `DB_TLS_CA` at 2,048 the documented ceiling is
+ * 4,050 bytes against a platform cap of 4,096 - 46 bytes of headroom. The assertion that
+ * this still holds lives in `tests/traceability/legacyTestMap.ts`, so adding a variable or
+ * raising a maximum past the cap fails CI rather than a deployment.
+ *
+ * Each figure is the smallest that cannot refuse a legitimate value:
+ *
+ *   * `DB_HOST` - RFC 1035's 253-character host.
+ *   * `DB_NAME` and `DB_USER` - MySQL's own identifier and account-name limits.
+ *   * `DB_PASSWORD` - 128, far beyond any credential policy in practice; RDS caps a MySQL
+ *     master password at 41.
+ *   * the enumerations and the four pool integers - 16 to 24 each. Deliberately NOT their
+ *     longest accepted spelling: this is a DELIVERY bound, and a bound tight enough to
+ *     catch a typo would turn a size check into a second, worse shape check. Their real
+ *     vocabularies are enforced by their own resolvers, which produce a message naming
+ *     the accepted values; a byte count would say nothing useful about `NODE_ENV=prod`.
+ *   * `FEED_ALLOWED_HOSTS` and `ECB_REFERENCE_RATES` - 512 each, which is roughly two
+ *     maximal hosts or forty rate entries; the ECB publishes about thirty currencies.
+ *   * `DB_TLS_CA` - 2,048, which holds ONE ordinary PEM certificate authority. A full
+ *     multi-certificate chain does not fit, and that is the constrained case the
+ *     contract answers by pointing at the alternatives rather than by raising the number:
+ *     leave it unset and trust the runtime's public root store, or supply only the single
+ *     authority that signs the server's certificate.
+ *
+ * ⚠ `LOG_LEVEL`'s FIGURE IS A BUDGET ALLOCATION AND NOT A REFUSAL THRESHOLD, which is the
+ * one asymmetry in this table and is required by an invariant stated elsewhere in this
+ * file: an unset or unrecognized `LOG_LEVEL` MUST NOT be able to abort a cold start,
+ * because this module reports its own fatal failure through the logger. Its bytes still
+ * count toward the aggregate - an undeployable set is undeployable whatever made it so -
+ * but no per-variable refusal is raised for it. See {@link assertDeliverableEnvironment}.
+ */
+const CONTRACT_KEY_MAX_VALUE_BYTES: Readonly<Record<string, number>> = Object.freeze({
+  DB_HOST: 253,
+  DB_PORT: 16,
+  DB_NAME: 64,
+  DB_USER: 32,
+  DB_PASSWORD: 128,
+  DB_TLS_MODE: 24,
+  DB_TLS_MIN_VERSION: 16,
+  DB_TLS_CA: 2_048,
+  DB_DIALECT: 24,
+  DB_CONNECTION_LIMIT: 16,
+  DB_CONNECT_TIMEOUT_MS: 16,
+  DB_MAX_IDLE: 16,
+  DB_IDLE_TIMEOUT_MS: 16,
+  NODE_ENV: 24,
+  LOG_LEVEL: 16,
+  FEED_ALLOWED_HOSTS: 512,
+  ECB_REFERENCE_RATES: 512,
+  ECB_RATES_RETRIEVED_AT: 32,
+  TEST_LIVE_DATABASE: 16,
+});
+
+/**
+ * The one contract key whose size is budgeted but never individually refused.
+ *
+ * `LOG_LEVEL` may not be able to abort a cold start - see {@link LoggingConfig} for why
+ * that is structural rather than a preference - so a per-variable size refusal is not
+ * available for it. Its bytes still count toward the aggregate, where the failure is
+ * about whether the SET can be delivered rather than about the logging threshold.
+ */
+const UNREFUSABLE_CONTRACT_KEY = 'LOG_LEVEL';
+
+/**
+ * Measure a string in UTF-8 bytes, which is the unit the platform quota is expressed in.
+ *
+ * `TextEncoder` is a global in the `nodejs20.x` runtime and in every browser, so this
+ * needs no import - which matters here more than usual, because this module imports
+ * nothing at all by design. Counting CHARACTERS instead would under-measure any non-ASCII
+ * value: an internationalized host or a non-ASCII credential costs two to four bytes per
+ * character, and a budget measured in the wrong unit is a budget that can be exceeded
+ * while passing.
+ */
+function measureUtf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/**
+ * Refuse a configuration that cannot be delivered, and say which variable is at fault.
+ *
+ * Two independent refusals, because a set can fail either way round: every variable is
+ * held to its own documented maximum, AND the total is held to the platform cap. A
+ * configuration whose variables are each individually legal can still exceed the cap
+ * together, which is exactly the case a per-variable rule alone would miss.
+ *
+ * NO VALUE IS EVER ECHOED, only its measured size. Two of the variables measured here are
+ * a credential and a private host name, and the actionable diagnosis is the number of
+ * bytes rather than the bytes themselves.
+ *
+ * @param source the environment being resolved.
+ * @param problems the aggregate problem list; one entry per over-size variable, plus one
+ *   for the aggregate.
+ */
+function assertDeliverableEnvironment(source: EnvironmentSource, problems: string[]): void {
+  let totalBytes = 0;
+
+  for (const [key, maxValueBytes] of Object.entries(CONTRACT_KEY_MAX_VALUE_BYTES)) {
+    const value = source[key];
+
+    if (value === undefined) {
+      continue;
+    }
+
+    const valueBytes = measureUtf8Bytes(value);
+    totalBytes += measureUtf8Bytes(key) + valueBytes + ENVIRONMENT_ENTRY_OVERHEAD_BYTES;
+
+    if (valueBytes > maxValueBytes && key !== UNREFUSABLE_CONTRACT_KEY) {
+      problems.push(
+        `${key} is ${String(valueBytes)} bytes, over its documented maximum of ${String(maxValueBytes)}. The whole environment must fit in the ${String(MAX_DELIVERABLE_ENVIRONMENT_BYTES)}-byte quota AWS Lambda applies to the entire variable map, keys included, and that quota is not adjustable - so an over-size value makes the deployment undeployable rather than merely unusual. Its value is never echoed here; see slatwall-ts/.env.example for the per-variable maxima and, for an over-size certificate authority or rate table, the alternatives to shipping it in the environment.`,
+      );
+    }
+  }
+
+  if (totalBytes > MAX_DELIVERABLE_ENVIRONMENT_BYTES) {
+    problems.push(
+      `The configured environment is ${String(totalBytes)} bytes across the ${String(Object.keys(CONTRACT_KEY_MAX_VALUE_BYTES).length)} contract variables, over the ${String(MAX_DELIVERABLE_ENVIRONMENT_BYTES)}-byte quota AWS Lambda applies to the entire variable map, keys included. Every variable may be individually within its maximum and the set still not fit. Reduce the largest values - DB_TLS_CA, ECB_REFERENCE_RATES and FEED_ALLOWED_HOSTS are the three that can grow - or deliver them outside the environment. No value is echoed here.`,
+    );
+  }
+}
+
+/**
+ * IPv4 addresses in `127.0.0.0/8`, the block reserved for loopback.
+ *
+ * The whole `/8` rather than only `127.0.0.1`, because the entire block is loopback by
+ * definition and a developer binding a second local server to `127.0.0.2` is doing
+ * something ordinary. Each octet is bounded so `127.0.0.999` is not mistaken for an
+ * address, and the pattern is anchored at both ends so nothing may precede or follow
+ * it.
+ */
+const IPV4_LOOPBACK_HOST =
+  /^127\.(?:\d|[1-9]\d|1\d\d|2[0-4]\d|25[0-5])(?:\.(?:\d|[1-9]\d|1\d\d|2[0-4]\d|25[0-5])){2}$/;
+
+/**
+ * The non-IPv4 spellings of a loopback host, matched after case-folding and after any
+ * surrounding IPv6 brackets are removed.
+ *
+ * `::1` is the IPv6 loopback address and `0:0:0:0:0:0:0:1` is the same address written
+ * out, both of which `mysql2` accepts; a deployment that spelled it either way meant
+ * the same thing and should not be refused over notation.
+ */
+const NAMED_LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '::1', '0:0:0:0:0:0:0:1']);
+
+/**
+ * Whether `host` names the local machine over a loopback interface.
+ *
+ * ★ THIS IS A SYNTACTIC TEST, DELIBERATELY, AND IT RESOLVES NOTHING. This module has
+ * no imports and must not acquire one - it has to be able to raise its own startup
+ * failure before anything else has loaded - so there is no DNS lookup here and there
+ * will not be one. A name that merely RESOLVES to a loopback address is therefore
+ * refused, which is the conservative direction: the only cost is that an operator who
+ * invented a private alias for their local server must spell it `127.0.0.1`, while the
+ * benefit is that whether a deployment starts on plaintext transport cannot depend on
+ * a resolver's answer at startup.
+ *
+ * ⚠ `localhost` IS ACCEPTED WITH A KNOWN CAVEAT, and the caveat is recorded rather
+ * than quietly tolerated. A hosts file can point `localhost` at a non-loopback
+ * address, so accepting the name is not the same guarantee that accepting a literal
+ * is. It is accepted because it is the spelling every local development environment
+ * and every container-compose file actually uses, and refusing it would mean the rule
+ * was routinely worked around instead of followed. An operator able to rewrite the
+ * machine's hosts file can already redirect the connection whatever this function
+ * says.
+ *
+ * The brackets an IPv6 literal is conventionally written in are stripped before
+ * matching, because `[::1]` and `::1` name the same interface and a deployment should
+ * not be refused over notation.
+ */
+function isLoopbackHost(host: string): boolean {
+  const bare = host.replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
+  return NAMED_LOOPBACK_HOSTS.has(bare) || IPV4_LOOPBACK_HOST.test(bare);
+}
+
+/**
+ * Resolves `LOG_LEVEL`, and NEVER records a problem.
+ *
+ * ★ THE ONLY RESOLVER IN THIS FILE THAT CANNOT FAIL, AND IT TAKES NO `problems`
+ * ARRAY SO THAT IT CANNOT ACQUIRE ONE BY ACCIDENT. The reasoning is on
+ * {@link LoggingConfig}: this module reports its own aggregate failure through
+ * `src/lib/logger.ts`, so a threshold able to abort a cold start would leave a
+ * misconfigured process unable to explain itself. A mistyped value is therefore
+ * coerced to the default and classified, not rejected.
+ *
+ * Case folding matches every other enumeration here, so `INFO`, `Warn` and
+ * ` error ` are all accepted - `readTrimmed` removes surrounding whitespace and
+ * reports a blank value as absent, which is how a shell that exports the variable
+ * empty spells "use the default".
+ *
+ * THE REJECTED VALUE IS DISCARDED HERE AND TRAVELS NOWHERE. It is not returned, not
+ * stored, not interpolated into a message and not retained in any set. That is the
+ * structural half of the fix for the disclosure defect described on
+ * {@link LogThresholdSource}: there is no code path from a malformed `LOG_LEVEL` to
+ * an emitted line, because after this function returns the value no longer exists.
+ */
+function resolveLogging(source: EnvironmentSource): LoggingConfig {
+  const raw = readTrimmed(source, 'LOG_LEVEL');
+  if (raw === undefined) {
+    return Object.freeze({ level: DEFAULT_LOG_THRESHOLD, levelSource: 'defaulted-unset' });
+  }
+
+  const canonical = matchCanonical(LOG_THRESHOLDS, raw);
+  if (canonical === undefined) {
+    return Object.freeze({
+      level: DEFAULT_LOG_THRESHOLD,
+      levelSource: 'defaulted-unrecognized',
+    });
+  }
+
+  return Object.freeze({ level: canonical, levelSource: 'configured' });
+}
+
+/**
+ * A dotted-quad IPv4 literal, in the shape a host variable can carry.
+ *
+ * ★ EACH OCTET IS BOUNDED, WHICH IS THE DIFFERENCE BETWEEN AN ADDRESS AND A NAME. A shape test of
+ * `\d{1,3}` four times over would classify `999.1.1.1` as an address, and the consequence is not
+ * cosmetic: the `verify-identity` rule below refuses IP literals, so a mis-classified NAME would be
+ * refused with a message naming the wrong problem, and the operator would be told to supply a DNS
+ * name they had already supplied. `999.1.1.1` is not an address, so it is a name - one that will
+ * fail to RESOLVE, which is the right place and the right layer for it to fail.
+ *
+ * Anchored at both ends so nothing may precede or follow the quad.
+ */
+const IPV4_LITERAL_SHAPE =
+  /^(?:\d|[1-9]\d|1\d\d|2[0-4]\d|25[0-5])(?:\.(?:\d|[1-9]\d|1\d\d|2[0-4]\d|25[0-5])){3}$/;
+
+/**
+ * Whether a host string is an IP LITERAL rather than a name.
+ *
+ * A dotted quad, or anything carrying a colon - which in a host position can only be an IPv6 address,
+ * bracketed or bare, since the port is a separate variable in this contract. Used by the
+ * `verify-identity` rule (F47): a certificate binds to NAMES through its subject-alternative-name
+ * extension, and an IP literal takes a different code path in the driver's identity check whose
+ * behaviour cannot be asserted from here.
+ */
+function isIpLiteralHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+
+  return IPV4_LITERAL_SHAPE.test(normalized) || normalized.includes(':');
+}
+
 /**
  * Resolves `DB_TLS_MODE`, `DB_TLS_MIN_VERSION` and `DB_TLS_CA`, or records why the
  * process must not start.
@@ -866,6 +1302,23 @@ function resolveRuntimeEnvironment(
  * returns before using it - so that a malformed value is still reported rather
  * than hidden behind an unrelated setting.
  *
+ * TWO RULES READ `DB_HOST` AS WELL AS THE MODE, because a transport posture is a
+ * property of the PAIR and neither variable can be judged alone. Both were added after a
+ * security review found documentation asserting protections the code did not enforce, and
+ * each is annotated at its own refusal below:
+ *
+ *   * `disabled` REQUIRES A LOOPBACK HOST, in every environment. The earlier rule keyed
+ *     plaintext to `NODE_ENV` alone, and `NODE_ENV` is DEFAULTED - so a production
+ *     container that simply never set it passed the check and sent its credential over a
+ *     link it did not own (CWE-319). What makes plaintext acceptable is the traffic never
+ *     leaving the machine, so that property is what is checked now. The production
+ *     refusal is kept alongside it as defence in depth.
+ *   * `verify-identity` REFUSES AN IP-LITERAL HOST. Server Name Indication cannot carry
+ *     an address, so the driver sends no `servername` and the runtime silently performs
+ *     no host-name check while the connection still reports itself fully verified
+ *     (CWE-295). `verify-ca` exists to state that weaker position honestly, and is what
+ *     such a deployment must choose.
+ *
  * The CA is read as PEM TEXT, never as a path: this module performs no filesystem
  * access - it has no imports at all - and the deployed runtime injects environment
  * variables natively, so a path would have nothing to resolve against. A
@@ -877,10 +1330,11 @@ function resolveRuntimeEnvironment(
 function resolveDatabaseTls(
   source: EnvironmentSource,
   environment: RuntimeEnvironment | undefined,
+  host: string | undefined,
   problems: string[],
 ): DatabaseTlsConfig | undefined {
   const accepted = DATABASE_TLS_MODES.join(', ');
-  const guidance = `Accepted values are ${accepted} (matched without regard to case). verify-identity is recommended; verify-ca omits the host-name check and suits only an IP-literal host or a proxy whose certificate names a different host; disabled is for a loopback development server and is rejected outright when NODE_ENV is production. There is deliberately no default and no opportunistic mode.`;
+  const guidance = `Accepted values are ${accepted} (matched without regard to case). verify-identity is recommended and requires a NAMED host, because a certificate binds to names; verify-ca omits the host-name check and therefore REQUIRES a pinned trust anchor in DB_TLS_CA; disabled is permitted only when DB_HOST provably names the loopback interface, whatever NODE_ENV says. There is deliberately no default and no opportunistic mode.`;
 
   const rawMode = readTrimmed(source, 'DB_TLS_MODE');
   if (rawMode === undefined) {
@@ -899,9 +1353,71 @@ function resolveDatabaseTls(
     return undefined;
   }
 
+  // ★★★ CLEARTEXT IS BOUND TO THE DESTINATION, NOT TO A LABEL (F48, CWE-319). QUOTE-THEN-REVISE: the
+  // rule here was `mode === 'disabled' && environment === 'production'`, with the message "DB_TLS_MODE
+  // is disabled while NODE_ENV is production, which would send the account, the credential and every
+  // statement over an unprotected connection." The diagnosis was exactly right and the CONDITION was
+  // the wrong one. `NODE_ENV` is OPTIONAL and defaults to `development`
+  // (`DEFAULT_RUNTIME_ENVIRONMENT`), so the single most likely deployment - one that never set it -
+  // could send the account, the credential and every row to a REMOTE database in cleartext, and the
+  // guard would not fire. A deployment label is a claim about intent; the host is a fact about where
+  // the bytes go.
+  //
+  // So the test is now on the DESTINATION and applies in every environment: `disabled` is admitted
+  // only when `DB_HOST` provably names the loopback interface, where there is no network segment for
+  // an on-path actor to occupy. `NODE_ENV` is no longer consulted for this decision at all - which
+  // also means `production` can no longer be the thing that saves a misconfigured deployment, and
+  // `development` can no longer be the thing that excuses one.
+  //
+  // ★ AND THE PRODUCTION REFUSAL IS KEPT AS A SECOND, INDEPENDENT GUARD rather than replaced by the
+  // one above. F48 asks that the loopback rule apply "regardless of NODE_ENV"; it does not ask that
+  // production stop being refused, and holding both is strictly stronger than holding either. They
+  // fail for different reasons and the messages say so: the guard above refuses a REMOTE cleartext
+  // destination in any environment, and this one refuses cleartext in a deployment that declares
+  // itself production even when the destination is local - because a production service talking to a
+  // loopback database is a misconfiguration whether or not the transport is exposed.
   if (mode === 'disabled' && environment === 'production') {
     problems.push(
-      'DB_TLS_MODE is disabled while NODE_ENV is production, which would send the account, the credential and every statement over an unprotected connection. Set verify-identity, or verify-ca when the host name cannot be checked, and supply the trust anchor through DB_TLS_CA if the authority is not a public root.',
+      'DB_TLS_MODE is disabled while NODE_ENV is production, which would send the account, the credential and every statement over an unprotected connection. Set verify-identity, or verify-ca with a pinned trust anchor in DB_TLS_CA when the host name cannot be checked.',
+    );
+    return undefined;
+  }
+
+  // ★ TWO INDEPENDENTLY-AUTHORED COPIES OF THE CLEARTEXT RULE WERE FOLDED INTO ONE, and this is the
+  // survivor. Both refused the same destinations for the same reason (F48, CWE-319); this one is kept
+  // because it satisfies two properties the other did not. It does NOT echo `DB_HOST` back - the
+  // aggregate refusal states that no value of `DB_HOST`, `DB_USER` or `DB_PASSWORD` is echoed, and a
+  // diagnostic that quoted the host would have been the one place this module published it. And it
+  // STAYS QUIET WHEN `DB_HOST` IS ABSENT: `resolveRequired` has already recorded that omission, so
+  // adding a transport complaint on top would point an operator at the wrong variable.
+  //
+  // ★★ THE PLAINTEXT RULE THAT DOES NOT DEPEND ON NODE_ENV, and the reason the check
+  // above is not sufficient on its own. `NODE_ENV` is a DEFAULTED variable: omit it and
+  // it resolves to `development`, so a production container that simply never set it
+  // would pass the production test and go on to send its credential over a link it does
+  // not own. A security review recorded that gap (CWE-319) together with the
+  // documentation that claimed the opposite. The control is therefore the PROPERTY that
+  // makes plaintext acceptable - the traffic never leaving the machine - rather than a
+  // label a deployment can forget to apply. The production refusal above is retained as
+  // defence in depth: it names the more obvious mistake more clearly, and a deployment
+  // that trips both should be told about both.
+  if (mode === 'disabled' && host !== undefined && !isLoopbackHost(host)) {
+    problems.push(
+      'DB_TLS_MODE is disabled while DB_HOST is not a loopback address, which would send the account, the credential and every statement in clear text over a network link this process does not control. Plaintext is accepted only for a server reached through the local interface - 127.0.0.0/8, ::1, 0:0:0:0:0:0:0:1 or the name localhost - and NODE_ENV is not consulted for this decision, so the rule holds in every environment: NODE_ENV is defaulted, a deployment label cannot make a remote connection local, and an unset variable must not be what stands between a credential and the wire. The rejected host is deliberately NOT quoted here, because this module states that no value of DB_HOST, DB_USER or DB_PASSWORD is echoed in a refusal; the variable, the rule and the accepted spellings are named instead. Set verify-identity for a named host, or verify-ca when the host is an IP literal or fronted by a proxy whose certificate names a different host, and supply the trust anchor through DB_TLS_CA if the authority is not a public root.',
+    );
+    return undefined;
+  }
+
+  // ★★ IDENTITY VERIFICATION AGAINST AN ADDRESS IS NOT IDENTITY VERIFICATION. See
+  // {@link isIpLiteralHost}: the driver cannot send Server Name Indication for an IP
+  // literal, so the runtime has no name to check the certificate's subject against and
+  // the handshake verifies the chain while silently skipping the identity test. Accepting
+  // the combination would leave a deployment believing it had the stronger mode while
+  // running the weaker one - the failure direction this whole group exists to close - so
+  // it is refused and the honest alternative is named.
+  if (mode === 'verify-identity' && host !== undefined && isIpLiteralHost(host)) {
+    problems.push(
+      'DB_TLS_MODE is verify-identity while DB_HOST is an IP literal. TLS identity verification compares the requested host NAME against the names the certificate presents, and Server Name Indication cannot carry an address, so the driver sends none and the host-name check is silently skipped - the connection would verify the certificate chain only, while reporting itself as fully verified. Use a host name the certificate names, or state the weaker position explicitly with verify-ca, which verifies the chain and documents that identity is unchecked.',
     );
     return undefined;
   }
@@ -931,9 +1447,26 @@ function resolveDatabaseTls(
   }
 
   if (rawCertificateAuthority === undefined) {
-    // Not a problem. An unset anchor means the runtime's built-in public root store
-    // is trusted, which is correct for a managed database whose certificate is
-    // signed by a public authority, and verification remains on either way.
+    // ★★★ verify-ca WITHOUT A PINNED ANCHOR VERIFIES ALMOST NOTHING (F47, CWE-295).
+    // QUOTE-THEN-REVISE: this branch returned unconditionally, annotated "Not a problem. An unset
+    // anchor means the runtime's built-in public root store is trusted, which is correct for a
+    // managed database whose certificate is signed by a public authority, and verification remains on
+    // either way." That is true of `verify-identity`, where the host name is what binds the
+    // certificate to the intended server. It is FALSE of `verify-ca`, which is defined by omitting
+    // that check: with identity verification off and the entire public root store trusted, ANY
+    // certificate signed by ANY public authority satisfies the handshake, so an on-path actor holding
+    // a certificate for a domain it does control impersonates the database. The trust anchor is the
+    // only thing left binding the connection to the intended server, so it cannot be optional.
+    if (mode === 'verify-ca') {
+      problems.push(
+        "DB_TLS_MODE is verify-ca but DB_TLS_CA is not set. verify-ca omits the host-name check, so the trust anchor is the ONLY thing binding the connection to the intended server; trusting the runtime's public root store instead would accept any certificate signed by any public authority. Supply the provider's or your private authority's PEM text in DB_TLS_CA, or use verify-identity with the database's DNS name, where the host name performs that binding.",
+      );
+      return undefined;
+    }
+
+    // Reached only by `verify-identity`, where it is correct: the host-name check binds the
+    // certificate to the intended server, so the built-in public root store is a sound anchor for a
+    // managed database whose certificate a public authority signed.
     return Object.freeze({ mode, certificateAuthority: undefined, minimumVersion });
   }
 
@@ -950,35 +1483,208 @@ function resolveDatabaseTls(
 }
 
 /**
- * A bare host authority, for validating `FEED_ALLOWED_HOSTS` at start-up.
+ * The one accepted shape of a bare host authority in this subtree: a host, optionally
+ * followed by `:` and a port.
  *
- * ★ THIS IS A FAIL-FAST ON DEPLOYMENT CONFIGURATION, NOT A SECOND SOURCE OF TRUTH.
- * `toTrustedFeedHost` in `src/integrations/google/googleFeedService.ts` remains the
- * only mint for a trusted host, and it re-checks the same shape at the point of use.
- * Checking here as well means a typo in the deployment's own list is a start-up
- * failure with a named variable rather than a silent refusal of every feed request
- * later, and the two patterns are deliberately identical so a value cannot pass one
- * and fail the other. If they ever diverge, the mint wins by construction: it runs
- * last and its result is what gets published.
+ * ★★★ THIS PATTERN IS THE SINGLE SOURCE OF TRUTH AND IS SHARED, NOT COPIED.
+ * `src/integrations/google/rssFeedRenderer.ts` validates the SAME value at the point
+ * where it is concatenated into five URL sites, and it now reaches that decision through
+ * {@link parseHostAuthority} below rather than through a pattern of its own.
  *
- * A port is permitted, because the legacy `CGI.HTTP_HOST` carried one whenever the
- * request used a non-default port.
+ * ⚠ IT USED TO BE COPIED, AND THE TWO COPIES DID NOT AGREE - which is why this is now
+ * one function. The docblock here claimed "the two patterns are deliberately identical
+ * so a value cannot pass one and fail the other". They were not identical. This one was
+ * lowercase-only, admitted no underscore and had no bracketed-IPv6 alternative, while
+ * the renderer's admitted all three; so `SHOP.example.com`, `internal_host` and `[::1]`
+ * were rejected as deployment configuration and accepted at the point of use. The claim
+ * was not merely stale - the ordering it relied on ("the mint wins by construction: it
+ * runs last") had also been retired, because the mint was removed in an earlier revision
+ * and membership is now checked in the composition root.
+ *
+ * THE UNION OF THE TWO IS ADOPTED, WHICH IS THE PERMISSIVE ONE, AND THAT IS THE SAFE
+ * DIRECTION. The renderer's grammar is the security boundary: it decides what may be
+ * written into a published feed. Configuration only decides which of those a deployment
+ * has authorized. A configuration grammar STRICTER than the boundary's cannot make
+ * anything safer - the boundary still refuses what it refuses - and it can refuse a
+ * legitimate deployment, which is exactly what happened. A configuration grammar LOOSER
+ * than the boundary's would be the dangerous asymmetry, and sharing one function makes
+ * both impossible.
+ *
+ * The grammar, and what each alternative is for:
+ *
+ *   bracketed literal   `[...]` holding only hex digits, colons and dots, so an IPv6
+ *                       deployment is not refused. Brackets are required, as RFC 3986
+ *                       requires them, which is also what keeps the colon-rich form from
+ *                       being confused with a host-and-port.
+ *   registered name     one or more dot-separated LABELS, each STARTING and ENDING
+ *                       alphanumeric with hyphens and underscores permitted between.
+ *                       Composed per label rather than over the whole name, which is
+ *                       what refuses a leading dot, a trailing dot, a leading or
+ *                       trailing hyphen and an EMPTY LABEL (`a..b`) without a rule for
+ *                       each. The underscore is not RFC 1123 for a public name but is
+ *                       common in internal DNS, and it cannot change which authority a
+ *                       URL resolves to.
+ *   optional port       captured, and then RANGE-CHECKED by the function below rather
+ *                       than by this pattern - see {@link parseHostAuthority}.
+ *
+ * It refuses a scheme, a path, credentials, a query, a fragment, whitespace anywhere,
+ * control characters including CR and LF, and emptiness. Each of those would change
+ * which authority a published URL points at.
  */
-const FEED_ALLOWED_HOST_AUTHORITY =
-  /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:\d{1,5})?$/;
+/**
+ * What {@link resolveFeedAllowedHosts} answers when it did not record a problem.
+ *
+ * A ONE-MEMBER WRAPPER, AND THE WRAPPER IS THE POINT. Every resolver in this file uses a
+ * bare `undefined` return to mean "I recorded a problem, do not build a configuration",
+ * and after F40 this resolver additionally needs to say "the variable is not set" - which
+ * is a SUCCESS carrying an absent value. Two absences with two meanings cannot share one
+ * `undefined`, so the success case is wrapped: an absent wrapper is a failure, and a
+ * present wrapper whose member is `undefined` is an unset variable.
+ *
+ * Not exported. `FeedConfig.allowedHosts` is the shape every consumer reads; this type
+ * exists only to keep the two absences apart between the resolver and its one caller.
+ */
+interface ResolvedFeedAllowedHosts {
+  readonly allowedHosts: readonly string[] | undefined;
+}
+
+const HOST_AUTHORITY_SHAPE =
+  /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?)*)(?::(\d{1,5}))?$/;
+
+/**
+ * A port with no leading zero, so a single spelling means a single value.
+ *
+ * `065535` and `65535` denote the same port to a resolver and are different strings to
+ * every comparison this subtree makes, so an allow-list entry written one way would not
+ * match a request written the other. Refusing the padded form removes the ambiguity
+ * rather than normalizing it away, because normalizing would silently change a value a
+ * deployment wrote deliberately. It also refuses `0` and `00000`, which the range check
+ * below would refuse anyway - two reasons, one refusal.
+ */
+const UNPADDED_PORT_SHAPE = /^[1-9]\d{0,4}$/;
+
+/** The highest port number a TCP authority can name. */
+const MAX_HOST_AUTHORITY_PORT = 65_535;
+
+/**
+ * The longest accepted host authority: RFC 1035's 253-character host plus `:65535`.
+ *
+ * Enforced here as well as at the rendering boundary, which it previously was not:
+ * configuration applied no length bound at all, so a multi-kilobyte entry was accepted
+ * as deployment configuration and then refused at the point of use.
+ */
+const MAX_HOST_AUTHORITY_LENGTH = 259;
+
+/**
+ * A parsed bare host authority.
+ *
+ * `host` retains the brackets of an IPv6 literal, because they are part of the authority
+ * as it must be written into a URL; `port` is absent when none was supplied, which is
+ * distinct from a port that was supplied and rejected - that case yields no
+ * {@link HostAuthority} at all.
+ */
+export interface HostAuthority {
+  /** The host half, exactly as written, brackets retained for an IPv6 literal. */
+  readonly host: string;
+  /** The port half as a number, or `undefined` when none was written. */
+  readonly port: number | undefined;
+}
+
+/**
+ * Parse a bare host authority - a host with an optional port - or answer `undefined`.
+ *
+ * ★★ THE SECOND EXPORTED UNIT OF THIS MODULE, AND THE ONLY ONE, RECORDED AS A DELIBERATE
+ * EXCEPTION RATHER THAN AN OVERSIGHT. The standard this port holds itself to is one
+ * exported unit per file, and that standard exists to keep a regenerated file's diff
+ * small in the refine loop. It is set aside here for a reason that outweighs it: a
+ * SECURITY GRAMMAR MUST NOT EXIST TWICE. The only two candidates for owning it are this
+ * module, which validates the deployment's allow-list, and
+ * `src/integrations/google/rssFeedRenderer.ts`, which validates the value it writes into
+ * a published document - and this module CANNOT IMPORT, by a documented invariant with
+ * its own justification (see the note above `appConfig`: it must be able to raise its own
+ * startup failure before anything else has loaded, and its failure message must be
+ * provably credential-free). If the shared code cannot be imported INTO here, it has to
+ * be exported FROM here. The alternatives were a duplicated pattern - which is the defect
+ * being fixed - or moving the check out of start-up validation, which would trade
+ * fail-fast on a deployment typo for a refusal of every feed request at run time.
+ *
+ * WHAT THE PORT CHECK ADDS OVER THE PATTERN, and why it is a function rather than more
+ * regex. `(?::(\d{1,5}))?` accepts one to five digits, which is `0` through `99999`: it
+ * admits port 0, which names no port, and 65536 through 99999, which name nothing at all.
+ * A regex CAN express the range, at the cost of a nine-alternative construction nobody
+ * can read or verify; a comparison against {@link MAX_HOST_AUTHORITY_PORT} is
+ * self-evidently right. The leading-zero refusal stays a pattern because that IS a
+ * lexical property.
+ *
+ * @param candidate the value to parse, taken exactly as supplied. Nothing is trimmed,
+ *   lower-cased or otherwise rewritten here: a caller that wants normalization does it
+ *   before calling, so this function's answer describes the value the caller actually
+ *   holds.
+ * @returns the parsed authority, or `undefined` when the value is not a bare host
+ *   authority, is longer than {@link MAX_HOST_AUTHORITY_LENGTH}, or names a port outside
+ *   1 to {@link MAX_HOST_AUTHORITY_PORT} or written with a leading zero.
+ */
+export function parseHostAuthority(candidate: string): HostAuthority | undefined {
+  if (candidate.length === 0 || candidate.length > MAX_HOST_AUTHORITY_LENGTH) {
+    return undefined;
+  }
+
+  const matched = HOST_AUTHORITY_SHAPE.exec(candidate);
+
+  if (matched === null) {
+    return undefined;
+  }
+
+  const rawPort = matched[1];
+
+  if (rawPort === undefined) {
+    return Object.freeze({ host: candidate, port: undefined });
+  }
+
+  if (!UNPADDED_PORT_SHAPE.test(rawPort)) {
+    return undefined;
+  }
+
+  const port = Number(rawPort);
+
+  if (port > MAX_HOST_AUTHORITY_PORT) {
+    return undefined;
+  }
+
+  return Object.freeze({
+    host: candidate.slice(0, candidate.length - rawPort.length - 1),
+    port,
+  });
+}
 
 /**
  * Resolves `FEED_ALLOWED_HOSTS`, a comma-separated list of bare host authorities.
  *
- * Unset or blank yields an EMPTY list, which refuses every feed candidate. That is
- * the safe default and is why no deployment is forced to configure a feed.
+ * ★★★ UNSET YIELDS `undefined`, NOT AN EMPTY LIST (F40). QUOTE-THEN-REVISE: this
+ * paragraph read "Unset or blank yields an EMPTY list, which refuses every feed
+ * candidate. That is the safe default and is why no deployment is forced to configure a
+ * feed." Those two sentences contradict each other - a default that refuses every request
+ * DOES force a deployment to configure the feed, on pain of the capability not working -
+ * and the source publishes the feed method publicly with no allow-list at all
+ * [integrationServices/google/controllers/feed.cfc:L54]. See {@link FeedConfig} for the
+ * three states and why they must stay distinct.
+ *
+ * BLANK IS NOT UNSET HERE, WHICH IS WHY THE RAW SOURCE IS READ RATHER THAN `readTrimmed`.
+ * `readTrimmed` folds a whitespace-only value into `undefined`, and that fold is right for
+ * a credential and wrong for a policy: `FEED_ALLOWED_HOSTS=` is a deliberate statement
+ * that no host is served, and it must not become "no policy configured". A value that is
+ * PRESENT therefore always yields a list - empty when it names nothing.
  *
  * Each member is trimmed and lower-cased before validation, because DNS names are
- * case-insensitive and the mint normalizes the same way; duplicates that differ only
- * in casing or surrounding space therefore collapse to one entry. Nothing else is
- * rewritten - no punycode conversion, no default-port stripping, no trailing-dot
- * removal - because each would make the configured host differ from the request host
- * it is matched against.
+ * case-insensitive and the membership check in `src/handlers/bootstrap.ts` compares
+ * lower-cased; duplicates that differ only in casing or surrounding space therefore
+ * collapse to one entry. Nothing else is rewritten - no punycode conversion, no
+ * default-port stripping, no trailing-dot removal - because each would make the
+ * configured host differ from the request host it is matched against.
+ *
+ * The shape itself is decided by {@link parseHostAuthority}, which is the SAME function
+ * `src/integrations/google/rssFeedRenderer.ts` reaches at the point of use, so a value
+ * this accepts cannot be refused there and a value it refuses cannot be authorized here.
  *
  * A malformed member is a recorded problem rather than a silently dropped entry: a
  * deployment that meant to allow `shop.example.com` and wrote `https://shop.example.com`
@@ -987,11 +1693,11 @@ const FEED_ALLOWED_HOST_AUTHORITY =
 function resolveFeedAllowedHosts(
   source: EnvironmentSource,
   problems: string[],
-): readonly string[] | undefined {
-  const raw = readTrimmed(source, 'FEED_ALLOWED_HOSTS');
+): ResolvedFeedAllowedHosts | undefined {
+  const raw = source['FEED_ALLOWED_HOSTS'];
 
   if (raw === undefined) {
-    return Object.freeze([]);
+    return Object.freeze({ allowedHosts: undefined });
   }
 
   const members = raw
@@ -999,16 +1705,16 @@ function resolveFeedAllowedHosts(
     .map((member) => member.trim().toLowerCase())
     .filter((member) => member.length > 0);
 
-  const malformed = members.filter((member) => !FEED_ALLOWED_HOST_AUTHORITY.test(member));
+  const malformed = members.filter((member) => parseHostAuthority(member) === undefined);
 
   if (malformed.length > 0) {
     problems.push(
-      `FEED_ALLOWED_HOSTS contains ${malformed.length} entr${malformed.length === 1 ? 'y' : 'ies'} that ${malformed.length === 1 ? 'is' : 'are'} not a bare host authority: ${malformed.map(describeReceived).join(', ')}. Supply hosts only - no scheme, credentials, path, query or fragment - separated by commas, for example "shop.example.com,shop.example.com:8443". Leave it unset to publish no product feed at all.`,
+      `FEED_ALLOWED_HOSTS contains ${malformed.length} entr${malformed.length === 1 ? 'y' : 'ies'} that ${malformed.length === 1 ? 'is' : 'are'} not a bare host authority: ${malformed.map(describeReceived).join(', ')}. Supply hosts only - no scheme, credentials, path, query or fragment - separated by commas, for example "shop.example.com,shop.example.com:8443". A port, when written, must be 1 to ${String(MAX_HOST_AUTHORITY_PORT)} with no leading zero, and the whole entry at most ${String(MAX_HOST_AUTHORITY_LENGTH)} characters. Leave it UNSET to serve the feed on whatever authority the request carries, as the legacy did, or set it to an empty value to publish no product feed at all.`,
     );
     return undefined;
   }
 
-  return Object.freeze([...new Set(members)]);
+  return Object.freeze({ allowedHosts: Object.freeze([...new Set(members)]) });
 }
 
 // THERE IS NO `FEED_URL_SCHEME` RESOLVER, DELIBERATELY. An earlier revision read a
@@ -1033,6 +1739,18 @@ const CURRENCY_CODE_SHAPE = /^[A-Z]{3}$/;
  */
 const RATE_NUMERAL_SHAPE = /^\d+(\.\d+)?$/;
 
+// ★ TWO INDEPENDENTLY-AUTHORED ISO-INSTANT VALIDATORS WERE FOLDED INTO ONE, AND THE SURVIVOR KEEPS
+// BOTH OF THEIR STAGES. A standalone shape pattern paired with a written-out Gregorian leap rule
+// stood here, next to `resolveIsoInstant` below; both existed because the same measurement was made
+// twice - `new Date('2026-02-31T00:00:00Z')` does NOT return an Invalid Date on this runtime, it
+// rolls forward to 3 March, so a `NaN` check alone admits a date that does not exist.
+//
+// What was withdrawn is the DUPLICATION, not either check. `resolveIsoInstant` still refuses on the
+// GRAMMAR first and on the CALENDAR second, and it still reports them as two different problems,
+// because they are two different operator mistakes: a value in the wrong FORM, and a value in the
+// right form naming a day that never happened. The leap rule itself is gone - a `Date.UTC` round
+// trip decides the same question without a hand-written February length to keep correct.
+
 /**
  * Resolves `ECB_REFERENCE_RATES` and `ECB_RATES_RETRIEVED_AT`.
  *
@@ -1053,10 +1771,12 @@ const RATE_NUMERAL_SHAPE = /^\d+(\.\d+)?$/;
  *      Negative values cannot arrive at all, because the numeral shape admits no
  *      sign - which is stricter than a positivity test and is the point of using a
  *      shape that excludes the sign rather than one that accepts and then rejects it.
- *   3. AGE. `ECB_RATES_RETRIEVED_AT` is REQUIRED whenever any rate is supplied, and
- *      must be an ISO-8601 instant. Rates of unknown age cannot be assessed, and the
- *      legacy always knew the age of its own table - it wrote `retrieved` into the
- *      memo at [L124].
+ *   3. AGE. `ECB_RATES_RETRIEVED_AT` is REQUIRED whenever any rate is supplied, and its
+ *      ISO-8601 shape is ENFORCED by grammar before it is parsed - see
+ *      {@link ISO_8601_INSTANT_SHAPE}, and note that a bare `NaN` check would admit
+ *      every locale spelling a date parser guesses at. Rates of unknown age cannot be
+ *      assessed, and the legacy always knew the age of its own table - it wrote
+ *      `retrieved` into the memo at [L124].
  *
  * Rates are NOT parsed to numbers here, and must not be: they are carried as strings
  * straight through to `Money`/`Decimal`, which is the target's single arithmetic
@@ -1065,6 +1785,143 @@ const RATE_NUMERAL_SHAPE = /^\d+(\.\d+)?$/;
  * Unset yields an empty table and an undefined retrieval instant, which is the
  * documented no-conversion-configured state.
  */
+/**
+ * A complete ISO-8601 instant in extended format, WITH A MANDATORY ZONE DESIGNATOR.
+ *
+ * Groups, in order: year, month, day, hour, minute, optional second, optional
+ * fractional second, and the zone - `Z` or `±HH:MM`. Every field is range-bounded here
+ * rather than left to the parser, so `13:70` and month `13` never reach it.
+ *
+ * ★★ THE ZONE IS REQUIRED, AND THAT IS THE WHOLE REASON THIS PATTERN EXISTS. `new
+ * Date()` accepts far more than ISO-8601 and silently assigns a meaning to what it
+ * accepts: `2026-08-04` becomes UTC midnight, `Aug 4 2026` parses at all, and - the
+ * dangerous one - `2026-08-04T00:00:00` with no zone is interpreted in the HOST'S LOCAL
+ * TIME, so the same environment value denotes a different instant on two machines. This
+ * port's explicit UTC policy cannot survive that, and a rate table's age is exactly the
+ * quantity a silent whole-day or whole-hour shift corrupts.
+ *
+ * `T` and `Z` are matched case-insensitively because V8 accepts either and refusing a
+ * lowercase designator would reject a value that is unambiguous. Nothing else is
+ * relaxed.
+ */
+const ISO_INSTANT_SHAPE =
+  /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])[Tt]([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d)(?:\.(\d{1,9}))?)?([Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
+/**
+ * How far ahead of this host's clock a retrieval instant may sit before it is refused.
+ *
+ * ★ THIS IS A CLOCK-SKEW ALLOWANCE, NOT A TOLERANCE FOR FUTURE-DATED DATA, and it is
+ * deliberately small. The instant is captured on whichever machine fetched the rates and
+ * evaluated on a Lambda host, so two unsynchronized clocks can legitimately disagree by
+ * seconds to a couple of minutes; refusing a deployment over that would be a false
+ * alarm. Anything beyond it is not skew - it is a wrong value, a wrong timezone
+ * assumption, or a placeholder someone typed - and it matters because a future instant
+ * yields a NEGATIVE age, which every "is this stale?" comparison reads as fresh.
+ */
+const MAX_RETRIEVAL_CLOCK_SKEW_MS = 5 * 60 * 1_000;
+
+/** Field widths used when validating that a matched date is a real calendar date. */
+const ISO_FRACTION_DIGITS = 3;
+
+/**
+ * Resolves a strict ISO-8601 instant, or records why it cannot be trusted.
+ *
+ * Three refusals, each answering a way the previous `new Date(raw)` accepted something
+ * it should not have:
+ *
+ *   1. SHAPE. See {@link ISO_INSTANT_SHAPE} - a zone designator is mandatory, so no
+ *      value's meaning depends on the host's timezone.
+ *   2. CALENDAR. A shape-valid date can still be impossible, and `Date` rolls it over
+ *      silently: `2026-02-30T00:00:00Z` becomes 2 March. The written fields are
+ *      round-tripped through `Date.UTC` and compared, which rejects 30 February, 31
+ *      April and 29 February in a common year. The comparison is done on the fields AS
+ *      WRITTEN, independently of the offset, because a calendar date is either real or
+ *      not regardless of which zone it was written in.
+ *   3. THE FUTURE. Rates cannot have been retrieved after now. A future instant produces
+ *      a negative age, and every staleness comparison downstream treats a negative age as
+ *      fresh - so the one value whose purpose is to make a stale table visible would
+ *      instead guarantee it looked current. {@link MAX_RETRIEVAL_CLOCK_SKEW_MS} allows for
+ *      unsynchronized clocks and nothing more.
+ *
+ * ★ THIS IS THE ONE CLOCK READ IN THIS MODULE, and it is confined to this refusal.
+ * Nothing else here depends on the current time, no resolved value is derived from it,
+ * and it is read through `Date.now()` rather than held, so nothing is memoized against
+ * it.
+ *
+ * NORMALIZATION IS A NO-OP BY CONSTRUCTION, WHICH IS WHY THERE IS NO CONVERSION STEP.
+ * Once a zone designator is present the value denotes an absolute instant, and a `Date`
+ * IS an absolute instant - milliseconds since the epoch, with no zone of its own. An
+ * offset-carrying input and its `Z` equivalent therefore resolve to the SAME `Date`, and
+ * `toISOString()` renders either in UTC. The zone requirement above is what makes that
+ * true; converting afterwards would be converting something that has no zone to convert.
+ *
+ * @param raw the trimmed environment value.
+ * @param problems the aggregate problem list; exactly one entry is added on refusal.
+ * @returns the resolved instant, or `undefined` when a problem was recorded.
+ */
+function resolveIsoInstant(raw: string, problems: string[]): Date | undefined {
+  const guidance =
+    'Supply a complete ISO-8601 instant with an explicit zone - "2026-08-04T00:00:00Z", or an offset such as "2026-08-04T02:00:00+02:00". A date alone, or a date and time with no zone, is refused: its meaning would depend on the timezone of whichever machine read it.';
+
+  const matched = ISO_INSTANT_SHAPE.exec(raw);
+
+  if (matched === null) {
+    problems.push(
+      `ECB_RATES_RETRIEVED_AT is not an ISO-8601 instant in the extended form this contract publishes; received ${describeReceived(raw)}. ${guidance}`,
+    );
+    return undefined;
+  }
+
+  // Every group below is guaranteed by a successful match, but the type is
+  // `string | undefined` under the compiler's index rules. The two optional groups get
+  // real defaults; the four mandatory ones fall back to a value that cannot pass the
+  // calendar check, so a future edit to the pattern fails loudly instead of silently
+  // resolving midnight on 1 January of year zero.
+  const year = Number(matched[1] ?? 'NaN');
+  const month = Number(matched[2] ?? 'NaN');
+  const day = Number(matched[3] ?? 'NaN');
+  const hour = Number(matched[4] ?? 'NaN');
+  const minute = Number(matched[5] ?? 'NaN');
+  const second = Number(matched[6] ?? '0');
+  const fraction = Number(
+    (matched[7] ?? '').padEnd(ISO_FRACTION_DIGITS, '0').slice(0, ISO_FRACTION_DIGITS) || '0',
+  );
+
+  const asWritten = new Date(Date.UTC(year, month - 1, day, hour, minute, second, fraction));
+
+  if (
+    asWritten.getUTCFullYear() !== year ||
+    asWritten.getUTCMonth() !== month - 1 ||
+    asWritten.getUTCDate() !== day
+  ) {
+    problems.push(
+      `ECB_RATES_RETRIEVED_AT names no real calendar instant - the shape is right but the date does not exist, and a date parser would roll it silently forward into the following month rather than reject it; received ${describeReceived(raw)}. ${guidance}`,
+    );
+    return undefined;
+  }
+
+  const instant = new Date(raw);
+
+  if (Number.isNaN(instant.getTime())) {
+    // Unreachable through the pattern above, which is stricter than the parser. Kept as
+    // an explicit invariant so that a relaxation of the pattern cannot produce an
+    // `Invalid Date` that every downstream comparison then answers `false` to.
+    problems.push(
+      `ECB_RATES_RETRIEVED_AT is not a parsable instant; received ${describeReceived(raw)}. ${guidance}`,
+    );
+    return undefined;
+  }
+
+  if (instant.getTime() > Date.now() + MAX_RETRIEVAL_CLOCK_SKEW_MS) {
+    problems.push(
+      `ECB_RATES_RETRIEVED_AT is in the future; received ${describeReceived(raw)}. Rates cannot have been retrieved after now, and a future instant makes the table's age negative - which every staleness check reads as fresh, so the value whose purpose is to expose a stale table would instead guarantee it looked current. Supply the instant the rates were actually captured, in UTC or with an explicit offset.`,
+    );
+    return undefined;
+  }
+
+  return instant;
+}
+
 function resolveCurrencyRates(
   source: EnvironmentSource,
   problems: string[],
@@ -1134,12 +1991,9 @@ function resolveCurrencyRates(
     return undefined;
   }
 
-  const retrievedAt = new Date(rawRetrievedAt);
+  const retrievedAt = resolveIsoInstant(rawRetrievedAt, problems);
 
-  if (Number.isNaN(retrievedAt.getTime())) {
-    problems.push(
-      `ECB_RATES_RETRIEVED_AT is not a parsable instant; received ${describeReceived(rawRetrievedAt)}. Supply an ISO-8601 instant, for example "2026-08-04T00:00:00Z".`,
-    );
+  if (retrievedAt === undefined) {
     return undefined;
   }
 
@@ -1209,45 +2063,47 @@ class DatabaseConnectionSettings implements DatabaseConnectionConfig {
    * mistaken for a real value, while the members that are genuinely useful for
    * diagnosis remain visible.
    *
-   * ★ THREE FIELDS ARE REDACTED, NOT ONE, AND THE TWO ADDITIONS ARE NOT A
-   * JUDGEMENT CALL - THEY CLOSE A CONTRADICTION BETWEEN THIS METHOD AND THE
-   * PROMISES MADE ABOUT IT. Redacting only the credential left this projection
-   * disagreeing with three separate statements elsewhere, each of which is a
-   * checkable citation rather than an opinion:
+   * ★ ALL FIVE FIELDS ARE REDACTED, AND THE LAST TWO JOINED THE OTHER THREE
+   * BECAUSE THE ARGUMENT FOR KEEPING THEM VISIBLE HAD EXPIRED. Redacting only the
+   * credential first left this projection contradicting three checkable statements
+   * elsewhere - the "never echoed in diagnostics" note on `host` and `user` above,
+   * the logger's independent never-log key set, and the host omission in
+   * `src/repositories/mysql/connection.ts` - so the host and the account were
+   * redacted too. The schema name and the port were then kept visible on a stated
+   * ground:
    *
-   *   * The property documentation directly above `host` and `user` on
-   *     `DatabaseConnectionConfig` says each is "never echoed in diagnostics".
-   *     This method echoed both, so one of the two had to be wrong.
-   *   * `src/lib/logger.ts` independently lists `host` in its never-log key set
-   *     [`CONNECTION_KEYS`], so a caller who logged this projection got a
-   *     redaction marker for a key named `host` from one code path and the real
-   *     hostname from this one - the same field, two answers.
-   *   * `src/repositories/mysql/connection.ts` omits the host from its
-   *     pool-created log line and says in as many words that the account is
-   *     "never passed at all", citing this file's promise as its reason. That
-   *     omission was load-bearing on a promise this method broke.
+   *   "neither appears in the logger's never-log key set; and `connection.ts` logs
+   *    both DELIBERATELY, in the very line that omits the host."
    *
-   * WHY `database` AND `port` STAY VISIBLE, which looks like an inconsistency
-   * until the three authorities above are applied mechanically rather than by
-   * feel. Neither is documented as never-echoed on its property above; neither
-   * appears in the logger's never-log key set; and `connection.ts` logs both
-   * DELIBERATELY, in the very line that omits the host. They are also what makes
-   * a misconfiguration diagnosable at all - "connected to the wrong schema" and
-   * "connected to the wrong port" are the two failures this projection exists to
-   * surface. Redacting them would not close a contradiction, it would create a
-   * fresh one with `connection.ts` and blind the diagnostic at the same time.
+   * ⚠ THAT SECOND CLAUSE IS NO LONGER TRUE, AND IT WAS THE LOAD-BEARING HALF.
+   * `connection.ts` removed the port, the database name, the dialect and the
+   * connection limit from its pool-created line, and its own comment now names the
+   * removal as a disclosure defect rather than a diagnostic - in its words, "a
+   * database name and a port together are reconnaissance; a pool ceiling is capacity
+   * intelligence". So the file cited here as the authority for publishing them now
+   * classifies publishing them as the defect. Keeping them visible would leave this
+   * method as the last publisher of exactly what that file went out of its way to
+   * stop publishing.
+   *
+   * THE DIAGNOSTIC ARGUMENT DOES NOT SURVIVE THE MOVE EITHER. "Connected to the
+   * wrong schema" is diagnosed from the environment the operator set, which is where
+   * the value came from; nothing is learned by having the service read it back out to
+   * a log stream whose audience is far wider than that operator. What this projection
+   * is genuinely for is proving that a configuration object CAN be serialized safely,
+   * and a shape of five markers proves that better than a shape of three.
    *
    * They are REDACTED rather than OMITTED, matching the credential's existing
-   * treatment, because a marker proves a deliberate decision was made where a
-   * missing key is indistinguishable from a field nobody remembered to add.
-   * `appConfig.load`'s documented guarantee - redacted, not merely omitted -
-   * therefore stays true of all three.
+   * treatment, because a marker proves a deliberate decision was made where a missing
+   * key is indistinguishable from a field nobody remembered to add.
+   * `appConfig.load`'s documented guarantee - redacted, not merely omitted - stays
+   * true of all five, and the return type narrows to `string` accordingly: there is no
+   * longer a numeric member for it to admit.
    */
-  toJSON(): Readonly<Record<string, string | number>> {
+  toJSON(): Readonly<Record<string, string>> {
     return Object.freeze({
       host: REDACTED_MARKER,
-      port: this.port,
-      database: this.database,
+      port: REDACTED_MARKER,
+      database: REDACTED_MARKER,
       user: REDACTED_MARKER,
       password: REDACTED_MARKER,
     });
@@ -1267,6 +2123,12 @@ class DatabaseConnectionSettings implements DatabaseConnectionConfig {
 function buildConfiguration(source: EnvironmentSource): AppConfig {
   const problems: string[] = [];
 
+  // FIRST, AND OVER THE WHOLE SET AT ONCE. A configuration that cannot be delivered is
+  // not worth resolving in detail, but it is reported ALONGSIDE every other problem
+  // rather than instead of them - one restart should surface every mistake, which is
+  // this module's contract everywhere else too. Nothing below depends on the outcome.
+  assertDeliverableEnvironment(source, problems);
+
   const environment = resolveRuntimeEnvironment(source, problems);
   const host = resolveRequired(source, 'DB_HOST', problems);
   const user = resolveRequired(source, 'DB_USER', problems);
@@ -1276,19 +2138,33 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
   const port = resolveInteger(source, 'DB_PORT', DEFAULT_DATABASE_PORT, 1, MAX_TCP_PORT, problems);
   const database = readTrimmed(source, 'DB_NAME') ?? DEFAULT_DATABASE_NAME;
 
-  // Resolved AFTER the environment, because the production rule inside it reads
-  // the already-validated `environment` rather than re-reading NODE_ENV.
-  const tls = resolveDatabaseTls(source, environment, problems);
+  // Resolved AFTER the environment AND after the host, because two of its rules read
+  // already-validated values rather than re-reading the environment: the protocol floor still
+  // reports against `environment`, and the transport rules (F47/F48) turn on the resolved `host` -
+  // cleartext is admitted only for a provable loopback destination, and `verify-identity` requires a
+  // named one. `host` may be `undefined` when DB_HOST itself failed; the resolver handles that
+  // explicitly rather than treating an unresolved host as safe.
+  const tls = resolveDatabaseTls(source, environment, host, problems);
 
-  // Optional, and empty when unset - a deployment that publishes no product feed
-  // configures nothing. See {@link FeedConfig} for why the list lives here at all
-  // rather than arriving on the request that is being checked against it.
+  // Optional. UNSET means no host policy, which serves the feed on the request's own
+  // authority exactly as the source did; a PRESENT value is a policy, empty or not (F40).
+  // The resolver answers a WRAPPER so those two states stay distinguishable from the
+  // `undefined` that every resolver in this file uses to mean "problem recorded": the
+  // wrapper is absent on failure and present with an `undefined` member when the variable
+  // is simply not set. See {@link FeedConfig} for why the list lives here at all rather
+  // than arriving on the request that is being checked against it.
   const feedAllowedHosts = resolveFeedAllowedHosts(source, problems);
 
   // Optional, and empty when unset. See {@link CurrencyConfig} for why a rate table
   // is configuration at all, and `src/handlers/bootstrap.ts` for what an empty one
   // means at conversion time.
   const currency = resolveCurrencyRates(source, problems);
+
+  // Deliberately passed no `problems` array: the threshold cannot fail the process,
+  // for the reason stated on {@link LoggingConfig}. It is resolved here anyway - and
+  // not by `src/lib/logger.ts` reading the environment itself - so that this module
+  // is genuinely the only reader of `process.env` under `src/**`.
+  const logging = resolveLogging(source);
 
   // The pool integers are operational knobs. `DB_MAX_IDLE` alone accepts zero,
   // because retaining no idle connection is a legitimate operational choice;
@@ -1359,8 +2235,9 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
     dialect,
     pool: Object.freeze(pool),
     tls,
-    feed: Object.freeze({ allowedHosts: feedAllowedHosts }),
+    feed: Object.freeze({ allowedHosts: feedAllowedHosts.allowedHosts }),
     currency,
+    logging,
   });
 }
 
@@ -1399,8 +2276,12 @@ let memoizedConfiguration: AppConfig | undefined;
  *     that depended on configuration could not report a configuration failure,
  *     and this module is required to fail hard. The thrown error carries the
  *     complete diagnosis itself, so nothing here needs a logger, and the fatal
- *     path cannot be made contingent on logging having initialized. The logger
- *     reads its own level directly and independently.
+ *     path cannot be made contingent on logging having initialized. The
+ *     dependency does not run the other way either: this module RESOLVES the
+ *     logger's threshold (`resolveLogging`) but does not hand it over, because
+ *     that would be an import. `src/handlers/bootstrap.ts` is the one place that
+ *     holds both, and it performs the handover - which is also the one place a
+ *     divergence between the duplicated level unions would be caught.
  *   * Not `dotenv`. It is a development-time dependency for loading a local
  *     `.env` file, and the deployed runtime injects environment variables
  *     natively, so importing it here would put a development-only dependency on
@@ -1420,15 +2301,20 @@ let memoizedConfiguration: AppConfig | undefined;
  *     anything else having loaded correctly. Second, and decisively, the failure
  *     message has to be provably free of credentials; a general-purpose
  *     validator reports the value it received, which is precisely the disclosure
- *     this module must make impossible. The surface is fourteen variables of four
- *     primitive shapes, so nothing is lost by writing it out: five strings
- *     (`DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_TLS_CA`), five
+ *     this module must make impossible. The surface is the seventeen variables
+ *     this module owns, in six shapes, so nothing is lost by writing it out: five
+ *     strings (`DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_TLS_CA`), five
  *     integers (`DB_PORT`, `DB_CONNECTION_LIMIT`, `DB_CONNECT_TIMEOUT_MS`,
- *     `DB_IDLE_TIMEOUT_MS`, `DB_MAX_IDLE`) and four closed enumerations
- *     (`DB_DIALECT`, `NODE_ENV`, `DB_TLS_MODE`, `DB_TLS_MIN_VERSION`). There is
- *     no boolean in the surface: the transport setting that used to be one is now
- *     `DB_TLS_MODE`, a required enumeration, because a boolean could not express
- *     the difference between chain verification and identity verification.
+ *     `DB_IDLE_TIMEOUT_MS`, `DB_MAX_IDLE`), four closed enumerations
+ *     (`DB_DIALECT`, `NODE_ENV`, `DB_TLS_MODE`, `DB_TLS_MIN_VERSION`), one
+ *     comma-separated host list (`FEED_ALLOWED_HOSTS`), one comma-separated
+ *     `CODE=RATE` table (`ECB_REFERENCE_RATES`) and one ISO-8601 instant
+ *     (`ECB_RATES_RETRIEVED_AT`). The last three were missing from an earlier
+ *     revision of this sentence, which counted fourteen while the module read
+ *     seventeen. There is no boolean in the surface: the transport setting that
+ *     used to be one is now `DB_TLS_MODE`, a required enumeration, because a
+ *     boolean could not express the difference between chain verification and
+ *     identity verification.
  */
 export const appConfig = Object.freeze({
   /**

@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/handlers/bootstrap.ts       composition root (wiring)
 //   tests/integration/repositories  repository integration tier
@@ -83,16 +81,25 @@
 //     purpose - refusing to build a MySQL pool for a non-MySQL dialect.
 //   * THIS FILE turns those validated values into a pool and an executor.
 //
-//   THE ENVIRONMENT AS A WHOLE IS NOT OWNED BY ONE MODULE, and this file does not
-//   claim it is. `config.ts` is authoritative for the DATABASE AND RUNTIME keys
-//   above and nothing wider. Two other owners exist, stated so no reader
-//   generalizes the sentence above into a subtree-wide monopoly:
-//     - `src/lib/logger.ts` reads LOG_LEVEL independently, on its own, because a
-//       logger that had to wait for validated database configuration could not
-//       report a configuration failure;
-//     - `tests/setup.ts` owns the TEST-ONLY environment state - it assigns TZ and
-//       reads TEST_LIVE_DATABASE - which never exists in a deployed bundle.
-//   None of the three overlaps: no key is read by more than one of them.
+//   `src/lib/config.ts` IS THE ONLY READER OF `process.env` UNDER `src/**`, and
+//   that is now literally true rather than approximately so. It reads eighteen of
+//   the nineteen contract keys, LOG_LEVEL among them. The one key it does not read
+//   is TEST_LIVE_DATABASE, which `tests/setup.ts` reads together with the TZ
+//   assignment it makes - test-only environment state that never exists in a
+//   deployed bundle, and the reason this sentence is scoped to `src/**`.
+//
+//   QUOTE-THEN-REVISE. This paragraph used to read: "THE ENVIRONMENT AS A WHOLE IS
+//   NOT OWNED BY ONE MODULE ... `src/lib/logger.ts` reads LOG_LEVEL independently,
+//   on its own, because a logger that had to wait for validated database
+//   configuration could not report a configuration failure". The REASON was sound
+//   and still holds - the logger must be able to report a configuration failure, so
+//   it may not depend on configuration - but the ARRANGEMENT it justified was a
+//   second reader of the process environment, which made the subtree's documented
+//   single-authority guarantee false. The two are now reconciled without either
+//   file importing the other: `config.ts` resolves LOG_LEVEL leniently, so a
+//   mistyped level still cannot abort a cold start, and `src/handlers/bootstrap.ts`
+//   hands the validated threshold to the logger as it wires the composition. The
+//   logger reads no environment variable at all.
 //
 //   `slatwallRootURL`, published from the FW/1 base URL at [Application.cfc:L75],
 //   is a routing artifact replaced by API Gateway plus `src/handlers/router.ts`
@@ -447,7 +454,7 @@ export function resolveStampedModifiedByAccountID(
  * the work function an executor recording onto the same log, so nothing there needs
  * to imitate a pool or a connection. Second,
  * it keeps the one sanctioned module-scope pool from leaking into six files; the
- * single wiring point is the composition root at `src/handlers/bootstrap.ts` (planned),
+ * single wiring point is the composition root at `src/handlers/bootstrap.ts`,
  * which is what replaces DI/1's runtime convention scan under transformation rule
  * T1.
  *
@@ -1148,7 +1155,7 @@ const POOL_CREATION_SITE =
  *      produce a self-inconsistent result set.
  *   2. NO CLOCK ABSTRACTION LIVES HERE. This constant makes the driver's
  *      conversion explicit; deciding what "now" is belongs to the caller, which
- *      is also why `isCurrent(now: Date)` takes its instant as a parameter on the
+ *      is also why `isCurrent(now?: Date)` takes its instant as a parameter on the
  *      domain side rather than reading a clock.
  */
 const POOL_TIMEZONE = 'Z';
@@ -1211,8 +1218,42 @@ const POOL_TIMEZONE = 'Z';
  * authentication is not part of the legacy datasource contract
  * [config/configApplication.cfm:L1-L2] and adding it would invent one.
  *
- * @param tls - The resolved posture from `src/lib/config.ts`, already validated
- *   and already refused if it named `disabled` in production.
+ * WHY `verifyIdentity` IS NOT SUFFICIENT ON ITS OWN, and where the missing half
+ * lives. The driver derives the name it checks the certificate against from the
+ * host: `servername = Net.isIP(this.config.host) ? undefined : this.config.host`
+ * [node_modules/mysql2/lib/base/connection.js:L394-L396], and its post-handshake
+ * identity check runs only `if (typeof servername === 'string' && verifyIdentity)`
+ * [L417]. For an IP-literal host there is therefore no name to check, the chain is
+ * verified and the identity test is silently skipped - while this function has set
+ * `verifyIdentity: true` and the connection reports itself fully verified. That
+ * combination is refused UPSTREAM, in `resolveDatabaseTls`, because a refusal
+ * belongs where the two variables are read together and a startup failure naming
+ * `DB_TLS_MODE` and `DB_HOST` is worth more than a handshake that quietly proves
+ * less than it claims. The same resolver refuses `disabled` for any non-loopback
+ * host. Nothing here re-checks either: one owner, stated once.
+ *
+ * @param tls - The resolved posture from `src/lib/config.ts`, already validated,
+ *   and already refused if it named `disabled` in production or for a non-loopback
+ *   host, or `verify-identity` for an IP-literal host.
+ * ★★ THE `disabled` ARM OMITS `ssl` ENTIRELY, AND WHAT MAKES THAT SAFE IS A
+ * PRECONDITION ESTABLISHED ELSEWHERE - NAMED HERE SO IT IS NOT MISTAKEN FOR AN
+ * ASSUMPTION. `src/lib/config.ts` will not resolve `disabled` unless `DB_HOST` is
+ * a loopback address (`127.0.0.0/8`, `::1` or `localhost`), in EVERY environment,
+ * and it additionally refuses the mode outright under `NODE_ENV=production`. So by
+ * the time this function sees `disabled`, the connection this pool will open
+ * cannot leave the machine, and returning no `ssl` block leaves plaintext on a
+ * channel that has no network segment to be observed on.
+ *
+ * THE CHECK IS NOT DUPLICATED HERE, DELIBERATELY. This function is handed a
+ * resolved posture and does not receive the host, which is the right shape: two
+ * copies of a security rule are two rules that can disagree, and the one that
+ * refuses a process at startup is the one worth having. If this file is ever
+ * changed to build a pool from something other than validated configuration, THIS
+ * ARM BECOMES A CLEARTEXT DEFECT and the loopback rule must move with it.
+ *
+ * @param tls - The resolved posture from `src/lib/config.ts`, already validated,
+ *   already refused if it named `disabled` in production, and already refused if
+ *   it named `disabled` for a non-loopback host.
  * @returns The driver's `ssl` options, or `undefined` for `disabled`.
  */
 function buildTlsOptions(tls: DatabaseTlsConfig): SslOptions | undefined {
@@ -1236,10 +1277,10 @@ function buildTlsOptions(tls: DatabaseTlsConfig): SslOptions | undefined {
  *
  * Every value comes from `src/lib/config.ts`, the owner of the database and
  * runtime keys and the only module this file consults for them - see the
- * ownership split in the module header, which also names the two other
- * environment owners (`src/lib/logger.ts` for LOG_LEVEL, `tests/setup.ts` for
- * TZ and TEST_LIVE_DATABASE). Nothing here has a fallback: a missing or
- * malformed value has already failed the process by the time this runs.
+ * ownership split in the module header, which also records the single exception
+ * to its subtree-wide monopoly (`tests/setup.ts`, for TZ and TEST_LIVE_DATABASE,
+ * neither of which exists in a deployed bundle). Nothing here has a fallback: a
+ * missing or malformed value has already failed the process by the time this runs.
  *
  * PROPERTIES ARE READ ONE BY ONE, NOT SPREAD, AND THAT IS DELIBERATE. The
  * credential on `DatabaseConnectionConfig` is a prototype getter over a private
@@ -1365,6 +1406,15 @@ let memoizedExecutor: PreparedStatementExecutor | undefined;
  * admin subsystem and has no response to render into in a headless service; the
  * thrown error carries the diagnosis instead.
  *
+ * That parity claim covers the PROBE and nothing else, and the boundary matters
+ * because the two failures were not alike. The abort at
+ * [config/configORM.cfm:L6] guards only the `<cfcatch>` above it. The DIALECT
+ * chain at [config/configORM.cfm:L9-L15] carries no `<cfelse>`, so an
+ * unrecognized product name left `this.ormSettings.dialect` silently unset and
+ * execution continued - and refusing that value outright, which
+ * `src/repositories/mysql/dialect.ts` does, is a deliberate improvement rather
+ * than the preserved behaviour this paragraph describes.
+ *
  * Note that constructing a pool does not open a connection. The driver's pool
  * factory is synchronous and connects lazily on first use, which is why no
  * top-level `await` is needed anywhere in this module - and none may be added,
@@ -1410,9 +1460,18 @@ export function getConnectionPool(): Pool {
   // What remains is the only fact this line was ever needed for: a pool was
   // constructed in this container, exactly once. An operator who needs to know
   // WHICH datasource reads the environment they configured; nothing about that
-  // configuration is echoed back out. This matches the position `src/lib/config.ts`
-  // already takes on the host and the position `src/lib/logger.ts` enforces
-  // independently by redacting connection-shaped keys.
+  // configuration is echoed back out.
+  //
+  // ALL THREE FILES NOW STATE ONE POLICY, which they did not when this line was
+  // first narrowed. `src/lib/logger.ts` redacts a context key called `port` for
+  // exactly the reasoning above; `src/lib/config.ts`'s
+  // `DatabaseConnectionSettings.toJSON` redacts the schema name and the port
+  // alongside the host, the account and the credential - it previously kept the
+  // first two visible and cited THIS line as its authority for doing so, which
+  // stopped being true the moment this line dropped them; and
+  // `src/handlers/bootstrap.ts` withdrew both the `database` record and the `pool`
+  // record from its published diagnostics rather than reduce them. So nothing in
+  // this tree republishes what this line declines to log.
   logger.info('MySQL connection pool created');
 
   return memoizedPool;
@@ -1614,7 +1673,7 @@ function createConnectionExecutor(connection: PoolConnection): PreparedStatement
 /**
  * The executor the composition root wires into every repository.
  *
- * This is the single line `src/handlers/bootstrap.ts` (planned) needs, and it is the only
+ * This is the single line `src/handlers/bootstrap.ts` needs, and it is the only
  * place production code should turn a pool into an executor. A repository must
  * never call it: repositories receive an executor as a constructor argument, and
  * calling this from inside one would reintroduce the service-locator pattern that

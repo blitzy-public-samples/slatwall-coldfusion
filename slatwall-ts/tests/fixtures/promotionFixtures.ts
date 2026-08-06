@@ -799,33 +799,6 @@ type QualifierOptionListMismatch = {
   readonly providerServesProperty: string;
 };
 
-/**
- * The `hb_permission` contrast: the reward's attribute is misspelled and the
- * qualifier's - the very next sibling entity - is not.
- */
-type PermissionAttributeContrast = {
-  /** The reward's attribute value VERBATIM, typo intact. */
-  readonly rewardPermissionAsWritten: string;
-
-  /** The reward's attribute value with the typo corrected. */
-  readonly rewardPermissionCorrected: string;
-
-  /**
-   * ⚠️ AAP CORRECTION #1: the plan cites `PromotionReward.cfc:L49`. The component
-   * declaration - and therefore the typo - is at L57; L49-L56 is the tail of the
-   * comment block that carries the `rewardType` vocabulary.
-   */
-  readonly rewardPermissionLocator: string;
-
-  /** The plan's citation, recorded so the correction is auditable. */
-  readonly rewardPermissionLocatorPerPlan: string;
-
-  /** The qualifier's attribute value, spelled CORRECTLY. */
-  readonly qualifierPermissionAsWritten: string;
-
-  readonly qualifierPermissionLocator: string;
-};
-
 /** One row of the reward-type dispatch map, with the pass it routes into. */
 type RewardTypeDispatchRow = {
   readonly rewardType: string;
@@ -1319,13 +1292,12 @@ interface PromotionFixtureGraph {
   /** The leaked entry, likewise. */
   readonly leakedRewardUsageDetail: PromotionRewardUsageDetail;
 
-  /**
-   * ⭐ Both inner searches in the stripping loop run in REVERSE
-   * [model/service/PromotionService.cfc:L482, L498], so the SMALLEST matching
-   * discount is found first. `true` records that the target reproduces the
-   * direction rather than iterating forwards and getting a different answer.
-   */
-  readonly overUseStrippingSearchesInReverse: boolean;
+  // The REVERSE direction of both inner searches in the stripping loop
+  // [model/service/PromotionService.cfc:L482, L498] is NOT published here as a boolean. A flag this
+  // module writes and a suite reads can only agree with itself; the direction is load-bearing money
+  // behaviour, so it is proven behaviourally in
+  // tests/unit/services/promotion/overUseStripping.test.ts, where the SMALLEST matching discount is
+  // the one rewritten and the one deleted.
 
   /**
    * The identifier that gates the whole reward body at
@@ -1478,9 +1450,6 @@ interface PromotionFixtureGraph {
   /** ⭐ AAP CORRECTION #6: the declared-property / provider mismatch. */
   readonly qualifierOptionListMismatch: QualifierOptionListMismatch;
 
-  /** ⚠️ AAP CORRECTION #1, plus the correctly-spelled sibling that corroborates it. */
-  readonly permissionAttributeContrast: PermissionAttributeContrast;
-
   // --- Materialized paths and the membership graph -------------------------
 
   /**
@@ -1562,26 +1531,18 @@ interface PromotionFixtureGraph {
    */
   readonly promotionValidationCensus: readonly ValidationFileCensusRow[];
 
-  /**
-   * The regression-ticket identifier for the preserved return/exchange no-op at
-   * [model/service/PromotionService.cfc:L542-L544], which carries a legacy
-   * `// TODO [issue #1766]` and does nothing.
-   *
-   * The branch is ported as a no-op with its TODO intact rather than silently
-   * completed, and the ticket name follows the `issue_<ticket#>` convention the
-   * legacy `meta/tests/unit/IssuesTest.cfc` uses.
-   */
-  readonly preservedReturnExchangeNoOpTicket: string;
+  // The `issue_1766` regression-ticket identifier for the preserved return/exchange no-op
+  // [model/service/PromotionService.cfc:L542-L544] is NOT published here. Provenance belongs to
+  // tests/traceability/legacyTestMap.ts, which registers the preserved TODO and checks the ticket
+  // against `src/services/promotionService.ts` itself; the BEHAVIOUR the TODO defers - a return or
+  // exchange order yielding no intent at all - is proven in
+  // tests/unit/services/promotionService.test.ts.
 
-  /**
-   * ⭐ NET-NEW, NOT PARITY. No legacy test covers ANY promotion entity:
-   * `meta/tests/unit/entity/` holds only `BrandTest.cfc` and `ProductTest.cfc`
-   * plus their shared base. Every suite that consumes this module is therefore
-   * net-new coverage and must be labelled as such in
-   * `tests/traceability/legacyTestMap.ts`. Recorded on the graph so a
-   * traceability test can assert the claim instead of trusting a comment.
-   */
-  readonly legacyTestCoverageExists: boolean;
+  // NET-NEW, NOT PARITY: no legacy test covers ANY promotion entity. That finding is NOT published
+  // here as a boolean for consuming suites to assert back. It is owned by
+  // tests/traceability/legacyTestMap.ts, where `legacyExtendedSuites` names the only two suites that
+  // extend legacy coverage, block A7 pins the list to exactly those two, and block A14 accounts for
+  // every suite on disk - so a suite claiming parity it does not have fails the ledger.
 }
 
 // ---------------------------------------------------------------------------
@@ -1927,25 +1888,6 @@ const DEFAULT_APPLIED_TYPE: PromotionAppliedType = 'orderItem';
 
 // --- Identifier and label literals ---------------------------------------
 
-/**
- * The reward's `hb_permission` attribute VERBATIM, typo intact.
- *
- * ⚠️ AAP CORRECTION #1: the plan cites `model/entity/PromotionReward.cfc:L49`.
- * The component declaration carrying this attribute is at L57.
- */
-const REWARD_PERMISSION_AS_WRITTEN = 'promotionPeriod.promtionRewards';
-
-/** The same attribute with the typo corrected, which is what the target uses. */
-const REWARD_PERMISSION_CORRECTED = 'promotionPeriod.promotionRewards';
-
-/**
- * ⭐ The qualifier's permission attribute [model/entity/PromotionQualifier.cfc:L49],
- * spelled CORRECTLY - the sibling entity declared thirty lines away in the same
- * directory. The contrast is what proves the reward's spelling is damage rather
- * than a house convention.
- */
-const QUALIFIER_PERMISSION_AS_WRITTEN = 'promotionPeriod.promotionQualifiers';
-
 /** The gate identifier at [model/service/PromotionService.cfc:L197], legacy grammar intact. */
 const LEGACY_QUALIFICATION_GATE_IDENTIFIER = 'qualificationsMeet';
 
@@ -1957,9 +1899,6 @@ const CONDITIONAL_DATE_VALIDATION_NAME = 'needsEndAfterStart';
 
 /** The comparison that condition applies to `endDateTime`. */
 const CONDITIONAL_DATE_VALIDATION_COMPARISON = 'gtProperty: startDateTime';
-
-/** The regression ticket for the preserved return/exchange no-op. */
-const PRESERVED_RETURN_EXCHANGE_NO_OP_TICKET = 'issue_1766';
 
 /** The lowercase parameter name the target uses for `PromotionCode.setPromotion`. */
 const PROMOTION_CODE_SET_PROMOTION_PARAMETER_NAME = 'promotion';
@@ -1983,20 +1922,6 @@ const DEFAULT_PROMOTION_CODE_VALUE = 'SAVE10';
  * system too. A same-cased collision would not prove the normalisation.
  */
 const COLLIDING_PROMOTION_CODE_VALUE = 'save10';
-
-/**
- * ⭐ NO LEGACY TEST COVERS ANY PROMOTION ENTITY.
- *
- * `meta/tests/unit/entity/` holds `BrandTest.cfc`, `ProductTest.cfc` and their
- * shared `SlatwallEntityTestBase.cfc`, and nothing else;
- * `meta/tests/unit/service/` holds AccountService, HibachiService,
- * PaymentService and UtilityRBService tests, none of them in scope; and
- * `meta/tests/unit/dao/` holds only AccountDAO and PaymentDAO tests. Every suite
- * that consumes this module is therefore NET-NEW coverage and must be labelled
- * net-new in `tests/traceability/legacyTestMap.ts`. Presenting any of it as
- * parity would be a false claim about the legacy suite.
- */
-const LEGACY_TEST_COVERAGE_EXISTS = false;
 
 // ---------------------------------------------------------------------------
 // Frozen exhibit tables
@@ -2491,25 +2416,6 @@ const QUALIFIER_OPTION_LIST_MISMATCH: QualifierOptionListMismatch = Object.freez
   providerWithoutDeclaredProperty: 'getRewardMatchingTypeOptions',
   providerLocator: 'model/entity/PromotionQualifier.cfc:L107-L115',
   providerServesProperty: 'rewardMatchingType',
-});
-
-/**
- * ⚠️ AAP CORRECTION #1, as data: the reward's misspelled `hb_permission`, its TRUE
- * location, and the correctly-spelled sibling that corroborates the reading.
- *
- * The typo is preserved as a schema-contract value because the legacy admin
- * resolves permissions by that exact string; the target's own symbol uses the
- * corrected spelling and records the original. The qualifier's attribute, thirty
- * lines away in the same directory, is spelled correctly - which is what shows
- * the reward's spelling is copy-paste damage rather than a house convention.
- */
-const PERMISSION_ATTRIBUTE_CONTRAST: PermissionAttributeContrast = Object.freeze({
-  rewardPermissionAsWritten: REWARD_PERMISSION_AS_WRITTEN,
-  rewardPermissionCorrected: REWARD_PERMISSION_CORRECTED,
-  rewardPermissionLocator: 'model/entity/PromotionReward.cfc:L57',
-  rewardPermissionLocatorPerPlan: 'model/entity/PromotionReward.cfc:L49',
-  qualifierPermissionAsWritten: QUALIFIER_PERMISSION_AS_WRITTEN,
-  qualifierPermissionLocator: 'model/entity/PromotionQualifier.cfc:L49',
 });
 
 /**
@@ -4557,7 +4463,6 @@ export function makePromotionFixtures(
     leakedRewardID,
     overusedRewardUsageDetail,
     leakedRewardUsageDetail,
-    overUseStrippingSearchesInReverse: true,
     legacyQualificationGateIdentifier: LEGACY_QUALIFICATION_GATE_IDENTIFIER,
     opaqueOrderReferences,
 
@@ -4588,7 +4493,6 @@ export function makePromotionFixtures(
     qualifierGateNullDefaults: QUALIFIER_GATE_NULL_DEFAULTS,
     rewardMatchingTypeVocabulary: REWARD_MATCHING_TYPE_VOCABULARY,
     qualifierOptionListMismatch: QUALIFIER_OPTION_LIST_MISMATCH,
-    permissionAttributeContrast: PERMISSION_ATTRIBUTE_CONTRAST,
 
     // Materialized paths and the membership graph.
     materializedIdPaths,
@@ -4612,7 +4516,5 @@ export function makePromotionFixtures(
 
     // Census and traceability.
     promotionValidationCensus: PROMOTION_VALIDATION_CENSUS,
-    preservedReturnExchangeNoOpTicket: PRESERVED_RETURN_EXCHANGE_NO_OP_TICKET,
-    legacyTestCoverageExists: LEGACY_TEST_COVERAGE_EXISTS,
   };
 }

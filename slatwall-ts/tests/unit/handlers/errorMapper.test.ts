@@ -90,6 +90,7 @@ import type {
 import {
   AUTHORIZER_ACCOUNT_CLAIM,
   AUTHORIZER_ADMIN_CLAIM,
+  containsPrototypeMemberKey,
   forbiddenResponse,
   invalidRequestResponse,
   jsonSuccessResponse,
@@ -97,6 +98,7 @@ import {
   resolveRequestPrincipal,
   resolveServerRequestId,
   routeDiagnosticLabel,
+  PROTOTYPE_MEMBER_FIELD_ISSUE,
   routeNotFoundResponse,
   unauthenticatedResponse,
 } from '../../../src/handlers/errorMapper.js';
@@ -1032,18 +1034,19 @@ describe('a refusal to serve a caller', () => {
     const { logger } = createRecordingLogger();
     const headers = unauthenticatedResponse(contextWith(logger)).headers ?? {};
 
-    // ★ THE SET IS THREE NOW, AND IT IS STILL CLOSED. `x-content-type-options: nosniff` joined
-    // `JSON_RESPONSE_HEADERS` for QA-I4 - the module already declares `content-type` explicitly, and
-    // this is the half of that statement which says "do not second-guess it". What this case is
-    // really about has not changed: NO `www-authenticate` accompanies a 401, because naming a scheme
-    // would publish an authentication mechanism this migration was never given. An exact key set is
-    // how that stays enforced rather than hoped for - a fourth header fails this.
+    // ★★ THE SET IS TWO AGAIN, AND IT IS STILL CLOSED. `x-content-type-options: nosniff` briefly joined
+    // `JSON_RESPONSE_HEADERS`; a code review removed it as an HTTP semantic the ported system never had
+    // and the AAP never prescribed (0.8.1 forbids inventing one), so the exact set is back to the two
+    // headers this module's own contract requires. What this case is really about has not changed: NO
+    // `www-authenticate` accompanies a 401, because naming a scheme would publish an authentication
+    // mechanism this migration was never given. An exact key set is how that stays enforced rather than
+    // hoped for - a third header fails this, whichever direction it is invented from.
     expect(
       Object.keys(headers)
         .map((name): string => name.toLowerCase())
         .sort(),
-    ).toEqual(['cache-control', 'content-type', 'x-content-type-options']);
-    expect(headers['x-content-type-options']).toBe('nosniff');
+    ).toEqual(['cache-control', 'content-type']);
+    expect(headers['x-content-type-options']).toBeUndefined();
   });
 
   it('is never produced by the thrown-value mapping funnel', () => {
@@ -1407,20 +1410,57 @@ describe('the mapper owns the single emission for a handler-established refusal'
     );
   });
 
-  it('still publishes the closed reason and the field paths in the context', () => {
+  it('★★★ logs the closed reason and a COUNT, and no field-path text whatsoever', () => {
+    // ★★ THIS CASE WAS INVERTED, AND THE INVERSION IS THE FIX. It used to require the published paths
+    // to appear verbatim in the log context under `fieldPaths`. A security review found (MAJOR,
+    // CWE-209/CWE-532) that the requirement was the defect: one producer of those paths assembled them
+    // out of the CALLER's own ancestor key names, so a caller could choose what this module persisted
+    // to the log stream. The paths are still PUBLISHED to the caller in the response body - that is
+    // what makes a 400 actionable - but nothing on the stream can carry submitted text now, because
+    // the two members that remain are a closed union value and a number.
     const { logger, emissions } = createRecordingLogger();
 
-    invalidRequestResponse(
+    const response = invalidRequestResponse(
       'missingQueryParameter',
       contextWith(logger),
-      [{ path: 'queryStringParameters.keyword', message: 'is required' }],
-      'keyword was absent',
+      [
+        { path: 'queryStringParameters.keyword', message: 'is required' },
+        { path: 'queryStringParameters.operation', message: 'is required' },
+      ],
+      // The handler-established GROUND still travels, on the log MESSAGE, exactly as before - it is
+      // this module's own sentence about what it found and carries no submitted material. It is worded
+      // here without repeating either published path, so the assertion below can hold the WHOLE line to
+      // account rather than only the context.
+      'a required parameter was absent',
     );
 
     const context = contextOf(soleEmission(emissions));
 
     expect(context['invalidRequestReason']).toBe('missingQueryParameter');
-    expect(context['fieldPaths']).toStrictEqual(['queryStringParameters.keyword']);
+    expect(context['fieldIssueCount']).toBe(2);
+    expect(context['fieldPaths']).toBeUndefined();
+
+    // Not merely absent from that one member - absent from the whole serialized line.
+    const line = JSON.stringify(soleEmission(emissions));
+
+    expect(line).not.toContain('keyword');
+    expect(line).not.toContain('queryStringParameters');
+
+    // ★ AND STILL PUBLISHED WHERE A CALLER CAN ACT ON THEM.
+    expect(bodyOf(response.body).fields?.map((field) => field.path)).toStrictEqual([
+      'queryStringParameters.keyword',
+      'queryStringParameters.operation',
+    ]);
+  });
+
+  it('reports a zero count rather than omitting it when a refusal produced no field detail', () => {
+    // The count is unconditional so an operator never has to distinguish "no issues" from "the field
+    // was not emitted". Its predecessor published an empty array for the same reason.
+    const { logger, emissions } = createRecordingLogger();
+
+    invalidRequestResponse('missingRequestBody', contextWith(logger));
+
+    expect(contextOf(soleEmission(emissions))['fieldIssueCount']).toBe(0);
   });
 });
 
@@ -1722,5 +1762,173 @@ describe('what the resolver deliberately does not read', () => {
     for (const shape of [undefined, null, '', 'a string', 0, false, [], {}, new Date()]) {
       expect(() => resolveRequestPrincipal(eventWithAuthorizer(shape))).not.toThrow();
     }
+  });
+});
+
+// ===========================================================================
+// THE ONE UNRECOGNIZED KEY A STRICT SCHEMA DOES NOT REFUSE
+//
+// WHAT THESE CASES PIN
+//   `containsPrototypeMemberKey` and `PROTOTYPE_MEMBER_FIELD_ISSUE` - the detection
+//   and the refusal that close the single gap in this service's closed request
+//   grammar. Every request document is validated by a `z.strictObject`, whose
+//   contract is that an unrecognized key is a REFUSAL naming the member; measured
+//   against the pinned `zod` 4.4.3, `__proto__` is the one key that contract does
+//   not hold for - it is ACCEPTED and silently dropped at every nesting level,
+//   while `constructor` in the same position is refused.
+//
+// WHY THEY LIVE IN THIS SUITE
+//   The detection used to be a helper module of its own with a suite of its own,
+//   and both were beyond the project's enumerated layout. A code review required
+//   the validation folded into an approved module and the unplanned pair removed,
+//   so the predicate now sits with the response vocabulary it feeds - which also
+//   keeps `promotionApplicationHandler` and `priceResolutionHandler`, the two
+//   boundaries that parse a JSON body, from either duplicating it or importing
+//   each other. Its coverage moved here with it; nothing was dropped in the move.
+//
+// ⚠ EVERY DOCUMENT BELOW IS BUILT WITH `JSON.parse`, AND THAT IS NOT A STYLE
+// CHOICE. The object literal `{ __proto__: {} }` invokes the prototype SETTER and
+// creates NO own property, so a literal fixture would contain nothing to detect
+// and these cases would pass against a predicate that always answered `false`.
+// `JSON.parse` - which is what a handler runs on the body API Gateway delivers -
+// makes it an ordinary own DATA property. `parseDocument` below is the narrowing
+// that keeps that honest.
+// ===========================================================================
+
+/**
+ * Parse raw request text into the `object` the predicate declares, or fail the case.
+ *
+ * The narrowing is the point: both call sites in production reach this check only after establishing
+ * that the parsed body is a non-null, non-array object, and this helper reproduces exactly that
+ * precondition rather than casting past it.
+ */
+function parseDocument(text: string): object {
+  const parsed: unknown = JSON.parse(text);
+
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error(`the fixture ${text} did not parse to an object`);
+  }
+
+  return parsed;
+}
+
+describe('containsPrototypeMemberKey', () => {
+  it('★★★ detects the key as an OWN property at the root, where a strict schema admits it', () => {
+    expect(containsPrototypeMemberKey(parseDocument('{"operation":"x","__proto__":{"p":1}}'))).toBe(
+      true,
+    );
+
+    // The finding's own central observation, re-asserted rather than taken on trust: the document
+    // carries the key as DATA and the prototype chain is untouched, which is why this closes an
+    // inconsistency rather than an active vulnerability.
+    expect(Object.prototype).not.toHaveProperty('p');
+  });
+
+  it('★★ detects it at every depth, including inside an array element', () => {
+    // DEEP, because the asymmetry it corrects is deep: `strictObject` refuses an unrecognized key at
+    // every level, so refusing this one only at the root would leave the inconsistency one level down -
+    // and the nested case is the one QA actually submitted.
+    for (const text of [
+      '{"order":{"orderID":"o-1","__proto__":{"p":1}}}',
+      '{"order":{"orderItems":[{"skuID":"s-1","__proto__":{"p":1}}]}}',
+      '{"a":[{"b":{"c":[{"__proto__":{"p":1}}]}}]}',
+      '{"a":{"b":{"c":{"d":{"e":{"__proto__":{"p":1}}}}}}}',
+    ]) {
+      expect(containsPrototypeMemberKey(parseDocument(text))).toBe(true);
+    }
+  });
+
+  it('detects it whatever the offending key HOLDS, including null and a scalar', () => {
+    // The value under the key is never inspected. A document that carries the name at all is refused,
+    // because what makes it a refusal is the member being present, not what was put in it.
+    for (const text of ['{"__proto__":"x"}', '{"__proto__":null}', '{"__proto__":0}']) {
+      expect(containsPrototypeMemberKey(parseDocument(text))).toBe(true);
+    }
+  });
+
+  it('★★ answers false for an ordinary document, so no well-formed request is refused', () => {
+    // The INHERITED `__proto__` is present on every ordinary object in the language and is not a
+    // caller's doing - `Object.hasOwn` is what distinguishes the two, and reporting the inherited one
+    // would refuse every request this service receives.
+    const ordinary = parseDocument(
+      '{"operation":"applyPromotions","order":{"orderID":"o-1","orderItems":[{"skuID":"s-1"}]}}',
+    );
+
+    expect(containsPrototypeMemberKey(ordinary)).toBe(false);
+    expect('__proto__' in ordinary).toBe(true);
+  });
+
+  it('answers false for the OTHER prototype-adjacent names, which a strict schema already refuses', () => {
+    // `constructor` and `prototype` need no help here: measured against the pinned validator, both come
+    // back as `unrecognized_keys`, so detecting them would duplicate the schema and change nothing.
+    expect(
+      containsPrototypeMemberKey(parseDocument('{"constructor":{"a":1},"prototype":{"b":2}}')),
+    ).toBe(false);
+  });
+
+  it('answers false for an empty document, an empty array and a document of scalars', () => {
+    for (const text of ['{}', '[]', '{"a":null,"b":1,"c":"x","d":true,"e":[null,null]}']) {
+      expect(containsPrototypeMemberKey(parseDocument(text))).toBe(false);
+    }
+  });
+
+  it('★★★ survives caller-supplied nesting that would overflow a recursive walk', () => {
+    // ITERATIVE, with an explicit stack, because a `RangeError` thrown from a security guard would
+    // convert a 400 into an unrecognized 500. A 2 000-level document is exactly what QA testing sent.
+    const depth = 2000;
+    const clean = `${'{"a":'.repeat(depth)}1${'}'.repeat(depth)}`;
+    const offending = `${'{"a":'.repeat(depth)}{"__proto__":{"p":1}}${'}'.repeat(depth)}`;
+
+    expect(containsPrototypeMemberKey(parseDocument(clean))).toBe(false);
+    expect(containsPrototypeMemberKey(parseDocument(offending))).toBe(true);
+  });
+
+  it('survives a very wide document and a very long array', () => {
+    const wide = `{${Array.from({ length: 5000 }, (_unused, index) => `"k${String(index)}":${String(index)}`).join(',')}}`;
+    const long = `{"items":[${Array.from({ length: 5000 }, (_unused, index) => `{"n":${String(index)}}`).join(',')}]}`;
+
+    expect(containsPrototypeMemberKey(parseDocument(wide))).toBe(false);
+    expect(containsPrototypeMemberKey(parseDocument(long))).toBe(false);
+  });
+
+  it('is a PREDICATE, so there is no path for it to assemble out of the caller’s key names', () => {
+    // ★★★ THIS IS THE CASE THE REPLACED HELPER COULD NOT HAVE PASSED. It returned the offending key's
+    // full dotted location, so this document produced `planted_api_token_value.__proto__` - and a
+    // security review found (MAJOR, CWE-209/CWE-532) that the path reached a 400 body and the log
+    // stream, letting a caller choose what this service published and persisted. A boolean cannot: the
+    // ancestor name below is never read into a return value, and the refusal that follows is a frozen
+    // constant of the module.
+    const document = parseDocument('{"planted_api_token_value":{"__proto__":{"p":1}}}');
+    const detected: boolean = containsPrototypeMemberKey(document);
+
+    expect(detected).toBe(true);
+    expect(typeof detected).toBe('boolean');
+    expect(JSON.stringify(PROTOTYPE_MEMBER_FIELD_ISSUE)).not.toContain('planted_api_token_value');
+  });
+});
+
+describe('PROTOTYPE_MEMBER_FIELD_ISSUE', () => {
+  it('★★ names the offending key and nothing else, and is frozen', () => {
+    // The one member name involved that a caller does not choose. The depth at which the key was found
+    // is deliberately absent, because a depth cannot be described without naming the ancestors.
+    expect(PROTOTYPE_MEMBER_FIELD_ISSUE).toStrictEqual({
+      path: '__proto__',
+      message: 'is not a member this request accepts',
+    });
+    expect(Object.isFrozen(PROTOTYPE_MEMBER_FIELD_ISSUE)).toBe(true);
+  });
+
+  it('publishes as a 400 with the fixed path, through the mapper’s own refusal arm', () => {
+    // The shared refusal builder is what both JSON boundaries hand it to, so the published shape is
+    // asserted here rather than restated in each handler suite.
+    const { logger } = createRecordingLogger();
+    const response = invalidRequestResponse('unusableRequestInput', contextWith(logger), [
+      PROTOTYPE_MEMBER_FIELD_ISSUE,
+    ]);
+
+    expect(response.statusCode).toBe(400);
+    expect(bodyOf(response.body).fields).toStrictEqual([
+      { path: '__proto__', message: 'is not a member this request accepts' },
+    ]);
   });
 });

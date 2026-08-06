@@ -111,6 +111,7 @@ import { PriceGroup } from '../../../src/domain/entities/priceGroup.js';
 import { PriceGroupRate } from '../../../src/domain/entities/priceGroupRate.js';
 import { Product } from '../../../src/domain/entities/product.js';
 import { ProductType } from '../../../src/domain/entities/productType.js';
+import { RoundingRule } from '../../../src/domain/entities/roundingRule.js';
 import { Sku } from '../../../src/domain/entities/sku.js';
 import type { SkuPriceGroupResolver } from '../../../src/domain/entities/sku.js';
 import type {
@@ -481,6 +482,30 @@ function aPriceGroupNamed(priceGroupID: string, ...rates: readonly PriceGroupRat
   }
 
   return priceGroup;
+}
+
+/**
+ * One `RoundingRule` for the population cases, with the fixed `.99` / `Closest` shape.
+ *
+ * ★ THE VALUE ROUNDER IS THE IDENTITY, and that is deliberate rather than lazy: these cases assert
+ * that the rule ARRIVES on the rate through populate, never that it rounds. The arithmetic the rule
+ * drives is asserted in section 4, against the recorded `roundValueByRoundingRule` calls.
+ */
+function aRoundingRuleNamed(roundingRuleID: string): RoundingRule {
+  return new RoundingRule(
+    {
+      roundingRuleID,
+      roundingRuleName: 'Nine ninety nine',
+      roundingRuleExpression: '.99',
+      roundingRuleDirection: 'Closest',
+      createdDateTime: undefined,
+      createdByAccountID: undefined,
+      modifiedDateTime: undefined,
+      modifiedByAccountID: undefined,
+      priceGroupRates: [],
+    },
+    { roundValueByRoundingRule: (value: Money): Money => value },
+  );
 }
 
 /** A price group holding the supplied rates, with the far side of each rate wired. */
@@ -1345,20 +1370,23 @@ describe('calculateSkuPriceBasedOnPriceGroup: resolve, then dispatch', () => {
 // ---------------------------------------------------------------------------
 
 describe('getPriceGroupDataJSON: DEFECT 5, the loop variable that is never assigned', () => {
-  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L236]: the loop variable is `i` but the
-  // body indexes getPageRecords()[local.i], and local.i is never assigned, so the method throws
-  // on the first non-empty iteration.
+  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L236]: the loop declares its counter as `i`
+  // at [L235] but the body indexes getPageRecords()[local.i], reaching the counter through the
+  // implicit function scope instead of by name. AAP 0.6.7 states the defect exactly this way -
+  // "References `local.i` while the loop variable is `i`" - and claims no failure.
   // Preserved deliberately; do not fix without a product decision.
   //
-  // ★★ DRIFT CORRECTION, AND IT MATTERS ENOUGH TO STATE PLAINLY. That marker records the
-  // defect as the source is written; it does NOT describe an observable of the shipped port,
-  // and this suite does not pretend otherwise. In CFML an UNSCOPED `var i` declared inside a
-  // function IS a member of the `local` scope, so `local.i` and `i` name the same variable on
-  // every engine this release supports - `readme.md` lists ColdFusion 9.0.1+ and Railo 4.1+,
-  // and the vendored FW/1 2.1 and DI/1 0.4.2 both require full `local`-scope support. The
-  // inconsistent SPELLING is real and is preserved as a recorded defect; the NullPointer it
-  // looks like it should cause is not reproducible, so inventing a throw here would be
-  // fabricating a failure the legacy never had.
+  // ★★ WHY NO THROW IS REPRODUCED, STATED PLAINLY BECAUSE AN EARLIER READING GOT IT WRONG. This
+  // marker once ended "and local.i is never assigned, so the method throws on the first non-empty
+  // iteration", and `tests/traceability/legacyTestMap.ts` carried the same claim in its defect
+  // register - so the ledger contradicted the suite it certifies. The source settles it: [L231]
+  // declares `var local = {}` and [L235] declares `var i`, and in CFML an UNSCOPED `var` inside a
+  // function IS a member of the `local` scope, so `local.i` reads back the counter [L235] just
+  // wrote on every engine this release supports - `readme.md` lists ColdFusion 9.0.1+ and Railo
+  // 4.1+, and the vendored FW/1 2.1 and DI/1 0.4.2 both require full `local`-scope support. The
+  // inconsistent SPELLING is real and is preserved as a recorded defect; the NullPointer it looks
+  // like it should cause is not reproducible, so inventing a throw here would be fabricating a
+  // failure the legacy never had.
   //
   // What IS asserted is the observable that spelling predicts either way: EVERY page record is
   // serialised, IN PAGE ORDER, under its own identifier. Had `local.i` genuinely been a
@@ -2662,6 +2690,153 @@ describe('savePriceGroupRate: population from the payload', () => {
     expect(repository.rateSaves).toStrictEqual([]);
     expect(returned).toBe(savedRate);
     expect(returned.getAmount()?.toFixed2()).toBe('5.00');
+  });
+
+  it('★★★ POPULATES amountType, the property the SAVE CONTEXT REQUIRES', async () => {
+    // ★★★ THE MEMBER WHOSE ABSENCE MADE THIS METHOD UNABLE TO CREATE A VALID RATE. Code review
+    // recorded `PriceGroupRateSaveInput` as "narrowed to ID/amount, omitting `amountType`,
+    // `globalFlag`, rounding rule, and other source-populated properties", and `amountType` is the
+    // sharpest case: `model/validation/PriceGroupRate.json` declares it
+    // `{"contexts":"save","required":true}`, so with no way to set it NO payload could ever produce a
+    // rate that passes validation. It also selects the arithmetic branch at
+    // [model/service/PriceGroupService.cfc:L321-L336].
+    const savedRate = aRate({ amountType: 'percentageOff' });
+    const { service, repository } = makeSubject();
+
+    aPriceGroupHolding(savedRate);
+
+    await service.savePriceGroupRate(savedRate, {
+      priceGroupRateId: SAVED_RATE_ID,
+      amountType: 'amountOff',
+    });
+
+    expect(repository.rateSaves[0]?.rate.getAmountType()).toBe('amountOff');
+  });
+
+  it('★ POPULATES globalFlag, which the reconciliation block then reads', async () => {
+    // The value populate writes is read TWICE by the block that runs immediately after it: [L429]
+    // demotes every sibling when THIS rate is global, and [L436-L442] then clears this rate's own
+    // include/exclude collections. A caller that could not set the flag could reach neither branch.
+    const savedRate = aRate({ globalFlag: false });
+    const { service, repository } = makeSubject();
+    const sibling = aRate({ priceGroupRateID: 'pgr-sibling', globalFlag: true });
+
+    aPriceGroupHolding(savedRate, sibling);
+
+    await service.savePriceGroupRate(savedRate, {
+      priceGroupRateId: SAVED_RATE_ID,
+      globalFlag: true,
+    });
+
+    expect(repository.rateSaves[0]?.rate.getGlobalFlag()).toBe(true);
+
+    // And the two reads that depend on it both fired: the sibling was demoted [L429-L431]...
+    expect(sibling.getGlobalFlag()).toBe(false);
+  });
+
+  it('★ POPULATES a FALSE globalFlag, because a present falsy value is a submitted value', async () => {
+    // Populate's guard is `structKeyExists` [org/Hibachi/HibachiTransient.cfc], not truthiness - so a
+    // truthiness-based branch would make DEMOTING a global rate impossible through this method, which
+    // is the whole reason the port tests `!== undefined`.
+    const savedRate = aRate({ globalFlag: true });
+    const { service, repository } = makeSubject();
+
+    aPriceGroupHolding(savedRate);
+
+    await service.savePriceGroupRate(savedRate, {
+      priceGroupRateId: SAVED_RATE_ID,
+      globalFlag: false,
+    });
+
+    expect(repository.rateSaves[0]?.rate.getGlobalFlag()).toBe(false);
+  });
+
+  it('★★ POPULATES the roundingRule, because that association decides MONEY', async () => {
+    // `calculateSkuPriceBasedOnPriceGroupRate` [model/service/PriceGroupService.cfc:L316-L340] applies
+    // this rule to the `percentageOff` branch, so a rate saved without the rule the caller chose
+    // silently prices differently. It arrives ALREADY RESOLVED rather than as an identifier - the
+    // "entity becomes an input" pattern this service already applies to `resolvedSku` - because
+    // loading one would mean a service tier resolving entities by ID through a locator no in-scope
+    // port publishes.
+    const savedRate = aRate();
+    const { service, repository } = makeSubject();
+    const rule = aRoundingRuleNamed('rr-nine-ninety-nine');
+
+    aPriceGroupHolding(savedRate);
+
+    await service.savePriceGroupRate(savedRate, {
+      priceGroupRateId: SAVED_RATE_ID,
+      roundingRule: rule,
+    });
+
+    expect(repository.rateSaves[0]?.rate.getRoundingRule()).toBe(rule);
+  });
+
+  it('★ CLEARS the roundingRule on an explicit null, and leaves it alone when the key is absent', async () => {
+    // The two are DIFFERENT INSTRUCTIONS. `null` is the admin form's own "no rounding rule" choice -
+    // the property declares `hb_optionsNullRBKey="define.none"` [model/entity/PriceGroupRate.cfc:L68] -
+    // while an absent key means populate never touched the column.
+    const rule = aRoundingRuleNamed('rr-to-be-cleared');
+
+    const cleared = aRate({ roundingRule: rule });
+    const clearing = makeSubject();
+
+    aPriceGroupHolding(cleared);
+
+    await clearing.service.savePriceGroupRate(cleared, {
+      priceGroupRateId: SAVED_RATE_ID,
+      roundingRule: null,
+    });
+
+    expect(clearing.repository.rateSaves[0]?.rate.getRoundingRule()).toBeUndefined();
+
+    const untouched = aRate({ roundingRule: rule });
+    const leaving = makeSubject();
+
+    aPriceGroupHolding(untouched);
+
+    await leaving.service.savePriceGroupRate(untouched, { priceGroupRateId: SAVED_RATE_ID });
+
+    expect(leaving.repository.rateSaves[0]?.rate.getRoundingRule()).toBe(rule);
+  });
+
+  it('POPULATES remoteID, the integration-identity column', async () => {
+    const savedRate = aRate();
+    const { service, repository } = makeSubject();
+
+    aPriceGroupHolding(savedRate);
+
+    await service.savePriceGroupRate(savedRate, {
+      priceGroupRateId: SAVED_RATE_ID,
+      remoteID: 'remote-rate-42',
+    });
+
+    expect(repository.rateSaves[0]?.rate.getRemoteID()).toBe('remote-rate-42');
+  });
+
+  it('★★★ a refused save RECORDS its rules on the entity, so the caller can ask why', async () => {
+    // `HibachiService.save` [org/Hibachi/HibachiService.cfc:L151-L167] leaves a refused save's rules ON
+    // THE ENTITY, skips the DAO, and returns that entity - which is what [L407] then reads. Without the
+    // register a caller received an unpersisted rate indistinguishable from a persisted one, and that
+    // silence is what code review recorded across this whole save tier.
+    //
+    // This fixture fails TWO of the three save-context rules at once: `amountType` is absent and the
+    // submitted `amount` is non-numeric, so both are reported.
+    const savedRate = new PriceGroupRate({ priceGroupRateID: SAVED_RATE_ID });
+    const { service, repository } = makeSubject();
+
+    aPriceGroupHolding(savedRate);
+
+    const refused = await service.savePriceGroupRate(savedRate, {
+      priceGroupRateId: SAVED_RATE_ID,
+      amount: 'not a number',
+    });
+
+    expect(refused).toBe(savedRate);
+    expect(refused.hasErrors()).toBe(true);
+    expect(refused.hasError('amountType')).toBe(true);
+    expect(refused.hasError('amount')).toBe(true);
+    expect(repository.rateSaves).toStrictEqual([]);
   });
 
   it('never populates the primary key from the payload', async () => {

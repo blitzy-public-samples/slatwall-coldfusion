@@ -55,8 +55,9 @@
 // `meta/tests/unit/dao/` only AccountDAOTest and PaymentDAOTest - so neither the owning
 // `promotionService` surface nor `PromotionDAO` is covered legacy-side either.
 //
-// The fixture module corroborates this independently: `legacyTestCoverageExists` is `false`, and
-// that flag is asserted below rather than merely trusted.
+// The traceability ledger corroborates this independently and executably: `legacyExtendedSuites` in
+// tests/traceability/legacyTestMap.ts names the only two suites that extend legacy coverage, block
+// A7 pins that list to exactly those two, and block A14 accounts for every suite on disk.
 //
 // The four cases [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67] handed every legacy
 // entity suite for free are NOT inherited, and NO shared base class is introduced to imitate
@@ -88,7 +89,7 @@
 //
 // Three deliberate divergences exist project-wide and EVERY ONE is owned elsewhere:
 //
-//   (a) the un-`var`'d `discountAmount` [model/service/PromotionService.cfc:L1007, L1009], which
+//   (a) the un-`var`'d `discountAmount` [model/service/PromotionService.cfc:L1007, L1009, L1014], which
 //       leaks into component scope and would become cross-invocation state on a warm container
 //       - owned by `src/services/promotion/**`;
 //   (b) the `amountOff` raw-float gap [model/service/PromotionService.cfc:L998], where that one
@@ -150,7 +151,7 @@
 //   11  [model/service/PromotionService.cfc:L703]               shipping-address-zones clause
 //                                                               re-tests hasShippingMethod
 //   12  [model/service/PromotionService.cfc:L998]               amountOff omits precisionEvaluate
-//   13  [model/service/PromotionService.cfc:L1007, L1009]       discountAmount assigned without var
+//   13  [model/service/PromotionService.cfc:L1007, L1009, L1014]  discountAmount assigned without var
 //   14  [model/service/PromotionService.cfc:L1013-L1015]        clamp compares pre-rounding, writes
 //                                                               post-rounding
 //   15  [model/service/PromotionService.cfc:L1094-L1100]        two use-count methods declare
@@ -354,109 +355,6 @@ const REWARD_TYPES_IN_SOURCE_ORDER: readonly string[] = Object.freeze([
   'contentAccess',
   'fulfillment',
   'order',
-]);
-
-/**
- * All FOURTEEN many-to-many link tables, in source declaration order, with the `type="array"`
- * census.
- *
- * CFML parity [model/entity/PromotionReward.cfc:L74]: fourteen many-to-many OWNER collections -
- * exactly one more than `PromotionQualifier`'s thirteen. The differentiator is
- * `eligiblePriceGroups`, linking through the abbreviated `SwPromoRewardEligiblePriceGrp` table.
- * Only L74, L86 and L87 declare `type="array"`; the other eleven omit it. Annotated, not
- * normalised - the target materialises all fourteen as arrays regardless, and this table is the
- * record of what the source actually says so the normalisation stays auditable.
- */
-const EXPECTED_LINK_TABLES: readonly {
-  readonly property: string;
-  readonly linkTable: string;
-  readonly declaresTypeArray: boolean;
-  readonly locator: string;
-}[] = Object.freeze([
-  {
-    property: 'eligiblePriceGroups',
-    linkTable: 'SwPromoRewardEligiblePriceGrp',
-    declaresTypeArray: true,
-    locator: 'model/entity/PromotionReward.cfc:L74',
-  },
-  {
-    property: 'fulfillmentMethods',
-    linkTable: 'SwPromoRewardFulfillmentMethod',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L76',
-  },
-  {
-    property: 'shippingAddressZones',
-    linkTable: 'SwPromoRewardShipAddressZone',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L77',
-  },
-  {
-    property: 'shippingMethods',
-    linkTable: 'SwPromoRewardShippingMethod',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L78',
-  },
-  {
-    property: 'brands',
-    linkTable: 'SwPromoRewardBrand',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L80',
-  },
-  {
-    property: 'options',
-    linkTable: 'SwPromoRewardOption',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L81',
-  },
-  {
-    property: 'skus',
-    linkTable: 'SwPromoRewardSku',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L82',
-  },
-  {
-    property: 'products',
-    linkTable: 'SwPromoRewardProduct',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L83',
-  },
-  {
-    property: 'productTypes',
-    linkTable: 'SwPromoRewardProductType',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L84',
-  },
-  {
-    property: 'excludedBrands',
-    linkTable: 'SwPromoRewardExclBrand',
-    declaresTypeArray: true,
-    locator: 'model/entity/PromotionReward.cfc:L86',
-  },
-  {
-    property: 'excludedOptions',
-    linkTable: 'SwPromoRewardExclOption',
-    declaresTypeArray: true,
-    locator: 'model/entity/PromotionReward.cfc:L87',
-  },
-  {
-    property: 'excludedSkus',
-    linkTable: 'SwPromoRewardExclSku',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L88',
-  },
-  {
-    property: 'excludedProducts',
-    linkTable: 'SwPromoRewardExclProduct',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L89',
-  },
-  {
-    property: 'excludedProductTypes',
-    linkTable: 'SwPromoRewardExclProductType',
-    declaresTypeArray: false,
-    locator: 'model/entity/PromotionReward.cfc:L90',
-  },
 ]);
 
 /**
@@ -937,16 +835,24 @@ describe('the ported surface, and the members deliberately dropped or never pres
     }
   });
 
-  it('DROPS the shippingMethods helper pair the legacy declares, and never had the other two', () => {
-    // CFML parity [model/entity/PromotionReward.cfc:L76-L78]: Group A collapses to opaque
-    // readonly string[] IDs because FulfillmentMethod, AddressZone and ShippingMethod are out of
-    // scope and were never ported. `shippingMethods` DROPS the add/remove helpers the legacy
-    // declares at [L178-L185] and [L186-L195]; `fulfillmentMethods` and `shippingAddressZones`
-    // never had any to begin with - the source declares no `addFulfillmentMethod` and no
-    // `addShippingAddressZone` anywhere. The asymmetry is preserved, not smoothed: the port does
-    // not invent the two missing pairs, and it does not keep the one that exists.
-    expect(PROTOTYPE_MEMBERS).not.toContain('addShippingMethod');
-    expect(PROTOTYPE_MEMBERS).not.toContain('removeShippingMethod');
+  it('KEEPS the shippingMethods helper pair the legacy declares, and never had the other two (F30)', () => {
+    // ★★★ QUOTE-THEN-REVISE. This case was "DROPS the shippingMethods helper pair the legacy
+    // declares", reasoning that "the port does not invent the two missing pairs, and it does not
+    // keep the one that exists." The second half was wrong. AAP 0.4.2 states that the bidirectional
+    // `add*`/`remove*` helpers "become array operations with identical names", and the OWNING half of
+    // this pair - `arrayAppend` at [model/entity/PromotionReward.cfc:L180], `arrayFind` plus
+    // `arrayDeleteAt` at [L187-L190] - is pure array work that an opaque `shippingMethodID`
+    // reproduces exactly. Only the FAR half needs the unported `ShippingMethod` entity.
+    //
+    // CFML parity [model/entity/PromotionReward.cfc:L76-L78]: all three Group A collections still
+    // collapse to opaque string IDs, because `FulfillmentMethod`, `AddressZone` and `ShippingMethod`
+    // are out of scope. The ASYMMETRY IS STILL PRESERVED AND STILL NOT SMOOTHED, in the direction the
+    // source actually runs: `shippingMethods` HAS a helper pair at [L178-L185] and [L186-L195] and
+    // therefore has one here, while `fulfillmentMethods` and `shippingAddressZones` have none in the
+    // source - there is no `addFulfillmentMethod` and no `addShippingAddressZone` anywhere in it - and
+    // so none is invented here.
+    expect(PROTOTYPE_MEMBERS).toContain('addShippingMethod');
+    expect(PROTOTYPE_MEMBERS).toContain('removeShippingMethod');
     expect(PROTOTYPE_MEMBERS).not.toContain('addFulfillmentMethod');
     expect(PROTOTYPE_MEMBERS).not.toContain('removeFulfillmentMethod');
     expect(PROTOTYPE_MEMBERS).not.toContain('addShippingAddressZone');
@@ -1090,24 +996,14 @@ describe('the FOURTEEN many-to-many collections, and the one that separates Rewa
     expect(fixtures.rewardManyToManyCollections[0]?.property).toBe('eligiblePriceGroups');
   });
 
-  it('preserves all fourteen link-table names verbatim, abbreviations intact', () => {
-    // C5 schema continuity: the target reads and writes the existing `Sw*` tables unchanged. Not
-    // one of these names is expanded, "corrected" or regularised - most sharply
-    // `SwPromoRewardEligiblePriceGrp` (which is NOT `...EligiblePriceGroup`) and the five
-    // `SwPromoRewardExcl*` names (which are NOT `...Excluded*`).
-    expect(fixtures.rewardManyToManyCollections.map((collection) => collection.linkTable)).toEqual(
-      EXPECTED_LINK_TABLES.map((expected) => expected.linkTable),
-    );
-
-    // And the declaration ORDER matches the source line by line, so the census is checkable
-    // against a `git show` of the CFC rather than only against itself.
-    expect(fixtures.rewardManyToManyCollections.map((collection) => collection.property)).toEqual(
-      EXPECTED_LINK_TABLES.map((expected) => expected.property),
-    );
-    expect(fixtures.rewardManyToManyCollections.map((collection) => collection.locator)).toEqual(
-      EXPECTED_LINK_TABLES.map((expected) => expected.locator),
-    );
-  });
+  // C5 SCHEMA CONTINUITY for all fourteen link tables - `SwPromoRewardEligiblePriceGrp` is never
+  // `...EligiblePriceGroup`, and the five `SwPromoRewardExcl*` names are never `...Excluded*` - used
+  // to be "asserted" by mapping the fixture census onto a second array declared in this same file.
+  // Two test-owned arrays agreeing proves nothing about the port, and nothing about the CFC either.
+  // Both the fourteen names and their declaration order are now derived from
+  // [model/entity/PromotionReward.cfc] and checked against the shipped source in
+  // tests/traceability/legacyTestMap.ts block A20, which also contrasts them with the qualifier's
+  // thirteen and pins `eligiblePriceGroups` as the single differentiator.
 
   it('records the table itself as the abbreviated SwPromoReward', () => {
     // CFML parity [model/entity/PromotionReward.cfc:L57]: `table="SwPromoReward"`, matching
@@ -1142,9 +1038,8 @@ describe('the FOURTEEN many-to-many collections, and the one that separates Rewa
       fixtures.rewardManyToManyCollections.filter((collection) => !collection.declaresTypeArray),
     ).toHaveLength(11);
 
-    expect(fixtures.rewardManyToManyCollections.map((c) => c.declaresTypeArray)).toEqual(
-      EXPECTED_LINK_TABLES.map((expected) => expected.declaresTypeArray),
-    );
+    // The same three properties are derived from the frozen CFC - rather than from a second array in
+    // this file - in tests/traceability/legacyTestMap.ts block A20, alongside the qualifier's two.
   });
 
   it('preserves the Group A declaration order, which is REVERSED against the qualifier', () => {
@@ -1248,24 +1143,108 @@ describe('the FOURTEEN many-to-many collections, and the one that separates Rewa
     expect(subject.getBrands()).toHaveLength(2);
     expect(subject.getBrands()[1]?.getBrandID()).toBe(fixtures.excludedBrand.getBrandID());
 
-    // The three opaque identifier arrays are `readonly` instead, because nothing mutates them:
-    // there is no helper pair to keep in sync on either side.
+    // ★ THE OPAQUE IDENTIFIER ARRAYS ARE PROJECTED `readonly`, so a caller cannot push into one -
+    // but `shippingMethodIDs` IS LIVE behind that projection, because its helper pair mutates it.
+    // QUOTE-THEN-REVISE: this used to read "The three opaque identifier arrays are `readonly`
+    // instead, because nothing mutates them: there is no helper pair to keep in sync on either side."
+    // `shippingMethods` [model/entity/PromotionReward.cfc:L78] does have a helper pair, at
+    // [L178-L195], and it is now authored (F30). The `readonly` projection is what forces a caller
+    // through the helper, where the guard semantics live.
     expect(subject.getShippingMethodIDs()).toEqual(['promofx-shipping-method']);
+
+    const liveIDs: readonly string[] = subject.getShippingMethodIDs();
+    subject.addShippingMethod('added-through-the-helper');
+
+    // The SAME array object, observed after the mutation - exactly as CFML's callers observed
+    // `variables.shippingMethods` after an `arrayAppend`.
+    expect(subject.getShippingMethodIDs()).toBe(liveIDs);
+    expect(liveIDs).toEqual(['promofx-shipping-method', 'added-through-the-helper']);
+
+    // Restored, so no later case in this describe inherits the addition.
+    subject.removeShippingMethod('added-through-the-helper');
+    expect(subject.getShippingMethodIDs()).toEqual(['promofx-shipping-method']);
+  });
+
+  it('★★★ reproduces the OWNING half of the shippingMethods helper pair, ID-keyed (F30)', () => {
+    // CFML parity [model/entity/PromotionReward.cfc:L178-L195]. The pair is authored because AAP
+    // 0.4.2 requires the `add*`/`remove*` helpers to "become array operations with identical names",
+    // and the owning half is pure array work - `arrayAppend` [L180], `arrayFind` plus
+    // `arrayDeleteAt` [L187-L190] - which an opaque `shippingMethodID` reproduces exactly.
+    const reward = new PromotionReward({
+      promotionRewardID: 'reward-shipping-helpers',
+      shippingMethodIDs: ['ship-first'],
+    });
+
+    // THE CONSTRUCTOR COPIES: the caller's array is not aliased into the entity.
+    const supplied = ['ship-first'];
+    const isolated = new PromotionReward({
+      promotionRewardID: 'reward-isolated',
+      shippingMethodIDs: supplied,
+    });
+    isolated.addShippingMethod('ship-second');
+    expect(supplied).toEqual(['ship-first']);
+
+    // `hasShippingMethod` [guard site L179] answers on the identifier.
+    expect(reward.hasShippingMethod('ship-first')).toBe(true);
+    expect(reward.hasShippingMethod('ship-absent')).toBe(false);
+
+    // [L179-L181] The `!has` guard: a value already held is NOT appended twice.
+    reward.addShippingMethod('ship-first');
+    expect(reward.getShippingMethodIDs()).toEqual(['ship-first']);
+
+    // ...and an unheld value is appended, in order, at the end.
+    reward.addShippingMethod('ship-second');
+    expect(reward.getShippingMethodIDs()).toEqual(['ship-first', 'ship-second']);
+    expect(reward.hasShippingMethod('ship-second')).toBe(true);
+
+    // [L187-L190] `remove*` removes the FIRST occurrence only, which is `arrayFind` +
+    // `arrayDeleteAt` semantics rather than a filter. Proven on a deliberately duplicated array,
+    // because that is the only state in which the two differ.
+    const duplicated = new PromotionReward({
+      promotionRewardID: 'reward-duplicated-links',
+      shippingMethodIDs: ['ship-dup', 'ship-other', 'ship-dup'],
+    });
+    duplicated.removeShippingMethod('ship-dup');
+    expect(duplicated.getShippingMethodIDs()).toEqual(['ship-other', 'ship-dup']);
+
+    // The `> 0` / `!== -1` guard: removing an absent identifier is a no-op and never throws.
+    duplicated.removeShippingMethod('ship-never-linked');
+    expect(duplicated.getShippingMethodIDs()).toEqual(['ship-other', 'ship-dup']);
+
+    // ★ NEITHER HELPER TOUCHES THE OTHER TWO GROUP A COLLECTIONS, whose link tables are different
+    // rows entirely - the failure an inverted helper would produce.
+    expect(reward.getFulfillmentMethodIDs()).toEqual([]);
+    expect(reward.getShippingAddressZoneIDs()).toEqual([]);
+
+    // ★ AND THE FAR HALF IS NOT SIMULATED. `ShippingMethod` is unported, so [L182-L184] and
+    // [L191-L194] have no counterpart here and the entity publishes no member that pretends to one.
+    expect(PROTOTYPE_MEMBERS).not.toContain('getShippingMethods');
+    expect(PROTOTYPE_MEMBERS).not.toContain('hasPromotionRewardShippingMethod');
   });
 });
 
 describe('the ELEVEN membership predicates, all comparing by primary key', () => {
-  it('exposes exactly eleven singular has* predicates, and hasShippingMethod is ABSENT', () => {
-    // Eleven predicates for fourteen collections. The three missing ones are Group A: with
-    // `FulfillmentMethod`, `AddressZone` and `ShippingMethod` unported there is no entity to accept
-    // as an argument, so `hasShippingMethod` - which the legacy DOES declare implicitly and calls
-    // at [model/entity/PromotionReward.cfc:L179] - has no target counterpart.
+  it('exposes exactly twelve singular has* predicates, hasShippingMethod among them (F30)', () => {
+    // ★★★ QUOTE-THEN-REVISE. This case was "exposes exactly eleven singular has* predicates, and
+    // hasShippingMethod is ABSENT", reasoning that "with `FulfillmentMethod`, `AddressZone` and
+    // `ShippingMethod` unported there is no entity to accept as an argument, so `hasShippingMethod`
+    // ... has no target counterpart." The premise is true and the conclusion does not follow: the
+    // predicate's ARGUMENT can be the opaque `shippingMethodID` the collection actually holds, which
+    // is the anti-corruption treatment AAP 0.1.1 mandates for an out-of-scope aggregate. It is the
+    // guard site of `addShippingMethod` [model/entity/PromotionReward.cfc:L179], so it has to be
+    // callable for that helper to be reproducible.
     //
-    // ⚠ `hasShippingMethod` being absent also matters service-side: the shipping-address-zones
-    // clause at [model/service/PromotionService.cfc:L703] re-tests `hasShippingMethod` where it
-    // means to test the zone condition. That defect is sibling-owned and only cited here.
+    // TWELVE predicates for fourteen collections. The two still missing are the Group A collections
+    // the SOURCE declares no helper for at all - `fulfillmentMethods` [L76] and
+    // `shippingAddressZones` [L77] - so their absence is the source's, not the boundary's.
+    //
+    // ⚠ The service-side defect this case used to cite is unaffected and is still sibling-owned: the
+    // shipping-address-zones clause at [model/service/PromotionService.cfc:L703] re-tests
+    // `hasShippingMethod` where it means to test the zone condition. It is cited here, not
+    // re-asserted, and publishing the predicate does not repair it.
     const singularPredicates: readonly string[] = [
       'hasEligiblePriceGroup',
+      'hasShippingMethod',
       'hasBrand',
       'hasOption',
       'hasSku',
@@ -1278,21 +1257,20 @@ describe('the ELEVEN membership predicates, all comparing by primary key', () =>
       'hasExcludedProductType',
     ];
 
-    expect(singularPredicates).toHaveLength(11);
+    expect(singularPredicates).toHaveLength(12);
     for (const predicate of singularPredicates) {
       expect(PROTOTYPE_MEMBERS).toContain(predicate);
     }
 
-    expect(PROTOTYPE_MEMBERS).not.toContain('hasShippingMethod');
     expect(PROTOTYPE_MEMBERS).not.toContain('hasFulfillmentMethod');
     expect(PROTOTYPE_MEMBERS).not.toContain('hasShippingAddressZone');
 
-    // Exactly eleven `has*` members exist in total once the two plural helpers are excluded, so no
-    // twelfth predicate has crept in.
+    // Exactly twelve `has*` members exist in total once the two plural helpers are excluded, so no
+    // thirteenth predicate has crept in.
     const shippedPredicates = PROTOTYPE_MEMBERS.filter(
       (member) => member.startsWith('has') && !member.startsWith('hasAny'),
     );
-    expect(shippedPredicates).toHaveLength(11);
+    expect(shippedPredicates).toHaveLength(12);
   });
 
   it('answers membership by primary key, not by object identity', () => {
@@ -1591,14 +1569,17 @@ describe('the bidirectional helpers, and the guard polarity that is load-bearing
     // remove. That defect is owned by `option.test.ts`; it is cited here so the clean verdict above
     // is understood as a measured finding rather than an assumption, and it is NOT re-asserted.
     //
-    // (Thirteen pairs for fourteen collections: `fulfillmentMethods` and `shippingAddressZones`
-    // have no helpers at all, and the surviving twelfth pair - `shippingMethods` - is dropped in
-    // the target, leaving eleven many-to-many pairs plus the many-to-one.)
+    // (Thirteen pairs for fourteen collections: `fulfillmentMethods` and `shippingAddressZones` have
+    // no helpers at all in the source. QUOTE-THEN-REVISE - this parenthesis used to continue "and the
+    // surviving twelfth pair - `shippingMethods` - is dropped in the target, leaving eleven
+    // many-to-many pairs plus the many-to-one." That pair is now AUTHORED, keyed on the opaque
+    // `shippingMethodID` per AAP 0.4.2, so the target carries TWELVE many-to-many pairs plus the
+    // many-to-one - all thirteen the source declares.)
     const removeMembers = PROTOTYPE_MEMBERS.filter((member) => member.startsWith('remove'));
     const addMembers = PROTOTYPE_MEMBERS.filter((member) => member.startsWith('add'));
 
-    expect(removeMembers).toHaveLength(12);
-    expect(addMembers).toHaveLength(11);
+    expect(removeMembers).toHaveLength(13);
+    expect(addMembers).toHaveLength(12);
     expect(removeMembers).toContain('removePromotionPeriod');
     expect(addMembers).not.toContain('addPromotionPeriod');
 
@@ -3001,31 +2982,14 @@ describe('THE ONE RENAMED IDENTIFIER IN tests/unit/domain/entities', () => {
     );
   });
 
-  it('keeps the original misspelling auditable, at the corrected locator', () => {
-    // The rename is only defensible if the legacy value stays recoverable, so the as-written
-    // spelling, the corrected spelling and BOTH locators are carried as data.
-    const contrast = fixtures.permissionAttributeContrast;
-
-    expect(contrast.rewardPermissionAsWritten).toBe('promotionPeriod.promtionRewards');
-    expect(contrast.rewardPermissionCorrected).toBe('promotionPeriod.promotionRewards');
-    expect(contrast.rewardPermissionLocator).toBe('model/entity/PromotionReward.cfc:L57');
-
-    // The stale plan locator is recorded ALONGSIDE the verified one rather than discarded, so the
-    // drift is visible to the next reader instead of being silently absorbed.
-    expect(contrast.rewardPermissionLocatorPerPlan).toBe('model/entity/PromotionReward.cfc:L49');
-    expect(contrast.rewardPermissionLocator).not.toBe(contrast.rewardPermissionLocatorPerPlan);
-
-    // The control: the sibling attribute, correctly spelled, at its own verified locator.
-    expect(contrast.qualifierPermissionAsWritten).toBe('promotionPeriod.promotionQualifiers');
-    expect(contrast.qualifierPermissionLocator).toBe('model/entity/PromotionQualifier.cfc:L49');
-
-    // What makes the two comparable, and therefore what makes this one a typo: identical prefix,
-    // divergent spelling of the same word.
-    expect(contrast.rewardPermissionCorrected.startsWith('promotionPeriod.')).toBe(true);
-    expect(contrast.qualifierPermissionAsWritten.startsWith('promotionPeriod.')).toBe(true);
-    expect(contrast.rewardPermissionAsWritten.includes('promtion')).toBe(true);
-    expect(contrast.qualifierPermissionAsWritten.includes('promtion')).toBe(false);
-  });
+  // The rename is only defensible while the legacy value stays recoverable, and that record used to
+  // live here as four fixture-authored strings asserted against the same four literals - a closed
+  // loop between this suite and tests/fixtures/promotionFixtures.ts. It now lives where the frozen
+  // components can be read: tests/traceability/legacyTestMap.ts carries the as-written spelling in
+  // `verbatimIdentifiers` (checked on [model/entity/PromotionReward.cfc:L57]), the plan's stale L49
+  // locator in `locatorCorrections`, and the correctly-spelled sibling control from
+  // [model/entity/PromotionQualifier.cfc:L49] in block A12b. The CORRECTED spelling this port
+  // publishes is asserted above, off `PromotionReward.entityMetadata`, which is production output.
 
   it('does NOT extend the rename to the typos that are data contracts', () => {
     // ★ WHY THIS ONE AND ONLY THIS ONE: `hb_permission` is INTERNAL framework metadata - no column
@@ -3577,12 +3541,12 @@ describe('per-test isolation, proven rather than asserted', () => {
     expect(second.percentageOffReward.getBrands()).toHaveLength(1);
   });
 
-  it('confirms this suite is NET-NEW coverage with no legacy antecedent', () => {
-    // C8 traceability, asserted rather than only claimed in the header. `PromotionReward` is one of
-    // the SIXTEEN in-scope entities with no legacy test at all, and presenting net-new coverage as
-    // parity would fail the coverage gate outright.
-    expect(fixtures.legacyTestCoverageExists).toBe(false);
-  });
+  // TRACEABILITY: that this suite is NET-NEW - no legacy antecedent under `meta/tests/` - is not
+  // asserted here against a fixture-authored boolean, which could only ever agree with itself.
+  // tests/traceability/legacyTestMap.ts owns the provenance: `legacyExtendedSuites` names the ONLY
+  // two suites that carry a legacy assertion forward, block A7 asserts that the list is exactly
+  // those two, and block A14 accounts for every suite on disk. A suite presenting net-new coverage
+  // as parity therefore fails the ledger, not a self-agreeing flag.
 });
 
 // ---------------------------------------------------------------------------

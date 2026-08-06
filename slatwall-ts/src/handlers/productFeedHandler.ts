@@ -81,7 +81,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-l
 import type { CompositionRoot, RequestScopeInput } from './bootstrap.js';
 import type { ErrorMappingContext } from './errorMapper.js';
 import type { RouteAction, RoutedCapability } from './router.js';
-import type { ProductFeedPort } from '../domain/ports/productFeedPort.js';
+import type { FeedCriteria, ProductFeedPort } from '../domain/ports/productFeedPort.js';
 
 /**
  * The capability this entrypoint answers for, and the only one it answers for.
@@ -126,34 +126,28 @@ const FEED_RESPONSE_STATUS = 200;
  * this file does not otherwise touch - not a change to the document, and not the invention of an
  * HTTP semantic the source lacked.
  *
- * ★★ ONE HEADER JOINED IT - `x-content-type-options: nosniff` - AND THIS RECORDS WHY THE JUDGMENT CALL
- * ABOVE STILL HOLDS. That paragraph once opened "The only header a served feed carries" and continued
- * "Nothing else is added, deliberately". The list that followed is the reason the exception is narrow:
- * `etag`, `last-modified`, `cache-control`, content and compression negotiation, pagination and
- * conditional requests are all HTTP SEMANTICS THE SOURCE LACKED, and inventing any of them here would
- * be inventing a non-functional requirement (AAP 0.8.1). None of them is added.
+ * ★★★ THE CONTENT TYPE IS THE ONLY HEADER A SERVED FEED CARRIES, AND ONE THAT BRIEFLY JOINED IT HAS
+ * BEEN WITHDRAWN. `etag`, `last-modified`, `cache-control`, content and compression negotiation,
+ * pagination and conditional requests are all HTTP SEMANTICS THE SOURCE LACKED, and inventing any of
+ * them here would be inventing a non-functional requirement (AAP 0.8.1). None of them is added.
  *
- * `nosniff` is not in that category. It is the second half of the statement this file ALREADY makes:
- * having decided to "declare the document as what it is" rather than inherit an engine default,
- * declaring also that a recipient must not second-guess that declaration is the same decision carried
- * to its conclusion. QA testing noted the header's absence across every response, and leaving the feed
- * out while `./errorMapper.js` sets it on every JSON response is exactly the kind of split that lets a
- * deployment satisfy one surface and not the other. An RSS body is XML, and XML is the content type
- * sniffing most readily re-interprets - so of the two surfaces, this is the one where it earns its
- * place, even though the intended consumer is Google Merchant Center rather than a browser.
+ * `x-content-type-options: nosniff` was added on the argument that it is the second half of the
+ * statement this file already makes - having declared the document as what it is, declaring also that a
+ * recipient must not second-guess that declaration. A code review removed it, and the reasoning holds:
+ * the note added alongside it conceded that neither the source nor the AAP prescribes the header, and
+ * that concession puts it in exactly the category the paragraph above refuses. Being a conventionally
+ * sensible header does not make it any less an invention. A deployment that wants it sets it at the
+ * edge; `./errorMapper.js` withdrew the same header from every JSON response for the same reason, so
+ * the two surfaces remain consistent - both carry only what their own contract requires.
  *
- * Still nothing about the DOCUMENT changes: this is a transport-level statement about a body this file
- * does not otherwise touch.
- *
- * `./errorMapper.js` sets `cache-control: no-store` on its own failure responses, which is that
+ * `./errorMapper.js` does set `cache-control: no-store` on its own failure responses, which is that
  * module's decision about a failure envelope and is not extended to a served document here.
  *
- * The keys are lower-case, matching the convention `./errorMapper.js` already established; HTTP
- * header names are case-insensitive, so the casing is a consistency choice rather than a contract.
+ * The key is lower-case, matching the convention `./errorMapper.js` already established; HTTP header
+ * names are case-insensitive, so the casing is a consistency choice rather than a contract.
  */
 const FEED_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'content-type': 'application/rss+xml; charset=utf-8',
-  'x-content-type-options': 'nosniff',
 });
 
 /**
@@ -328,11 +322,20 @@ function readRequestInstant(event: APIGatewayProxyEvent): Date | undefined {
 /**
  * The per-invocation inputs this handler opens its request scope with.
  *
- * ★★★ RULING B, HONOURED AT ITS ONLY CALL SITE. The feed host and the clock are supplied HERE, to
- * the scope factory, so `./bootstrap.js` can close both over the port instance it builds. That is
- * what keeps `ProductFeedPort.generateProductFeed()` a zero-parameter method: neither value is ever
- * a method argument, the port signature is not widened by so much as one parameter, and no criteria
- * type is declared, imported or referenced anywhere in this module.
+ * ★★★ QUOTE-THEN-REVISE. This block used to read: "RULING B, HONOURED AT ITS ONLY CALL SITE. The
+ * feed host and the clock are supplied HERE, to the scope factory, so `./bootstrap.js` can close
+ * both over the port instance it builds. That is what keeps
+ * `ProductFeedPort.generateProductFeed()` a zero-parameter method: neither value is ever a method
+ * argument, the port signature is not widened by so much as one parameter, and no criteria type is
+ * declared, imported or referenced anywhere in this module."
+ *
+ * The two values are still supplied HERE and this is still their only call site - what changed is
+ * where they go. AAP 0.4.2 freezes the ported method as
+ * `generateProductFeed(criteria: FeedCriteria)` and AAP 0.9.2 gates on that row, so the composition
+ * root no longer closes them over a port instance: it normalizes and allow-list-checks the host,
+ * pins the instant, and publishes the pair as `RequestScope.feedCriteria` for this handler to
+ * forward. The scope input below is unchanged, member for member; `FeedCriteria` is now imported
+ * here as the type of the value the scope hands back.
  *
  * Two members and no more. `accountID` and `adminAccountFlag` are left out because the feed reads
  * neither: the legacy action established no account, and omitting `accountID` IS the logged-out arm
@@ -584,11 +587,23 @@ export function createProductFeedHandler(
 
       const feedPort: ProductFeedPort | undefined = scope.productFeedPort;
 
-      if (feedPort === undefined) {
-        // Unreachable given a supplied feed host - the composition root builds the port if and only
-        // if `feedHost` was present, and it was proven present above. The branch exists because the
-        // published type is honest about the member being optional and because a non-null assertion
-        // is the one construct that would silence precisely the checks this port relies on.
+      // ★★★ THE CRITERIA COMES FROM THE SCOPE, NOT FROM THIS FILE, and that is deliberate. Both of
+      // its members are values a primary adapter must not decide: the origin authority has to be
+      // checked against the DEPLOYMENT-OWNED allow-list in `AppConfig.feed.allowedHosts`, which this
+      // layer may neither read nor write, and the instant has to be the request's SINGLE instant so
+      // one document cannot straddle two clock readings. The composition root assembled and froze
+      // both; this handler forwards them unchanged and substitutes neither.
+      const feedCriteria: FeedCriteria | undefined = scope.feedCriteria;
+
+      if (feedPort === undefined || feedCriteria === undefined) {
+        // Unreachable given a supplied feed host - the composition root publishes the port and the
+        // criteria under one condition, `feedHost` was proven present above, and an unlisted host
+        // would already have rejected the scope. The branch exists because the published types are
+        // honest about both members being optional and because a non-null assertion is the one
+        // construct that would silence precisely the checks this port relies on.
+        //
+        // BOTH ARE TESTED IN ONE CONDITION because the root publishes them together; testing only
+        // the port would leave the criteria narrowing to a caller's assumption.
         //
         // ★★★ RAISED AND NOT LOGGED HERE (finding F14). A local `logger.error` used to precede this
         // throw, and the mapper then logged the same fault again - two lines for one defect. The
@@ -598,19 +613,26 @@ export function createProductFeedHandler(
         throw new MissingProductFeedPortError();
       }
 
-      // ★★★ ZERO ARGUMENTS, AND THE WHOLE POINT OF RULING 1. The four selection filters - the SKU
-      // is active [integrationServices/google/controllers/feed.cfc:L68], its product is active
-      // [:L69], its product is published [:L70], and its product has an open-ended quantity
+      // ★★★ ONE ARGUMENT, AND IT SELECTS NOTHING. QUOTE-THEN-REVISE: this comment used to open
+      // "ZERO ARGUMENTS, AND THE WHOLE POINT OF RULING 1", and its substance stands while its
+      // headline does not. AAP 0.4.2 freezes the ported method as
+      // `generateProductFeed(criteria: FeedCriteria)` and AAP 0.9.2 gates on that row, so the
+      // per-request context is passed rather than closed over.
+      //
+      // THE FOUR SELECTION FILTERS ARE STILL INVARIANTS AND `FeedCriteria` STILL CANNOT REACH THEM -
+      // the SKU is active [integrationServices/google/controllers/feed.cfc:L68], its product is
+      // active [:L69], its product is published [:L70], and its product has an open-ended quantity
       // available to sell from one upward [:L72] - together with the three joins [:L64-L66], the
-      // brand among them LEFT joined so a product carrying no brand still appears, are INVARIANTS
-      // of the ported statement. They are not defaults, not options and not switchable, and there
-      // is nothing here to pass them through. The feed is whole-catalog by construction; narrowing
-      // it would change observable behaviour.
+      // brand among them LEFT joined so a product carrying no brand still appears. They are not
+      // defaults, not options and not switchable, there is no member here that could narrow them,
+      // and nothing in this file reads a product identifier, a page, a limit, a sort or a date
+      // window. The feed is whole-catalog by construction; narrowing it would change observable
+      // behaviour.
       //
       // The renderer is a pure synchronous function and this await belongs to the repository read
       // alone - a method is asynchronous in this port if and only if its legacy body reached the
       // DAO or the ORM. What comes back is the complete document.
-      const feedDocument = await feedPort.generateProductFeed();
+      const feedDocument = await feedPort.generateProductFeed(feedCriteria);
 
       // One operational line, and deliberately no measurement on it. No document size, no item or
       // row count and no elapsed time is recorded anywhere in this file or its comments: the source
@@ -751,9 +773,12 @@ export function createProductFeedHandler(
  * No worker thread is introduced either - the in-scope legacy slice contains no `cfthread` at all - and
  * the legacy runtime's lock timeouts are noted in the plan and deliberately not implemented.
  *
- * THE PORTED OPERATION TAKES NO BUSINESS ARGUMENTS. `ProductFeedPort.generateProductFeed()` is
- * nullary, so no schema is declared for parameters that do not exist and no query-string parameter,
- * product identifier, date window, page or limit is read.
+ * THE PORTED OPERATION TAKES NO BUSINESS ARGUMENTS, WHICH IS NOT THE SAME AS TAKING NO ARGUMENT.
+ * `ProductFeedPort.generateProductFeed(criteria)` takes the one argument AAP 0.4.2 declares, and
+ * `FeedCriteria` carries only the request's origin authority and its instant - so no schema is
+ * declared for business parameters that do not exist, and no query-string parameter, product
+ * identifier, date window, page, limit or sort is read anywhere in this file. QUOTE-THEN-REVISE: this
+ * sentence used to assert the method was "nullary".
  *
  * THE LAMBDA ADAPTER ITSELF STILL VALIDATES AND STILL READS THE EVENT. It reads the method and path for
  * `./router.js` and refuses a request that resolves to no route or to another capability; it reads the

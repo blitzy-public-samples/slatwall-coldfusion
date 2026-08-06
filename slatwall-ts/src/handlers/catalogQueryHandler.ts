@@ -156,6 +156,7 @@ import {
   mapErrorToApiGatewayResponse,
   resolveServerRequestId,
   routeDiagnosticLabel,
+  forbiddenResponse,
   resolveRequestPrincipal,
   routeNotFoundResponse,
   unauthenticatedResponse,
@@ -909,19 +910,26 @@ function planInvocation(
 type MatchedProduct = ProductPage['records'][number];
 
 /**
- * Project one matched product onto the two columns the executed statement selected.
+ * Rename one matched row's two members onto the two this surface publishes.
  *
- * The member is OMITTED when the accessor answers `undefined`, which is the whole of how absence is
+ * ★★★ IT IS A RENAME NOW, NOT A PROJECTION OF AN ENTITY (F38). The service used to answer hydrated
+ * products here and this function read `getProductID()` and `getProductName()` off each one - the ONLY
+ * two members it ever read, which is precisely why code review recorded the graph hydration behind
+ * them as unasked-for work. The service now answers the two columns
+ * [model/dao/ProductDAO.cfc:L421] selects, keyed as the legacy keys them - `"id"` and `"value"`
+ * [L429-L436] - and this function maps them onto the names this HTTP surface has always published.
+ * THE RESPONSE SHAPE IS THEREFORE UNCHANGED: `productID` and an optional `productName`, exactly as
+ * before, which is why no consumer of this endpoint sees the difference.
+ *
+ * The member is OMITTED when the row carries no name, which is the whole of how absence is
  * represented on this surface. Nothing is substituted - no empty string, no `null`, no zero - because
  * a substituted value is indistinguishable from a real one and this subtree treats that distinction as
  * load-bearing.
  */
-function projectProduct(product: MatchedProduct): CatalogProductProjection {
-  const productName = product.getProductName();
+function projectProduct(match: MatchedProduct): CatalogProductProjection {
+  const productName = match.value;
 
-  return productName === undefined
-    ? { productID: product.getProductID() }
-    : { productID: product.getProductID(), productName };
+  return productName === undefined ? { productID: match.id } : { productID: match.id, productName };
 }
 
 /**
@@ -1177,23 +1185,51 @@ export function createCatalogQueryHandler(
         return routeNotFoundResponse(mappingContext);
       }
 
-      // ★★ THE ADMISSION GATE. This route once served every anonymous request, and security review
-      // recorded the exposure as CRITICAL (CWE-306/CWE-862) together with the consequence it enabled
-      // (HIGH, CWE-200): `keyword` is required-but-may-be-empty, so an empty keyword matches every
-      // row, while the ported catalog statement intentionally preserves the legacy predicates and
-      // carries no `activeFlag`/`publishedFlag` restriction. Inactive and unpublished rows were
-      // therefore anonymously enumerable.
+      // ★★ THE ADMISSION GATE, IN TWO STEPS: IDENTIFIED, THEN ADMINISTRATIVE. This route once served
+      // every anonymous request, and security review recorded the exposure as CRITICAL
+      // (CWE-306/CWE-862) together with the consequence it enabled (HIGH, CWE-200): `keyword` is
+      // required-but-may-be-empty, so an empty keyword matches every row, while the ported catalog
+      // statement intentionally preserves the legacy predicates and carries no
+      // `activeFlag`/`publishedFlag` restriction. Inactive and unpublished rows were therefore
+      // anonymously enumerable.
       //
-      // Authentication closes that enumeration at the route entrance without changing the
-      // must-preserve result set. Adding `activeFlag`/`publishedFlag` to
-      // [model/dao/ProductDAO.cfc:L420-L427] would be a new catalog filter and AAP 0.6.7 permits no
-      // such divergence. The product FEED applies those filters because its own legacy statement
-      // does; this catalog query does not.
+      // ★★★ AUTHENTICATION ALONE DID NOT CLOSE IT (F45, CWE-862). QUOTE-THEN-REVISE: this block
+      // ended "Authentication closes that enumeration at the route entrance without changing the
+      // must-preserve result set." It does not. It closes it to ANONYMOUS callers and leaves it open
+      // to every identified one - and the source opens NONE of these three operations to a
+      // non-administrator:
       //
-      // The refusal follows route resolution and precedes the selector, parameter closure, schema
-      // and graph construction. An unidentified caller therefore costs no parse, connection or
-      // statement, while a path this capability does not own remains a 404 rather than a revealing
-      // 401.
+      //   * `getUnusedProductOptions` and `getUnusedProductOptionGroups` are consumed at exactly two
+      //     sites, `admin/views/entity/preprocessproduct_addoption.cfm:L60` and
+      //     `admin/views/entity/preprocessproduct_addoptiongroup.cfm:L60` - both inside `admin/`,
+      //     whose controllers declare `this.publicMethods=''`. They are administrative by
+      //     construction, reached through `Product.getUnusedProductOptions()`
+      //     [model/entity/Product.cfc:L635-L646].
+      //   * `findProducts` stands in for `searchProductsByProductType`
+      //     [model/dao/ProductDAO.cfc:L419-L437], which has NO CALLER ANYWHERE in the legacy tree,
+      //     so there is no public antecedent to preserve - and its statement is the one that carries
+      //     no `activeFlag`/`publishedFlag` predicate. The only surface the legacy DOES publish
+      //     publicly is the product FEED, which applies four filters of its own
+      //     [integrationServices/google/controllers/feed.cfc:L68-L72].
+      //
+      // So the claim is REQUIRED, which is this finding's first suggested resolution, and it changes
+      // no result set: nothing about the statement, its predicates or its projection moves. Adding
+      // `activeFlag`/`publishedFlag` to [model/dao/ProductDAO.cfc:L420-L427] would instead be a new
+      // catalog filter, and AAP 0.6.7 permits no such divergence - which is precisely why the gate
+      // has to sit at the ENTRANCE rather than in the query.
+      //
+      // ★ WHY ALL THREE AND NOT A SPLIT. The finding offers "or split truly public reads from admin
+      // operations". There is no truly public read among the three to split off: two are
+      // admin-view-only and the third has no caller and no filters. A split would therefore have to
+      // INVENT a public capability the source does not publish.
+      //
+      // THE TWO REFUSALS ARE DISTINCT AND BOTH ARE FIXED RESPONSES from `./errorMapper.js`, whose
+      // published sentences are identical and whose statuses differ - 401 for no identity, 403 for an
+      // insufficient one. Neither body names the claim, the operation or the principal, so an
+      // attacker learns which of the two occurred and nothing else. Both precede the selector,
+      // parameter closure, schema and graph construction, so a refused request costs no parse, no
+      // connection and no statement; and a path this capability does not own remains a 404 rather
+      // than a revealing 401.
       const principalResolution = resolveRequestPrincipal(event);
       if (!principalResolution.identified) {
         // The reason is a closed literal from `./errorMapper.js`, carried in the message rather than
@@ -1204,6 +1240,18 @@ export function createCatalogQueryHandler(
         });
 
         return unauthenticatedResponse(mappingContext);
+      }
+
+      if (!principalResolution.principal.adminAccountFlag) {
+        // NO ACCOUNT IDENTIFIER AND NO CLAIM NAME ON THE LOG LINE. The refusal is worth counting and
+        // the identity is not worth recording here: `accountID` would put a caller-supplied value in
+        // the log stream for no diagnostic gain, and the claim name is already a published constant.
+        log.warn('catalog query refused: the caller principal carries no administrative claim', {
+          requestId,
+          route: mappingContext.route,
+        });
+
+        return forbiddenResponse(mappingContext);
       }
 
       // --- 2. The operation selector, bounded at one ----------------------

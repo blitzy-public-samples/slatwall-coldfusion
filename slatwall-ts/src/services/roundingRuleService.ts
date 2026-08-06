@@ -52,7 +52,7 @@
 //     [model/entity/RoundingRule.cfc:L66-L68]. Only the `percentageOff` branch of
 //     that switch applies a rounding rule at all; `amountOff` [L331] and `amount`
 //     [L334] skip it. That asymmetry is a defect owned by
-//     `src/services/priceGroupService.ts` (planned), not by this file, and it is
+//     `src/services/priceGroupService.ts`, not by this file, and it is
 //     recorded here only so nobody expects this file to normalise it.
 //
 // ⚠️ THE DIRECTION OF THE PROMOTION CALL, STATED SO IT IS NEVER RE-DERIVED WRONGLY
@@ -125,7 +125,7 @@
 //     not imported. Nothing here holds a host, a DSN, a password or a token.
 //   * NO AMBIENT SCOPE, AND THEREFORE NO CONTEXT PARAMETER. A census of the
 //     component found ZERO `getHibachiScope()` and ZERO `getSlatwallScope()` sites,
-//     so unlike `src/services/priceGroupService.ts` (planned) this service needs no
+//     so unlike `src/services/priceGroupService.ts` this service needs no
 //     explicit context argument. Do not add one speculatively.
 //   * NO SERVICE LOCATOR TO REMOVE. The component contains ZERO `getService()`
 //     sites - the only one in the in-scope service tier is
@@ -190,7 +190,7 @@
 //
 // NO INTRA-FOLDER IMPORT. Nothing under `src/services/` is imported. Every
 // collaborator arrives as a constructor argument and the graph is assembled once,
-// explicitly, in `src/handlers/bootstrap.ts` (planned).
+// explicitly, in `src/handlers/bootstrap.ts`.
 //
 // NO THIRD-PARTY RUNTIME PACKAGE, AND IN PARTICULAR NO `decimal.js`. Exactly two
 // modules in the subtree may import it directly - `src/lib/cfml/precision.ts` and
@@ -202,7 +202,7 @@
 // `fixStyle: 'separate-type-imports'` and `no-import-type-side-effects` require.
 // ---------------------------------------------------------------------------
 
-import type { RoundingRule } from '../domain/entities/roundingRule.js';
+import type { RoundingRule, RoundingRuleDirection } from '../domain/entities/roundingRule.js';
 import type { PromotionRepository } from '../domain/ports/promotionRepository.js';
 import { Money } from '../domain/valueObjects/money.js';
 import { listGetAt, listLen } from '../lib/cfml/list.js';
@@ -215,7 +215,7 @@ import {
 } from '../lib/cfml/numberFormat.js';
 import type { PreciseValue } from '../lib/cfml/precision.js';
 import { absolute, add, isGreaterThan, isLessThan, subtract } from '../lib/cfml/precision.js';
-import { cfEquals } from '../lib/cfml/struct.js';
+import { cfEquals, cfFoldKey, structGet, structKeyExists } from '../lib/cfml/struct.js';
 import { cfLen, cfTruthy, isNullish } from '../lib/cfml/truthiness.js';
 
 /**
@@ -253,35 +253,90 @@ export interface RoundingRuleFrameworkWrites {
 }
 
 /**
- * Raised by {@link RoundingRuleService.saveRoundingRule} when the rule fails the save-context rules
- * declared at [model/validation/RoundingRule.json].
+ * One save-context rule of [model/validation/RoundingRule.json] that a rule did not satisfy.
  *
- * ★★ A THROW, WHERE THE LEGACY SET A FLAG - A DOCUMENTED DIVERGENCE, NOT AN OVERSIGHT.
- * [org/Hibachi/HibachiService.cfc:L151-L165] validates, and on failure it does NOT throw: it leaves
- * the entity carrying errors, skips the DAO call, announces a failure event and RETURNS THE ENTITY.
- * Reproducing that shape needs `HibachiEntity.validate()` and `hasErrors()`, and those are
- * deliberately NOT ported anywhere in this slice - `src/domain/entities/brand.ts` records the
- * decision, and `src/domain/entities/promotion.ts` records it again for the delete context.
+ * ★★★ THIS REPLACES `RoundingRuleValidationError`, WHICH WAS THROWN. That class documented its own
+ * divergence honestly - "A THROW, WHERE THE LEGACY SET A FLAG - A DOCUMENTED DIVERGENCE, NOT AN
+ * OVERSIGHT" - and rested it on one premise: "Reproducing that shape needs `HibachiEntity.validate()`
+ * and `hasErrors()`, and those are deliberately NOT ported anywhere in this slice... With no
+ * error-collection surface to populate, the two available shapes are THROW or RETURN AN UNSAVED ENTITY
+ * AS THOUGH IT SAVED."
  *
- * With no error-collection surface to populate, the two available shapes are THROW or RETURN AN
- * UNSAVED ENTITY AS THOUGH IT SAVED. The second is exactly the success-shaped dropped write this
- * finding is about, so it is not a candidate. Throwing is also what the service tier already does for
- * declarative validation elsewhere: `processProduct_updateSkus` calls
- * `productUpdateSkusSchema.parse(input)`, which raises. The divergence is therefore consistent with
- * the codebase and is confined to HOW a refusal is signalled - never to WHICH rules refuse.
+ * The dilemma was real and it had a THIRD horn, which is the one the legacy takes: publish the error
+ * collection. `src/domain/entities/roundingRule.ts` now carries the four-member register of
+ * [org/Hibachi/HibachiTransient.cfc:L30-L64], so the refused entity comes back CARRYING ITS ERRORS -
+ * neither thrown, nor success-shaped. That is `HibachiService.save`'s contract verbatim: skip the write
+ * when `hasErrors()` [L153-L155], and `return arguments.entity` either way [L167].
+ *
+ * SERVER-AUTHORED, VALUE-FREE. Both members are transcribed from the JSON rule, so neither can leak a
+ * submitted value into a log line or an API response.
  */
-export class RoundingRuleValidationError extends Error {
-  public constructor(
-    /** The property that failed, spelled as [model/validation/RoundingRule.json] spells it. */
-    public readonly propertyName: string,
-    /** Why it failed, in the terms the JSON rule uses. */
-    public readonly reason: string,
-  ) {
-    super(
-      `saveRoundingRule refused: ${propertyName} ${reason}. ` +
-        'Declared at model/validation/RoundingRule.json in the "save" context.',
-    );
-    this.name = 'RoundingRuleValidationError';
+export interface RoundingRuleSaveContextError {
+  /** The property the rule is declared on, spelled as the JSON spells it. Used as the error name. */
+  readonly propertyIdentifier: string;
+
+  /** The rule, stated in the terms the JSON rule uses. */
+  readonly errorMessage: string;
+}
+
+/**
+ * Copy every populatable column the payload carries onto the rule, BEFORE validation reads it.
+ *
+ * Ports the populate step of `super.save(argumentcollection=arguments)`
+ * [model/service/RoundingRuleService.cfc:L63] - that is, `arguments.entity.populate(arguments.data)`
+ * [org/Hibachi/HibachiService.cfc:L145], which runs BEFORE `validate` [L150] and before the write
+ * [L153-L155].
+ *
+ * ★★★ THE STEP WHOSE ABSENCE MADE THE SAVE INERT. Code review recorded that `RoundingRuleSaveInput`
+ * was never applied, so a valid payload could neither create nor update a rule: the three `required`
+ * rules of [model/validation/RoundingRule.json] judged an entity nothing had written to, and the save
+ * refused. See that type for the circular argument that produced the gap.
+ *
+ * ★★ THE THREE COLUMN SEMANTICS OF THE FRAMEWORK'S COLUMN BRANCH, reproduced:
+ *
+ *   1. ONLY KEYS THAT ARE PRESENT ARE WRITTEN - `structKeyExists(arguments.data, name)`. An ABSENT key
+ *      leaves the stored value alone, which is what makes a partial update a partial update.
+ *   2. THE KEY MATCH IS CASE-INSENSITIVE, because CFML struct keys are. {@link structKeyExists} and
+ *      {@link structGet} carry that, so `{ROUNDINGRULENAME: 'x'}` still lands.
+ *   3. SIMPLE VALUES ARE TRIMMED - `_setProperty(name, trim(value))`.
+ *
+ * A BLANK VALUE IS STORED AS BLANK RATHER THAN CLEARING THE COLUMN, and that differs from
+ * `populateProduct`'s nullable columns for a reason the framework states: its clearing arm needs
+ * `trim(value) == ""`, and the ported setters take a definite `string`. Either way the value that
+ * reaches validation is empty and the `required` rule refuses it, so the observable outcome of a blank
+ * submission is identical; what differs is only whether the column would have been written as NULL or
+ * as `''` - and it is never written at all, because the save is refused.
+ *
+ * ⛔ NO AUDIT COLUMN AND NO IDENTIFIER IS POPULATED. All four audit properties declare
+ * `hb_populateEnabled="false"` [model/entity/RoundingRule.cfc:L57-L60] - the framework's own
+ * instruction to skip them - and `roundingRuleID` is UUID-minted [L52].
+ *
+ * @param rule - The entity being saved. MUTATED IN PLACE, exactly as [L145] mutates it.
+ * @param data - The save payload. READ ONLY.
+ */
+function populateRoundingRule(rule: RoundingRule, data: RoundingRuleSaveInput): void {
+  if (structKeyExists(data, 'roundingRuleName')) {
+    const roundingRuleName = structGet(data, 'roundingRuleName');
+
+    if (typeof roundingRuleName === 'string') {
+      rule.setRoundingRuleName(roundingRuleName.trim());
+    }
+  }
+
+  if (structKeyExists(data, 'roundingRuleExpression')) {
+    const roundingRuleExpression = structGet(data, 'roundingRuleExpression');
+
+    if (typeof roundingRuleExpression === 'string') {
+      rule.setRoundingRuleExpression(roundingRuleExpression.trim());
+    }
+  }
+
+  if (structKeyExists(data, 'roundingRuleDirection')) {
+    const roundingRuleDirection = structGet(data, 'roundingRuleDirection');
+
+    if (typeof roundingRuleDirection === 'string') {
+      rule.setRoundingRuleDirection(roundingRuleDirection.trim());
+    }
   }
 }
 
@@ -304,32 +359,95 @@ export class RoundingRuleValidationError extends Error {
  * [model/entity/RoundingRule.cfc:L78-L86] rather than reimplemented - the entity is the authority for
  * its own declared validator, and duplicating that loop here would let the two drift.
  *
- * ORDER OF EVALUATION follows the JSON's own property order, and the first failure raises. CFML
- * collected every error before returning; with no error-collection surface ported there is nothing to
- * collect into, so the first failure is reported and the rest are unreached. That narrows WHICH
- * failure a caller is told about, never WHETHER a failing rule refuses.
+ * ORDER OF EVALUATION follows the JSON's own property order, and EVERY FAILURE IS COLLECTED - which is
+ * what `validate()` did, accumulating through `addError` [org/Hibachi/HibachiTransient.cfc:L61-L64]
+ * before the flush asked `hasErrors()` once. An earlier revision raised on the first failure and
+ * defended it: "with no error-collection surface ported there is nothing to collect into, so the first
+ * failure is reported and the rest are unreached. That narrows WHICH failure a caller is told about,
+ * never WHETHER a failing rule refuses." The narrowing is now unnecessary, because the entity publishes
+ * the collection - so a caller learns about every problem at once, as it did under CFML.
  */
-function assertSaveContextRules(rule: RoundingRule): void {
+function collectSaveContextErrors(rule: RoundingRule): RoundingRuleSaveContextError[] {
+  const errors: RoundingRuleSaveContextError[] = [];
+
   if (!cfTruthy(cfLen(rule.getRoundingRuleName()))) {
-    throw new RoundingRuleValidationError('roundingRuleName', 'is required');
+    errors.push({
+      propertyIdentifier: 'roundingRuleName',
+      errorMessage: 'roundingRuleName is required',
+    });
   }
 
   if (!cfTruthy(cfLen(rule.getRoundingRuleExpression()))) {
-    throw new RoundingRuleValidationError('roundingRuleExpression', 'is required');
-  }
-
-  if (!rule.hasExpressionWithListOfNumericValuesOnly()) {
-    throw new RoundingRuleValidationError(
-      'roundingRuleExpression',
-      'must satisfy hasExpressionWithListOfNumericValuesOnly - every list element must be numeric ' +
-        'and carry exactly two digits after the decimal point',
-    );
+    errors.push({
+      propertyIdentifier: 'roundingRuleExpression',
+      errorMessage: 'roundingRuleExpression is required',
+    });
+  } else if (!rule.hasExpressionWithListOfNumericValuesOnly()) {
+    // ★ THE SECOND QUALIFIER ON THE SAME PROPERTY RUNS ONLY WHEN `required` PASSED. The legacy
+    // `validate_...` dispatchers each test the value independently, and
+    // `hasExpressionWithListOfNumericValuesOnly` [model/entity/RoundingRule.cfc:L78-L86] iterates a
+    // comma list - for an EMPTY expression that loop has nothing to reject, so it would report
+    // "satisfied" and the only honest error is the `required` one already recorded. Chaining the two
+    // reports one failure per genuine problem rather than two for the same empty value.
+    errors.push({
+      propertyIdentifier: 'roundingRuleExpression',
+      errorMessage:
+        'roundingRuleExpression must satisfy hasExpressionWithListOfNumericValuesOnly - every list ' +
+        'element must be numeric and carry exactly two digits after the decimal point',
+    });
   }
 
   if (!cfTruthy(cfLen(rule.getRoundingRuleDirection()))) {
-    throw new RoundingRuleValidationError('roundingRuleDirection', 'is required');
+    errors.push({
+      propertyIdentifier: 'roundingRuleDirection',
+      errorMessage: 'roundingRuleDirection is required',
+    });
   }
+
+  return errors;
 }
+
+/**
+ * The direction argument of {@link RoundingRuleService.roundValue} - THE TYPE AAP 0.4.2 NAMES.
+ *
+ * The mapping table freezes the signature as `roundValue(value: Money | string,
+ * roundingExpression?: string, roundingDirection?: RoundingDirection): DecimalString`, and AAP
+ * 0.9.2 makes every row of that table a parity gate. This is that `RoundingDirection`, declared
+ * here because this is the module that owns the method.
+ *
+ * ★★★ IT NAMES THE THREE RECOGNISED TOKENS WITHOUT CONSTRAINING THE ARGUMENT TO THEM, AND BOTH
+ * HALVES ARE LOAD-BEARING.
+ *
+ *   THE NAMING HALF reuses {@link RoundingRuleDirection} - `'Closest' | 'Up' | 'Down'`, the same
+ *   union the entity module already publishes for its option list - rather than re-spelling three
+ *   literals a second time. Those are the `case` labels at
+ *   [model/service/RoundingRuleService.cfc:L133, L144, L155], and naming them gives a caller
+ *   completion and a reader the vocabulary.
+ *
+ *   THE OPEN HALF is the intersection with `string`, and it exists because the legacy `switch`
+ *   [model/service/RoundingRuleService.cfc:L132] carries NO `default` arm: an unrecognised
+ *   direction falls through every case and the function answers the two-decimal input UNROUNDED.
+ *   That is reachable live state, not a defensive hypothetical -
+ *   `roundValueByRoundingRule` forwards `rule.getRoundingRuleDirection()`
+ *   [model/entity/RoundingRule.cfc:L55], a free-text `SwRoundingRule` column with no enumeration
+ *   constraint in the schema and no format validation in
+ *   [model/validation/RoundingRule.json]. A closed union here would make that state
+ *   UNREPRESENTABLE, so a persisted row the legacy system prices today could not even be passed
+ *   to the ported method, and the characterisation test that pins the fall-through could not be
+ *   written. Matching is also CASE-INSENSITIVE, for the reason argued at
+ *   {@link canonicalRoundingDirection}; the union's three spellings are canonical, not exclusive.
+ *
+ *   QUOTE-THEN-REVISE. The parameter was previously typed as a bare `string`, defended on the
+ *   ground that a union would be "a constraint on the argument". The reasoning about the
+ *   fall-through was right and the conclusion was wrong: a bare `string` DROPPED the mapped type
+ *   name, which AAP 0.9.2 gates on, and it was never necessary to drop it - an open union admits
+ *   every string the bare type admitted, so nothing that compiled before stops compiling now.
+ *
+ * `string & Record<never, never>` rather than `string & {}`: the two are equivalent to the
+ * checker, and the empty object literal is what `@typescript-eslint/no-empty-object-type`
+ * rejects.
+ */
+export type RoundingDirection = RoundingRuleDirection | (string & Record<never, never>);
 
 /**
  * The two values the legacy memo stores for one rounding rule.
@@ -350,41 +468,63 @@ function assertSaveContextRules(rule: RoundingRule): void {
  * column is `NULL`, and both behaviours are load-bearing - the difference is
  * spelled out in full at {@link RoundingRuleService.getRoundingRuleDetailsByID}.
  *
- * `roundingRuleDirection` is `string` and NOT the entity module's
- * `RoundingRuleDirection` union. The column carries no enumeration constraint in
- * the schema, an unrecognised direction is a REACHABLE live state, and narrowing
+ * `roundingRuleDirection` is {@link RoundingDirection} and NOT the entity module's
+ * CLOSED `RoundingRuleDirection` union. The column carries no enumeration constraint
+ * in the schema, an unrecognised direction is a REACHABLE live state, and narrowing
  * the type here would make a reachable state unrepresentable - see the
- * defaultless dispatch at {@link RoundingRuleService.roundValue}.
+ * defaultless dispatch at {@link RoundingRuleService.roundValue}. `RoundingDirection`
+ * is the OPEN form: it names the three canonical spellings for a reader while still
+ * admitting every string the column can hold, so this member is exactly as permissive
+ * as the plain `string` it replaced and carries the mapped type name besides.
  */
 export interface RoundingRuleDetails {
   /** [model/service/RoundingRuleService.cfc:L73] The raw expression, as stored. */
   readonly roundingRuleExpression: string;
 
   /** [model/service/RoundingRuleService.cfc:L74] The raw direction, unvalidated. */
-  readonly roundingRuleDirection: string;
+  readonly roundingRuleDirection: RoundingDirection;
 }
 
 /**
- * The optional payload handed to {@link RoundingRuleService.saveRoundingRule},
- * standing in for the legacy `struct data` argument
- * [model/service/RoundingRuleService.cfc:L56].
+ * The optional payload handed to {@link RoundingRuleService.saveRoundingRule}, standing in for the
+ * legacy `struct data` argument [model/service/RoundingRuleService.cfc:L56].
  *
- * AN OPEN STRUCT RATHER THAN A TYPED INTERFACE, AND THAT IS THE HONEST SHAPE HERE
- * RATHER THAN A SHORTCUT. A typed interface is the right translation of a CFML
- * struct whenever the ported body READS keys from it - which is why
- * `BrandSaveInput` in `src/services/brandService.ts` enumerates the two keys its
- * body touches. This body reads ZERO keys: `saveRoundingRule` consults only
- * `entity.isNew()` [L57] and `entity.getRoundingRuleID()` [L58-L59], then hands
- * `data` on untouched inside `super.save(argumentcollection=arguments)` [L63].
- * Enumerating `SwRoundingRule`'s populatable columns here would therefore invent a
- * contract the legacy save path never had, and schema continuity forbids adding a
- * constraint the legacy lacks. So the type says exactly what is true: an untyped
- * CFML struct that this service passes through without reading.
+ * ★★★ QUOTE-THEN-REVISE, AND THE OPEN STRUCT WAS THE DEFECT. This type used to be
+ * `Readonly<Record<string, unknown>>`, argued for at length: "AN OPEN STRUCT RATHER THAN A TYPED
+ * INTERFACE, AND THAT IS THE HONEST SHAPE HERE RATHER THAN A SHORTCUT... This body reads ZERO keys...
+ * Enumerating `SwRoundingRule`'s populatable columns here would therefore invent a contract the legacy
+ * save path never had."
  *
- * `Readonly` because nothing here writes to it. Contrast `BrandSaveInput`, whose
- * `urlTitle` is deliberately writable because that service genuinely writes it.
+ * The observation was accurate about the METHOD BODY and wrong about the SAVE PATH. `saveRoundingRule`
+ * ends `return super.save(argumentcollection=arguments)` [L63], and `super.save`'s FIRST step is
+ * `arguments.entity.populate(arguments.data)` [org/Hibachi/HibachiService.cfc:L145] - so the legacy
+ * save path read every populatable column out of that struct, before validating. Declining to type them
+ * did not avoid inventing a contract; it DROPPED one. Code review measured the result: the payload was
+ * never applied, so a valid payload could neither create nor update a rule, because the three
+ * `required` rules judged an entity nothing had written to.
+ *
+ * THE THREE KEYS ARE THE THREE POPULATABLE COLUMNS, taken from the entity's own metadata rather than
+ * chosen: [model/entity/RoundingRule.cfc:L53-L55]. `roundingRuleID` is UUID-minted [L52] and the four
+ * audit properties declare `hb_populateEnabled="false"` [L57-L60], the framework's instruction that
+ * populate skip them - so the set is closed at three by the source, not by preference.
+ *
+ * EVERY MEMBER IS OPTIONAL AND `readonly`. Optional because populate copied only the keys the struct
+ * CARRIED, leaving every other column at its stored value; `readonly` because nothing here writes to
+ * it, unlike `BrandSaveInput`, whose `urlTitle` genuinely is written.
  */
-export type RoundingRuleSaveInput = Readonly<Record<string, unknown>>;
+export interface RoundingRuleSaveInput {
+  /** `roundingRuleName` [model/entity/RoundingRule.cfc:L53]. `required` in the save context. */
+  readonly roundingRuleName?: string | undefined;
+
+  /**
+   * `roundingRuleExpression` [model/entity/RoundingRule.cfc:L54]. `required` in the save context, and
+   * additionally subject to `hasExpressionWithListOfNumericValuesOnly`.
+   */
+  readonly roundingRuleExpression?: string | undefined;
+
+  /** `roundingRuleDirection` [model/entity/RoundingRule.cfc:L55]. `required` in the save context. */
+  readonly roundingRuleDirection?: string | undefined;
+}
 
 /**
  * CFML's `isNull(x)`, as a TypeScript type guard.
@@ -582,6 +722,59 @@ function left(value: string, count: number): string {
 }
 
 /**
+ * The three rounding directions the legacy `switch` carries, spelled exactly as its
+ * `case` labels spell them [model/service/RoundingRuleService.cfc:L133, L144, L155].
+ *
+ * ★ QUOTE-THEN-REVISE. This block used to read: "Deliberately NOT a published union type on
+ * `roundValue`: an unrecognised direction is a reachable persisted state (see the dispatch), so
+ * the parameter stays a plain `string` and this table is only the recognition vocabulary, never a
+ * constraint on the argument." The premise stands and the conclusion does not. `roundValue` now
+ * declares {@link RoundingDirection}, the type AAP 0.4.2 names, and that type is OPEN - the three
+ * canonical spellings are named for a reader while every other string stays admissible, so the
+ * fall-through this table's absence of a `default` arm produces is as reachable as it ever was.
+ * The vocabulary and the constraint were never the same thing.
+ *
+ * This runtime table is still needed and is NOT redundant with the type: a type cannot fold case
+ * at run time, and {@link canonicalRoundingDirection} matches these spellings case-insensitively
+ * because a CFML `switch` does. It stays module-local and unexported.
+ */
+const ROUNDING_DIRECTIONS: readonly string[] = Object.freeze(['Closest', 'Up', 'Down']);
+
+/**
+ * The canonical spelling of a rounding direction, matched WITHOUT REGARD TO CASE.
+ *
+ * ★★★ WHY THIS EXISTS: A CFML `switch` OVER STRINGS IS CASE-INSENSITIVE.
+ * `switch(arguments.roundingDirection)` [model/service/RoundingRuleService.cfc:L132] matched
+ * `case "Closest"` for a persisted value of `closest`, `CLOSEST` or `ClOsEsT` alike, and the
+ * row priced through that arm. A TypeScript `switch` compares with `===`, so an exact-case
+ * port silently demoted every one of those rows to the no-arm-matched path and answered the
+ * un-rounded input - a different total for data the legacy system rounds today. AAP 0.1.1
+ * requires every ported comparison to be audited for CFML case-insensitivity rather than
+ * assumed; this is that audit applied to the one comparison in the slice that selects a
+ * pricing branch.
+ *
+ * ONLY A RECOGNISED TOKEN IS REWRITTEN. A token that matches none of the three is returned
+ * UNCHANGED, so it still matches no `case` arm and still falls through to the legacy
+ * pass-through at [L170-L174]. The vocabulary is not widened and nothing is refused: this
+ * function cannot turn an unrecognised direction into a recognised one, only a differently
+ * cased spelling of a recognised one into its canonical spelling.
+ *
+ * `cfEquals` is used rather than a local `toLowerCase()` comparison because
+ * `src/lib/cfml/struct.ts` already owns CFML case-insensitive string identity for this
+ * subtree, and a second folding rule invented here could drift from it.
+ *
+ * @param roundingDirection - the direction as supplied or as persisted, in any case.
+ * @returns the canonical spelling when the token is one of the three, otherwise the token
+ *   exactly as received.
+ */
+function canonicalRoundingDirection(roundingDirection: string): string {
+  return (
+    ROUNDING_DIRECTIONS.find((candidate: string) => cfEquals(candidate, roundingDirection)) ??
+    roundingDirection
+  );
+}
+
+/**
  * The ported `RoundingRuleService`
  * [model/service/RoundingRuleService.cfc:L49-L204].
  *
@@ -614,7 +807,7 @@ function left(value: string, count: number): string {
  * [src/domain/entities/roundingRule.ts]. That interface is module-local and
  * deliberately unexported - publishing it would read as a fourteenth port - so this
  * class satisfies it STRUCTURALLY, with no `implements` clause and without importing
- * the name. TypeScript needs neither, and `src/handlers/bootstrap.ts` (planned)
+ * the name. TypeScript needs neither, and `src/handlers/bootstrap.ts`
  * wires the concrete instance in. That is why the signature of
  * `roundValueByRoundingRule` below must not drift: the entity's constructor is a
  * compile-time check on it.
@@ -634,7 +827,7 @@ export class RoundingRuleService {
    * module-level binding survives between UNRELATED invocations, so rounding-rule
    * state held at module scope would let one tenant's pricing rules answer another
    * tenant's request. Held per instance, and with `src/handlers/bootstrap.ts`
-   * (planned) constructing the graph per invocation, the map cannot outlive the
+   * constructing the graph per invocation, the map cannot outlive the
    * request that filled it. The single documented exception to the no-module-state
    * rule anywhere in this subtree is the connection pool in
    * `src/repositories/mysql/connection.ts`, which is not this file's concern.
@@ -656,17 +849,36 @@ export class RoundingRuleService {
    * `__proto__` to collide with. It also gives `saveRoundingRule` the ordinary
    * `delete` that [L59]'s `structDelete` becomes.
    *
-   * JUDGMENT CALL: CFML struct keys are CASE-INSENSITIVE and `Map` keys are not, so
-   * two spellings of one identifier that CFML would treat as a single memo entry
-   * resolve as two here. This is unobservable through the public contract. The
-   * VALUE is identical either way, because `MySQL`'s default collation makes the
-   * `roundingRuleID = ?` predicate case-insensitive too, so both spellings load the
-   * same row; only the number of lookups differs. The case-insensitive struct
-   * helpers live in `src/lib/cfml/struct.ts`, which is deliberately outside this
-   * file's dependency set - and `structDelete` is deliberately absent from that
-   * module in any case, so the eviction below is expressed locally by design.
+   * ★★★ KEYED BY THE FOLDED IDENTIFIER, BECAUSE CFML STRUCT KEYS ARE CASE-INSENSITIVE.
+   * This paragraph previously recorded the opposite decision - that two spellings of one
+   * identifier would resolve as two `Map` entries, and that the difference was "unobservable
+   * through the public contract". The first half was true and the second was not. `MySQL`'s
+   * default collation makes the `roundingRuleID = ?` predicate case-INSENSITIVE, so both
+   * spellings load the same row - but they loaded it through two SEPARATE reads, and a
+   * `saveRoundingRule` eviction spelled one way then left the OTHER spelling's stale entry in
+   * place, so one request could round the same rule two different ways after a save. Folding
+   * with `cfFoldKey` from `src/lib/cfml/struct.ts` collapses the entry, exactly as the legacy
+   * struct collapsed it, so eviction reaches every spelling. The ORIGINAL identifier is still
+   * what reaches the repository; only the memo's identity is folded.
+   *
+   * ★★★ IT MEMOISES THE IN-FLIGHT PROMISE, NOT ONLY THE RESOLVED VALUE. A memo that stores
+   * results alone is not a memo under concurrency: two overlapping `getRoundingRuleDetailsByID`
+   * calls for one identifier both miss, both issue a read, and - if an administrator saves
+   * between them - can hand two DIFFERENT rules to two price calculations inside a single
+   * request. Storing the promise makes the second caller await the first caller's read, which
+   * is the single-flight property the legacy synchronous body had for free.
+   *
+   * A REJECTION IS NEVER REMEMBERED. The legacy body throws on a zero-row read BEFORE writing
+   * anything into `variables.roundingRuleDetails` [model/service/RoundingRuleService.cfc:L70-L75],
+   * so a later call retried. `getRoundingRuleDetailsByID` therefore removes its own entry when the
+   * read rejects; a cached rejection would turn one transient failure into a permanent one for
+   * the rest of the request.
+   *
+   * A PRIVATE INSTANCE FIELD, NEVER MODULE STATE - see the paragraph above. `structDelete` is
+   * deliberately absent from `src/lib/cfml/struct.ts`, so the eviction below is expressed with
+   * `Map.prototype.delete` by design.
    */
-  private readonly roundingRuleDetails = new Map<string, RoundingRuleDetails>();
+  private readonly roundingRuleDetails = new Map<string, Promise<RoundingRuleDetails>>();
 
   /**
    * @param promotionRepository - Replaces the legacy
@@ -771,10 +983,10 @@ export class RoundingRuleService {
    * `roundingRuleDirection` all required in the `save` context, and the expression additionally
    * carries `"method":"hasExpressionWithListOfNumericValuesOnly"` - which the entity already
    * implements [model/entity/RoundingRule.cfc:L78-L86], so the rule is INVOKED rather than
-   * reimplemented. Failure raises {@link RoundingRuleValidationError}; that divergence from the
-   * legacy's error-flag shape is justified at the class.
+   * reimplemented. Failure RECORDS the rule on the entity and answers it unpersisted - see
+   * {@link RoundingRuleSaveContextError} for why this no longer throws.
    *
-   * ORDER OF OPERATIONS, PRESERVED: evict [L57-L61], then validate and write [L63]. The eviction runs
+   * ORDER OF OPERATIONS, PRESERVED: evict [L57-L61], then populate, validate and write [L63]. The eviction runs
    * FIRST even though it now precedes a write that could fail, because that is where the source puts
    * it - a refused save in the legacy also left the memo already evicted, since `structDelete` ran
    * before `super.save` was ever reached.
@@ -799,22 +1011,24 @@ export class RoundingRuleService {
    *   uses `rule`, matching `roundValueByRoundingRule`. Parameter names are not part
    *   of a TypeScript call contract - there are no named arguments - so this costs
    *   no parity, and the legacy spelling is recorded here instead.
-   * @param data - The legacy `struct data`. Accepted for signature parity and never
-   *   read: the eviction logic does not consult it, and [L63] passed it straight on.
-   *   ★ IT IS STILL NOT READ, AND THAT IS DELIBERATE EVEN NOW THAT A WRITE HAPPENS.
-   *   [org/Hibachi/HibachiService.cfc:L143-L148] populates from `data` before validating, but
-   *   `RoundingRuleSaveInput` publishes no persistent-property key to populate FROM - the payload
-   *   type's own docblock records that "this body reads ZERO keys". Populating from a payload that
-   *   declares no columns would mean inventing keys the source never had.
+   * @param data - The legacy `struct data`. ★★ NOW READ, AND THAT IS THE FIX. It used to be
+   *   "accepted for signature parity and never read", on the ground that "`RoundingRuleSaveInput`
+   *   publishes no persistent-property key to populate FROM" - a circular argument that left
+   *   `super.save`'s populate step [org/Hibachi/HibachiService.cfc:L145] unported, so no payload could
+   *   create or update a rule. It now declares the three populatable columns of
+   *   [model/entity/RoundingRule.cfc:L53-L55] and they are applied BEFORE validation, which is the
+   *   legacy order. ABSENT `data` populates nothing, reproducing the framework's own
+   *   `structKeyExists(arguments, "data")` guard.
    * @param context - The legacy `context`, defaulting to `"save"` exactly as [L56]
    *   declares. ★ NOW MEANINGFUL RATHER THAN INERT: [org/Hibachi/HibachiService.cfc:L151] passes it
    *   to `validate(context=...)`, and [model/validation/RoundingRule.json] declares its three rules
    *   in the `"save"` context specifically - the fourth rule, `priceGroupRates maxCollection 0`,
    *   belongs to `"delete"`. So a caller naming any other context gets no save-context validation,
    *   exactly as the legacy dispatcher behaves.
-   * @returns The PERSISTED rule - the row as it now stands, carrying its minted identifier and audit
-   *   stamps. Previously this returned the same instance it was handed.
-   * @throws {@link RoundingRuleValidationError} when a save-context rule fails.
+   * @returns THE SAME ENTITY EITHER WAY [org/Hibachi/HibachiService.cfc:L167]: the PERSISTED rule -
+   *   the row as it now stands, carrying its minted identifier and audit stamps - when it validated,
+   *   or the POPULATED-BUT-UNPERSISTED rule CARRYING ITS ERRORS when it did not. Ask `hasErrors()` /
+   *   `getErrors()` [org/Hibachi/HibachiTransient.cfc:L30-L64].
    */
   async saveRoundingRule(
     rule: RoundingRule,
@@ -842,8 +1056,13 @@ export class RoundingRuleService {
       // `Map.prototype.delete` on an absent key is already a no-op, making the
       // guard redundant here as well; it too is reproduced rather than elided, for
       // the same diffability reason.
-      if (this.roundingRuleDetails.has(rule.getRoundingRuleID())) {
-        this.roundingRuleDetails.delete(rule.getRoundingRuleID());
+      //
+      // ★ THE CANONICAL KEY IS EVICTED, WHICH IS WHY THE FOLD MATTERS HERE AND NOT ONLY ON
+      // THE READ. A save spelled `abc` must invalidate an entry a read stored as `ABC`, or the
+      // rest of the request keeps rounding by the pre-save expression. See the field docblock.
+      const memoKey = cfFoldKey(rule.getRoundingRuleID());
+      if (this.roundingRuleDetails.has(memoKey)) {
+        this.roundingRuleDetails.delete(memoKey);
       }
     }
 
@@ -851,20 +1070,53 @@ export class RoundingRuleService {
     //   return super.save(argumentcollection=arguments);
     //
     // ★ WHAT THAT ONE LINE IS, UNPACKED. [org/Hibachi/HibachiService.cfc:L133-L169] populates from
-    // `data` if present [L146], validates in `context` [L151], and ONLY when `hasErrors()` is false
-    // calls `getHibachiDAO().save(target=...)` [L155]. Population is a no-op here (see the `data`
-    // parameter note); validation and the write follow, in that order.
+    // `data` if present [L145], validates in `context` [L150], and ONLY when `hasErrors()` is false
+    // calls `getHibachiDAO().save(target=...)` [L153-L155] - RETURNING THE ENTITY EITHER WAY [L167].
+    // All three steps are below, in that order.
+
+    // STEP 1 - POPULATE [org/Hibachi/HibachiService.cfc:L145]:
+    //   if(structKeyExists(arguments, "data")) { arguments.entity.populate(arguments.data); }
+    //
+    // ★★★ THIS STEP USED TO BE ABSENT, AND ITS ABSENCE MADE THE METHOD UNABLE TO SAVE ANYTHING. The
+    // note that stood here read: "Population is a no-op here (see the `data` parameter note)" - on the
+    // ground that the payload type "publishes no persistent-property key to populate FROM". That was
+    // circular: the payload declared no keys because this step did not use them, and the step did not
+    // use them because the payload declared none. Code review measured the outcome - a VALID payload
+    // could neither create nor update a rule, because the three `required` rules judged an entity
+    // nothing had written to.
+    //
+    // ★★ THE GUARD IS THE LEGACY'S OWN `structKeyExists(arguments, "data")`, which is an ARGUMENT
+    // presence test, not a key test - so it becomes `data !== undefined` on an optional parameter.
+    // Populate itself then copies only the keys the struct CARRIES, which is what the three
+    // `structKeyExists` probes inside `populateRoundingRule` reproduce.
+    if (data !== undefined) {
+      populateRoundingRule(rule, data);
+    }
+
+    // STEP 2 - VALIDATE [org/Hibachi/HibachiService.cfc:L150], on the POPULATED entity.
     //
     // ★ CONTEXT-GATED, EXACTLY AS THE FRAMEWORK GATES IT. `validate(context=...)` selects the rule
     // set, and [model/validation/RoundingRule.json] puts all three field rules in `"save"`. A caller
     // naming another context therefore reaches the write without them, which is the legacy behaviour
     // rather than a shortcut.
-    if (cfEquals(context, 'save')) {
-      assertSaveContextRules(rule);
+    const errors = cfEquals(context, 'save') ? collectSaveContextErrors(rule) : [];
+
+    // ★★★ THE REFUSAL IS RECORDED ON THE ENTITY AND THE ENTITY IS RETURNED, UNPERSISTED - the third
+    // horn of the dilemma the retired `RoundingRuleValidationError` argued had only two. See
+    // {@link RoundingRuleSaveContextError}. The write below is SKIPPED, exactly as [L153-L155] skips
+    // it, and the memo eviction above has already happened - which is also the legacy's ordering,
+    // since `structDelete` [L58-L59] ran before `super.save` was ever reached.
+    if (errors.length > 0) {
+      for (const error of errors) {
+        rule.addError(error.propertyIdentifier, error.errorMessage);
+      }
+
+      return rule;
     }
 
-    // The durable half. `isNew()` decides insert versus update inside the collaborator, which is where
-    // the statement and its audit stamps live - this tier decides only WHETHER to write.
+    // STEP 3 - the durable half [org/Hibachi/HibachiService.cfc:L153-L155]. `isNew()` decides insert
+    // versus update inside the collaborator, which is where the statement and its audit stamps live -
+    // this tier decides only WHETHER to write.
     return await this.frameworkWrites.saveRoundingRule(rule);
   }
 
@@ -938,46 +1190,80 @@ export class RoundingRuleService {
     // Legacy [model/service/RoundingRuleService.cfc:L68]:
     //   if(!structKeyExists(variables.roundingRuleDetails, arguments.roundingRuleID))
     // A `Map.get` miss and a stored `undefined` are indistinguishable in general,
-    // but not here: every value this map ever holds is a frozen two-key object, so
-    // `undefined` means "absent" and the existence test and the read collapse into
-    // one lookup.
-    let details = this.roundingRuleDetails.get(roundingRuleID);
+    // but not here: every value this map ever holds is a promise, so `undefined`
+    // means "absent" and the existence test and the read collapse into one lookup.
+    //
+    // ★ THE KEY IS FOLDED AND THE ENTRY IS THE IN-FLIGHT PROMISE - both properties are
+    // explained on the field. The identifier that reaches the repository below is the
+    // caller's ORIGINAL spelling, never the folded one, so the statement's own predicate is
+    // untouched.
+    const memoKey = cfFoldKey(roundingRuleID);
+    const memoized = this.roundingRuleDetails.get(memoKey);
 
-    if (details === undefined) {
-      // Legacy [model/service/RoundingRuleService.cfc:L70]:
-      //   var detailsQuery = getRoundingRuleDAO().getRoundingRuleQuery(
-      //       roundingRuleID = arguments.roundingRuleID);
-      const detailsQuery = await this.promotionRepository.getRoundingRuleQuery(roundingRuleID);
-
-      if (isCfmlNull(detailsQuery)) {
-        throw new Error(
-          `No rounding rule carries the identifier ${JSON.stringify(roundingRuleID)}. ` +
-            'The legacy query [model/service/RoundingRuleService.cfc:L70] yields zero rows in ' +
-            'this case and [L73-L74] then fail reading columns off the empty result; that ' +
-            'failure is reproduced rather than masked with a substituted default.',
-        );
-      }
-
-      // Legacy [model/service/RoundingRuleService.cfc:L72-L74]: an empty struct is
-      // created and exactly two keys are written into it. Both are built here in one
-      // frozen literal instead, because a two-step create-then-populate has no
-      // purpose once the object is immutable.
-      //
-      // CFML parity [model/service/RoundingRuleService.cfc:L73-L74]: `?? ''` restores
-      // the CFML query-column rendering of a SQL NULL. See the ⚠️ note above - this
-      // is what makes a rule with no stored expression a pass-through on this path
-      // while it is a `"0.00"` rounding on the entity path.
-      details = Object.freeze({
-        roundingRuleExpression: detailsQuery.getRoundingRuleExpression() ?? '',
-        roundingRuleDirection: detailsQuery.getRoundingRuleDirection() ?? '',
-      });
-
-      this.roundingRuleDetails.set(roundingRuleID, details);
+    if (memoized !== undefined) {
+      // Legacy [model/service/RoundingRuleService.cfc:L76]:
+      //   return variables.roundingRuleDetails[ arguments.roundingRuleID ];
+      return await memoized;
     }
 
-    // Legacy [model/service/RoundingRuleService.cfc:L76]:
-    //   return variables.roundingRuleDetails[ arguments.roundingRuleID ];
-    return details;
+    const resolution = this.resolveRoundingRuleDetails(roundingRuleID);
+    this.roundingRuleDetails.set(memoKey, resolution);
+
+    // A FAILED READ IS FORGOTTEN, NEVER CACHED. Registered before the `await` so the
+    // rejection is always handled - an unobserved rejected promise sitting in a map would
+    // otherwise surface as an unhandled rejection - and guarded by identity so a retry that
+    // has already installed its own entry is not evicted by the previous failure.
+    resolution.catch((): void => {
+      if (this.roundingRuleDetails.get(memoKey) === resolution) {
+        this.roundingRuleDetails.delete(memoKey);
+      }
+    });
+
+    return await resolution;
+  }
+
+  /**
+   * The repository half of `getRoundingRuleDetailsByID`, extracted so the memo above can hold
+   * ONE promise per identifier.
+   *
+   * Private, and deliberately so: it is the uncached read, and every caller must go through
+   * the memo. Splitting it out changes no behaviour - the body is verbatim the legacy
+   * [model/service/RoundingRuleService.cfc:L69-L75] sequence - it only gives the single-flight
+   * entry something to hold.
+   *
+   * @param roundingRuleID - the caller's ORIGINAL spelling, which is what the predicate binds.
+   * @returns the two-key frozen details object the legacy memo stored.
+   * @throws Error when no rule carries the identifier, reproducing the legacy zero-row column
+   *   read.
+   */
+  private async resolveRoundingRuleDetails(roundingRuleID: string): Promise<RoundingRuleDetails> {
+    // Legacy [model/service/RoundingRuleService.cfc:L70]:
+    //   var detailsQuery = getRoundingRuleDAO().getRoundingRuleQuery(
+    //       roundingRuleID = arguments.roundingRuleID);
+    const detailsQuery = await this.promotionRepository.getRoundingRuleQuery(roundingRuleID);
+
+    if (isCfmlNull(detailsQuery)) {
+      throw new Error(
+        `No rounding rule carries the identifier ${JSON.stringify(roundingRuleID)}. ` +
+          'The legacy query [model/service/RoundingRuleService.cfc:L70] yields zero rows in ' +
+          'this case and [L73-L74] then fail reading columns off the empty result; that ' +
+          'failure is reproduced rather than masked with a substituted default.',
+      );
+    }
+
+    // Legacy [model/service/RoundingRuleService.cfc:L72-L74]: an empty struct is
+    // created and exactly two keys are written into it. Both are built here in one
+    // frozen literal instead, because a two-step create-then-populate has no
+    // purpose once the object is immutable.
+    //
+    // CFML parity [model/service/RoundingRuleService.cfc:L73-L74]: `?? ''` restores
+    // the CFML query-column rendering of a SQL NULL. See the ⚠️ note above - this
+    // is what makes a rule with no stored expression a pass-through on this path
+    // while it is a `"0.00"` rounding on the entity path.
+    return Object.freeze({
+      roundingRuleExpression: detailsQuery.getRoundingRuleExpression() ?? '',
+      roundingRuleDirection: detailsQuery.getRoundingRuleDirection() ?? '',
+    });
   }
 
   /**
@@ -1100,8 +1386,8 @@ export class RoundingRuleService {
    * SYNCHRONOUS AND PURE. No repository, no clock, no environment, no instance state:
    * the result depends on the three arguments and nothing else. Both of its
    * synchronous consumers depend on that -
-   * `src/services/priceGroupService.ts` (planned) and
-   * `src/services/promotion/discountAmount.ts` (planned) are both specified to call
+   * `src/services/priceGroupService.ts` and
+   * `src/services/promotion/discountAmount.ts` are both specified to call
    * rounding synchronously.
    *
    * LEGACY-DEFECT [model/service/RoundingRuleService.cfc:L88 vs L79, L84]: `roundValue`
@@ -1146,17 +1432,19 @@ export class RoundingRuleService {
    * @param roundingExpression - A CFML comma list of rounding expressions. Defaults to
    *   `'0.00'`, exactly as [L88] declares. An empty list rounds nothing: `listLen('')`
    *   is 0, so the loop never runs and the input is returned unchanged.
-   * @param roundingDirection - `'Closest'`, `'Up'` or `'Down'`. Defaults to
-   *   `'Closest'`, exactly as [L88] declares. Typed `string` rather than a union
-   *   because an unrecognised direction is a reachable live state - see the dispatch
-   *   below.
+   * @param roundingDirection - `'Closest'`, `'Up'` or `'Down'`, matched without regard to
+   *   case. Defaults to `'Closest'`, exactly as [L88] declares. Typed
+   *   {@link RoundingDirection} - the name AAP 0.4.2 assigns this parameter - which is an
+   *   OPEN union: it names those three canonical spellings while still admitting any other
+   *   string, because an unrecognised direction is a reachable live state that falls through
+   *   the defaultless dispatch below and yields the input unrounded.
    * @returns The rounded numeral, or the two-decimal input when no candidate was
    *   selected.
    */
   roundValue(
     value: Money | DecimalString,
     roundingExpression: string = '0.00',
-    roundingDirection: string = 'Closest',
+    roundingDirection: RoundingDirection = 'Closest',
   ): DecimalString {
     // Legacy [model/service/RoundingRuleService.cfc:L89]:
     //   var inputValue = numberFormat(arguments.value, "0.00");
@@ -1447,7 +1735,25 @@ export class RoundingRuleService {
       // Pinned rather than repaired: `tests/unit/services/roundingRuleService.test.ts` drives
       // `outOfVocabularyDirectionRoundingRule` through this dispatch and asserts the two-decimal
       // input comes back unchanged, so the fall-through cannot become a throw unnoticed.
-      switch (roundingDirection) {
+      //
+      // ★★★ DISPATCHED ON THE CANONICALISED TOKEN, BECAUSE A CFML `switch` ON A STRING IS
+      // CASE-INSENSITIVE AND A TypeScript ONE IS NOT. This is the money half of the same
+      // reasoning the vocabulary note above sets out, and it points the other way: a persisted
+      // `roundingRuleDirection` of `'closest'`, `'UP'` or `'down'` MATCHED its arm in the legacy
+      // engine [model/service/RoundingRuleService.cfc:L132-L166] and priced accordingly, while an
+      // exact-case comparison here matched nothing, left both accumulators untouched and answered
+      // the UN-ROUNDED input - a different total for the same row. `SwRoundingRule`
+      // `roundingRuleDirection` is bare `ormtype="string"` [model/entity/RoundingRule.cfc:L55]
+      // with no check constraint and no rule in `model/validation/RoundingRule.json`, and the
+      // legacy admin's own select emits the mixed-case labels, so other casings are ordinary
+      // persisted data rather than a hypothetical.
+      //
+      // ONLY RECOGNISED TOKENS ARE FOLDED, WHICH IS WHAT KEEPS THE FALL-THROUGH ALIVE.
+      // `canonicalRoundingDirection` answers the exactly-spelled arm for a case-insensitive match
+      // and otherwise returns the token UNCHANGED, so a genuinely out-of-vocabulary direction
+      // still matches no arm and still reaches `return inputValue` at [L170-L174]. Case parity is
+      // restored; the vocabulary is not widened, no arm is added, and no direction is refused.
+      switch (canonicalRoundingDirection(roundingDirection)) {
         // Legacy [model/service/RoundingRuleService.cfc:L133-L143].
         case 'Closest': {
           if (isCfmlNull(returnDelta) || isLessThan(valueOptionOneDelta, returnDelta)) {

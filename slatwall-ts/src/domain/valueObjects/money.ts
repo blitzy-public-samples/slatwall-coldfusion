@@ -122,7 +122,7 @@
 //
 // Routing all arithmetic through `Money` is what closes the raw floating-point gap in the
 // `amountOff` branch at [model/service/PromotionService.cfc:L998] (register entry 12) and what
-// makes the un-scoped `discountAmount` assignment at [L1007, L1009] (register entry 13)
+// makes the un-scoped `discountAmount` assignment at [L1007, L1009, L1014] (register entry 13)
 // function-local. Both divergences are owned and annotated in `src/services`, as are register
 // entries 8 and 14 and the `roundValue` algorithm with its ten measured characterization outputs.
 

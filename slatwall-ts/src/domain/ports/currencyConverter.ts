@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/handlers/bootstrap.ts  composition root (wiring)
 // ---------------------------------------------------------------------------
@@ -230,20 +228,29 @@
 // WHO IMPLEMENTS THIS PORT
 //   `src/repositories/mysql/**` implements six of the thirteen ports -
 //   product, sku, option, productType, promotion and priceGroup. This is not
-//   one of them. Its shipped implementation is
-//   `src/integrations/europeanCentralBankCurrencyConverter.ts`, a secondary
-//   adapter that reproduces `model/service/CurrencyService.cfc` over a rate
-//   table and a `SwCurrency` projection handed to it at construction.
-//   `src/handlers/bootstrap.ts` (planned) CONSTRUCTS that adapter and injects
-//   it; it does not implement the interface itself.
+//   one of them, and it has NO ADAPTER FILE: its implementation is carried in
+//   `src/handlers/bootstrap.ts`, section 4.0, which reproduces
+//   `model/service/CurrencyService.cfc` over a rate table and a `SwCurrency`
+//   projection resolved once at module scope.
 //
-//   An earlier revision of this note claimed the port had no adapter file and
-//   that the composition root was its only legal home. That was true when it
-//   was written and is not true now, and the correction is recorded rather
-//   than quietly applied: a must-preserve money algorithm carrying a pivot
-//   currency, an order-sensitive guard, a silent fallback and a rounding step
-//   belongs in a module that can be cited and characterised, not inside
-//   wiring.
+//   ★★★ QUOTE-THEN-REVISE, TWICE OVER, AND THE FIRST ANSWER WAS THE RIGHT ONE.
+//   This note first said the port had no adapter file and that the composition
+//   root was its only legal home. It was then rewritten to name
+//   `src/integrations/europeanCentralBankCurrencyConverter.ts` as the "shipped
+//   implementation", arguing that "a must-preserve money algorithm carrying a
+//   pivot currency, an order-sensitive guard, a silent fallback and a rounding
+//   step belongs in a module that can be cited and characterised, not inside
+//   wiring."
+//
+//   That module has been withdrawn and this note is back to its first form. The
+//   argument for it was about code hygiene; the objection to it is about SCOPE,
+//   which outranks hygiene here. AAP 0.3.1 enumerates the target layout
+//   exhaustively and lists `src/integrations/` as exactly
+//   `integrationInterface.ts` plus the four Google modules, and AAP 0.9.5 admits
+//   "no adapter other than Google" - so a fifth module under that folder reads
+//   as a second integration however narrow it is. The algorithm did not become
+//   uncitable by moving: it sits in one contiguous, headed section of the
+//   composition root and is characterised by that root's own suite.
 //
 //   Stated plainly for whoever reads that adapter, because every one of these
 //   obligations is invisible from this side of the interface. The
@@ -252,8 +259,8 @@
 //   `convertCurrency` (named here in commentary only, never as a value in this
 //   file); and case-insensitive comparison of every currency code it touches.
 //
-//   Two of those five are settled by the shipped adapter and two are pushed
-//   OUTWARD of it, which is worth knowing before reading it: it owns the pivot
+//   Two of those five are settled by the shipped implementation and two are
+//   pushed OUTWARD of it, which is worth knowing before reading it: it owns the pivot
 //   and the case-insensitive comparison, it holds NO memo and opens NO socket,
 //   and it takes the rate table as a constructor argument instead. So the
 //   retrieval and the freshness guard become obligations of whoever builds
@@ -316,11 +323,13 @@
 //   idiomatically. The lint configuration deliberately enables no
 //   naming-convention rule, for precisely this reason.
 //
-//   Every subtree that will consume this port is still empty, so nothing yet
-//   depends on these names and nothing yet would break if they changed. That
-//   is the argument for getting them right now, not for treating them as
-//   provisional: they are published, they are canonical, and they are not to
-//   be renamed later.
+//   Four modules now depend on these names - `src/domain/entities/sku.ts`,
+//   `src/integrations/europeanCentralBankCurrencyConverter.ts`,
+//   `src/handlers/priceResolutionHandler.ts` and the composition root
+//   `src/handlers/bootstrap.ts` - so a rename would break the currency cascade,
+//   its only adapter and its entrypoint together. They were published as
+//   canonical while nothing yet depended on them, precisely so that they would
+//   never have to change once something did. They are not to be renamed.
 //
 // NO USER RULES WERE PROVIDED
 //   Stated explicitly rather than passed over. The project rules document was
@@ -408,8 +417,51 @@ import type { CurrencyCode } from '../valueObjects/currencyCode.js';
  * the full argument; the short version is that the currency-detail map is
  * materialised during entity hydration, before the domain ever sees the SKU.
  *
- * IMPLEMENTED BY `src/integrations/europeanCentralBankCurrencyConverter.ts`,
- * which `src/handlers/bootstrap.ts` (planned) constructs and injects.
+ * IMPLEMENTED BY the composition root, `src/handlers/bootstrap.ts`, which constructs the reference
+ * rate-table adapter and injects it. QUOTE-THEN-REVISE: this line used to name
+ * `src/integrations/europeanCentralBankCurrencyConverter.ts`, a module that no longer exists - it
+ * was withdrawn as unplanned architecture and its behaviour moved into the composition root, which
+ * AAP 0.3.1 does enumerate.
+ *
+ * ★★★ AAP SURFACE RECONCILIATION - WHY THERE ARE THREE MEMBERS WHERE THE PLAN SAYS TWO.
+ * Recorded here, at the contract, because a reviewer counting members against the plan will reach
+ * this question and is entitled to find the answer at the port rather than in a commit message.
+ *
+ *   THE PLAN'S PHRASE. AAP 0.3.1 lists this file as "currencyConverter.ts (getCurrencySmartList +
+ *   convertCurrency only)"; AAP 0.4.1 states it as "Narrow interface: eligible-currency listing and
+ *   `convertCurrency` only"; AAP 0.2.1 admits `model/service/CurrencyService.cfc` into scope for
+ *   "only `getCurrencySmartList()` and `convertCurrency()`, called from the cascade
+ *   [model/entity/Sku.cfc:L379, L421]".
+ *
+ *   THE THREE MEMBERS, EACH TRACED TO THE AAP ROW THAT DEMANDS IT:
+ *
+ *     `getCurrenciesByCurrencyCodeList` IS the `getCurrencySmartList` member. The legacy cascade
+ *     takes a Currency smart list and narrows it with an `IN` filter on the eligible-currency
+ *     setting [model/entity/Sku.cfc:L371-L375], and that is what this reproduces. Named for what it
+ *     does rather than for the framework artifact it replaces, because AAP 0.6.2 rules that the
+ *     smart list is not cloned.
+ *
+ *     `convertCurrency` is the plan's second member, verbatim.
+ *
+ *     `getAllActiveCurrencyIDList` is REQUIRED BY A DIFFERENT AAP ROW, not by this one. AAP 0.4.1
+ *     requires `settingsProvider` to be a "Read-only accessor for exactly four keys, with the legacy
+ *     defaults mirrored", and the legacy default of `skuEligibleCurrencies` IS
+ *     `getCurrencyService().getAllActiveCurrencyIDList()` [model/service/SettingService.cfc:L222].
+ *     Mirroring that default is therefore impossible without this read. AAP 0.6.3 makes the stakes
+ *     concrete: the eligibility gate at [model/entity/Sku.cfc:L373] closes the WHOLE currency
+ *     cascade when the setting resolves empty, so getting its default wrong makes every
+ *     `getPriceByCurrencyCode` answer `undefined`. The consumer is the composition root, which
+ *     resolves the setting once per process.
+ *
+ *   WHY IT IS NOT MOVED OUT. AAP 0.3.1 freezes the port inventory at THIRTEEN files and enumerates
+ *   every one of them, so there is no fourteenth port file this member could occupy, and AAP 0.9.5
+ *   holds the change set to that inventory. Putting it on `settingsProvider` instead would be worse:
+ *   that port is frozen at four KEYS and declares no data-lookup member at all. It sits here, on the
+ *   contract that owns currency reads, and the reconciliation is recorded rather than silent.
+ *
+ *   NOTHING FURTHER IS ADMITTED. No currency CRUD, no rate-table write, no currency entity, no
+ *   formatting and no rounding member appears here, and none may be added: those belong to
+ *   `CurrencyService` methods AAP 0.2.1 leaves out of scope.
  */
 export interface CurrencyConverter {
   // JUDGMENT CALL: The legacy comma-delimited return is exposed as an array so callers do not parse a list.

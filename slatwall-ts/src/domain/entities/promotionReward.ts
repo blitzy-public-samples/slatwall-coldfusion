@@ -726,30 +726,43 @@ export class PromotionReward {
    * linktable="SwPromoRewardShippingMethod" fkcolumn="promotionRewardID"
    * inversejoincolumn="shippingMethodID"`.
    *
-   * ★★★ LEGACY-NOTE [model/entity/PromotionReward.cfc:L78, L178-L195]: `ShippingMethod` is part
-   * of the explicitly out-of-scope order/checkout/shipping pipeline, so this collection is
-   * collapsed to an inert readonly opaque-ID array like its two Group B siblings. UNLIKE
-   * `fulfillmentMethods` [L76] and `shippingAddressZones` [L77], however, the source DOES
-   * declare a full hand-written helper pair for it - `addShippingMethod` [L178-L185] and
-   * `removeShippingMethod` [L186-L195]. BOTH ARE DROPPED HERE, along with the
-   * framework-dispatched `hasShippingMethod` predicate whose call site is the `add*` guard at
-   * L179. "Dropped" means the member is not authored in the target; no legacy file is touched.
+   * LEGACY-NOTE [model/entity/PromotionReward.cfc:L78]: `ShippingMethod` is part of the explicitly
+   * out-of-scope order/checkout/shipping pipeline, so the collection itself is collapsed to opaque
+   * `shippingMethodID` values rather than an entity array - the anti-corruption treatment AAP 0.1.1
+   * mandates for an out-of-scope aggregate. The persisted link rows survive losslessly, so schema
+   * continuity is unbroken.
    *
-   * This follows the precedent already set three times in this folder:
-   * `PriceGroup.addAppliedOrderItem` [model/entity/PriceGroup.cfc:L128] /
-   * `removeAppliedOrderItem` [L131] (dropped - `OrderItem` out of scope);
-   * `Brand.addAttributeValue` [model/entity/Brand.cfc:L90] / `removeAttributeValue` [L93]
-   * (dropped - EAV not ported); and model/entity/PromotionCode.cfc's `accounts` / `orders`
-   * collections with all four of their helpers (dropped - `Account`/`Order` out of scope).
+   * ★★★ QUOTE-THEN-REVISE: THE THREE HELPERS ARE AUTHORED, KEYED ON THE OPAQUE ID (F30). This block
+   * used to state that `addShippingMethod` [L178-L185], `removeShippingMethod` [L186-L195] and the
+   * framework-dispatched `hasShippingMethod` predicate were all "DROPPED HERE", on the precedent of
+   * `PriceGroup.addAppliedOrderItem` [model/entity/PriceGroup.cfc:L128] / `removeAppliedOrderItem`
+   * [L131], `Brand.addAttributeValue` [model/entity/Brand.cfc:L90] / `removeAttributeValue` [L93],
+   * and model/entity/PromotionCode.cfc's `accounts` / `orders` helpers.
    *
-   * The persisted link rows survive losslessly as the ID array here, so schema continuity is
-   * unbroken. The far-side members the dropped helpers referenced -
-   * `ShippingMethod.hasPromotionReward` and `ShippingMethod.getPromotionRewards()` - are
-   * therefore never called from this file.
+   *   THE PRECEDENT WAS MISAPPLIED. Every case it cites is a collection with NO helper in the source
+   *   at all, or one whose helper needs a far-side entity method that has no ID-keyed equivalent.
+   *   This one is different in the one way that matters: AAP 0.4.2 states that the bidirectional
+   *   `add*`/`remove*` helpers "become array operations with identical names", and the OWNING SIDE of
+   *   these two is pure array work over `variables.shippingMethods` - `arrayAppend` at [L180],
+   *   `arrayFind` plus `arrayDeleteAt` at [L187-L190] - which an opaque ID reproduces exactly. Only
+   *   the far side needs the entity, and the far side is where the boundary genuinely bites.
    *
-   * ★ THE DELETE-CONTEXT TENSION applies here too, on the same terms as the two siblings above.
+   *   SO THE OWNING HALF IS REPRODUCED AND THE FAR HALF IS NOT, and the split is stated at each
+   *   member rather than used to justify dropping the whole thing. `ShippingMethod.hasPromotionReward`
+   *   and `ShippingMethod.getPromotionRewards()` are never called from this file, because
+   *   `ShippingMethod` is not ported.
+   *
+   * ★ A MUTABLE ARRAY BEHIND A `readonly` BINDING, which is what the helpers need and is exactly what
+   * CFML had: `variables.shippingMethods` was itself mutated in place by both helpers. The BINDING is
+   * `readonly` so the array cannot be replaced wholesale, and the constructor COPIES its input so the
+   * hydrating adapter's array is never aliased into the entity.
+   *
+   * ★ THE DELETE-CONTEXT TENSION applies here too, on the same terms as the two siblings above:
+   * because this surfaces as IDs, a `maxCollection:0` delete-context rule referencing it would
+   * trivially PASS here where it would BLOCK in CFML. Enforcement belongs to src/services and
+   * src/repositories.
    */
-  private readonly shippingMethodIDs: readonly string[];
+  private readonly shippingMethodIDs: string[];
 
   /**
    * GROUP C, INCLUDE. [model/entity/PromotionReward.cfc:L80]
@@ -1003,7 +1016,10 @@ export class PromotionReward {
     this.eligiblePriceGroups = init.eligiblePriceGroups ?? [];
     this.fulfillmentMethodIDs = init.fulfillmentMethodIDs ?? [];
     this.shippingAddressZoneIDs = init.shippingAddressZoneIDs ?? [];
-    this.shippingMethodIDs = init.shippingMethodIDs ?? [];
+    // COPIED, not aliased: the helpers below mutate this array in place, exactly as
+    // [model/entity/PromotionReward.cfc:L180, L189] mutate `variables.shippingMethods`, so the
+    // hydrating adapter's own array must not be the one that moves.
+    this.shippingMethodIDs = [...(init.shippingMethodIDs ?? [])];
     this.brands = init.brands ?? [];
     this.options = init.options ?? [];
     this.skus = init.skus ?? [];
@@ -1179,9 +1195,17 @@ export class PromotionReward {
    * [model/entity/PromotionReward.cfc:L78] The collapsed Group B link rows for
    * `SwPromoRewardShippingMethod`, as opaque `shippingMethodID` values.
    *
-   * ★ This is the surface that replaces the DROPPED `getShippingMethods()`,
-   * `addShippingMethod` [L178-L185], `removeShippingMethod` [L186-L195] and
-   * `hasShippingMethod` members. See the field documentation for the full drop record.
+   * ★ This is the ID-keyed surface that replaces `getShippingMethods()`, whose element type would
+   * be the out-of-scope `ShippingMethod` entity. QUOTE-THEN-REVISE: this note used to add
+   * "`addShippingMethod` [L178-L185], `removeShippingMethod` [L186-L195] and `hasShippingMethod`"
+   * to that list of replaced members; all three are now AUTHORED, keyed on the opaque ID. See the
+   * field documentation for the full record.
+   *
+   * ★ THE LIVE ARRAY, exactly as [model/entity/PromotionReward.cfc:L183, L191, L193] returned the
+   * live `variables.shippingMethods` to its callers - so a caller that read this before an
+   * `addShippingMethod` observes the addition, as it did in CFML. It is typed `readonly` so a caller
+   * cannot mutate it directly and must go through the helpers, which is the one place the guard
+   * semantics live.
    *
    * ★ FAR-SIDE CONTRACT FOR src/services: resolve shipping methods through read-only
    * order-fulfillment views, not through entity traversal.
@@ -1624,9 +1648,10 @@ export class PromotionReward {
    * Framework-dispatched [org/Hibachi/HibachiEntity.cfc:L507-L565]; NOT declared in the source.
    * Guard site L379. Compares on `productTypeID`. EXCLUDE side [L90].
    *
-   * ⚠ THIS TABLE HAS ELEVEN ROWS, NOT TWELVE. `hasShippingMethod`, whose guard site is L179, is
-   * DELIBERATELY NOT AUTHORED - see the `shippingMethodIDs` field documentation for the full
-   * drop record.
+   * ⚠ QUOTE-THEN-REVISE: THIS TABLE HAS TWELVE ROWS. It used to read "THIS TABLE HAS ELEVEN ROWS,
+   * NOT TWELVE. `hasShippingMethod`, whose guard site is L179, is DELIBERATELY NOT AUTHORED".
+   * `hasShippingMethod` IS authored now (F30), keyed on the opaque `shippingMethodID` because
+   * `ShippingMethod` is out of scope - see the `shippingMethodIDs` field documentation.
    */
   hasExcludedProductType(productType: ProductType): boolean {
     const candidateID: string = productType.getProductTypeID();
@@ -1646,7 +1671,7 @@ export class PromotionReward {
   // THIRTEEN HELPER PAIRS FOR FOURTEEN RELATIONSHIPS, verified from the source:
   //   setPromotionPeriod        L140 / removePromotionPeriod        L146   (the many-to-one)
   //   addEligiblePriceGroup     L158 / removeEligiblePriceGroup     L166
-  //   addShippingMethod         L178 / removeShippingMethod         L186   ⇒ DROPPED, see below
+  //   addShippingMethod         L178 / removeShippingMethod         L186   ⇒ ID-KEYED, see below
   //   addBrand                  L198 / removeBrand                 L206
   //   addOption                 L218 / removeOption                L226
   //   addSku                    L238 / removeSku                   L246
@@ -1661,15 +1686,22 @@ export class PromotionReward {
   // ⇒ `fulfillmentMethods` [L76] and `shippingAddressZones` [L77] have NO helpers at all in the
   //   source, while `shippingMethods` [L78] HAS them - an asymmetry that DIFFERS from
   //   model/entity/PromotionQualifier.cfc, which declared no helpers for ANY of its three
-  //   out-of-scope collections. TWELVE PAIRS ARE AUTHORED HERE: the many-to-one pair plus
-  //   ELEVEN many-to-many pairs. The `shippingMethod` pair is dropped.
+  //   out-of-scope collections.
+  //
+  //   ★★★ QUOTE-THEN-REVISE: ALL THIRTEEN PAIRS ARE AUTHORED HERE. This read "TWELVE PAIRS ARE
+  //   AUTHORED HERE: the many-to-one pair plus ELEVEN many-to-many pairs. The `shippingMethod` pair
+  //   is dropped." AAP 0.4.2 requires the `add*`/`remove*` helpers to "become array operations with
+  //   identical names", and the owning half of this pair is pure array work that an opaque ID
+  //   reproduces exactly. So the count is the many-to-one pair plus TWELVE many-to-many pairs, and
+  //   the `shippingMethod` pair is ID-KEYED rather than entity-keyed - the only pair in the block
+  //   that is.
   //
   // ★★★ THE TWO FAR-SIDE MEMBER FAMILIES - NEVER MIXED.
   //
   //   FAMILY 1, INCLUDE: `hasPromotionReward(this)` + `getPromotionRewards()`
   //     PromotionPeriod  has L142  get L143, L150, L152   ✅ verified in promotionPeriod.ts
   //     PriceGroup       has L162  get L163, L171, L173   ✅ verified in priceGroup.ts
-  //     ShippingMethod   has L182  get L183, L191, L193   ❌ out of scope - helpers DROPPED
+  //     ShippingMethod   has L182  get L183, L191, L193   ❌ out of scope - FAR SIDE not reproduced
   //     Brand            has L202  get L203, L211, L213   ✅ verified in brand.ts
   //     Option           has L222  get L223, L231, L233   ✅ verified in option.ts
   //     Sku              has L242  get L243, L251, L253   ✅ verified in sku.ts
@@ -1904,6 +1936,83 @@ export class PromotionReward {
     const thatIndex: number = farSide.indexOf(this);
     if (thatIndex !== -1) {
       farSide.splice(thatIndex, 1);
+    }
+  }
+
+  /**
+   * Whether this reward already carries the given shipping-method link row.
+   *
+   * Framework-dispatched [org/Hibachi/HibachiEntity.cfc:L507-L565]; NOT declared in the source.
+   * Its one guard site is the `addShippingMethod` condition at
+   * [model/entity/PromotionReward.cfc:L179], and it is published here for the same reason the other
+   * twelve `has*` predicates are: the guard has to be callable to be reproducible, and a caller
+   * checking membership before adding is doing what the source's own `add*` does.
+   *
+   * ★ KEYED ON THE OPAQUE ID, because `ShippingMethod` is part of the out-of-scope order/checkout/
+   * shipping pipeline and is not ported. The comparison is `===` on the identifier rather than the
+   * two-branch identity-or-ID comparison the entity-keyed predicates use: those need the branch only
+   * because a NEW entity has an empty identifier and must still be findable by reference, and an
+   * opaque ID array holds no unsaved entity for that branch to serve.
+   *
+   * @param shippingMethodID the `shippingMethodID` value of the link row.
+   * @returns whether the identifier is already held.
+   */
+  hasShippingMethod(shippingMethodID: string): boolean {
+    return this.shippingMethodIDs.includes(shippingMethodID);
+  }
+
+  /**
+   * [model/entity/PromotionReward.cfc:L178-L185] Link table `SwPromoRewardShippingMethod`.
+   * Parameter named `shippingMethod` in the source; ID-keyed here, so `shippingMethodID`.
+   *
+   * ★★★ THE OWNING HALF IS REPRODUCED EXACTLY; THE FAR HALF CANNOT BE AND IS NOT SIMULATED.
+   *
+   *   OWNING HALF [L179-L181]: `if(arguments.shippingMethod.isNew() or
+   *   !hasShippingMethod(arguments.shippingMethod)) { arrayAppend(variables.shippingMethods, ...) }`.
+   *   The `!has` term is reproduced below. The `isNew()` term is UNREACHABLE through an ID-keyed
+   *   helper and that is a consequence of the boundary rather than a decision: `isNew()` means "no
+   *   persisted identifier yet", and this array holds identifiers, so there is no unsaved
+   *   shipping method for the disjunction's first arm to admit. The observable effect of the missing
+   *   arm is that a duplicate is never appended, where CFML would append one for an unsaved entity -
+   *   a state that cannot arise on this side of the boundary.
+   *
+   *   FAR HALF [L182-L184]: `if(isNew() or !arguments.shippingMethod.hasPromotionReward(this)) {
+   *   arrayAppend(arguments.shippingMethod.getPromotionRewards(), this) }`. Not reproduced, because
+   *   `ShippingMethod` is not ported and neither of those two members exists to call. Nothing is
+   *   substituted for it: a fabricated far side would be a second, invented link representation.
+   *   Maintaining the inverse row is the repository's business, on the same terms as every other
+   *   opaque-ID collection in this file.
+   *
+   * @param shippingMethodID the `shippingMethodID` value to link.
+   */
+  addShippingMethod(shippingMethodID: string): void {
+    // [L179-L181]
+    if (!this.hasShippingMethod(shippingMethodID)) {
+      this.shippingMethodIDs.push(shippingMethodID);
+    }
+  }
+
+  /**
+   * [model/entity/PromotionReward.cfc:L186-L195] Removes from the OWNING side only.
+   *
+   * ★ FIRST OCCURRENCE ONLY, which is the source's semantic and not a simplification:
+   * `arrayFind` at [L187] answers the first position and `arrayDeleteAt` at [L189] removes exactly
+   * that one element, so a duplicated link row would leave one behind. `indexOf` plus a
+   * single-element `splice` is the same behaviour.
+   *
+   * ★ THE `> 0` TEST BECOMES `!== -1`, because CFML's `arrayFind` answers 0 for "absent" over
+   * 1-based positions while `indexOf` answers -1 over 0-based ones. The guard is the same guard.
+   *
+   * ★ THE FAR-SIDE REMOVAL [L191-L194] IS NOT REPRODUCED, for the reason recorded on
+   * `addShippingMethod`.
+   *
+   * @param shippingMethodID the `shippingMethodID` value to unlink.
+   */
+  removeShippingMethod(shippingMethodID: string): void {
+    // [L187-L190]
+    const thisIndex: number = this.shippingMethodIDs.indexOf(shippingMethodID);
+    if (thisIndex !== -1) {
+      this.shippingMethodIDs.splice(thisIndex, 1);
     }
   }
 

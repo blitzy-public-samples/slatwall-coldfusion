@@ -129,7 +129,7 @@ import type {
   ProductTypeTreeRow,
 } from '../../domain/ports/productTypeRepository.js';
 import { buildIdPathList } from '../../domain/valueObjects/materializedIdPath.js';
-import { listAppend, listLen } from '../../lib/cfml/list.js';
+import { listAppend, listFindNoCase, listLen } from '../../lib/cfml/list.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { isNullish } from '../../lib/cfml/truthiness.js';
 import type { AuditActorContext, PreparedStatementExecutor, SqlRow } from './connection.js';
@@ -1296,7 +1296,7 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
    * never imported as a module singleton. Three consequences follow, and all three
    * are wanted. The class holds no ambient dependency, so what it talks to is
    * visible at its construction site in the composition root -
-   * `src/handlers/bootstrap.ts` (planned) - rather than resolved behind its back.
+   * `src/handlers/bootstrap.ts` - rather than resolved behind its back.
    * It reads no environment variable and holds no credential, so configuration stays
    * the composition root's business. And statement-shape assertions become possible
    * WITHOUT A DATABASE: a suite implements the three-method interface, records each
@@ -1433,6 +1433,45 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
     const ancestryRows: SqlRow[] = [targetRow];
     const visitedFoldedIDs = new Set<string>([targetFoldedID]);
 
+    // ★★★ THE WHOLE ANCESTRY IS READ IN ONE STATEMENT INSTEAD OF ONE PER HOP (F37). The walk below
+    // used to `await this.readProductTypeRow(parentProductTypeID)` on every iteration, so a type
+    // five levels deep cost five statements - and the row it starts from ALREADY CARRIES the answer:
+    // `productTypeIDPath` is a stored materialized path [model/entity/ProductType.cfc:L53],
+    // maintained by the entity's own `preInsert`/`preUpdate` hooks [L305, L310], and the legacy
+    // itself trusts it to find the root at [model/entity/ProductType.cfc:L112]. One path read is
+    // therefore the same question asked once.
+    //
+    // ROW-FOR-ROW IDENTICAL, NOT MERELY EQUIVALENT. `SELECT_PRODUCT_TYPES_BY_ID_PATH_SQL` projects
+    // the SAME `PRODUCT_TYPE_PROJECTION` from the SAME table with NO additional predicate - no
+    // `activeFlag` filter, no `LIMIT`, no `ORDER BY` - so a row arriving through it is
+    // indistinguishable from the same row arriving through `SELECT_PRODUCT_TYPE_BY_ID_SQL`. Had the
+    // path statement carried an extra predicate, an ancestor it excluded would have shortened the
+    // chain, and a shortened chain is a DIFFERENT ANSWER on two must-preserve paths: product-type
+    // membership in the promotion engine [model/service/PromotionService.cfc:L858-L870] and the
+    // third level of the price-group cascade [model/service/PriceGroupService.cfc:L140-L181].
+    //
+    // ★★ THE READ IS LAZY AND GATED, so no statement is issued that provably cannot answer.
+    // It happens at the FIRST HOP THAT NEEDS A PARENT, which means a root - the common case, and the
+    // only shape `getProductTypeQuery` consumers ever hydrate one level deep - still costs exactly
+    // the one row read that found it. And it happens only when the stored path NAMES the identifier
+    // being resolved: asking for "every type whose id occurs in this path" cannot return a parent
+    // the path does not mention, so for a STALE path - which nothing prevents, because nothing
+    // rewrites a descendant's path when an ancestor moves - the per-row read is taken directly.
+    // `listFindNoCase` decides that membership with CFML list semantics, case-insensitively.
+    //
+    // The gate is NARROWER than the statement it guards, deliberately and harmlessly: the predicate
+    // is an unanchored substring `LIKE`, so it would also return a row whose identifier merely
+    // OCCURS INSIDE the path without being an element of it. Such a parent fails the gate and is
+    // read by identifier instead - one statement either way, the same row either way.
+    //
+    // ★ THE WALK IS UNCHANGED IN EVERY OTHER RESPECT, WHICH IS THE POINT. It still follows PARENT
+    // POINTERS rather than the path's order, so the linkage the rows actually declare is what builds
+    // the chain - a path that disagrees with the pointers does not get to redraw the tree - and the
+    // cycle guard still fires on the parent identifier before that parent is resolved.
+    const targetProductTypeIDPath =
+      readOptionalText(targetRow, 'productTypeIDPath', BY_ID_STATEMENT_LABEL) ?? '';
+    let pathAncestorRowsByFoldedID: ReadonlyMap<string, SqlRow> | undefined;
+
     let descendantRow: SqlRow = targetRow;
     let hasUnvisitedAncestor = true;
 
@@ -1465,10 +1504,21 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
         throw new ProductTypeCycleError([...visitedFoldedIDs], foldIdentifier(parentProductTypeID));
       }
 
-      const parentRow =
-        parentProductTypeID === undefined
-          ? undefined
-          : await this.readProductTypeRow(parentProductTypeID);
+      // FROM THE ONE PATH READ when the stored path names this parent, which is the ordinary case;
+      // from its own statement when it does not, or when the path read did not return it.
+      let parentRow: SqlRow | undefined;
+
+      if (parentProductTypeID !== undefined) {
+        if (listFindNoCase(targetProductTypeIDPath, parentProductTypeID) > 0) {
+          pathAncestorRowsByFoldedID ??= await this.readAncestryRowsByPath(
+            targetRow,
+            targetFoldedID,
+          );
+          parentRow = pathAncestorRowsByFoldedID.get(foldIdentifier(parentProductTypeID));
+        }
+
+        parentRow ??= await this.readProductTypeRow(parentProductTypeID);
+      }
 
       if (parentRow === undefined) {
         hasUnvisitedAncestor = false;
@@ -1657,13 +1707,82 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
   }
 
   /**
-   * Read one product-type row, or nothing.
+   * Read every ancestor named by one row's stored materialized path, in ONE statement.
    *
-   * Shared by the identifier read and by the save path's prior-row read, so both use the same
-   * statement with the same single bound parameter.
+   * QUOTE-THEN-REVISE. This helper's docblock previously read, in full: "Read one product-type row,
+   * or nothing. Shared by the identifier read and by the save path's prior-row read, so both use the
+   * same statement with the same single bound parameter." That text describes
+   * {@link MysqlProductTypeRepository.readProductTypeRow}, which is where it now lives; it was left
+   * behind here when this helper was introduced ahead of it. Every clause of it was wrong of this
+   * helper: it reads MANY rows rather than one, it is reached from the identifier read ALONE and not
+   * from the save path, and the parameter it binds is a PATH rather than an identifier.
    *
-   * @param productTypeID the identifier to match.
-   * @returns the row, or `undefined` when none matches.
+   * The one bound parameter is the subject of
+   * {@link https://dev.mysql.com/doc/refman/8.0/en/string-comparison-functions.html LIKE}, not its
+   * pattern: `SELECT_PRODUCT_TYPES_BY_ID_PATH_SQL` asks `? LIKE concat('%', productTypeID, '%')`, so
+   * the path is the string being matched and each candidate row supplies its own pattern. That is
+   * the unanchored substring test `materializedIdPathLikePatternFragment` documents, chosen over
+   * `FIND_IN_SET` because the legacy comparison also matches an identifier occurring INSIDE another.
+   *
+   * A PATH OF ZERO ELEMENTS ISSUES NO STATEMENT and answers with an empty map, so a root - whose
+   * path holds only itself, and whose only entry is then excluded - costs exactly the one row read
+   * that found it. `listLen` from `src/lib/cfml/list.ts` decides emptiness, not a comparison against
+   * `''`, because `''`, `','` and `',,'` are all lists of zero elements in CFML.
+   *
+   * THE TARGET ROW IS EXCLUDED FROM THE RESULT. It is already the head of the walk's `ancestryRows`,
+   * and admitting it would let a self-parent resolve out of this map and so bypass the cycle guard
+   * that exists to refuse exactly that.
+   *
+   * @param targetRow the row the ancestry walk starts from, whose `productTypeIDPath` is read.
+   * @param targetFoldedID the folded identifier of `targetRow`, excluded from the result.
+   * @returns every ancestor row the path names, keyed by folded identifier; empty when the path is
+   *   absent or names nothing.
+   * @throws An error named `ProductTypeColumnError` when a returned row is missing a projected
+   *   column.
+   */
+  private async readAncestryRowsByPath(
+    targetRow: SqlRow,
+    targetFoldedID: string,
+  ): Promise<ReadonlyMap<string, SqlRow>> {
+    const productTypeIDPath = readOptionalText(
+      targetRow,
+      'productTypeIDPath',
+      BY_ID_STATEMENT_LABEL,
+    );
+
+    // A row with no stored path - the column is nullable - yields nothing here, and the walk then
+    // resolves every ancestor through its own read exactly as it did before. No path is invented.
+    if (productTypeIDPath === undefined || listLen(productTypeIDPath) === 0) {
+      return new Map<string, SqlRow>();
+    }
+
+    const rows = await this.executor.execute(SELECT_PRODUCT_TYPES_BY_ID_PATH_SQL, [
+      productTypeIDPath,
+    ]);
+    const rowsByFoldedID = new Map<string, SqlRow>();
+
+    for (const row of rows) {
+      const foldedID = foldIdentifier(readIdentifier(row, 'productTypeID', BY_ID_STATEMENT_LABEL));
+
+      // THE TARGET IS EXCLUDED, deliberately: it is already the head of `ancestryRows`, and admitting
+      // its own row here would let the walk resolve a self-parent from the map and bypass the cycle
+      // guard that is supposed to refuse exactly that.
+      if (foldedID !== targetFoldedID) {
+        rowsByFoldedID.set(foldedID, row);
+      }
+    }
+
+    return rowsByFoldedID;
+  }
+
+  /**
+   * One product-type row by identifier, or nothing.
+   *
+   * Still reached per ancestor when a stored path is incomplete; see
+   * {@link MysqlProductTypeRepository.readAncestryRowsByPath}.
+   *
+   * @param productTypeID the identifier to read.
+   * @returns the row, or `undefined` when no row matches.
    */
   private async readProductTypeRow(productTypeID: string): Promise<SqlRow | undefined> {
     const rows = await this.executor.execute(SELECT_PRODUCT_TYPE_BY_ID_SQL, [productTypeID]);

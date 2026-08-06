@@ -154,12 +154,11 @@ const ENGINE_APPLIED_TYPES: readonly PromotionAppliedType[] = [
   'orderFulfillment',
 ];
 
-/**
- * The legacy table, named verbatim. SCHEMA CONTINUITY IS BINDING
- * [model/entity/PromotionApplied.cfc:L49]: the port reads and writes `SwPromotionApplied`
- * unchanged, with no migration, no rename, no new table and no column change.
- */
-const LEGACY_TABLE = 'SwPromotionApplied';
+// SCHEMA CONTINUITY IS BINDING [model/entity/PromotionApplied.cfc:L49]: the port reads and writes
+// `SwPromotionApplied` unchanged, with no migration, no rename, no new table and no column change.
+// The name is not held in a local constant here, because a constant can only be compared with
+// itself; tests/traceability/legacyTestMap.ts block A20 holds the shipped source to the frozen
+// `table=` attribute instead.
 
 /**
  * The four `fkcolumn` values, verbatim, keyed by the property that declares each.
@@ -370,13 +369,12 @@ describe('the ported surface, and the six helpers deliberately dropped', () => {
     }
   });
 
-  it('names the legacy table verbatim and exposes no accessor for it', () => {
-    // C5 schema continuity: the physical name is `SwPromotionApplied`, not a pluralised or prefixed
-    // variant, and the entity name is `SlatwallPromotionApplied`
-    // [model/entity/PromotionApplied.cfc:L49].
-    expect(LEGACY_TABLE).toBe('SwPromotionApplied');
-    expect(prototypeMembers()).not.toContain('getTableName');
-  });
+  // C5 schema continuity - the physical name is `SwPromotionApplied` and the entity name
+  // `SlatwallPromotionApplied` [model/entity/PromotionApplied.cfc:L49] - is checked against the
+  // shipped source in tests/traceability/legacyTestMap.ts block A20, which derives both from the
+  // frozen `table=` / `entityname=` attributes for all 18 entities. Restating them here as a
+  // constant and asserting it back proved only that this file can hold its own literals; the
+  // `getTableName` half is already covered by the metadata case above.
 
   it('carries no hb_permission-derived member, because the component declares none', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L49]: this component declares NO
@@ -738,16 +736,20 @@ describe('the three order-side foreign keys are opaque identifiers with getters 
   it('keeps the lowercase-f orderfulfillmentID column spelling distinct from the accessor', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L60]: the fkcolumn is spelled
     // `orderfulfillmentID` with a LOWERCASE f, unlike orderItemID (L59) and orderID (L61).
-    // Preserved verbatim as a schema contract. The accessor is camel-cased from the PROPERTY name
-    // `orderFulfillment`, so both halves are pinned:
-    expect(LEGACY_FK_COLUMNS.orderFulfillment).toBe('orderfulfillmentID');
-    expect(LEGACY_FK_COLUMNS.orderFulfillment).not.toBe('orderFulfillmentID');
+    // Preserved verbatim as a schema contract. The COLUMN spellings are not restated here and
+    // compared with themselves - `LEGACY_FK_COLUMNS` is authored in this file, so that loop could
+    // not notice a target module mis-casing the join. Both halves are read from the frozen
+    // component and from the emitted SQL in tests/traceability/legacyTestMap.ts block A20, which
+    // also shows the lowercase-f owning column and the capitalised far-side column meeting in the
+    // same live join. What IS checkable from here is the accessor this class publishes, which is
+    // camel-cased from the PROPERTY name `orderFulfillment` rather than from the column:
     expect(prototypeMembers()).toContain('getOrderFulfillmentID');
+    expect(prototypeMembers()).not.toContain('getOrderfulfillmentID');
 
-    // The other three columns capitalise consistently, which makes L60 the outlier.
-    expect(LEGACY_FK_COLUMNS.orderItem).toBe('orderItemID');
-    expect(LEGACY_FK_COLUMNS.order).toBe('orderID');
-    expect(LEGACY_FK_COLUMNS.promotion).toBe('promotionID');
+    // And the identifier really is carried through the constructor, not merely declared.
+    expect(aPromotionApplied({ orderFulfillmentID: 'of-42' }).getOrderFulfillmentID()).toBe(
+      'of-42',
+    );
   });
 
   it('records the hb_cascadeCalculate asymmetry without shipping a calculated property', () => {

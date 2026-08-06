@@ -187,9 +187,9 @@ import {
 } from '../../../src/lib/cfml/precision.js';
 import type { PreciseValue } from '../../../src/lib/cfml/precision.js';
 import { RoundingRuleService } from '../../../src/services/roundingRuleService.js';
-import { RoundingRuleValidationError } from '../../../src/services/roundingRuleService.js';
 import type { RoundingRuleFrameworkWrites } from '../../../src/services/roundingRuleService.js';
 import type {
+  RoundingDirection,
   RoundingRuleDetails,
   RoundingRuleSaveInput,
 } from '../../../src/services/roundingRuleService.js';
@@ -489,8 +489,13 @@ describe('RoundingRuleService', () => {
     // The default stub resolves the one rule most cases need and nothing else, so
     // an unexpected identifier surfaces as the service's own absent-rule failure
     // rather than as a silently plausible answer.
+    //
+    // ★ THE MATCH IS CASE-INSENSITIVE, BECAUSE THE STATEMENT IT DOUBLES IS.
+    // `roundingRuleID = ?` runs under MySQL's default collation, so the real adapter answers
+    // the same row for `abc` and `ABC`. An exact-match double would model a database that
+    // does not exist and would hide the memo-identity property the cases below pin.
     repository = new RecordingPromotionRepository((roundingRuleID) =>
-      roundingRuleID === graph.closestRoundingRule.getRoundingRuleID()
+      roundingRuleID.toLowerCase() === graph.closestRoundingRule.getRoundingRuleID().toLowerCase()
         ? graph.closestRoundingRule
         : undefined,
     );
@@ -984,20 +989,101 @@ describe('RoundingRuleService', () => {
         graph.outOfVocabularyRoundingRuleDirection,
       );
 
-      // Case matters, and that is worth pinning because CFML `switch` on a string
-      // is case-INSENSITIVE while the ported dispatch is not. A lower-case spelling
-      // therefore takes this same pass-through branch.
-      expect(service.roundValue(PINNED_VALUE, EXPRESSION_LEADING_DOT, 'closest')).toBe(
+      // ★★★ CASE DOES **NOT** MATTER, AND THIS ASSERTION IS THE CORRECTION OF AN EARLIER ONE.
+      // This block used to assert that `'closest'` took the pass-through branch, on the
+      // reasoning that a differently-cased row "is not a state the legacy application
+      // produces". Both halves were wrong. A CFML `switch` over a string is
+      // case-INSENSITIVE [model/service/RoundingRuleService.cfc:L132], so the legacy engine
+      // ROUNDED such a row through the `Closest` arm; and `roundingRuleDirection` is bare
+      // `ormtype="string"` [model/entity/RoundingRule.cfc:L55] with no check constraint and no
+      // rule in `model/validation/RoundingRule.json`, so any casing is ordinary persisted
+      // data. Asserting the exact-case behaviour codified a real money defect: the same row
+      // rounded in CFML and passed through here.
+      //
+      // Only the CASE of a recognised token is folded. The out-of-vocabulary token above is
+      // still a pass-through, which is what keeps the legacy no-default-arm behaviour intact.
+      expect(service.roundValue(PINNED_VALUE, EXPRESSION_LEADING_DOT, 'closest')).toBe('11.99');
+    });
+
+    it('11b. types the direction as the mapped RoundingDirection, which is OPEN by design (F26)', () => {
+      // ★★★ THIS CASE GUARDS THE TYPE, NOT A NEW BEHAVIOUR. AAP 0.4.2 freezes the signature as
+      // `roundValue(value: Money | string, roundingExpression?: string, roundingDirection?:
+      // RoundingDirection): DecimalString`, and AAP 0.9.2 makes every row of that table a parity
+      // gate. The parameter previously carried a bare `string`, which dropped the mapped type
+      // name; it now carries `RoundingDirection`.
+      //
+      // The annotations below are the assertion. They are checked by `npm run typecheck`, not at
+      // run time, and they fail the BUILD if `RoundingDirection` is ever narrowed to the closed
+      // `'Closest' | 'Up' | 'Down'` union - which would make a reachable persisted row
+      // unrepresentable and would delete case 11 above along with it.
+      const persistedDirection: RoundingDirection = graph.outOfVocabularyRoundingRuleDirection;
+      const canonicalDirections: readonly RoundingDirection[] = [
+        DIRECTION_CLOSEST,
+        DIRECTION_UP,
+        DIRECTION_DOWN,
+      ];
+
+      // And the run-time half: the same two behaviours, reached through the mapped type. An
+      // out-of-vocabulary token still passes through; a canonical one still rounds.
+      expect(service.roundValue(PINNED_VALUE, EXPRESSION_LEADING_DOT, persistedDirection)).toBe(
         PINNED_VALUE_QUANTIZED,
       );
+      expect(canonicalDirections).toHaveLength(3);
+      expect(
+        canonicalDirections.map((direction: RoundingDirection): string =>
+          service.roundValue(PINNED_VALUE, EXPRESSION_LEADING_DOT, direction),
+        ),
+      ).toStrictEqual(['11.99', '12.99', '11.99']);
+    });
 
-      // JUDGMENT CALL: that difference is recorded rather than corrected. The
-      // legacy data is written by the admin form-field metadata, which supplies the
-      // three capitalised spellings [model/entity/RoundingRule.cfc:L70-L76], so a
-      // differently-cased row is not a state the legacy application produces - and
-      // normalising the case here would silently ROUND rows that today pass
-      // through untouched, which would move money. This suite pins the shipped
-      // behaviour; changing it needs a product decision, not a test edit.
+    it('11a. dispatches every direction without regard to case, exactly as a CFML switch does', () => {
+      // CFML parity [model/service/RoundingRuleService.cfc:L132-L166]: `switch` over a string
+      // compares case-insensitively, so each of these spellings selected its arm in the legacy
+      // engine and priced through it. The canonical spelling's answer is asserted first, then
+      // every alternative casing is required to equal it - so the property under test is
+      // "case cannot change the money", not a list of remembered numerals.
+      const canonicalClosest = service.roundValue(
+        PINNED_VALUE,
+        EXPRESSION_LEADING_DOT,
+        DIRECTION_CLOSEST,
+      );
+      const canonicalUp = service.roundValue(PINNED_VALUE, EXPRESSION_LEADING_DOT, DIRECTION_UP);
+      const canonicalDown = service.roundValue(
+        PINNED_VALUE,
+        EXPRESSION_LEADING_DOT,
+        DIRECTION_DOWN,
+      );
+
+      // The three measured answers from AAP 0.6.4, restated so a fold that quietly changed
+      // WHICH arm ran would fail here rather than silently agreeing with itself.
+      expect(canonicalClosest).toBe('11.99');
+      expect(canonicalUp).toBe('12.99');
+      expect(canonicalDown).toBe('11.99');
+
+      for (const spelling of ['closest', 'CLOSEST', 'ClOsEsT']) {
+        expect(service.roundValue(PINNED_VALUE, EXPRESSION_LEADING_DOT, spelling)).toBe(
+          canonicalClosest,
+        );
+      }
+
+      for (const spelling of ['up', 'UP', 'uP']) {
+        expect(service.roundValue(PINNED_VALUE, EXPRESSION_LEADING_DOT, spelling)).toBe(
+          canonicalUp,
+        );
+      }
+
+      for (const spelling of ['down', 'DOWN', 'dOwN']) {
+        expect(service.roundValue(PINNED_VALUE, EXPRESSION_LEADING_DOT, spelling)).toBe(
+          canonicalDown,
+        );
+      }
+
+      // Folding is IDENTITY-ONLY: it may not admit a token that is merely similar. A padded
+      // spelling is a different string to a CFML struct key and to a CFML `switch` alike, so
+      // it still reaches the pass-through tail.
+      expect(service.roundValue(PINNED_VALUE, EXPRESSION_LEADING_DOT, ' closest ')).toBe(
+        PINNED_VALUE_QUANTIZED,
+      );
     });
 
     it('11b. returns the quantized input when a direction gate admits no candidate', () => {
@@ -1545,6 +1631,68 @@ describe('RoundingRuleService', () => {
       expect(repository.lookups).toHaveLength(2);
     });
 
+    it('★ records one entry per identifier without regard to case, as a CFML struct key does', async () => {
+      // CFML parity [model/service/RoundingRuleService.cfc:L53, L68]: the memo is a STRUCT, and
+      // CFML struct keys are case-insensitive, so `abc` and `ABC` were one entry. A `Map` keyed
+      // by the raw identifier made them two - two reads for one row, and worse, an eviction
+      // spelled one way left the other spelling's stale entry answering the pre-save
+      // expression for the rest of the request.
+      const identifier = graph.closestRoundingRule.getRoundingRuleID();
+
+      const canonical = await service.getRoundingRuleDetailsByID(identifier);
+
+      expect(repository.lookups).toHaveLength(1);
+
+      // The alternative casing loads the same row in MySQL's default collation, so it must
+      // resolve from the record rather than issue a second read.
+      const upperCased = await service.getRoundingRuleDetailsByID(identifier.toUpperCase());
+
+      expect(repository.lookups).toHaveLength(1);
+      expect(upperCased).toBe(canonical);
+
+      // And the eviction reaches BOTH spellings, because there is only one entry to evict.
+      await service.saveRoundingRule(graph.closestRoundingRule);
+      await service.getRoundingRuleDetailsByID(identifier.toUpperCase());
+
+      expect(repository.lookups).toHaveLength(2);
+    });
+
+    it('★ resolves concurrent lookups of one identifier with a single read (single flight)', async () => {
+      // The legacy body is SYNCHRONOUS, so "check the struct, then read, then store" could not
+      // interleave. Here it can: two overlapping lookups both missed a value-only memo, both
+      // issued a read, and - with an administrator save landing between them - could hand two
+      // DIFFERENT rules to two price calculations inside one request. Memoising the in-flight
+      // promise restores the legacy property.
+      const identifier = graph.closestRoundingRule.getRoundingRuleID();
+
+      const [first, second, third] = await Promise.all([
+        service.getRoundingRuleDetailsByID(identifier),
+        service.getRoundingRuleDetailsByID(identifier),
+        service.getRoundingRuleDetailsByID(identifier.toUpperCase()),
+      ]);
+
+      expect(repository.lookups).toHaveLength(1);
+      expect(second).toBe(first);
+      expect(third).toBe(first);
+    });
+
+    it('★ does not remember a failed resolution, so a later lookup retries', async () => {
+      // Legacy [model/service/RoundingRuleService.cfc:L70-L75]: the zero-row read fails BEFORE
+      // anything is written into the struct, so a later call tried again. A cached rejected
+      // promise would turn one transient failure into a permanent one for the whole request.
+      await expect(service.getRoundingRuleDetailsByID('absent-rule')).rejects.toThrow(
+        /No rounding rule carries the identifier/,
+      );
+      await expect(service.getRoundingRuleDetailsByID('absent-rule')).rejects.toThrow(
+        /No rounding rule carries the identifier/,
+      );
+
+      expect(repository.lookups).toStrictEqual([
+        { roundingRuleID: 'absent-rule' },
+        { roundingRuleID: 'absent-rule' },
+      ]);
+    });
+
     it('★ keeps its record private to the instance, so two services cannot observe each other', async () => {
       // LEGACY-NOTE [model/service/RoundingRuleService.cfc:L53]: the legacy memo is
       // component-level state, which on a warm container would leak across unrelated
@@ -1697,11 +1845,17 @@ describe('RoundingRuleService', () => {
     describe('save-context validation, from model/validation/RoundingRule.json', () => {
       // ★★ EVERY CASE HERE PROVES THE SAME TWO THINGS: the rule refuses, AND NOTHING IS
       // WRITTEN. The second is the one that matters. `super.save` reached
-      // `getHibachiDAO().save()` [org/Hibachi/HibachiService.cfc:L155] only when
+      // `getHibachiDAO().save()` [org/Hibachi/HibachiService.cfc:L153-L155] only when
       // `hasErrors()` was false, so a failing entity was never persisted; performing the
-      // flush here without the rules would durably store a row the legacy REFUSED. The
-      // refusal is delivered as a throw because `hasErrors()` has no ported channel - a
-      // divergence in HOW, never in WHICH rules refuse.
+      // flush here without the rules would durably store a row the legacy REFUSED.
+      //
+      // ★★★ THE REFUSAL IS NOW READ OFF THE ANSWERED ENTITY, AND THAT IS A CORRECTION. These cases
+      // used to assert `rejects.toBeInstanceOf(RoundingRuleValidationError)`, under a note reading
+      // "the refusal is delivered as a throw because `hasErrors()` has no ported channel - a
+      // divergence in HOW, never in WHICH rules refuse." Code review recorded the HOW as the defect:
+      // [org/Hibachi/HibachiService.cfc:L167] returns the entity either way, so a caller inspects it
+      // rather than catching. `src/domain/entities/roundingRule.ts` now publishes the register, so
+      // WHICH rules refuse is unchanged and HOW matches the source.
 
       it('refuses a rule with no name, and writes nothing', async () => {
         const nameless = buildRoundingRule({
@@ -1711,10 +1865,12 @@ describe('RoundingRuleService', () => {
           roundingRuleDirection: DIRECTION_CLOSEST,
         });
 
-        await expect(service.saveRoundingRule(nameless)).rejects.toBeInstanceOf(
-          RoundingRuleValidationError,
-        );
+        const refused = await service.saveRoundingRule(nameless);
 
+        expect(refused).toBe(nameless);
+        expect(refused.getError('roundingRuleName')).toStrictEqual([
+          'roundingRuleName is required',
+        ]);
         expect(frameworkWrites.saves).toStrictEqual([]);
       });
 
@@ -1726,10 +1882,14 @@ describe('RoundingRuleService', () => {
           roundingRuleDirection: DIRECTION_CLOSEST,
         });
 
-        await expect(service.saveRoundingRule(expressionless)).rejects.toBeInstanceOf(
-          RoundingRuleValidationError,
-        );
+        const refused = await service.saveRoundingRule(expressionless);
 
+        // ONE error, not two: the `required` failure short-circuits the
+        // `hasExpressionWithListOfNumericValuesOnly` qualifier on the same property, because an empty
+        // comma list has nothing for that loop to reject and reporting it would double-count.
+        expect(refused.getError('roundingRuleExpression')).toStrictEqual([
+          'roundingRuleExpression is required',
+        ]);
         expect(frameworkWrites.saves).toStrictEqual([]);
       });
 
@@ -1747,10 +1907,12 @@ describe('RoundingRuleService', () => {
 
         expect(nonNumeric.hasExpressionWithListOfNumericValuesOnly()).toBe(false);
 
-        await expect(service.saveRoundingRule(nonNumeric)).rejects.toBeInstanceOf(
-          RoundingRuleValidationError,
-        );
+        const refused = await service.saveRoundingRule(nonNumeric);
 
+        expect(refused.hasError('roundingRuleExpression')).toBe(true);
+        expect(refused.getError('roundingRuleExpression')[0]).toContain(
+          'hasExpressionWithListOfNumericValuesOnly',
+        );
         expect(frameworkWrites.saves).toStrictEqual([]);
       });
 
@@ -1762,10 +1924,11 @@ describe('RoundingRuleService', () => {
           roundingRuleDirection: '',
         });
 
-        await expect(service.saveRoundingRule(directionless)).rejects.toBeInstanceOf(
-          RoundingRuleValidationError,
-        );
+        const refused = await service.saveRoundingRule(directionless);
 
+        expect(refused.getError('roundingRuleDirection')).toStrictEqual([
+          'roundingRuleDirection is required',
+        ]);
         expect(frameworkWrites.saves).toStrictEqual([]);
       });
 
@@ -1798,12 +1961,119 @@ describe('RoundingRuleService', () => {
           roundingRuleDirection: DIRECTION_CLOSEST,
         });
 
-        await expect(service.saveRoundingRule(nameless, undefined, 'SAVE')).rejects.toBeInstanceOf(
-          RoundingRuleValidationError,
-        );
+        const refused = await service.saveRoundingRule(nameless, undefined, 'SAVE');
 
+        expect(refused.hasErrors()).toBe(true);
         expect(frameworkWrites.saves).toStrictEqual([]);
       });
+    });
+
+    // -----------------------------------------------------------------------
+    // POPULATE-BEFORE-VALIDATE
+    //
+    // ★★★ THE STEP WHOSE ABSENCE MADE THIS METHOD UNABLE TO SAVE ANYTHING. `super.save`'s FIRST step
+    // is `arguments.entity.populate(arguments.data)` [org/Hibachi/HibachiService.cfc:L145], before
+    // `validate` [L150]. The port used to accept `data` and never read it - documented as "accepted
+    // for signature parity and never read" - so a VALID payload could neither create nor update a
+    // rule: the three `required` rules judged an entity nothing had written to. These cases assert
+    // both directions of the ordering.
+    // -----------------------------------------------------------------------
+
+    it('★ POPULATES all three columns from the payload BEFORE validating', async () => {
+      // Every column blank on the entity, every column supplied by the payload. Under the old
+      // no-op populate this save was refused three times over; it must now succeed.
+      const blank = buildRoundingRule({
+        roundingRuleID: '',
+        roundingRuleName: '',
+        roundingRuleExpression: '',
+        roundingRuleDirection: '',
+      });
+
+      const saved = await service.saveRoundingRule(blank, {
+        roundingRuleName: '  Nine Ninety Nine  ',
+        roundingRuleExpression: '  .99  ',
+        roundingRuleDirection: '  Closest  ',
+      });
+
+      // ★ TRIMMED, because `_setProperty(name, trim(value))` trims every simple value
+      // [org/Hibachi/HibachiTransient.cfc].
+      expect(blank.getRoundingRuleName()).toBe('Nine Ninety Nine');
+      expect(blank.getRoundingRuleExpression()).toBe('.99');
+      expect(blank.getRoundingRuleDirection()).toBe('Closest');
+
+      expect(blank.hasErrors()).toBe(false);
+      expect(frameworkWrites.saves).toStrictEqual([blank]);
+      expect(saved.hasErrors()).toBe(false);
+    });
+
+    it('★ an INVALID PAYLOAD cannot pass on STALE entity state', async () => {
+      // The entity is valid on its own. The payload blanks the expression, populate copies the blank,
+      // and the `required` rule then judges it - so a port that validated the pre-populate snapshot
+      // would have written the empty expression, which every later `roundValue` call would then read.
+      const valid = buildRoundingRule({
+        roundingRuleID: 'rule-that-is-valid-on-its-own',
+        roundingRuleName: 'A valid rule',
+        roundingRuleExpression: EXPRESSION_LEADING_DOT,
+        roundingRuleDirection: DIRECTION_CLOSEST,
+      });
+
+      const refused = await service.saveRoundingRule(valid, { roundingRuleExpression: '   ' });
+
+      expect(refused.getRoundingRuleExpression()).toBe('');
+      expect(refused.getError('roundingRuleExpression')).toStrictEqual([
+        'roundingRuleExpression is required',
+      ]);
+      expect(frameworkWrites.saves).toStrictEqual([]);
+    });
+
+    it('★ leaves a column ALONE when the payload omits its key', async () => {
+      // `structKeyExists(arguments.data, name)` is the populate guard, so an ABSENT key is
+      // "do not touch" rather than "populate to undefined".
+      const rule = buildRoundingRule({
+        roundingRuleID: 'rule-with-a-partial-payload',
+        roundingRuleName: 'Name On The Entity',
+        roundingRuleExpression: EXPRESSION_LEADING_DOT,
+        roundingRuleDirection: DIRECTION_CLOSEST,
+      });
+
+      await service.saveRoundingRule(rule, { roundingRuleName: 'Name From The Payload' });
+
+      expect(rule.getRoundingRuleName()).toBe('Name From The Payload');
+      expect(rule.getRoundingRuleExpression()).toBe(EXPRESSION_LEADING_DOT);
+      expect(rule.getRoundingRuleDirection()).toBe(DIRECTION_CLOSEST);
+    });
+
+    it('★ reads payload keys case-insensitively, as a CFML struct is read', async () => {
+      // Populate matched CFML property names case-insensitively, so a caller sending
+      // `ROUNDINGRULENAME` populated `roundingRuleName`. A case-sensitive read would silently drop it.
+      const rule = buildRoundingRule({
+        roundingRuleID: 'rule-with-a-shouted-payload-key',
+        roundingRuleName: 'Name On The Entity',
+        roundingRuleExpression: EXPRESSION_LEADING_DOT,
+        roundingRuleDirection: DIRECTION_CLOSEST,
+      });
+
+      await service.saveRoundingRule(rule, {
+        ROUNDINGRULENAME: 'Name From The Shouted Key',
+      } as unknown as Parameters<typeof service.saveRoundingRule>[1]);
+
+      expect(rule.getRoundingRuleName()).toBe('Name From The Shouted Key');
+    });
+
+    it('★ populates NOTHING when the payload argument is absent', async () => {
+      // The framework guard is `structKeyExists(arguments, "data")` - an ARGUMENT presence test. With
+      // no payload there is nothing to populate, and the entity is validated and written as it stands.
+      const rule = buildRoundingRule({
+        roundingRuleID: 'rule-saved-with-no-payload',
+        roundingRuleName: 'Name On The Entity',
+        roundingRuleExpression: EXPRESSION_LEADING_DOT,
+        roundingRuleDirection: DIRECTION_CLOSEST,
+      });
+
+      await service.saveRoundingRule(rule);
+
+      expect(rule.getRoundingRuleName()).toBe('Name On The Entity');
+      expect(frameworkWrites.saves).toStrictEqual([rule]);
     });
 
     it('★★ persists WITHOUT a repository write member, because the write is a separate collaborator', async () => {
@@ -2164,7 +2434,7 @@ describe('rounding-expression resource limits (S-10, resource half)', () => {
     );
   });
 
-  it('★★ REFUSES IN CONSTANT TIME, which is what makes the guard worth having', () => {
+  it('★★ REFUSES ON THE RAW LENGTH ALONE, WITHOUT TRAVERSING THE VALUE AT ALL', () => {
     // Unguarded, a member of this length would make `'0'.repeat(...)` build a string of the same
     // order - the cheapest denial of service in the pricing path, from a single persisted row.
     //
@@ -2172,17 +2442,83 @@ describe('rounding-expression resource limits (S-10, resource half)', () => {
     // MEMBER limits, and it refused this input correctly - but took TWELVE SECONDS to do it, because
     // reaching a member goes through `listLen` and `listGetAt` and those traverse the raw string. The
     // guard was paying the traversal cost in order to refuse the allocation cost, which on a 29-second
-    // API Gateway budget is most of the request. Measuring it is the only way that surfaced; the
-    // total-length gate that now runs first is derived from the two member limits, so it decides no
-    // case they would have decided differently and costs one property read. The timing bound below is
-    // the assertion that keeps it first.
-    const hostile = '9'.repeat(50_000_000);
-    const started = Date.now();
+    // API Gateway budget is most of the request. The total-length gate that now runs first is derived
+    // from the two member limits, so it decides no case they would have decided differently and costs
+    // one property read.
+    //
+    // ★★★ HOW THAT IS PROVEN NOW, AND WHY IT IS NEITHER A STOPWATCH NOR A 50 MB STRING. This case used
+    // to allocate `'9'.repeat(50_000_000)` and assert `Date.now() - started < 500`. A code review
+    // rejected both halves and was right on both counts: AAP 0.8.1 forbids asserting a latency figure
+    // the legacy system never stated, and a wall-clock bound is the one assertion here that a loaded CI
+    // host can fail with nothing wrong; the allocation, meanwhile, spent fifty megabytes to make a
+    // duration measurable.
+    //
+    // A TRIPWIRE MEASURES THE SAME PROPERTY EXACTLY, AND MORE STRICTLY. The subject may read the
+    // value's `length` before refusing and may do nothing else with it: `listLen` and `listGetAt` both
+    // reach the characters through the string iterator [src/lib/cfml/list.ts:L94, :L289]. So the stand-in
+    // below reports a hostile length from a GETTER - allocating nothing - and throws from its iterator.
+    // If the size gate ever moves after a list operation, the iterator fires and this case fails naming
+    // the traversal, instead of a duration drifting under a threshold.
+    let lengthReads = 0;
+    let traversals = 0;
+    const hostile = {
+      get length(): number {
+        lengthReads += 1;
+
+        return 50_000_001;
+      },
+      [Symbol.iterator]: (): Iterator<string> => {
+        traversals += 1;
+
+        throw new Error(
+          'TRAVERSED: a list operation walked the rounding expression before the size gate refused ' +
+            'it. The raw-length check must precede listLen and listGetAt, because reaching a member ' +
+            'means the string has already been traversed.',
+        );
+      },
+    } as unknown as string;
 
     expect(() => boundedService.roundValue(PINNED_VALUE, hostile, DIRECTION_CLOSEST)).toThrow(
       /at most 65792 characters in total/u,
     );
-    expect(Date.now() - started).toBeLessThan(500);
+
+    // Non-vacuous in both directions: the gate consulted the length, and nothing consulted the value.
+    expect(lengthReads).toBeGreaterThanOrEqual(1);
+    expect(traversals).toBe(0);
+  });
+
+  it('and the three size gates fire CHEAPEST-FIRST, proven by which limit each refusal names', () => {
+    // Guard ORDER is observable without timing, because each gate names its own limit. An input that
+    // violates more than one is refused by whichever runs first, so the message identifies the order.
+    //
+    // 300 members of 250 characters: 75,299 in total, so it is over the total AND over the member
+    // count. The TOTAL gate names itself, which puts it first.
+    const overTotalAndCount = Array.from({ length: 300 }, () => '9'.repeat(250)).join(',');
+
+    expect(overTotalAndCount.length).toBeGreaterThan(65792);
+    expect(() =>
+      boundedService.roundValue(PINNED_VALUE, overTotalAndCount, DIRECTION_CLOSEST),
+    ).toThrow(/at most 65792 characters in total/u);
+
+    // 300 members, one of them 300 characters, 30,499 in total: inside the total, over the count, AND
+    // carrying an over-long member. The COUNT gate names itself, which puts it second.
+    const overCountAndMemberLength = [
+      '9'.repeat(300),
+      ...Array.from({ length: 299 }, () => '9'.repeat(100)),
+    ].join(',');
+
+    expect(overCountAndMemberLength.length).toBeLessThanOrEqual(65792);
+    expect(() =>
+      boundedService.roundValue(PINNED_VALUE, overCountAndMemberLength, DIRECTION_CLOSEST),
+    ).toThrow(/at most 256 comma-separated members/u);
+
+    // Five members, one of them 300 characters: inside the total and inside the count, so the
+    // per-member gate is the only one left to fire - and it names the offending member's position.
+    const overMemberLengthOnly = ['.99', '.95', '9'.repeat(300), '.99', '.95'].join(',');
+
+    expect(() =>
+      boundedService.roundValue(PINNED_VALUE, overMemberLengthOnly, DIRECTION_CLOSEST),
+    ).toThrow(/member 3 is 300/u);
   });
 
   it('rejects on the derived total only where the member limits could not have applied', () => {

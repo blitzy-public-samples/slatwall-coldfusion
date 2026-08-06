@@ -1,13 +1,11 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// THE SIBLINGS THIS FILE NAMES, AND WHAT EACH ONE OWNS
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Commentary below hands responsibilities to other modules by name, and every
+// one of them exists on the branch - so each mention points at real code rather
+// than at an intention. Naming a boundary here is how this file records what it
+// deliberately does NOT do, so that no responsibility below acquires a second
+// owner:
 //
 //   src/domain/entities/priceGroupRate.ts            PriceGroupRate entity
 //   src/handlers/bootstrap.ts                        composition root (wiring)
@@ -141,7 +139,7 @@
 //     Worth knowing, and NOT this file's to fix: the other two branches of that
 //     switch - `amountOff` [L330] and `amount` [L333] - DO NOT apply the rounding
 //     rule at all. The asymmetry is a legacy defect owned by
-//     src/services/priceGroupService.ts (planned), where the amount-type strategies live.
+//     src/services/priceGroupService.ts, where the amount-type strategies live.
 //   * `hasExpressionWithListOfNumericValuesOnly` has ZERO code callers. Its only
 //     invocation in the entire legacy tree is the declarative `"method"` above. It
 //     is NOT dead code, and it is authored.
@@ -199,7 +197,7 @@
 // permitting custom code under /integrationServices/ does not extend here.
 //
 // TEST COVERAGE FOR THIS ENTITY IS NET-NEW
-// The suite belongs at tests/unit/domain/entities/roundingRule.test.ts (planned), is OWNED
+// The suite belongs at tests/unit/domain/entities/roundingRule.test.ts, is OWNED
 // BY A DIFFERENT AGENT, and is not authored from here. All of it is NET-NEW and
 // must be labelled net-new rather than presented as parity: no legacy test under
 // meta/tests/** touches RoundingRule. The only legacy suites extended anywhere in
@@ -218,6 +216,7 @@
 // index at all. Those two properties are what make the 1-based loop port
 // faithfully - the bound is what keeps it in range, not any leniency in the helper.
 import { listGetAt, listLen } from '../../lib/cfml/list.js';
+import { cfFoldKey } from '../../lib/cfml/struct.js';
 
 // CFML `len()`. Returns a COUNT and never a boolean, which is exactly what the
 // validator's arithmetic needs.
@@ -372,9 +371,9 @@ export interface RoundingRuleDirectionOption {
  * closed at thirteen interfaces, so there is no fourteenth port to declare. An
  * interface declared at the point of use is therefore the faithful translation: it
  * names precisely the one method the legacy body invokes and nothing more.
- * `src/services/roundingRuleService.ts` (planned) satisfies it STRUCTURALLY - TypeScript
+ * `src/services/roundingRuleService.ts` satisfies it STRUCTURALLY - TypeScript
  * needs no `implements` clause and the service never imports this file to get one -
- * and `src/handlers/bootstrap.ts` (planned) wires the concrete instance in.
+ * and `src/handlers/bootstrap.ts` wires the concrete instance in.
  *
  * The signature mirrors [model/service/RoundingRuleService.cfc:L84-L86] exactly:
  *
@@ -493,7 +492,7 @@ export class RoundingRule {
    * `save` context; that rule is enforced at the service tier, not here, so a
    * hydrated row may legitimately carry `undefined` for it.
    */
-  private readonly roundingRuleName: string | undefined;
+  private roundingRuleName: string | undefined;
 
   /**
    * The rounding expression: a CFML comma list of decimal candidates such as
@@ -520,7 +519,7 @@ export class RoundingRule {
    * consumer that has to make a decision about it. The predicate below does the
    * normalization explicitly, at its own call site, with the reasoning attached.
    */
-  private readonly roundingRuleExpression: string | undefined;
+  private roundingRuleExpression: string | undefined;
 
   /**
    * The rounding direction. [model/entity/RoundingRule.cfc:L55]
@@ -537,7 +536,7 @@ export class RoundingRule {
    * does not constrain this column, so narrowing it here would reject rows the
    * legacy system accepts. No validation is performed.
    */
-  private readonly roundingRuleDirection: string | undefined;
+  private roundingRuleDirection: string | undefined;
 
   // --- Audit properties [model/entity/RoundingRule.cfc:L58-L61] --------------------------------
   //
@@ -828,6 +827,136 @@ export class RoundingRule {
     return this.roundingRuleID === '';
   }
 
+  // ===========================================================================
+  // THE ORM-GENERATED SCALAR SETTERS - THE `populate` TARGETS
+  // ===========================================================================
+  //
+  // ★★★ WHY THEY ARE AUTHORED. `saveRoundingRule` reaches persistence through
+  // `super.save(argumentcollection=arguments)` [model/service/RoundingRuleService.cfc:L63], whose first
+  // step is `arguments.entity.populate(arguments.data)` [org/Hibachi/HibachiService.cfc:L145] - so
+  // every column the payload carried landed on the entity BEFORE `validate` [L150] read it. Code review
+  // recorded the consequence of a port with no setters: `RoundingRuleSaveInput` was never applied, so
+  // a VALID payload could neither create nor update a rule - the three `required` rules of
+  // [model/validation/RoundingRule.json] judged an entity nothing had written to.
+  //
+  // EXACTLY THE THREE POPULATABLE COLUMNS, AND NO MORE. `roundingRuleID` is
+  // `generator="uuid"`-minted [model/entity/RoundingRule.cfc:L52] and the four audit properties each
+  // carry `hb_populateEnabled="false"` [L57-L60], which is the framework's own instruction that
+  // `populate` must skip them [org/Hibachi/HibachiTransient.cfc]. That declaration is the reason this
+  // set is three rather than eight.
+
+  /** [model/entity/RoundingRule.cfc:L53] The ORM-generated `setRoundingRuleName()`. Populate target. */
+  setRoundingRuleName(roundingRuleName: string): void {
+    this.roundingRuleName = roundingRuleName;
+  }
+
+  /**
+   * [model/entity/RoundingRule.cfc:L54] The ORM-generated `setRoundingRuleExpression()`.
+   *
+   * NO FORMAT IS ENFORCED HERE, deliberately: the column is plain `ormtype="string"` with no
+   * constraint, and the `hasExpressionWithListOfNumericValuesOnly` rule
+   * [model/validation/RoundingRule.json] is a VALIDATION rule evaluated by
+   * {@link RoundingRule.hasExpressionWithListOfNumericValuesOnly} at save time, not a setter guard.
+   * Refusing here would refuse a value the legacy stored and then reported on.
+   */
+  setRoundingRuleExpression(roundingRuleExpression: string): void {
+    this.roundingRuleExpression = roundingRuleExpression;
+  }
+
+  /**
+   * [model/entity/RoundingRule.cfc:L55] The ORM-generated `setRoundingRuleDirection()`.
+   *
+   * ACCEPTS ANY STRING, which is what makes the defaultless dispatch in
+   * `src/services/roundingRuleService.ts` reachable rather than dead. The column carries no
+   * constraint and the JSON declares only `required`, so an unrecognised direction is a REACHABLE
+   * stored state - and `roundValue` reproduces CFML's no-default-arm fall-through for it.
+   */
+  setRoundingRuleDirection(roundingRuleDirection: string): void {
+    this.roundingRuleDirection = roundingRuleDirection;
+  }
+
+  // ===========================================================================
+  // THE ERROR REGISTER - THE FRAMEWORK'S REFUSAL CHANNEL
+  //
+  // ★★★ THE FULL REASONING IS RECORDED ONCE, ON `src/domain/entities/product.ts`, and is not
+  // restated here. In one paragraph: `HibachiService.save`
+  // [org/Hibachi/HibachiService.cfc:L133-L169] populates, validates, and writes ONLY when
+  // `!arguments.entity.hasErrors()` [L153] - RETURNING THE ENTITY EITHER WAY [L167]. It never throws
+  // for a validation refusal, so the legacy refusal channel IS the entity and a caller inspects it.
+  // Without these members the ported service had nowhere to put a refusal and threw instead, which
+  // code review recorded as a behaviour defect: a legacy caller inspecting `hasErrors()` is sent
+  // into an exception path it has no handler for, losing both the populated entity and the reasons.
+  //
+  // PORTED SHAPE: `getErrors()` [org/Hibachi/HibachiTransient.cfc:L30-L32] is a STRUCT keyed by error
+  // name whose values are ARRAYS of messages; `hasErrors()` [L47-L53] is `structCount(...)`;
+  // `hasError(name)` [L57-L59] is `structKeyExists`; `addError(name, message)` [L61-L64] APPENDS, so
+  // two messages under one name accumulate. Keys are matched without regard to case, because a CFML
+  // struct key is. The register is transient instance state: never a column, never read by a
+  // repository, never populated by hydration.
+  // ===========================================================================
+
+  /**
+   * The accumulated errors, keyed by FOLDED error name and carrying each name's ORIGINAL spelling.
+   *
+   * ★ TWO PIECES OF STATE PER ENTRY, BECAUSE A CFML STRUCT CARRIES BOTH. `variables.errors[errorName]`
+   * [org/Hibachi/HibachiErrors.cfc:L15-L19] LOOKS UP case-insensitively but REMEMBERS the case of the
+   * key as first written, so a second `addError('URLTITLE', ...)` appends to the entry created by
+   * `addError('urlTitle', ...)` and `getErrors()` still reports it as `urlTitle`. Folding the stored
+   * key alone would have lower-cased every property identifier a caller reads back.
+   *
+   * Mutable; `addError` is the only writer.
+   */
+  private readonly errors = new Map<
+    string,
+    { readonly name: string; readonly messages: string[] }
+  >();
+
+  /** Every error, keyed by error name [org/Hibachi/HibachiTransient.cfc:L30-L32]. Frozen projection. */
+  getErrors(): Readonly<Record<string, readonly string[]>> {
+    const projected: Record<string, readonly string[]> = {};
+
+    for (const entry of this.errors.values()) {
+      // `defineProperty` rather than assignment: an error name is server-authored here, but the
+      // projection is a plain object and `__proto__` must never be interceptable on one.
+      Object.defineProperty(projected, entry.name, {
+        value: Object.freeze([...entry.messages]),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+
+    return Object.freeze(projected);
+  }
+
+  /** Whether this entity carries any error [org/Hibachi/HibachiTransient.cfc:L47-L53]. */
+  hasErrors(): boolean {
+    return this.errors.size > 0;
+  }
+
+  /** Whether one named error is present [org/Hibachi/HibachiTransient.cfc:L57-L59]. */
+  hasError(errorName: string): boolean {
+    return this.errors.has(cfFoldKey(errorName));
+  }
+
+  /** The messages under one name, or an EMPTY ARRAY [org/Hibachi/HibachiTransient.cfc:L34-L43]. */
+  getError(errorName: string): readonly string[] {
+    return Object.freeze([...(this.errors.get(cfFoldKey(errorName))?.messages ?? [])]);
+  }
+
+  /** Record one error; messages ACCUMULATE [org/Hibachi/HibachiTransient.cfc:L61-L64]. */
+  addError(errorName: string, errorMessage: string): void {
+    const key = cfFoldKey(errorName);
+    const existing = this.errors.get(key);
+
+    if (existing === undefined) {
+      this.errors.set(key, { name: errorName, messages: [errorMessage] });
+      return;
+    }
+
+    existing.messages.push(errorMessage);
+  }
+
   // --- Declared methods [model/entity/RoundingRule.cfc:L66-L86] --------------------------------
 
   /**
@@ -864,7 +993,7 @@ export class RoundingRule {
    * `left()` slicing, candidate concatenation, the `10 ^ (len(rr)-3)` step and the
    * closest/up/down selection - is entirely
    * [model/service/RoundingRuleService.cfc:L88-L175] and is ported into
-   * src/services/roundingRuleService.ts (planned), along with its measured characterization
+   * src/services/roundingRuleService.ts, along with its measured characterization
    * outputs. This method is a one-line delegation in the source and is a one-line
    * delegation here.
    *
