@@ -1648,10 +1648,23 @@ spread across five files and never summarised is one nobody can review.
 
 `resolveRequestPrincipal` in `src/handlers/errorMapper.ts` reads **only**
 `event.requestContext.authorizer` — never a header, never the body, never a query parameter — and
-recognises exactly two claims: `accountID` (`AUTHORIZER_ACCOUNT_CLAIM`) and `adminAccountFlag`
-(`AUTHORIZER_ADMIN_CLAIM`, truthy only for the frozen set `['true', '1']`, compared with CFML
-case-folding). This subtree **issues no token, validates no signature and implements no login**: it
-trusts the authorizer's output and nothing else.
+recognises exactly three claims:
+
+- `accountID` (`AUTHORIZER_ACCOUNT_CLAIM`) — the opaque account, trimmed; absent or blank means **not
+  identified**.
+- `adminAccountFlag` (`AUTHORIZER_ADMIN_CLAIM`) — truthy only for the frozen set `['true', '1']`,
+  compared with CFML case-folding. A **general administrative permission**, and deliberately not a
+  service identity.
+- `serviceScope` (`AUTHORIZER_SERVICE_SCOPE_CLAIM`) — a comma-delimited list of **capability names a
+  service principal may drive**, tested only through `principalHasServiceScope`. Absent, blank or
+  non-string means **no capability is granted**.
+
+The third claim exists because a code review found (CWE-862/CWE-285) that `promotionApplication` was
+gated on `adminAccountFlag` while `catalogQuery` uses that same bit to admit ordinary **human** catalog
+administrators — so one claim was answering two different trust questions and every catalog
+administrator was also accepted as the promotion-pricing service. The two are now separate claims, and
+neither implies the other. This subtree still **issues no token, validates no signature and implements
+no login**: it trusts the authorizer's output and nothing else.
 
 Each capability decides admission in **two** steps, and only the first is common to all of them:
 whether the caller is **identified** (a missing or unusable `accountID` earns **401**), and then
@@ -1659,13 +1672,13 @@ whether the caller is **permitted the operation** (**403**). Both refusals publi
 sentence and name no claim, no operation and no principal, so an attacker learns which of the two
 occurred and nothing else.
 
-| Capability             | Identity required?                                                                                                                                                    | Authorization beyond identity                                                                                                                                                                                                                                                                                |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `catalogQuery`         | **Yes** — 401 otherwise.                                                                                                                                              | **Yes — 403 without `adminAccountFlag`, on every one of its fourteen operations.** None of them has a non-administrative legacy antecedent: the five reads are the `admin/` option-editing and catalog-search paths, and the nine mutations are product, product-type and brand writes and a product delete. |
-| `skuResolution`        | **Yes** — 401 otherwise.                                                                                                                                              | **No.** Its two operations are the option-to-SKU resolution a storefront legitimately performs, so identity is the whole gate.                                                                                                                                                                               |
-| `promotionApplication` | **Yes** — 401 otherwise.                                                                                                                                              | **No.** It prices the caller's own order view and writes nothing durable.                                                                                                                                                                                                                                    |
-| `priceResolution`      | **Partly** — refused unless the requested operation is in `ANONYMOUS_PERMITTED_OPERATIONS`, which holds exactly one member: `calculateSkuPriceBasedOnCurrentAccount`. | **No.** All twelve of its operations are reads; the four price-group writes are withheld from the routed surface entirely rather than gated.                                                                                                                                                                 |
-| `productFeed`          | **No — and it reads no principal at all.** The feed is machine-read by Google Merchant Center.                                                                        | **Origin, not identity.** What governs it is the configured `FEED_ALLOWED_HOSTS` allow-list, which fails closed — see the feed section.                                                                                                                                                                      |
+| Capability             | Identity required?                                                                                                                                                    | Authorization beyond identity                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalogQuery`         | **Yes** — 401 otherwise.                                                                                                                                              | **Yes — 403 without `adminAccountFlag`, on every one of its fourteen operations.** None of them has a non-administrative legacy antecedent: the five reads are the `admin/` option-editing and catalog-search paths, and the nine mutations are product, product-type and brand writes and a product delete.                                                                                                |
+| `skuResolution`        | **Yes** — 401 otherwise.                                                                                                                                              | **No.** Its two operations are the option-to-SKU resolution a storefront legitimately performs, so identity is the whole gate.                                                                                                                                                                                                                                                                              |
+| `promotionApplication` | **Yes** — 401 otherwise.                                                                                                                                              | **Yes — 403 unless `serviceScope` names `promotionApplication`.** Every economically decisive member of the request is caller-authored, including the `promotionAppliedID` values that become removal intents, so the route is restricted to a trusted **service** principal — the stand-in for the in-process `OrderService` caller. The general `adminAccountFlag` is deliberately **not** accepted here. |
+| `priceResolution`      | **Partly** — refused unless the requested operation is in `ANONYMOUS_PERMITTED_OPERATIONS`, which holds exactly one member: `calculateSkuPriceBasedOnCurrentAccount`. | **No.** All twelve of its operations are reads; the four price-group writes are withheld from the routed surface entirely rather than gated.                                                                                                                                                                                                                                                                |
+| `productFeed`          | **No — and it reads no principal at all.** The feed is machine-read by Google Merchant Center.                                                                        | **Origin, not identity.** What governs it is the configured `FEED_ALLOWED_HOSTS` allow-list, which fails closed — see the feed section.                                                                                                                                                                                                                                                                     |
 
 **Two sentences that used to sit here were wrong, and a code review was right about both.** They read
 "an unauthenticated deployment of these handlers admits everyone by construction" and
@@ -1692,9 +1705,16 @@ this subtree's to discharge:
 - **`adminAccountFlag` is a single boolean, not a role system.** It is enforced where the source puts
   the operation behind `admin/` — today that is `catalogQuery`, in full — and it is threaded into the
   request scope for consumers that need it. What this subtree does **not** have is per-operation
-  permissions, roles, scopes or a policy engine: there is one administrative bit, and a capability
-  either requires it or does not. Nothing here invents the permission subsystem the legacy `hb_permission`
+  permissions, roles or a policy engine: there is one administrative bit, and a capability either
+  requires it or does not. Nothing here invents the permission subsystem the legacy `hb_permission`
   attributes hint at, because AAP 0.2.2 excludes the account module that would own it.
+- **`serviceScope` is a capability grant, not a role system either — and it is deliberately the
+  narrowest thing that answers the finding.** It names capabilities, not roles or actions; there is no
+  hierarchy, no wildcard, no expiry and no policy document, and the only tokens that mean anything are
+  the frozen capability names in `src/handlers/router.ts`. It grants exactly one route today,
+  `promotionApplication`. Populating it is the deployment's authorizer's job, exactly as the other two
+  claims are: a deployment that omits it refuses that route and serves the other four unchanged, which
+  fails closed.
 
 ### Execution-model facts of the target platform
 

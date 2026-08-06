@@ -90,11 +90,13 @@ import type {
 import {
   AUTHORIZER_ACCOUNT_CLAIM,
   AUTHORIZER_ADMIN_CLAIM,
+  AUTHORIZER_SERVICE_SCOPE_CLAIM,
   containsPrototypeMemberKey,
   forbiddenResponse,
   invalidRequestResponse,
   jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
+  principalHasServiceScope,
   resolveRequestPrincipal,
   resolveServerRequestId,
   routeDiagnosticLabel,
@@ -1728,6 +1730,160 @@ describe('the administrative claim', () => {
     expect(
       resolveRequestPrincipal(eventWithAuthorizer({ [AUTHORIZER_ADMIN_CLAIM]: 'true' })).identified,
     ).toBe(false);
+  });
+});
+
+// ===========================================================================
+// THE SERVICE GRANT (NET-NEW)
+//
+// ★★★ WHY THIS CLAIM EXISTS SEPARATELY FROM THE ADMINISTRATIVE ONE. A code review
+// found (MAJOR, CWE-862/CWE-285) that the promotion-application route claimed to
+// require "a trusted service principal" while testing only the ADMINISTRATIVE
+// claim - the very claim `catalogQueryHandler` uses to admit ordinary human
+// catalog administrators. One bit was answering two different trust questions, so
+// every catalog administrator was also accepted as the pricing service. The
+// remedy is a dedicated, server-established, service-only grant, and these cases
+// pin the three properties that make it one: it is read from the authorizer and
+// nowhere else, it fails CLOSED on every unusable shape, and the administrative
+// claim neither grants it nor is granted by it.
+// ===========================================================================
+
+describe('the service grant (NET-NEW)', () => {
+  /** The grant a principal resolved from `value` carries. */
+  function serviceScopeFor(value: unknown): string {
+    return principalOf(
+      eventWithAuthorizer({
+        [AUTHORIZER_ACCOUNT_CLAIM]: ACCOUNT_ID,
+        [AUTHORIZER_SERVICE_SCOPE_CLAIM]: value,
+      }),
+    ).serviceScope;
+  }
+
+  /** Whether a principal resolved from `value` is granted `capability`. */
+  function grants(value: unknown, capability: string): boolean {
+    return principalHasServiceScope(
+      principalOf(
+        eventWithAuthorizer({
+          [AUTHORIZER_ACCOUNT_CLAIM]: ACCOUNT_ID,
+          [AUTHORIZER_SERVICE_SCOPE_CLAIM]: value,
+        }),
+      ),
+      capability,
+    );
+  }
+
+  it('carries the grant verbatim, trimmed once as a whole value', () => {
+    expect(serviceScopeFor('promotionApplication')).toBe('promotionApplication');
+    expect(serviceScopeFor('  promotionApplication\t')).toBe('promotionApplication');
+    expect(serviceScopeFor('catalogQuery,promotionApplication')).toBe(
+      'catalogQuery,promotionApplication',
+    );
+  });
+
+  it('★★★ is EMPTY for every shape that is not a usable grant, so a route fails closed', () => {
+    // Absence, a blank, a non-string: each yields the empty grant rather than
+    // something a membership test might accidentally satisfy.
+    for (const unusable of [undefined, null, '', '   ', 1, true, {}, []]) {
+      expect(serviceScopeFor(unusable)).toBe('');
+      expect(grants(unusable, 'promotionApplication')).toBe(false);
+    }
+
+    expect(
+      principalOf(eventWithAuthorizer({ [AUTHORIZER_ACCOUNT_CLAIM]: ACCOUNT_ID })).serviceScope,
+    ).toBe('');
+  });
+
+  it('grants a capability the list names, folding case as CFML `eq` does', () => {
+    for (const rendering of [
+      'promotionApplication',
+      'PROMOTIONAPPLICATION',
+      'PromotionApplication',
+      'catalogQuery,promotionApplication',
+      'promotionApplication,priceResolution',
+    ]) {
+      expect(grants(rendering, 'promotionApplication')).toBe(true);
+    }
+  });
+
+  it('★★ grants ONLY what the list names - no prefix, substring or padded match', () => {
+    // A grant is an exact element comparison. `promotion` is not
+    // `promotionApplication`; a padded element is not the element, because
+    // `listFindNoCase` treats padding as significant across the ported slice and
+    // the fail-closed direction is a refusal an operator can see.
+    for (const rendering of [
+      'promotion',
+      'promotionApplications',
+      'catalogQuery',
+      'catalogQuery,priceResolution',
+      'catalogQuery, promotionApplication',
+    ]) {
+      expect(grants(rendering, 'promotionApplication')).toBe(false);
+    }
+  });
+
+  it('★★★ is INDEPENDENT of the administrative claim in both directions', () => {
+    // The whole point of the finding: neither claim implies the other. An
+    // administrator holds no grant, and a granted service needs no admin bit.
+    const administrator = principalOf(
+      eventWithAuthorizer({
+        [AUTHORIZER_ACCOUNT_CLAIM]: ACCOUNT_ID,
+        [AUTHORIZER_ADMIN_CLAIM]: 'true',
+      }),
+    );
+
+    expect(administrator.adminAccountFlag).toBe(true);
+    expect(administrator.serviceScope).toBe('');
+    expect(principalHasServiceScope(administrator, 'promotionApplication')).toBe(false);
+
+    const service = principalOf(
+      eventWithAuthorizer({
+        [AUTHORIZER_ACCOUNT_CLAIM]: ACCOUNT_ID,
+        [AUTHORIZER_SERVICE_SCOPE_CLAIM]: 'promotionApplication',
+      }),
+    );
+
+    expect(service.adminAccountFlag).toBe(false);
+    expect(principalHasServiceScope(service, 'promotionApplication')).toBe(true);
+  });
+
+  it('never establishes a granted principal without an account', () => {
+    expect(
+      resolveRequestPrincipal(
+        eventWithAuthorizer({ [AUTHORIZER_SERVICE_SCOPE_CLAIM]: 'promotionApplication' }),
+      ).identified,
+    ).toBe(false);
+  });
+
+  it('cannot be granted by anything a CALLER writes', () => {
+    // The body, the headers, the query string and the path all assert the grant;
+    // the authorizer context does not exist. Nothing may be granted.
+    const event = eventWithAuthorizer(undefined);
+    const tampered: APIGatewayProxyEvent = {
+      ...event,
+      body: JSON.stringify({ [AUTHORIZER_SERVICE_SCOPE_CLAIM]: 'promotionApplication' }),
+      headers: { [AUTHORIZER_SERVICE_SCOPE_CLAIM]: 'promotionApplication' },
+      queryStringParameters: { [AUTHORIZER_SERVICE_SCOPE_CLAIM]: 'promotionApplication' },
+      pathParameters: { [AUTHORIZER_SERVICE_SCOPE_CLAIM]: 'promotionApplication' },
+    };
+
+    expect(resolveRequestPrincipal(tampered).identified).toBe(false);
+  });
+
+  it('is read case-insensitively by claim NAME, as a CFML struct key is', () => {
+    // An authorizer emitting `SERVICESCOPE` names the same claim as one emitting
+    // `serviceScope` - the same folding the account and admin claims get.
+    expect(
+      grants(undefined, 'promotionApplication') ||
+        principalHasServiceScope(
+          principalOf(
+            eventWithAuthorizer({
+              [AUTHORIZER_ACCOUNT_CLAIM]: ACCOUNT_ID,
+              SERVICESCOPE: 'promotionApplication',
+            }),
+          ),
+          'promotionApplication',
+        ),
+    ).toBe(true);
   });
 });
 

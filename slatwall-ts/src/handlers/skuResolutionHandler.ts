@@ -48,6 +48,9 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { z } from 'zod';
 
+// `listToArray` counts the selected-options list exactly as the statement builder parses it - one
+// element, one correlated `exists` clause - which is what makes the work bound measure the work.
+import { listToArray } from '../lib/cfml/list.js';
 import { structGet, structKeyList } from '../lib/cfml/struct.js';
 import type { Logger } from '../lib/logger.js';
 import { logger as processLogger } from '../lib/logger.js';
@@ -564,31 +567,103 @@ const operationEnvelopeSchema = z.object({
 export const MAXIMUM_SELECTED_OPTIONS_BYTES = 8 * 1024;
 
 /**
- * How many elements {@link MAXIMUM_SELECTED_OPTIONS_BYTES} can admit. DERIVED, AND NEVER ENFORCED.
+ * How many elements {@link MAXIMUM_SELECTED_OPTIONS_BYTES} can admit ON ITS OWN. DERIVED, NOT A RULE.
  *
  * ★ A CONSEQUENCE, NOT A SECOND RULE - and computed rather than written down, so the two figures
  * cannot drift apart. `listToArray` ignores empty elements [`splitOnDelimiters` in
- * `../lib/cfml/list.js`: `'a,,b'` has two elements], so the densest admissible list is
+ * `../lib/cfml/list.js`: `'a,,b'` has two elements], so the densest list the byte bound could carry is
  * single-character elements separated by single commas: n elements occupy at least 2n-1 characters,
  * and a UTF-8 byte count is never smaller than a character count, so n <= (bytes + 1) / 2.
  *
- * NOTHING VALIDATES AGAINST THIS VALUE. The schema tests bytes and only bytes, so a list of ANY element
- * count inside the byte bound is admitted - 1000 single-character elements are served while 1000
- * thirty-two-character identifiers are not, and that asymmetry is asserted, because it is the proof
- * that no count policy was reinstated. It is published so that the cost of the byte bound is legible -
- * the worst-case statement width falls from the 65535 placeholders the wire protocol permits to 4096 -
- * and so a test can assert that consequence instead of recomputing the arithmetic and drifting from it.
+ * ★★★ THIS FIGURE IS NOT THE ENFORCED CEILING, AND IT USED TO BE THE WHOLE STORY - WHICH IS THE
+ * FINDING. The superseded note read: "NOTHING VALIDATES AGAINST THIS VALUE. The schema tests bytes and
+ * only bytes, so a list of ANY element count inside the byte bound is admitted." A security review
+ * measured what that admitted: 4096 one-character elements, each expanding into the correlated `exists`
+ * fragment `../repositories/mysql/sql/skusBySelectedOptions.sql.ts` builds, is roughly 647 KiB of
+ * statement text carrying 4096 correlated subqueries - work a caller chooses and the database performs
+ * before it can even finish planning. The byte bound STAYS, and {@link MAXIMUM_SELECTED_OPTION_SUBQUERIES}
+ * now bounds that work as well, so this figure is what the byte bound would allow rather than what the
+ * route admits.
+ *
+ * It is still published, and the reason is unchanged: it makes the byte bound's own cost legible, and a
+ * test asserts the consequence rather than recomputing the arithmetic and drifting from it. The
+ * asymmetry it exists to demonstrate is also unchanged and still asserted - 1000 single-character
+ * elements are served while 1000 thirty-two-character identifiers are not - which remains the proof
+ * that byte length, not element count, is what {@link MAXIMUM_SELECTED_OPTIONS_BYTES} measures.
  */
 export const MAXIMUM_SELECTED_OPTION_ELEMENTS = Math.floor(
   (MAXIMUM_SELECTED_OPTIONS_BYTES + 1) / 2,
 );
 
 /**
+ * The most correlated subqueries one ROUTED invocation will ask the database to carry (CWE-400).
+ *
+ * ★★★ THE SECOND BOUND, AND THE THIRD TIME THIS PARAMETER HAS BEEN ARGUED ABOUT. Reading the three
+ * rulings together is the only way this number is legible, so all three are here:
+ *
+ *   1. A 64-ELEMENT CAP WAS ADDED AND STRUCK DOWN. It refused a 65-element list with a 400 and was
+ *      defended by citing AAP 0.6.5's batch limits. A code review rejected both: 0.6.5 governs
+ *      unbounded bulk MUTATION, while this is a READ that mutates nothing, and
+ *      `getProductSkusBySelectedOptions` is one of the three behaviours AAP 0.8.1 requires to survive
+ *      unchanged - the legacy loop at [model/dao/SkuDAO.cfc:L112] emits one `exists` clause per element
+ *      with no count test anywhere. THAT RULING STANDS, and nothing below restores an element POLICY:
+ *      this route still asserts nothing about how many options a product may carry.
+ *   2. A BYTE BOUND WAS ADDED (SEC-B) and stays - see {@link MAXIMUM_SELECTED_OPTIONS_BYTES}.
+ *   3. A LATER REVIEW MEASURED WHAT THE BYTE BOUND LEFT OPEN, and this is that bound. 8 KiB of query
+ *      text still admits 4096 one-character elements, each expanding into the 158-byte correlated
+ *      `exists` fragment at
+ *      `../repositories/mysql/sql/skusBySelectedOptions.sql.ts`, so one request could still hand MySQL
+ *      about 647 KiB of statement containing 4096 correlated subqueries. Authentication does not make
+ *      that amplification safe, because the caller is trusted to ASK, not to choose how much work
+ *      answering costs.
+ *
+ * ★★ WHY THIS IS A WORK BOUND AND NOT THE STRUCK-DOWN CAP WEARING A NEW NAME. The distinction is the
+ * whole reason a number can be admitted here at all, and it is measurable rather than rhetorical:
+ *
+ *   * THE STRUCK-DOWN CAP WAS A CLAIM ABOUT OPTIONS - "a product may not have more than 64" - a domain
+ *     fact the source states nowhere, and it refused selections a real catalog could express.
+ *   * THIS IS A CLAIM ABOUT SUBQUERIES THIS ADAPTER WILL COMMISSION. The statement emits exactly one
+ *     `and exists (...)` per element, so an element count IS the work count here; the unit is the
+ *     database's, not the catalog's.
+ *   * AND IT CANNOT REFUSE A SELECTION THE CATALOG COULD EXPRESS, which is what makes the two
+ *     genuinely different. A well-formed element is a generated option identifier and that column is 32
+ *     characters wide [model/entity/Option.cfc:L52], so 33 bytes per element with its delimiter: the
+ *     byte bound can carry at most 248 of them. This bound is FOUR TIMES that, so every list of
+ *     well-formed identifiers the byte bound admits is inside it with room to spare, and the hundreds-
+ *     of-elements magnitudes the earlier reversal defended stay served unchanged. What it refuses is
+ *     the shape that has no catalog meaning at all - thousands of one-character elements - which is
+ *     precisely the shape the finding measured.
+ *
+ * ★ NOT AN INVENTED NON-FUNCTIONAL REQUIREMENT [AAP 0.8.1]. No latency, throughput, capacity or
+ * availability target is claimed or implied, and no legacy service level is reproduced: this is a
+ * SAFETY bound on how much work one invocation of one net-new entrypoint may commission, of the same
+ * kind as the byte bound beside it and the document-size bound in
+ * `./promotionApplicationHandler.js`. It REFUSES; it never truncates, thins, re-orders or de-duplicates
+ * what it admits.
+ *
+ * ★★ AND THE PORTED SURFACE IS UNTOUCHED, WHICH IS WHY PARITY CANNOT BREAK. AAP 0.4.1 lists this
+ * handler as CREATE with NO source file, so there is no legacy HTTP route whose admission behaviour
+ * this could contradict. `ProductService.getProductSkusBySelectedOptions`
+ * [model/service/ProductService.cfc:L104], `MysqlSkuRepository` and the AND-of-EXISTS statement are all
+ * unchanged and all still answer a list of ANY length up to the protocol ceiling: the only bound they
+ * know is `MAX_PLACEHOLDER_COUNT`, which is 65535 because MySQL encodes a prepared statement's
+ * placeholder count in two bytes, and `tests/integration/repositories/skusBySelectedOptions.test.ts`
+ * continues to pin acceptance there. An in-process caller - the strangler-fig proxy AAP 0.1.1 describes,
+ * holding its own admission - reaches them without passing through this schema at all.
+ *
+ * Expressed as a power of two purely so the relationships above are checkable by eye: it is a quarter
+ * of {@link MAXIMUM_SELECTED_OPTION_ELEMENTS} and a sixty-fourth of the protocol ceiling.
+ */
+export const MAXIMUM_SELECTED_OPTION_SUBQUERIES = 1024;
+
+/**
  * ★ MUST-PRESERVE ARGUMENTS. Both `required string` in the legacy, so both keys must be present -
- * and neither carries a pattern, a trim, a case fold or a de-duplication step. Exactly ONE constraint
- * beyond presence exists anywhere here: the byte bound on `selectedOptions` that
- * {@link MAXIMUM_SELECTED_OPTIONS_BYTES} declares and that the ★★★ paragraph below argues in full. The
- * sentences between here and there record the reasoning it revises, verbatim, because that reasoning
+ * and neither carries a pattern, a trim, a case fold or a de-duplication step. Exactly TWO constraints
+ * beyond presence exist anywhere here, both on `selectedOptions` and both about what this adapter will
+ * commission rather than about what a product may be: the byte bound that
+ * {@link MAXIMUM_SELECTED_OPTIONS_BYTES} declares, and the correlated-subquery bound that
+ * {@link MAXIMUM_SELECTED_OPTION_SUBQUERIES} declares. The ★★★ paragraphs below argue each in full. The
+ * sentences between here and there record the reasoning they revise, verbatim, because that reasoning
  * struck down an EARLIER bound and none of it is withdrawn.
  *
  * `selectedOptions` STAYS A COMMA-DELIMITED STRING all the way to the SQL. It is not split here, not
@@ -614,18 +689,20 @@ export const MAXIMUM_SELECTED_OPTION_ELEMENTS = Math.floor(
  *      `exists` clause per element with no count test anywhere. Refusing at 65 made this route answer
  *      differently from the surface it is a port of.
  *
- * THE ONLY BOUND IS THE ONE THE DATABASE PROTOCOL IMPOSES, AND IT LIVES WHERE IT IS TRUE.
- * `../repositories/mysql/sql/skusBySelectedOptions.sql.ts` counts the placeholders the statement
- * would carry - one per element plus the optional `productID` - and refuses at
+ * THE ONLY BOUND THE PORTED TIERS KNOW IS THE ONE THE DATABASE PROTOCOL IMPOSES, AND IT LIVES WHERE IT
+ * IS TRUE. `../repositories/mysql/sql/skusBySelectedOptions.sql.ts` counts the placeholders the
+ * statement would carry - one per element plus the optional `productID` - and refuses at
  * `MAX_PLACEHOLDER_COUNT`, because MySQL encodes a prepared statement's placeholder count in a
  * TWO-BYTE field and a statement above that CANNOT BE PREPARED. That is a fact about the wire
  * protocol rather than a policy this adapter invented, it is 65535 rather than 64, and it applies to
  * every caller - routed or in-process - which is exactly why it is not duplicated here.
  *
- * So this schema carries no count, no pattern, no trim, no case fold and no de-duplication, and the
- * comma-list the caller sent is the comma-list the service receives.
+ * So this schema carries no pattern, no trim, no case fold and no de-duplication, and the comma-list
+ * the caller sent is the comma-list the service receives. What it does carry is TWO ADMISSION BOUNDS,
+ * each argued below and each a claim about what this ADAPTER will commission rather than about what a
+ * product may be: a byte length, and a ceiling on the correlated subqueries one invocation may ask for.
  *
- * ★★★ IT DOES NOW CARRY ONE BOUND - A BYTE LENGTH - AND THE DISTINCTION FROM THE REVERSED 64-ELEMENT
+ * ★★★ THE FIRST OF THE TWO IS A BYTE LENGTH, AND THE DISTINCTION FROM THE REVERSED 64-ELEMENT
  * CAP IS THE WHOLE JUSTIFICATION (SEC-B, CWE-400). A security review found that this route lets a
  * caller ask for one `exists` subquery per element with the only ceiling being the 65_535-placeholder
  * protocol limit, so a single request can demand tens of thousands of correlated subqueries. That is a
@@ -643,9 +720,10 @@ export const MAXIMUM_SELECTED_OPTION_ELEMENTS = Math.floor(
  *     it - and it is applied for the same reason: the size of one invocation's work is the caller's to
  *     choose only up to a stated limit.
  *
- * ★★ AND IT CHANGES NOTHING ABOUT THE PORTED SURFACE, WHICH IS WHY IT CANNOT BREAK PARITY. AAP 0.4.1
- * lists this handler as CREATE with NO source file - a net-new entrypoint - so there is no legacy HTTP
- * route whose admission behaviour this could contradict. `ProductService.getProductSkusBySelectedOptions`
+ * ★★ AND NEITHER BOUND CHANGES ANYTHING ABOUT THE PORTED SURFACE, WHICH IS WHY NEITHER CAN BREAK
+ * PARITY. AAP 0.4.1 lists this handler as CREATE with NO source file - a net-new entrypoint - so there
+ * is no legacy HTTP route whose admission behaviour either could contradict.
+ * `ProductService.getProductSkusBySelectedOptions`
  * [model/service/ProductService.cfc:L104], `MysqlSkuRepository` and the AND-of-EXISTS statement are all
  * untouched and all still answer a list of ANY length up to the protocol ceiling: the in-process caller
  * AAP 0.1.1 describes - a strangler-fig proxy holding its own admission - reaches them without passing
@@ -653,10 +731,21 @@ export const MAXIMUM_SELECTED_OPTION_ELEMENTS = Math.floor(
  * `tests/integration/repositories/skusBySelectedOptions.test.ts` continues to pin acceptance at
  * exactly 65_535 elements. The must-preserve behaviour is the SERVICE'S, and it is intact.
  *
- * ★ THE ELEMENT COUNT IS A CONSEQUENCE RATHER THAN A SECOND RULE. An element occupies at least one
- * character plus its delimiter, so this byte bound admits at most
+ * ★ THE ELEMENT COUNT THE BYTE BOUND IMPLIES IS A CONSEQUENCE RATHER THAN A RULE. An element occupies
+ * at least one character plus its delimiter, so the byte bound alone would admit at most
  * {@link MAXIMUM_SELECTED_OPTION_ELEMENTS} elements - stated and asserted, but derived from the bound
- * above rather than declared independently, so there is exactly one number to defend.
+ * above rather than declared independently.
+ *
+ * ★★★ AND THAT CONSEQUENCE IS WHY A SECOND BOUND EXISTS, WHICH SUPERSEDES THE SENTENCE THAT USED TO
+ * CLOSE THIS PARAGRAPH: "so there is exactly one number to defend". There are two, and the second one
+ * is defended on {@link MAXIMUM_SELECTED_OPTION_SUBQUERIES}. A later security review measured the
+ * consequence above and found it insufficient (CWE-400): 4096 one-character elements are inside the
+ * byte bound and still expand into 4096 correlated `exists` subqueries and roughly 647 KiB of statement
+ * text. The byte bound is unchanged; the work bound refuses that shape while sitting four times above
+ * the 248 well-formed option identifiers the byte bound can carry, so it cannot refuse a selection the
+ * catalog could express. NO ELEMENT POLICY IS RESTORED BY IT: the unit it counts is the statement's
+ * subquery, and the struck-down cap's claim about how many options a product may have is still not made
+ * anywhere on this route.
  *
  * ★★ AND DE-DUPLICATION IS STILL DECLINED, THOUGH IT WOULD CUT THE SAME WORST CASE. Collapsing
  * repeated elements would not change the ANSWER - `and exists (...)` is idempotent, so
@@ -676,6 +765,20 @@ const getProductSkusBySelectedOptionsSchema = z.object({
       (value: string): boolean =>
         Buffer.byteLength(value, 'utf8') <= MAXIMUM_SELECTED_OPTIONS_BYTES,
       { message: 'must not be longer than the published bound' },
+    )
+    // ★★★ THE WORK BOUND, ARGUED IN FULL ON {@link MAXIMUM_SELECTED_OPTION_SUBQUERIES}. Counted with
+    // `listToArray`, which is the SAME helper
+    // `../repositories/mysql/sql/skusBySelectedOptions.sql.ts` parses the list with, so the number
+    // measured here is exactly the number of `and exists (...)` clauses the statement would carry -
+    // empty positions dropped, as CFML `listLen` drops them [model/dao/SkuDAO.cfc:L113]. Counting any
+    // other way would bound a different quantity from the one being defended.
+    //
+    // The message names the WORK and neither the parameter's members nor the caller's value: a refusal
+    // here publishes no submitted text, and it deliberately carries none of the struck-down cap's
+    // sentence about a number of options, because no claim about option counts is being made.
+    .refine(
+      (value: string): boolean => listToArray(value).length <= MAXIMUM_SELECTED_OPTION_SUBQUERIES,
+      { message: 'must not exceed the published correlated-subquery bound' },
     ),
   productID: z.string(),
 });

@@ -2788,6 +2788,42 @@ export const LEGACY_TEST_MAP: {
 
   adapterTransportPolicies: [
     {
+      // ★★★ TWO ADMISSION BOUNDS ON ONE PARAMETER, AND THE HISTORY IS THE POINT. A 64-element cap was
+      // added here and STRUCK DOWN by a code review, because "at most 64 selected options" is a claim
+      // about the catalog that the source states nowhere and it contradicted a must-preserve read
+      // [AAP 0.8.1]; that ruling stands and the row below records the reversal it belongs to. A byte
+      // bound then closed the amplification a security review measured (SEC-B), and a LATER review
+      // measured what the byte bound still admitted: 4096 one-character elements, each expanding into
+      // the correlated `exists` fragment the statement builder emits - about 647 KiB of statement text
+      // and 4096 subqueries the caller chooses and the database pays for. Both bounds are registered
+      // here as ONE policy because they defend one parameter with one kind of claim: what this ADAPTER
+      // will commission. Neither is a claim about how many options a product may have.
+      summary:
+        'The selected-options parameter carries TWO admission bounds at the routed boundary and none ' +
+        'anywhere else: a byte length this adapter will read, and a ceiling on the correlated ' +
+        'subqueries one invocation may commission - counted with the same list helper the statement ' +
+        'builder parses the list with, so the number bounded is exactly the number of `exists` clauses ' +
+        'the statement would carry. Over either bound the route answers 400 naming only the member, ' +
+        'never the submitted value, and it REFUSES rather than truncating, trimming, re-ordering, ' +
+        'case-folding or de-duplicating what it admits. The subquery ceiling sits four times above the ' +
+        'largest list of well-formed 32-character option identifiers the byte bound can carry, so no ' +
+        'selection the catalog can express reaches it.',
+      owningModule: 'src/handlers/skuResolutionHandler.ts',
+      assertedBy: 'tests/unit/handlers/skuResolutionHandler.test.ts',
+      unchangedServiceContract:
+        'ProductService.getProductSkusBySelectedOptions [model/service/ProductService.cfc:L104], ' +
+        'MysqlSkuRepository and the AND-of-EXISTS statement in ' +
+        'src/repositories/mysql/sql/skusBySelectedOptions.sql.ts are untouched and still answer a list ' +
+        'of ANY length up to the only bound that is true of them - MAX_PLACEHOLDER_COUNT, which is ' +
+        '65535 because MySQL encodes a prepared statement placeholder count in two bytes. ' +
+        'tests/integration/repositories/skusBySelectedOptions.test.ts continues to pin acceptance at ' +
+        'exactly that figure, which is how the service-tier contract is known to be unchanged, and an ' +
+        'in-process caller holding its own admission [AAP 0.1.1] reaches the service without passing ' +
+        'through this schema at all. AAP 0.4.1 lists this handler as CREATE with no source file, so ' +
+        'there is no legacy HTTP admission behaviour either bound could contradict, and the ' +
+        'must-preserve behaviour AAP 0.8.1 names is the SERVICE\u2019S.',
+    },
+    {
       // ★★★ THIS ROW DESCRIBED A POLICY THAT WAS ADOPTED AND THEN REVERSED, AND A CODE REVIEW CAUGHT
       // THE ROW RATHER THAN THE CODE. It read: "A routed request that OMITS a parameter the operation
       // needs is refused at the schema with the field path, instead of reaching the service and
@@ -2860,6 +2896,37 @@ export const LEGACY_TEST_MAP: {
         'Headers are added around a payload the service already produced. No service method reads ' +
         'or writes a transport header; the legacy emitted none for these capabilities because it ' +
         'had no such endpoint.',
+    },
+    {
+      // ★★★ THIS ROW EXISTS BECAUSE THE GATE IT DESCRIBES WAS FOUND TO BE THE WRONG GATE. SEC-I
+      // restricted the promotion route to "a trusted service principal" but could only test the
+      // ADMINISTRATIVE claim, and a code review measured what that claim means one file over: the row
+      // below this one records `catalogQueryHandler` admitting ORDINARY HUMAN CATALOG ADMINISTRATORS
+      // with it. One claim answering two trust questions meant every catalog administrator was also
+      // accepted as the promotion-pricing service, free to name a subject account and submit
+      // self-authored prices and `promotionAppliedID` values that become REMOVE intents. The remedy is
+      // a dedicated service-only grant, and it is registered HERE rather than against the defect budget
+      // for the reason this register exists: the route is net-new, so there is no ported behaviour to
+      // measure it against and no budget slot to spend.
+      summary:
+        'The promotion-application route admits a caller only when the authorizer publishes a ' +
+        'DEDICATED service grant naming this route\u2019s own capability - not merely an identified ' +
+        'account, and not the general administrative claim, which admits human catalog administrators ' +
+        'elsewhere in this tier. An identified caller without the grant receives a fixed 403 that names ' +
+        'neither claim, refused before the body is parsed, so it costs no decode, no composition root, ' +
+        'no request scope and no statement.',
+      owningModule: 'src/handlers/promotionApplicationHandler.ts',
+      assertedBy: 'tests/unit/handlers/promotionApplicationHandler.test.ts',
+      unchangedServiceContract:
+        'PromotionService.updateOrderAmountsWithPromotions and the nine decomposition modules behind ' +
+        'it observe no principal, no claim and no status code: the gate runs before the envelope is ' +
+        'decoded and before a composition root or request scope exists, so an admitted document reaches ' +
+        'the engine byte-for-byte as it did before. The blanket removal of every applied promotion at ' +
+        'the head of the pass is AAP-mandated [AAP 0.6.1] and is untouched. The legacy had no HTTP ' +
+        'surface for this capability at all - AAP 0.4.1 lists this handler as CREATE with no source ' +
+        'file - and its in-process caller, OrderService [model/service/OrderService.cfc:L60-L61], was ' +
+        'trusted by construction because it could not be reached from outside the process; the grant is ' +
+        'the strangler-fig stand-in for exactly that, so no legacy call shape is refused.',
     },
     {
       summary:

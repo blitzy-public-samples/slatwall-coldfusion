@@ -83,8 +83,14 @@
 // file's directory, and `npm run lint` runs with this subtree as its working
 // directory, so ESLint never walks the untouched CFML tree (admin/, assets/,
 // config/, custom/, frontend/, integrationServices/, meta/, model/, org/,
-// public/, tags/, templates/). There is deliberately no root configuration and
-// no separate ignore file; ignores are expressed inside this flat config.
+// public/, tags/, templates/). There is deliberately no root configuration, and
+// lint scope is expressed inside this flat config rather than delegated: the
+// subtree DOES carry a committed `slatwall-ts/.gitignore` (restored under the
+// project-wide security assessment, so a fresh clone protects `.env` and the
+// generated artifact directories), but ESLint 10's flat config does not consult
+// Git ignore semantics for lint scope, so `globalIgnores` below states the same
+// generated paths in the vocabulary ESLint actually reads. The two are held in
+// agreement by review rather than by inheritance - see the `globalIgnores` note.
 // Never run the auto-fixer from the repository root.
 //
 // FORMATTING IS NOT OWNED HERE. Prettier 3.9.6 owns it, via
@@ -619,9 +625,14 @@ export default tseslint.config(
   // output, coverage reports, tooling caches, and generated declaration files.
   // Mirrors `tsconfig.json`'s `exclude` and the four generated-artifact classes
   // README.md names under "Connections, and what not to commit". The subtree
-  // carries no committed `.gitignore` - AAP 0.3.1 enumerates its root layout
-  // exhaustively and does not include one - so this list is written out here
-  // rather than inherited from an ignore file.
+  // does carry a committed `slatwall-ts/.gitignore` covering those same four
+  // classes, and this list is still written out here rather than inherited from
+  // it: an ESLint 10 flat config resolves lint scope from its own `ignores`
+  // entries and does not read Git ignore files, so an inherited list would not
+  // exist as far as the linter is concerned. Both are therefore maintained, and
+  // deliberately name the same generated paths - the ignore file so a fresh
+  // clone cannot stage a build product or a `.env`, this entry so the linter
+  // does not walk one.
   // -------------------------------------------------------------------------
   globalIgnores([
     'node_modules/**',

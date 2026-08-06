@@ -228,6 +228,15 @@ const OTHER_ACCOUNT_ID = 'acct-someone-else-0002';
 /** The route this capability answers on, taken from the shipped frozen table rather than retyped. */
 const CAPABILITY_ROUTE = ROUTE_TABLE.promotionApplication;
 
+/**
+ * The capability name a SERVICE grant has to name for this route to admit a caller.
+ *
+ * Read off the same frozen route row rather than retyped as a literal, so a suite cannot pass against
+ * a token the shipped table does not publish - the identical discipline `CAPABILITY_ROUTE` applies to
+ * the method and path.
+ */
+const PROMOTION_APPLICATION_CAPABILITY = CAPABILITY_ROUTE.capability;
+
 /** Everything one test wants to observe about how the handler drove its graph. */
 interface PricingRecorder {
   /** Labels in invocation order. */
@@ -614,20 +623,29 @@ function makeProxyEvent(overrides: {
  * An authorizer context establishing one TRUSTED SERVICE caller, under the claim names the handler
  * reads.
  *
- * ★★★ IT CARRIES THE ADMINISTRATIVE CLAIM NOW, AND THAT IS SEC-I. This used to return `{ accountID }`
- * alone, which is exactly the caller the finding is about: the route admitted ANY identified account,
- * so a customer could submit a wholly caller-authored economic document - its own prices, its own
- * extended prices, its own subtotals, and the `promotionAppliedID` of any applied-promotion row it
- * cared to name, each of which becomes a REMOVE intent. The route is now restricted to a trusted
- * service principal, the strangler-fig stand-in for the in-process `OrderService` caller
- * [model/service/OrderService.cfc:L60-L61].
+ * ★★★ IT CARRIES A SERVICE GRANT, AND THE ROUTE TO THAT IS TWO FINDINGS LONG. It first returned
+ * `{ accountID }` alone, which is exactly the caller SEC-I was about: the route admitted ANY identified
+ * account, so a customer could submit a wholly caller-authored economic document - its own prices, its
+ * own extended prices, its own subtotals, and the `promotionAppliedID` of any applied-promotion row it
+ * cared to name, each of which becomes a REMOVE intent. SEC-I then made it
+ * `{ accountID, adminAccountFlag: true }`, and a later code review found THAT insufficient (MAJOR,
+ * CWE-862/CWE-285): `adminAccountFlag` is the claim `catalogQueryHandler` uses to admit ordinary HUMAN
+ * catalog administrators, so the gate could not tell a service from an administrator and every catalog
+ * administrator was admitted here too.
+ *
+ * So the trusted caller now holds what a service holds and nothing more: the dedicated
+ * `serviceScope` grant naming this route's own capability, and NO administrative bit - which is itself
+ * the proof that the admin claim is no longer what admits. The strangler-fig stand-in for the
+ * in-process `OrderService` caller [model/service/OrderService.cfc:L60-L61] is a service, not an
+ * administrator.
  *
  * Every case in this suite that is about something OTHER than the gate therefore needs a caller the
  * route serves, and gets one here. The gate itself is asserted explicitly by the cases that use
- * {@link untrustedAuthorizerFor}, and by the admission block that walks the whole claim vocabulary.
+ * {@link untrustedAuthorizerFor} and {@link administratorAuthorizerFor}, and by the admission block
+ * that walks the whole claim vocabulary.
  */
 function authorizerFor(accountID: string): Readonly<Record<string, unknown>> {
-  return { accountID, adminAccountFlag: true };
+  return { accountID, serviceScope: PROMOTION_APPLICATION_CAPABILITY };
 }
 
 /**
@@ -638,6 +656,17 @@ function authorizerFor(accountID: string): Readonly<Record<string, unknown>> {
  */
 function untrustedAuthorizerFor(accountID: string): Readonly<Record<string, unknown>> {
   return { accountID };
+}
+
+/**
+ * An authorizer context establishing a GENERAL ADMINISTRATOR: identified, administrative, ungranted.
+ *
+ * ★★★ THIS IS THE CALLER THE LATER FINDING NAMED, and it exists as its own helper because "an
+ * administrator is not a service" is the correction, not a detail of it. It is precisely the principal
+ * `catalogQueryHandler` serves, and this route must refuse it.
+ */
+function administratorAuthorizerFor(accountID: string): Readonly<Record<string, unknown>> {
+  return { accountID, adminAccountFlag: true };
 }
 
 /** The envelope for `applyPromotions`. `order` is whatever the caller is putting on the wire. */
@@ -1947,18 +1976,21 @@ describe('the account trust boundary (NET-NEW)', () => {
     // case-sensitive index would let a deployment's key casing silently decide whether a request is
     // treated as signed in - which would refuse this order rather than price it.
     //
-    // ★★ BOTH CLAIMS ARE SPELLED UNCONVENTIONALLY HERE, AND THE SECOND IS SEC-I's. The trusted-service
-    // claim is read through the same case-folding struct read, so a deployment emitting
-    // `ADMINACCOUNTFLAG` names the same permission as one emitting `adminAccountFlag`. Getting that
-    // wrong in the other direction would be worse than a refusal: it would silently deny the one caller
-    // population this route serves, and the symptom would be a 403 nobody could explain.
+    // ★★ BOTH CLAIMS ARE SPELLED UNCONVENTIONALLY HERE, AND THE SECOND ONE MOVED. It used to be
+    // `ADMINACCOUNTFLAG`, because SEC-I gated the route on the administrative claim; a later code
+    // review found that claim unable to distinguish a service from a human catalog administrator, so
+    // the grant `SERVICESCOPE` is what this half now exercises. The property is unchanged and is read
+    // through the same case-folding struct read: a deployment emitting `SERVICESCOPE` names the same
+    // grant as one emitting `serviceScope`. Getting that wrong in the other direction would be worse
+    // than a refusal - it would silently deny the one caller population this route serves, and the
+    // symptom would be a 403 nobody could explain.
     const result = await harness.invoke(
       postApplyPromotions(
         order,
         {},
         {
           accountId: AUTHENTICATED_ACCOUNT_ID,
-          ADMINACCOUNTFLAG: true,
+          SERVICESCOPE: PROMOTION_APPLICATION_CAPABILITY,
         },
       ),
     );
@@ -2109,12 +2141,77 @@ describe('the trusted-service trust boundary (SEC-I)', () => {
     expect(harness.recorder.log).toEqual([]);
   });
 
-  it('★★ refuses every non-admitted rendering of the trusted claim, and admits the closed set', async () => {
-    // The vocabulary is `errorMapper`'s and is not widened for this route: a real `boolean true`, or one
-    // of the two truthy STRINGS an authorizer can carry. A NUMBER is refused - including `1`, admitted
-    // as the string `'1'` and refused as the numeral - because a permission arriving untyped is not one
-    // this route will guess at.
-    for (const refused of [false, 'false', '0', 0, 1, '', ' ', 'no', 'yes', null, {}, []]) {
+  it('★★★ REFUSES A GENERAL CATALOG ADMINISTRATOR, because an administrator is not a service', async () => {
+    // ★★★ THE REGRESSION CASE FOR THE LATER FINDING (MAJOR, CWE-862/CWE-285). SEC-I gated this route on
+    // `adminAccountFlag`, and a code review measured what that bit actually means elsewhere in the same
+    // subtree: `catalogQueryHandler` admits ORDINARY HUMAN CATALOG ADMINISTRATORS with it. One claim was
+    // answering two different trust questions, so every catalog administrator was also accepted as the
+    // promotion-pricing service - free to name a subject account and submit self-authored prices and
+    // `promotionAppliedID` values that become REMOVE intents.
+    //
+    // This is that exact caller: identified, administrative, and holding no service grant. It must be
+    // refused, and the refusal must cost nothing.
+    const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      postApplyPromotions(order, {}, administratorAuthorizerFor(AUTHENTICATED_ACCOUNT_ID)),
+    );
+
+    expect(result.statusCode).toBe(403);
+    expect(errorBodyOf(result).category).toBe('forbidden');
+    expect(errorBodyOf(result)).not.toHaveProperty('fields');
+    // The refusal names neither claim, so a caller cannot learn which one would have satisfied it.
+    expect(result.body).not.toContain('adminAccountFlag');
+    expect(result.body).not.toContain('serviceScope');
+    expect(harness.recorder.log).toEqual([]);
+  });
+
+  it('★★★ admits a SERVICE GRANT that carries no administrative bit at all', async () => {
+    // The other half of the correction, and the half that proves the gate MOVED rather than merely
+    // narrowed: a caller holding the grant and no admin flag is served. If the admin claim were still
+    // consulted, this would be a 403.
+    const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      postApplyPromotions(
+        order,
+        {},
+        {
+          accountID: AUTHENTICATED_ACCOUNT_ID,
+          serviceScope: PROMOTION_APPLICATION_CAPABILITY,
+        },
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.composedInputs).toHaveLength(1);
+  });
+
+  it('★★ refuses every non-admitted rendering of the service grant, and admits the closed set', async () => {
+    // ★★★ THIS CASE WALKED THE ADMINISTRATIVE CLAIM'S VOCABULARY AND NOW WALKS THE GRANT'S, WHICH IS
+    // THE SAME CASE ASKING THE CORRECTED QUESTION. The vocabulary is `errorMapper`'s and is not widened
+    // for this route: the grant is a CFML list of capability names, so a rendering is admitted only if
+    // it NAMES this capability as an element. Everything below is refused for a stated reason rather
+    // than as a lump - a permission arriving untyped, a neighbouring capability, a prefix of the right
+    // name, and a padded element the list helper deliberately does not trim.
+    const refusedRenderings: readonly unknown[] = [
+      undefined, // the grant is absent entirely
+      '', // present and empty
+      '   ', // present and blank
+      true, // a permission bit is not a grant
+      1, // nor a number
+      {}, // nor a struct
+      [], // nor an array
+      'catalogQuery', // a different capability
+      'priceResolution,productFeed', // two different capabilities
+      'promotion', // a prefix of the right name
+      'promotionApplications', // a near-miss spelling
+      'catalogQuery, promotionApplication', // padded element: `listFindNoCase` does not trim
+    ];
+
+    for (const refused of refusedRenderings) {
       const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
       const harness = makeHarness({ admit: order });
 
@@ -2124,16 +2221,27 @@ describe('the trusted-service trust boundary (SEC-I)', () => {
           {},
           {
             accountID: AUTHENTICATED_ACCOUNT_ID,
-            adminAccountFlag: refused,
+            serviceScope: refused,
           },
         ),
       );
 
-      expect(result.statusCode).toBe(403);
+      expect(result.statusCode, `rendering ${JSON.stringify(refused)} must not admit`).toBe(403);
       expect(harness.recorder.log).toEqual([]);
     }
 
-    for (const admitted of [true, 'true', '1', ' TRUE ', 'True']) {
+    // Admitted: the capability named as an element, case folded exactly as CFML `eq` folds it, alone or
+    // among others, with ordinary whitespace around the WHOLE claim value trimmed once.
+    const admittedRenderings: readonly string[] = [
+      'promotionApplication',
+      'PROMOTIONAPPLICATION',
+      'PromotionApplication',
+      ' promotionApplication ',
+      'catalogQuery,promotionApplication',
+      'promotionApplication,priceResolution',
+    ];
+
+    for (const admitted of admittedRenderings) {
       const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
       const harness = makeHarness({ admit: order });
 
@@ -2143,20 +2251,20 @@ describe('the trusted-service trust boundary (SEC-I)', () => {
           {},
           {
             accountID: AUTHENTICATED_ACCOUNT_ID,
-            adminAccountFlag: admitted,
+            serviceScope: admitted,
           },
         ),
       );
 
-      expect(result.statusCode).toBe(200);
+      expect(result.statusCode, `rendering ${JSON.stringify(admitted)} must admit`).toBe(200);
     }
   });
 
   it('★★★ cannot be granted the claim by the REQUEST - only the authorizer establishes it', async () => {
-    // The BODY asserts the permission while the authorizer withholds it. The body is the only
-    // caller-authored surface this suite's event builder models - and it is the one that matters, since
-    // the envelope is the sole caller-authored structure this route reads at all. If it were consulted,
-    // this would be served.
+    // The BODY asserts BOTH permissions - the grant this route reads and the administrative bit it no
+    // longer reads - while the authorizer withholds them. The body is the only caller-authored surface
+    // this suite's event builder models, and it is the one that matters, since the envelope is the sole
+    // caller-authored structure this route reads at all. If either were consulted, this would be served.
     const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
     const harness = makeHarness({ admit: order });
 
@@ -2164,6 +2272,7 @@ describe('the trusted-service trust boundary (SEC-I)', () => {
       makeProxyEvent({
         body: JSON.stringify({
           ...applyPromotionsDocument(wireOrderDocument(order)),
+          serviceScope: PROMOTION_APPLICATION_CAPABILITY,
           adminAccountFlag: true,
         }),
         authorizer: untrustedAuthorizerFor(AUTHENTICATED_ACCOUNT_ID),

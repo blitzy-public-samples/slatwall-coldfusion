@@ -113,6 +113,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { ZodError } from 'zod';
 
+import { listFindNoCase } from '../lib/cfml/list.js';
 import { structGet } from '../lib/cfml/struct.js';
 import type { LogContext, Logger } from '../lib/logger.js';
 import { logger } from '../lib/logger.js';
@@ -1776,12 +1777,46 @@ export const AUTHORIZER_ADMIN_CLAIM = 'adminAccountFlag';
 const TRUTHY_ADMIN_CLAIM_VALUES: readonly string[] = Object.freeze(['true', '1']);
 
 /**
+ * The authorizer-context member naming the SERVICE capabilities this caller may drive.
+ *
+ * ★★★ WHY A THIRD CLAIM EXISTS AT ALL, AND WHY {@link AUTHORIZER_ADMIN_CLAIM} COULD NOT DO THIS JOB.
+ *
+ * A code review found (MAJOR, CWE-862/CWE-285) that the promotion-application route described itself
+ * as restricted to "a trusted service principal" while the only thing it could actually test was
+ * {@link AUTHORIZER_ADMIN_CLAIM} - and `./catalogQueryHandler.js` gates ORDINARY HUMAN CATALOG
+ * ADMINISTRATION on that same bit. Two different trust decisions were therefore reading one claim,
+ * so every catalog administrator was also accepted as the pricing service: admitted, that caller may
+ * name a subject account and submit an entirely self-authored economic document - its own item
+ * prices, its own extended prices, its own subtotals, and the `promotionAppliedID` of any
+ * already-applied promotion, each of which the engine turns into a REMOVE intent
+ * [model/service/PromotionService.cfc:L64-L80].
+ *
+ * The finding's own remedy is what is implemented here: a DEDICATED, SERVER-ESTABLISHED, SERVICE-ONLY
+ * grant, so that "may administer the catalog" and "is the pricing service" cannot be the same
+ * statement. The administrative claim keeps exactly the job it already had and gains nothing.
+ *
+ * ★ NO NEW SECURITY MECHANISM IS INVENTED, AND THAT BOUNDARY MATTERS. This is one more member of the
+ * authorizer context the deployment's authorizer already populates - the same object, read the same
+ * way, refused the same way. No token format, signature scheme, API-key store, secret, shared HMAC or
+ * mutual-TLS story is introduced, because none of those is described by the plan this port
+ * implements. The grant is established by the authorizer and is unreachable from the request: nothing
+ * in a header, a query string, a path parameter or a body reaches this member.
+ *
+ * ★ THE VALUE IS A CFML LIST OF CAPABILITY NAMES rather than a single flag, so one authorizer can
+ * grant one service principal exactly the capabilities it drives - `promotionApplication` today -
+ * without a new claim name per route. The tokens are the FROZEN capability names `./router.js`
+ * publishes, so the vocabulary is the route table's rather than a second one invented here, and a
+ * caller's request never contributes a token.
+ */
+export const AUTHORIZER_SERVICE_SCOPE_CLAIM = 'serviceScope';
+
+/**
  * An identified caller.
  *
  * The whole of what a handler learns about who is asking. There is no name, no e-mail address, no
  * address, no telephone number, no token and no session identifier on it - a handler needs an opaque
- * account identifier and one permission bit, and carrying anything else would put personal data on a
- * request path that has no use for it.
+ * account identifier, one permission bit and its service grant, and carrying anything else would put
+ * personal data on a request path that has no use for it.
  */
 export interface RequestPrincipal {
   /**
@@ -1801,8 +1836,28 @@ export interface RequestPrincipal {
    * non-string, an empty string and any value outside {@link TRUTHY_ADMIN_CLAIM_VALUES} all yield
    * `false`, which is the non-admin arm of the legacy audit gate and the fail-closed direction for a
    * permission bit.
+   *
+   * ★ IT IS A GENERAL ADMINISTRATIVE PERMISSION AND IS NOT A SERVICE IDENTITY. `./catalogQueryHandler.js`
+   * gates human catalog administration on it, so a route needing "this caller IS the trusted service"
+   * must test {@link serviceScope} instead - see {@link AUTHORIZER_SERVICE_SCOPE_CLAIM} for the finding
+   * that separated the two.
    */
   readonly adminAccountFlag: boolean;
+
+  /**
+   * The service capabilities this caller is granted, as the authorizer published them.
+   *
+   * A CFML list - comma-delimited, tested only through {@link principalHasServiceScope} so the
+   * comparison rule exists once. Carried verbatim rather than parsed into an array here, because the
+   * one thing any caller of this ever needs is a membership test, and a single published predicate is
+   * what stops four handlers from spelling that test four ways.
+   *
+   * EMPTY UNLESS THE CLAIM AFFIRMATIVELY CARRIES SOMETHING. Absence, a non-string, an empty string and
+   * a whitespace-only string all yield `''`, on which the predicate answers `false` for every
+   * capability - so a service-only route fails closed on a misconfigured authorizer rather than
+   * admitting the caller.
+   */
+  readonly serviceScope: string;
 }
 
 /**
@@ -1973,11 +2028,50 @@ export function resolveRequestPrincipal(event: APIGatewayProxyEvent): RequestPri
   }
 
   // Frozen for the same reason every published object in `./bootstrap.js` is: `readonly` erases at
-  // emit, and a handler holding this must not be able to substitute the account it was given.
+  // emit, and a handler holding this must not be able to substitute the account, the permission bit or
+  // the service grant it was given.
   return Object.freeze({
     identified: true,
-    principal: Object.freeze({ accountID, adminAccountFlag: readAdminClaim(claims) }),
+    principal: Object.freeze({
+      accountID,
+      adminAccountFlag: readAdminClaim(claims),
+      // `readClaim` yields nothing for an absent claim, a non-string and a blank string, and trims the
+      // value it does yield. `''` is the fail-closed value: `principalHasServiceScope` answers `false`
+      // for every capability against it.
+      serviceScope: readClaim(claims, AUTHORIZER_SERVICE_SCOPE_CLAIM) ?? '',
+    }),
   });
+}
+
+/**
+ * Whether an identified caller is granted one SERVICE capability.
+ *
+ * ★★★ THE ONE ADMISSION TEST FOR A SERVICE-ONLY ROUTE, and the only supported way to read
+ * {@link RequestPrincipal.serviceScope}. A handler asking "may this caller drive this capability?"
+ * calls this and answers {@link forbiddenResponse} on `false`; it must not compare the member itself,
+ * because the comparison RULE - which delimiter, which case folding, what an empty grant means - is a
+ * privilege decision and belongs in one place.
+ *
+ * ★ CASE IS FOLDED AND PADDING IS NOT, both from `listFindNoCase` in `../lib/cfml/list.js` and both
+ * deliberate. Folding case is this subtree's house convention because CFML's own `eq` and
+ * `findNoCase` fold it, so an authorizer emitting `PROMOTIONAPPLICATION` names the same capability as
+ * one emitting `promotionApplication` - the same reasoning that makes the account claim itself
+ * case-insensitively keyed. Padding is significant because that helper documents element padding as
+ * load-bearing across the ported slice and declines to trim, so a grant written `a, b` grants `a` and
+ * ` b`: the second element does not match `b` and the route REFUSES. That is the fail-closed
+ * direction, it is visible to the operator as a refusal rather than as a silent admission, and the
+ * whole claim value is still trimmed once by `readClaim`, so ordinary leading or trailing whitespace
+ * around the grant costs nothing.
+ *
+ * @param principal the identified caller, from {@link resolveRequestPrincipal}.
+ * @param capability the capability being driven - a `RoutedCapability` name from `./router.js`, passed
+ *   as its frozen route-table value so no route invents a token of its own.
+ * @returns whether the grant names that capability.
+ */
+export function principalHasServiceScope(principal: RequestPrincipal, capability: string): boolean {
+  // `listFindNoCase` returns a 1-based position, or CFML's `0` for absent. An empty grant splits to no
+  // elements, so it answers 0 for every capability without needing a branch of its own.
+  return listFindNoCase(principal.serviceScope, capability) > 0;
 }
 
 // ===========================================================================

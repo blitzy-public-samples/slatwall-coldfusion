@@ -245,6 +245,7 @@ import {
   jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
   mapZodErrorFields,
+  principalHasServiceScope,
   PROTOTYPE_MEMBER_FIELD_ISSUE,
   resolveRequestPrincipal,
   resolveServerRequestId,
@@ -2084,8 +2085,13 @@ function renderSalePriceDetails(
 //     stay identical only until one is edited;
 //   * the status note argued at length for 200 and against inventing 201, 202, 409, 422 or 429 -
 //     which remains true and `jsonSuccessResponse` decides once for all five entrypoints. Its former
-//     argument against 401 was superseded by this route's authenticated admission gate; this handler
-//     still has no permission-gated operation and therefore emits no 403;
+//     argument against 401 was superseded by this route's authenticated admission gate, and its
+//     companion sentence - "this handler still has no permission-gated operation and therefore emits
+//     no 403" - was superseded too, by the service-grant gate this route now applies: the single
+//     operation IS permission-gated, and a caller that is identified but not granted the
+//     `promotionApplication` capability receives a fixed 403 from `forbiddenResponse` before its body
+//     is parsed. Both statuses come from `./errorMapper.js`, which decides them once for every
+//     entrypoint that gates;
 //   * `successResponse` serialised a body whose top level was this capability's own shape, so a caller
 //     integrating with two of the five had to learn two framings and a successful body carried no
 //     correlation identifier at all.
@@ -2191,11 +2197,15 @@ type EnvelopeDecoding =
 //
 // TWO THINGS NOW STAND BETWEEN A CALLER AND THE ENGINE, and neither is the account rule above:
 //
-//   1. THE CALLER MUST BE A TRUSTED SERVICE PRINCIPAL. Established from the authorizer's administrative
-//      claim - the only permission bit this tier can observe, since `getAdminAccountFlag()` belongs to
-//      the out-of-scope `Account` entity. This is the strangler-fig stand-in for the in-process
-//      `OrderService` caller [model/service/OrderService.cfc:L60-L61] that the legacy engine had, and
-//      which was trusted by construction because it could not be reached from outside the process.
+//   1. THE CALLER MUST BE A TRUSTED SERVICE PRINCIPAL. Established from the authorizer's SERVICE GRANT -
+//      `AUTHORIZER_SERVICE_SCOPE_CLAIM`, tested through `principalHasServiceScope` for this route's own
+//      capability name. It was originally the authorizer's ADMINISTRATIVE claim, and a code review
+//      found that insufficient: the same bit admits ordinary human catalog administrators through
+//      `./catalogQueryHandler.js`, so the gate could not tell a service from an administrator. The
+//      grant is what makes the sentence above true. This is the strangler-fig stand-in for the
+//      in-process `OrderService` caller [model/service/OrderService.cfc:L60-L61] that the legacy engine
+//      had, and which was trusted by construction because it could not be reached from outside the
+//      process.
 //   2. THE DOCUMENT MUST NOT CONTRADICT THE LEGACY'S OWN DEFINITIONS OF ITS MEMBERS. See
 //      `collectDocumentInconsistencies`. Nothing there is a rule invented for this port: each check
 //      restates an identity the legacy entity computes, so it cannot refuse a document the legacy
@@ -2673,14 +2683,19 @@ const IMPLEMENTED_ROUTE_ACTION: RouteAction = 'applyPromotions';
  *     write (section 2, obligation 3), so there is no audit stamp to attribute, and absent means false -
  *     the non-admin arm of the legacy gate `!account.isNew() && account.getAdminAccountFlag()`.
  *
- *     What changed around it is that the route now REQUIRES this very claim to admit the caller at all,
- *     so a reader could reasonably expect it to travel. It deliberately does not, for two reasons.
- *     First, nothing on THIS path consumes it: the flag's second consumer is
+ *     ★ AND THE SENTENCE THAT FOLLOWED IT IS NOW WRONG TWICE OVER, WHICH IS WHY IT IS REWRITTEN RATHER
+ *     THAN LEFT. It read: "What changed around it is that the route now REQUIRES this very claim to
+ *     admit the caller at all, so a reader could reasonably expect it to travel." The route requires
+ *     the SERVICE GRANT, not the administrative claim - a code review found the administrative claim
+ *     unable to distinguish a service from a human catalog administrator - so nothing about admission
+ *     invites this flag to travel any more. The two reasons for withholding it are the ones that
+ *     always mattered. First, nothing on THIS path consumes it: the flag's second consumer is
  *     `RequestScope.priceGroupEntitlements`, which is reached only by the price-resolution entrypoint's
  *     two binding helpers, and this handler names no price group - the price-group pass resolves them
  *     from the order's ACCOUNT. Second, the caller here is trusted to submit an order, which is not the
  *     same authority as being entitled to every price group in the store; passing the flag would grant
- *     that second authority silently and for no use.
+ *     that second authority silently and for no use. The GRANT does not travel either, and for the
+ *     same reason: no service reads it, and a request scope is not where an admission decision belongs.
  *
  *     If a future member of this path ever does consult the entitlement surface, this omission becomes a
  *     fail-closed refusal rather than a bypass - which is the direction an omission should fail in, and
@@ -2798,19 +2813,46 @@ export function createPromotionApplicationHandler(
       // order arrives as an INPUT. So the trust has to be placed in the CALLER, which is what the
       // legacy did implicitly by only ever being called in-process.
       //
-      // WHY THE ADMINISTRATIVE CLAIM IS THE MECHANISM. It is the only permission bit this tier can
-      // observe: `getAdminAccountFlag()` belongs to the out-of-scope `Account` entity, the authorizer
-      // resolves it, and `resolveRequestPrincipal` publishes it. No new claim vocabulary, token format,
-      // signature scheme or API-key store is invented here - inventing one would be a security
-      // mechanism this AAP does not describe.
+      // ★★★ THE MECHANISM IS A DEDICATED SERVICE GRANT, AND THE ADMINISTRATIVE CLAIM IS NOT ENOUGH.
+      // THIS PARAGRAPH REPLACES ONE THAT WAS WRONG, AND THE SUPERSEDED REASONING IS KEPT IN VIEW
+      // BECAUSE A LATER REVIEW MEASURED EXACTLY WHERE IT FAILED.
+      //
+      // It read: "WHY THE ADMINISTRATIVE CLAIM IS THE MECHANISM. It is the only permission bit this
+      // tier can observe: `getAdminAccountFlag()` belongs to the out-of-scope `Account` entity, the
+      // authorizer resolves it, and `resolveRequestPrincipal` publishes it. No new claim vocabulary,
+      // token format, signature scheme or API-key store is invented here." The second half still
+      // governs and is honoured below. The FIRST half was the defect: a code review found (MAJOR,
+      // CWE-862/CWE-285) that `adminAccountFlag` is the claim `./catalogQueryHandler.js` uses to admit
+      // ORDINARY HUMAN CATALOG ADMINISTRATORS, so this route was not restricted to a service at all -
+      // it was open to every catalog administrator, each of whom could then name a subject account and
+      // submit a wholly self-authored economic document, including the `promotionAppliedID` of rows
+      // belonging to orders it does not own. "The only bit available" was a reason to ADD the missing
+      // grant, not a reason to overload the one that was there.
+      //
+      // WHAT IS TESTED NOW. `AUTHORIZER_SERVICE_SCOPE_CLAIM` - a third authorizer-context member,
+      // established by the deployment's authorizer and unreachable from the request - carries the
+      // capabilities a SERVICE principal may drive, and `principalHasServiceScope` is the one published
+      // membership test. The token is {@link CAPABILITY} itself, passed as the frozen route-table value
+      // `./router.js` publishes, so this route invents no vocabulary of its own and a typo would be a
+      // compile error. `adminAccountFlag` is deliberately NOT consulted here: a human administrator is
+      // not this route's caller, and a service principal has no reason to hold an administrative bit.
+      // Still no token format, signature scheme, API-key store or shared secret is introduced - the
+      // authorizer context is read exactly as it already was, one member wider.
+      //
+      // WHY A GRANT RATHER THAN PER-FIELD OWNERSHIP PROOF. Unchanged, and it is the reason a grant is
+      // the whole remedy: the alternative - "accept only an account-owned order id and canonicalize the
+      // order server-side" - requires LOADING the order aggregate, and `OrderService` and every order
+      // entity are explicitly out of scope [AAP 0.2.2]. The checks that DO belong to this tier are
+      // untouched below: the subject account is server-established, and the order document must agree
+      // with it.
       //
       // ★ 403 AND NOT 404, AND A FIXED SENTENCE. An identity WAS established and is insufficient, which
       // is what 403 means; pretending the route does not exist would also hide it from the trusted
-      // caller misconfigured to omit its claim. `forbiddenResponse` publishes a sentence naming no
+      // caller misconfigured to omit its grant. `forbiddenResponse` publishes a sentence naming no
       // claim, no principal and no operation, and carries no `fields`, so nothing about the gate's
       // shape is disclosed. Refused BEFORE the body is parsed, so an unauthorized caller costs no
       // decode, no composition root, no scope and no statement.
-      if (!principalResolution.principal.adminAccountFlag) {
+      if (!principalHasServiceScope(principalResolution.principal, CAPABILITY)) {
         return forbiddenResponse(mappingContext);
       }
 

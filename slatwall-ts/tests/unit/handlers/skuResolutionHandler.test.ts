@@ -173,6 +173,7 @@ import {
   createSkuResolutionHandler,
   handler,
   MAXIMUM_SELECTED_OPTION_ELEMENTS,
+  MAXIMUM_SELECTED_OPTION_SUBQUERIES,
   MAXIMUM_SELECTED_OPTIONS_BYTES,
   NON_EXPOSED_SURFACE_NOTES,
 } from '../../../src/handlers/skuResolutionHandler.js';
@@ -1611,7 +1612,7 @@ describe('the SKU resolution Lambda entry point', () => {
       // Synchronous on purpose: this case asserts the relationship between two published
       // constants and invokes nothing, so there is nothing to await.
       it('publishes an element figure DERIVED from the byte bound, not declared beside it', () => {
-        // One number is defended - the byte bound - and the element figure is computed from
+        // The byte bound is defended in its own right and the element figure is computed from
         // it. Asserted as arithmetic so a future change to either cannot leave the two
         // disagreeing while every other case still passes.
         expect(MAXIMUM_SELECTED_OPTIONS_BYTES).toBe(8 * 1024);
@@ -1620,11 +1621,17 @@ describe('the SKU resolution Lambda entry point', () => {
         );
         expect(MAXIMUM_SELECTED_OPTION_ELEMENTS).toBe(4096);
 
-        // And it is a real ceiling on the statement rather than a comment: the worst case one
-        // invocation can demand falls to a sixteenth of the 65535 placeholders the wire
-        // protocol permits, which is the reduction in caller-chosen work the finding asked
-        // for.
-        expect(MAXIMUM_SELECTED_OPTION_ELEMENTS * 16).toBe(65_536);
+        // ★★★ AND THE DERIVED FIGURE IS NOT THE ENFORCED CEILING, WHICH IS THE CORRECTION A
+        // LATER FINDING FORCED. This case used to close with "it is a real ceiling on the
+        // statement rather than a comment: the worst case one invocation can demand falls to a
+        // sixteenth of the 65535 placeholders the wire protocol permits". A sixteenth of the
+        // protocol ceiling is still 4096 correlated subqueries and roughly 647 KiB of statement
+        // text, and a security review found that insufficient (CWE-400). The byte bound stays
+        // exactly as it was; the ENFORCED element ceiling is now the work bound, which is a
+        // quarter of this figure and a sixty-fourth of the protocol ceiling.
+        expect(MAXIMUM_SELECTED_OPTION_SUBQUERIES).toBeLessThan(MAXIMUM_SELECTED_OPTION_ELEMENTS);
+        expect(MAXIMUM_SELECTED_OPTION_SUBQUERIES * 4).toBe(MAXIMUM_SELECTED_OPTION_ELEMENTS);
+        expect(MAXIMUM_SELECTED_OPTION_SUBQUERIES * 64).toBe(65_536);
       });
 
       it('\u2605\u2605\u2605 counts BYTES and not ELEMENTS, which is why no count policy was reinstated', async () => {
@@ -1676,8 +1683,8 @@ describe('the SKU resolution Lambda entry point', () => {
       it('admits the densest list the bound allows and refuses one element more', async () => {
         // \u2605 THE DERIVED FIGURE IS TIGHT IN BOTH DIRECTIONS, which is the only way to show it
         // was derived correctly. `n` single-character elements plus `n - 1` commas is the
-        // smallest a list of `n` elements can be, so the maximum admissible element count is
-        // exactly `MAXIMUM_SELECTED_OPTION_ELEMENTS` - reachable, and not exceedable.
+        // smallest a list of `n` elements can be, so the byte bound's own element figure is
+        // exactly `MAXIMUM_SELECTED_OPTION_ELEMENTS` - reachable by bytes, and not exceedable.
         const densest = densestSelectedOptions(MAXIMUM_SELECTED_OPTION_ELEMENTS);
         const oneMore = densestSelectedOptions(MAXIMUM_SELECTED_OPTION_ELEMENTS + 1);
 
@@ -1686,27 +1693,136 @@ describe('the SKU resolution Lambda entry point', () => {
         );
         expect(Buffer.byteLength(oneMore, 'utf8')).toBeGreaterThan(MAXIMUM_SELECTED_OPTIONS_BYTES);
 
+        // ★★★ AND BOTH ARE NOW REFUSED, WHICH IS THE WHOLE OF THE LATER FINDING (CWE-400). This case
+        // used to assert that the denser of the two was SERVED - 4096 one-character elements, inside
+        // the byte bound and therefore admitted. A security review measured what answering that
+        // costs: 4096 correlated `exists` subqueries and roughly 647 KiB of statement text, chosen by
+        // the caller and paid for by the database. `MAXIMUM_SELECTED_OPTION_SUBQUERIES` now bounds
+        // that work, so the byte-densest list is refused for the work it commissions rather than for
+        // its length, and the element figure above is what the byte bound WOULD allow rather than what
+        // the route admits. The boundary of the enforced bound is pinned by the case below.
+        for (const overWorkBound of [densest, oneMore]) {
+          const refused = createHarness({ productSkusBySelectedOptions: [] });
+          const refusedResponse = await refused.invoke(
+            requestFor('getProductSkusBySelectedOptions', {
+              selectedOptions: overWorkBound,
+              productID: PRODUCT_ID,
+            }),
+          );
+
+          expect(refusedResponse.statusCode).toBe(400);
+          expect(fieldPathsOf(refusedResponse)).toContain('selectedOptions');
+          // Nothing reached the service, so the statement was never built and no subquery was ever
+          // commissioned - the refusal is what makes the bound worth having.
+          expect(refused.calls).toHaveLength(0);
+        }
+      });
+
+      it('★★★ admits EXACTLY the work bound and refuses one element more (CWE-400)', async () => {
+        // ★★★ THE REGRESSION CASE FOR THE WORK BOUND, pinned in both directions so the number is
+        // reachable and not exceedable. One element is one `and exists (...)` clause in
+        // `skusBySelectedOptions.sql.ts`, so this is the largest number of correlated subqueries one
+        // routed invocation may commission.
+        const atBound = densestSelectedOptions(MAXIMUM_SELECTED_OPTION_SUBQUERIES);
+        const overBound = densestSelectedOptions(MAXIMUM_SELECTED_OPTION_SUBQUERIES + 1);
+
+        // Both are comfortably inside the byte bound, which is what makes this case about WORK rather
+        // than about length: if the byte bound were doing the refusing, neither would reach the count.
+        expect(Buffer.byteLength(atBound, 'utf8')).toBeLessThan(MAXIMUM_SELECTED_OPTIONS_BYTES);
+        expect(Buffer.byteLength(overBound, 'utf8')).toBeLessThan(MAXIMUM_SELECTED_OPTIONS_BYTES);
+
         const admitted = createHarness({ productSkusBySelectedOptions: [] });
         const admittedResponse = await admitted.invoke(
           requestFor('getProductSkusBySelectedOptions', {
-            selectedOptions: densest,
+            selectedOptions: atBound,
             productID: PRODUCT_ID,
           }),
         );
 
+        // Served, and served VERBATIM: the bound refuses or it forwards, and it never trims, thins,
+        // re-orders or de-duplicates what it forwards.
         expect(admittedResponse.statusCode).toBe(200);
-        expect(admitted.calls[0]?.args).toEqual([densest, PRODUCT_ID]);
+        expect(admitted.calls[0]?.args).toEqual([atBound, PRODUCT_ID]);
 
         const refused = createHarness({ productSkusBySelectedOptions: [] });
         const refusedResponse = await refused.invoke(
           requestFor('getProductSkusBySelectedOptions', {
-            selectedOptions: oneMore,
+            selectedOptions: overBound,
             productID: PRODUCT_ID,
           }),
         );
 
         expect(refusedResponse.statusCode).toBe(400);
+        expect(fieldPathsOf(refusedResponse)).toContain('selectedOptions');
         expect(refused.calls).toHaveLength(0);
+
+        // ★★ AND THE REFUSAL RESTATES NEITHER THE STRUCK-DOWN CAP'S SENTENCE NOR THE CALLER'S VALUE.
+        // The earlier element ceiling published 'must not name more than 64 options'; this bound makes
+        // no claim about a number of options at all, and a caller's list is never echoed.
+        expect(refusedResponse.body).not.toContain('must not name more than');
+        expect(refusedResponse.body).not.toContain('option');
+        expect(refusedResponse.body).not.toContain(overBound);
+      });
+
+      it('★★ counts elements the way the STATEMENT counts them, so empty positions cost nothing', async () => {
+        // ★★ THE UNIT IS THE STATEMENT'S. `listToArray` drops empty positions, exactly as CFML
+        // `listLen` does at [model/dao/SkuDAO.cfc:L113], so a list padded with commas commissions no
+        // extra subquery and must not be refused for characters that build nothing. A count taken
+        // from `split(',')` would refuse this, and would be bounding a quantity nobody pays for.
+        const padded = `${densestSelectedOptions(MAXIMUM_SELECTED_OPTION_SUBQUERIES)}${','.repeat(
+          200,
+        )}`;
+
+        const populated = createHarness({ productSkusBySelectedOptions: [] });
+        const response = await populated.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: padded,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(response.statusCode).toBe(200);
+        // Forwarded with its padding intact: the tier that parses the list applies `listLen` itself.
+        expect(populated.calls[0]?.args).toEqual([padded, PRODUCT_ID]);
+      });
+
+      it('★★★ keeps the work bound clear of every selection the CATALOG can express', async () => {
+        // ★★★ THIS IS WHAT SEPARATES A WORK BOUND FROM THE STRUCK-DOWN COUNT POLICY, asserted as
+        // arithmetic rather than argued in prose. A well-formed element is a generated option
+        // identifier, 32 characters wide [model/entity/Option.cfc:L52], so 33 bytes with its
+        // delimiter: the byte bound can carry at most 248 of them. The work bound is four times that,
+        // so no list of well-formed identifiers the byte bound admits can ever reach it - the bound
+        // can only refuse the shape that has no catalog meaning, thousands of one-character elements.
+        const wellFormedCapacity = Math.floor(
+          (MAXIMUM_SELECTED_OPTIONS_BYTES + 1) / (WELL_FORMED_OPTION_ID.length + 1),
+        );
+
+        expect(wellFormedCapacity).toBe(248);
+        expect(MAXIMUM_SELECTED_OPTION_SUBQUERIES).toBeGreaterThan(wellFormedCapacity * 4);
+
+        // And it is a real reduction in the work a caller may commission, stated against the two
+        // figures it sits between rather than as a bare constant.
+        expect(MAXIMUM_SELECTED_OPTION_SUBQUERIES).toBe(1_024);
+        expect(MAXIMUM_SELECTED_OPTION_SUBQUERIES * 4).toBe(MAXIMUM_SELECTED_OPTION_ELEMENTS);
+        expect(MAXIMUM_SELECTED_OPTION_SUBQUERIES * 64).toBe(65_536);
+
+        // The hundreds-of-elements magnitudes the earlier reversal defended are still served, which is
+        // the same claim from the serving side: this list is well past the struck-down 64 and well
+        // inside the work bound.
+        const wellFormedList = Array.from(
+          { length: wellFormedCapacity },
+          (): string => WELL_FORMED_OPTION_ID,
+        ).join(',');
+        const populated = createHarness({ productSkusBySelectedOptions: [] });
+        const response = await populated.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: wellFormedList,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(response.statusCode).toBe(200);
+        expect(populated.calls[0]?.args).toEqual([wellFormedList, PRODUCT_ID]);
       });
 
       it('bounds ONLY the parameter that multiplies statement work, and leaves the rest alone', async () => {
