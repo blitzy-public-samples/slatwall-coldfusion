@@ -1047,41 +1047,121 @@ describe('GoogleFeedService - constructor injection and no hidden state', () => 
 });
 
 // ---------------------------------------------------------------------------
-// 8. The surface admits no invented input
+// 8. The surface takes EXACTLY ONE argument, and it admits no invented input beyond it
 //
-// JUDGMENT CALL: NO CRITERIA TYPE EXISTS, AND NONE IS INVENTED HERE. Settled by reading
-// [integrationServices/google/controllers/feed.cfc:L58-L73]. Every reference to the request context
-// there is a WRITE - the selection assigned onto it at L63, then joins and the four conditions at
-// L68-L72 added to that object - and NOTHING is read back out of it; the selection factory was
-// invoked with no arguments, so not even the legacy dynamic filter surface reached it. The legacy
-// action took no caller-supplied narrowing whatsoever and `ProductFeedPort` matches that with no
-// parameters. Declaring a named-but-empty criteria type would invent a requirement the source does
-// not supply, so this suite declares none and asserts that the shipped surface rejects one. The
-// four conditions are consequently unreachable from a caller, which makes them INVARIANTS of the
-// feed rather than defaults of a query, enforced in the row source and pinned by that module's
-// suite.
+// ★★★ QUOTE-THEN-REVISE, AND THE HEADING ITSELF WAS THE DEFECT. This section used to be titled "The
+// surface admits no invented input" and opened:
 //
-// The two cases below are COMPILE-TIME assertions. Each `@ts-expect-error` exists solely to assert
-// a deliberate type failure: were the surface ever widened to accept what is passed, the directive
-// would become unused and the typecheck gate would fail.
+//   "JUDGMENT CALL: NO CRITERIA TYPE EXISTS, AND NONE IS INVENTED HERE. Settled by reading
+//    [integrationServices/google/controllers/feed.cfc:L58-L73] [...] The legacy action took no
+//    caller-supplied narrowing whatsoever and `ProductFeedPort` matches that with no parameters.
+//    Declaring a named-but-empty criteria type would invent a requirement the source does not
+//    supply, so this suite declares none and asserts that the shipped surface rejects one."
+//
+// A code review found the description stale rather than wrong-headed, and the distinction matters.
+// The READING of the legacy is exact and is kept below: every reference to the request context at
+// [integrationServices/google/controllers/feed.cfc:L58-L73] is a WRITE - the selection assigned onto
+// it at L63, then joins and the four conditions at L68-L72 - and NOTHING is read back out, the
+// selection factory taking no arguments at all. So the legacy took no caller narrowing, and the four
+// conditions are INVARIANTS of the feed rather than defaults of a query, enforced in the row source
+// and pinned by that module's suite.
+//
+// WHAT CHANGED IS THE ARGUMENT COUNT, AND IT CHANGED FOR A REASON THAT IS NOT CALLER NARROWING. AAP
+// 0.4.2 freezes the ported signature as `generateProductFeed(criteria: FeedCriteria)`, and
+// {@link FeedCriteria} carries exactly two members - `feedHost` and `now`. Neither is a filter: the
+// host is the origin the five URL sites are built from, which the legacy read per-request from
+// `CGI.HTTP_HOST` and which security review S-15 moved behind a deployment-owned allow-list, and the
+// instant is the single clock reading every sale-price effective-date range in the document is
+// evaluated against. Both are AMBIENT REQUEST STATE the legacy read from the engine, made explicit
+// as an argument because there is no ambient request scope here to read them from - transformation
+// rule T6, applied to the one place a feed needs it. So the surface is NOT nullary, and the assertion
+// worth making is the one below: exactly one argument, of exactly that shape, and no narrowing of any
+// kind admitted alongside it.
+//
+// The two cases below are COMPILE-TIME assertions. Each `@ts-expect-error` exists solely to assert a
+// deliberate type failure: were the surface ever widened to accept what is passed, the directive would
+// become unused and the typecheck gate would fail.
 // ---------------------------------------------------------------------------
 
-describe('GoogleFeedService - the surface admits no invented input', () => {
-  it('rejects an options bag, a filter toggle, paging and every other narrowing', async () => {
+describe('GoogleFeedService - the surface takes one criteria argument and no narrowing', () => {
+  it('declares exactly one parameter, and it is the two-member criteria', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([makeFeedRow()]) });
 
+    // ★★ THE ARITY AND THE SHAPE ARE BOTH DERIVED, so a signature change is a compile error rather
+    // than a stale comment - which is precisely the failure mode a code review found in the sentence
+    // this replaced. `Parameters<>` reads the arity off the shipped method and `keyof` reads the
+    // member set off the shipped type; neither is restated as a literal.
+    const parameterCount: 1 = 1 satisfies Parameters<
+      GoogleFeedService['generateProductFeed']
+    >['length'];
+    expect(parameterCount).toBe(1);
+
+    const declaredMembers: readonly (keyof FeedCriteria)[] = ['feedHost', 'now'];
+    expect([...declaredMembers].sort()).toEqual(['feedHost', 'now']);
+
+    // And the one argument is genuinely required: the criteria the harness supplies is forwarded and
+    // the document comes back.
+    await expect(harness.service.generateProductFeed(harness.criteria)).resolves.toBe(
+      RENDERED_FEED_SENTINEL,
+    );
+    expect(harness.callLog).toEqual(READ_THEN_RENDER);
+    expect(harness.rowSourceCallArguments).toEqual([[]]);
+  });
+
+  it('declares the criteria as REQUIRED, so no call may omit it', () => {
+    // ★★ A PURE COMPILE-TIME ASSERTION, AND IT IS DELIBERATELY NOT AN INVOCATION. What is guaranteed
+    // here is the TYPE: a call that omits the criteria does not compile. A run-time claim would be
+    // dishonest, because a JavaScript caller bypassing the types reaches a body that reads
+    // `criteria.feedHost` and gets whatever that produces - which is not a contract and must not be
+    // asserted as one. So nothing is called.
+    //
+    // ★★★ REQUIREDNESS IS CHECKED THROUGH THE TUPLE LENGTH, and no `@ts-expect-error` on a nullary
+    // CALL would do it. A one-parameter function is assignable to a zero-parameter function type in
+    // TypeScript - fewer parameters is always safe - so such a directive would go unused and report
+    // itself. `Parameters<F>` distinguishes the two cases exactly: a REQUIRED parameter gives the
+    // tuple `[FeedCriteria]` whose `length` is `1`, while an OPTIONAL one gives `[FeedCriteria?]`
+    // whose `length` is `0 | 1`. Pinning it to `1` is therefore what fails the moment `criteria`
+    // becomes optional - which is the revision that would re-introduce an implicit host and an
+    // implicit clock, and the one the stale description a code review found had left unguarded.
+    type FeedCallParameters = Parameters<GoogleFeedService['generateProductFeed']>;
+    const requiredArity: FeedCallParameters['length'] = 1;
+    const optionalWouldWiden: 1 = requiredArity;
+
+    expect(optionalWouldWiden).toBe(1);
+  });
+
+  it('rejects an options bag, a filter toggle, paging and every other narrowing', () => {
     // Stands in for the whole forbidden set at once: the include-inactive, include-unpublished,
     // include-out-of-stock and minimum-quantity switches, a filter array, a predicate, paging, a
     // sort, a locale, a currency selector, a format discriminator, a destination, a since-marker, a
-    // chunk size, a callback, a streaming shape and a cancellation handle. A zero-parameter method
-    // rejects all of them identically, and a gateway event and invocation context with them.
-    // @ts-expect-error - the shipped method declares no parameter: "Expected 0 arguments, but got 1".
-    await expect(harness.service.generateProductFeed({ includeInactive: true })).resolves.toBe(
-      RENDERED_FEED_SENTINEL,
-    );
+    // chunk size, a callback, a streaming shape and a cancellation handle. The criteria is a closed
+    // two-member type, so it refuses all of them identically - and a gateway event and invocation
+    // context with them.
+    //
+    // Asserted against the PARAMETER TYPE rather than by calling, for the reason above and for one
+    // more: reading the parameter type off the method means this case cannot drift from the signature
+    // even if the criteria type is renamed.
+    const invented: Parameters<GoogleFeedService['generateProductFeed']>[0] = {
+      // @ts-expect-error - `includeInactive` is not a member of FeedCriteria, and the two members
+      // that are required are absent.
+      includeInactive: true,
+    };
 
-    expect(harness.callLog).toEqual(READ_THEN_RENDER);
-    expect(harness.rowSourceCallArguments).toEqual([[]]);
+    expect(Object.keys(invented)).toEqual(['includeInactive']);
+  });
+
+  it('rejects an EXTRA member alongside an otherwise valid criteria', () => {
+    // The sharper probe: both required members are present and correct, so the only thing wrong is
+    // the third. Excess-property checking is what refuses it, which is what keeps the criteria a
+    // closed contract rather than a bag that happens to carry two known keys.
+    const extended: Parameters<GoogleFeedService['generateProductFeed']>[0] = {
+      feedHost: FEED_HOST,
+      now: FEED_INSTANT,
+      // @ts-expect-error - excess property: FeedCriteria declares feedHost and now, and nothing else.
+      includeOutOfStock: true,
+    };
+
+    expect(extended.feedHost).toBe(FEED_HOST);
   });
 
   it('rejects an asynchronous renderer, so the renderer is synchronous by contract', () => {

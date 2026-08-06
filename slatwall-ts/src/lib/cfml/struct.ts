@@ -742,172 +742,53 @@ export function cfEquals(a: string | null | undefined, b: string | null | undefi
 }
 
 // ===========================================================================
-// PROTOTYPE-KEY DETECTION IN A PARSED JSON REQUEST DOCUMENT
+// PROTOTYPE-KEY DETECTION WAS ADDED HERE, AND IT IS DELIBERATELY GONE AGAIN
 // ===========================================================================
 //
-// ★★★ THIS SECTION WAS ITS OWN MODULE, `src/lib/jsonDocumentKeys.ts`, AND THE RELOCATION IS A
-// REVIEW FINDING. A scope census measured the subtree at more files than AAP 0.3.1's enumerated
-// layout contains, and that module was one of the unplanned extras: 0.3.1 enumerates exactly five
-// files under `src/lib/cfml/` - `truthiness.ts`, `list.ts`, `struct.ts`, `numberFormat.ts` and
-// `precision.ts` - plus `config.ts` and `logger.ts` under `src/lib/`, and nothing else.
+// ★★★ TWO REVIEWS TOUCHED THE SAME HELPER FROM OPPOSITE DIRECTIONS, AND BOTH ARE NOW
+// SATISFIED - BUT NOT BY THIS FILE. What stood here was a relocated `src/lib/jsonDocumentKeys.ts`,
+// exporting `findPrototypeKeyPath(document): string | undefined`, which walked a parsed JSON request
+// document and returned the DOTTED PATH of the first `__proto__` own key it found. Its own header
+// argued the relocation like this, and the sentence is quoted rather than paraphrased because it is
+// the premise being revisited:
 //
-// IT BELONGS HERE SPECIFICALLY, not merely somewhere planned. This module already owns every
-// struct-KEY concern in the port: case-folded lookup (`cfFoldKey`, `structGet`), own-key testing
-// (`structKeyExists`, `isOwnKeyOf`), key enumeration (`structKeyList`) and path descent
-// (`structGetPath`). Detecting an own `__proto__` key by walking a document's keys is the same
-// concern, and `isOwnKeyOf` below already reasons about `Object.hasOwn` for the same reason this
-// walk does. Co-locating them also puts the prototype-safety argument in one place instead of two.
+//   "THIS SECTION WAS ITS OWN MODULE, `src/lib/jsonDocumentKeys.ts`, AND THE RELOCATION IS A REVIEW
+//    FINDING. [...] IT BELONGS HERE SPECIFICALLY, not merely somewhere planned. This module already
+//    owns every struct-KEY concern in the port [...] Detecting an own `__proto__` key by walking a
+//    document's keys is the same concern [...] The public name, the behaviour and the two call sites
+//    are unchanged; only the file is."
 //
-// The public name, the behaviour and the two call sites are unchanged; only the file is.
+// THE FIRST HALF OF THAT WAS RIGHT AND STILL IS. AAP 0.3.1 enumerates exactly five files under
+// `src/lib/cfml/` - `truthiness.ts`, `list.ts`, `struct.ts`, `numberFormat.ts` and `precision.ts` -
+// plus `config.ts` and `logger.ts` under `src/lib/`, and nothing else. A sixth module was an
+// unplanned extra and could not stay. Nothing below re-creates it.
 //
-// What follows is the relocated module's own rationale, kept verbatim because it records measured
-// `zod` behaviour that is not re-derivable from the code:
+// THE SECOND HALF DID NOT FOLLOW, AND A LATER REVIEW SAID SO (MAJOR, CWE-209/CWE-532). Keeping "the
+// public name, the behaviour and the two call sites unchanged" preserved the one property that had to
+// change: a RETURNED PATH is assembled out of the caller's own ancestor key names, so a document such
+// as `{"api_token_value":{"__proto__":{}}}` produced `api_token_value.__proto__`, and that string
+// then reached both a 400 body and the log stream. The relocation moved a leak into a planned file
+// instead of closing it, and "which struct-key concern does this resemble?" was the wrong question to
+// decide the destination with - the deciding question is what the result is allowed to CONTAIN.
 //
+// WHERE THE DETECTION LIVES NOW: `containsPrototypeMemberKey` in `../../handlers/errorMapper.ts`,
+// which 0.3.1 enumerates, so the layout finding stays closed. It is a BOOLEAN PREDICATE - it cannot
+// assemble a caller path, which is why the path-returning form is not kept here "just in case" for a
+// caller that might want the location: keeping it would leave the leak one import away, and no caller
+// needs the location. The refusal publishes `PROTOTYPE_MEMBER_FIELD_ISSUE`, whose `path` is the
+// offending key name itself - a literal of that module, and the only name involved the caller did not
+// choose. Its two consumers, `priceResolutionHandler.ts` and `promotionApplicationHandler.ts`, already
+// import that module for the response the refusal produces, so the check now sits with the vocabulary
+// it feeds rather than one folder away from it.
 //
-// Locate a `__proto__` own key anywhere inside a parsed JSON request document.
+// NOTHING MEASURED WAS LOST. The `zod` 4.4.3 observations that motivated the guard - `constructor`
+// refused as an unrecognized key while `__proto__` is silently dropped, and `Object.prototype`
+// verified unmodified in all three cases - are recorded verbatim on `containsPrototypeMemberKey`,
+// along with the deep-and-iterative reasoning and the byte-cap argument that bounds the walk.
 //
-// ---------------------------------------------------------------------------
-// WHY THIS FILE EXISTS
-// ---------------------------------------------------------------------------
-// Every request document this service accepts is validated by a `z.strictObject`, whose contract is
-// that an UNRECOGNIZED KEY IS A REFUSAL - the caller is told which member it should not have sent
-// rather than having it silently dropped. `__proto__` is the one key for which that contract does not
-// hold, and QA testing found the gap by submitting it.
-//
-// MEASURED, not assumed. Against `zod` 4.4.3 with a nested pair of strict objects:
-//
-// {"order":{"a":"x","constructor":{}}}          -> REFUSED, `unrecognized_keys`, path ["order"]
-// {"order":{"a":"x","__proto__":{"polluted":1}}} -> ACCEPTED, the key silently dropped
-// {"order":{"a":"x"},"__proto__":{"p":1}}        -> ACCEPTED, and it IS an own key of the root
-// (`Object.hasOwn` true, `Object.keys` lists it)
-//
-// In all three cases `Object.prototype` was verified UNMODIFIED afterwards, which is the important
-// half of the finding and the reason it is rated informational: `JSON.parse` creates `__proto__` as an
-// ordinary own DATA property rather than invoking the setter, so no assignment reaches the prototype
-// chain, and nothing downstream of validation spreads or merges an unvalidated document into an
-// existing object. THIS FILE THEREFORE CLOSES AN INCONSISTENCY, NOT AN ACTIVE VULNERABILITY, and it
-// is written so that it would ALSO close the vulnerability if a future merge-style consumer were ever
-// introduced. Defence in depth is worth having precisely because it does not depend on the current
-// consumers staying as careful as they are today.
-//
-// ---------------------------------------------------------------------------
-// WHY IT IS SHARED RATHER THAN INLINED TWICE
-// ---------------------------------------------------------------------------
-// Two boundaries parse a JSON request body - `../handlers/priceResolutionHandler.ts` and
-// `../handlers/promotionApplicationHandler.ts` - and this project's convention is one exported unit
-// per file with no barrels, which is honoured here. The integration suites deliberately duplicate
-// their executor doubles rather than share one, and the reasoning recorded there is that a shared
-// helper would be an exported unit that is the subject of no suite. That reasoning does not carry
-// over to this function, for two reasons: it IS the subject of its own suite, and duplicated
-// security-adjacent logic has a specific failure mode of its own - one copy gets corrected and the
-// other quietly does not. One implementation, one suite, two narrow named imports.
-//
-// ---------------------------------------------------------------------------
-// WHY THE WALK IS DEEP, AND WHY IT IS ITERATIVE
-// ---------------------------------------------------------------------------
-// DEEP, because the asymmetry it corrects is deep. `strictObject` refuses an unrecognized key at
-// EVERY level of a nested document, so refusing `__proto__` only at the root would leave the very
-// inconsistency this closes in place one level down - and the nested case is the one QA actually
-// submitted.
-//
-// ITERATIVE, with an explicit stack, because recursion over caller-supplied nesting is a stack
-// overflow waiting to happen: a 2 000-level document is exactly what QA testing sent, and a
-// `RangeError` thrown from a security guard would convert a refusal into an unrecognized 500. The
-// work is bounded without needing a depth limit of its own - both call sites cap the request body's
-// byte length before parsing, so the node count is bounded by that cap, and a document produced by
-// `JSON.parse` cannot contain a cycle.
-
-/**
- * The one key name that `z.strictObject` does not treat as unrecognized.
- *
- * Written as a string constant rather than a literal at the comparison site so the value appears
- * exactly once, and spelled with a computed member access at every use so nothing in this module can
- * be read as assigning to a prototype.
- */
-const PROTOTYPE_KEY = '__proto__';
-
-/** How a path names an array element - the index, as the AAP's own field paths spell them. */
-function extendPath(parentPath: string, segment: string): string {
-  return parentPath === '' ? segment : `${parentPath}.${segment}`;
-}
-
-/**
- * One pending node: a value still to be examined, and the path that reaches it.
- *
- * `unknown` rather than `object`, because the stack carries array elements and object member values
- * before anything has narrowed them, and narrowing is this walk's own job.
- */
-interface PendingNode {
-  readonly value: unknown;
-  readonly path: string;
-}
-
-/**
- * Find the path of the first `__proto__` own key in a parsed JSON document.
- *
- * Traversal order is deterministic - depth-first over own enumerable keys in insertion order, which
- * for a `JSON.parse` result is document order - so a document with several offending keys always
- * reports the same one, and a suite can assert the exact path rather than a set.
- *
- * ★ ONLY OWN KEYS ARE CONSULTED, VIA `Object.hasOwn`. An INHERITED `__proto__` is present on every
- * ordinary object in the language and is not a caller's doing; reporting it would refuse every
- * request. What is being detected is specifically a key the CALLER's document carries.
- *
- * ★ `null` IS HANDLED BEFORE `typeof`, and arrays before plain objects. `typeof null === 'object'`
- * would otherwise put `null` on the plain-object branch, and `Object.hasOwn(null, …)` throws.
- *
- * @param document the parsed request document, already known to be an object at its root.
- * @returns the dotted path of the offending key - `'__proto__'` at the root, `'order.__proto__'`
- *   nested, `'order.orderItems.0.__proto__'` inside an array - or `undefined` when the document
- *   carries none, which is the ordinary case for every well-formed request.
- */
-export function findPrototypeKeyPath(document: object): string | undefined {
-  const pending: PendingNode[] = [{ value: document, path: '' }];
-
-  while (pending.length > 0) {
-    // `pop()` is `T | undefined` under `noUncheckedIndexedAccess`, and the loop condition does not
-    // narrow it, so the guard below is how the element is taken rather than a formality.
-    const node = pending.pop();
-
-    if (node === undefined) {
-      break;
-    }
-
-    const { value, path } = node;
-
-    if (value === null || typeof value !== 'object') {
-      continue;
-    }
-
-    if (Array.isArray(value)) {
-      // Elements are pushed in reverse so that `pop()` yields them in index order, which is what
-      // makes the reported path the FIRST offending element rather than the last.
-      for (let index = value.length - 1; index >= 0; index -= 1) {
-        pending.push({ value: value[index], path: extendPath(path, String(index)) });
-      }
-      continue;
-    }
-
-    if (Object.hasOwn(value, PROTOTYPE_KEY)) {
-      return extendPath(path, PROTOTYPE_KEY);
-    }
-
-    const keys = Object.keys(value);
-
-    for (let index = keys.length - 1; index >= 0; index -= 1) {
-      const key = keys[index];
-
-      if (key === undefined) {
-        continue;
-      }
-
-      pending.push({
-        // The index signature is what `Object.keys` already proved safe to read.
-        value: (value as Record<string, unknown>)[key],
-        path: extendPath(path, key),
-      });
-    }
-  }
-
-  return undefined;
-}
+// AND THE EXPORT SURFACE THIS FILE ADVERTISES IS ACCURATE AGAIN. The header above says the surface is
+// CLOSED and that "SIX OF THE SEVEN EXPORTS ARE TOTAL"; that count was written for the seven
+// struct-key functions and was never revised when an eighth was grafted on below it. Seven is once
+// more the number of functions this module exports, which is the smallest possible piece of evidence
+// that the graft was never really integrated here.
+// ===========================================================================

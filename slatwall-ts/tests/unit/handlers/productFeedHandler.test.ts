@@ -10,7 +10,10 @@
 // FOUR CONCERNS, AND NOTHING ELSE IS ASSERTED HERE:
 //
 //   1. PARSING AND VALIDATION - what this entrypoint reads off the request, and what it refuses.
-//   2. DELEGATION            - that the port is reached with NO arguments, once, per invocation.
+//   2. DELEGATION            - that the port is reached ONCE per invocation, with exactly one
+//                              argument: the criteria the composition root assembled. (This line read
+//                              "with NO arguments" until a code review found the whole file describing
+//                              a nullary contract the shipped port does not have - see section 2.)
 //   3. RESPONSE SHAPING      - the status, the single header, and the document returned unmodified.
 //   4. ERROR MAPPING         - the three statuses the mapper owns, and what may never reach a body.
 //
@@ -593,7 +596,7 @@ function projectFeedRow(entry: CatalogEntry): GoogleProductFeedRow {
     brandID: brand === undefined ? undefined : RESOLVED_BRAND_ID,
     brandName: brand?.getBrandName(),
     productCode: product.getProductCode(),
-    // Both weight members sit OUTSIDE the settings provider's seven keys, so they are carried as
+    // Both weight members sit OUTSIDE the settings provider's four keys, so they are carried as
     // the projection's own strings [integrationServices/google/views/feed/product.cfm:L58].
     skuShippingWeight: '1',
     skuShippingWeightUnitCode: 'lb',
@@ -1212,7 +1215,7 @@ describe('the product-feed entrypoint module surface', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. The reshaped contract: the feed takes no narrowing input
+// 2. The reshaped contract: one criteria argument, and no narrowing input from a caller
 //
 // ★ THE PERMITTED RESHAPING, AND ONE OF THE THREE THE PLAN ALLOWS FOR THE WHOLE MIGRATION. The
 // other two are the order-amount methods returning applied intents instead of mutating an order
@@ -1221,16 +1224,34 @@ describe('the product-feed entrypoint module surface', () => {
 //
 //   LEGACY  `public void function product(required struct rc)`
 //           [integrationServices/google/controllers/feed.cfc:L58]
-//   TARGET  `generateProductFeed(): Promise<string>`
+//   TARGET  `generateProductFeed(criteria: FeedCriteria): Promise<string>`
 //
-// The legacy body is settled evidence rather than a matter of taste: every reference to the request
-// context in it is a WRITE - the selection at [:L63], three joins at [:L64-L66], three filters at
-// [:L68-L70] and one range at [:L72] - and it ends at [:L73] with no return, no render call and no
-// read of any member of `rc`. Rendering was implicit framework convention. So the ported method
-// takes NO parameters, `src/domain/ports/productFeedPort.ts` declares it with none, and no criteria
-// type is declared, imported or referenced in this file. "Parsing and validation" for this route
-// therefore means proving that the route accepts NO narrowing input, which is what the tests below
-// do. ---------------------------------------------------------------------------
+// ★★★ QUOTE-THEN-REVISE, AND THE HEADING AND THE TARGET LINE WERE BOTH STALE. This block used to
+// title itself "the feed takes no narrowing input", give the target as `generateProductFeed():
+// Promise<string>`, and conclude: "So the ported method takes NO parameters,
+// `src/domain/ports/productFeedPort.ts` declares it with none, and no criteria type is declared,
+// imported or referenced in this file." A code review found every clause of that conclusion false of
+// the shipped source: the port declares `generateProductFeed(criteria: FeedCriteria)`, AAP 0.4.2
+// freezes it in exactly that form, AAP 0.9.2 gates on that row, and this file both imports the
+// criteria type and asserts on the argument.
+//
+// THE EVIDENCE ABOUT THE LEGACY IS UNCHANGED AND STILL EXACT. Every reference to the request context
+// in the legacy body is a WRITE - the selection at [:L63], three joins at [:L64-L66], three filters
+// at [:L68-L70] and one range at [:L72] - and it ends at [:L73] with no return, no render call and no
+// read of any member of `rc`. Rendering was implicit framework convention.
+//
+// WHAT THE ONE ARGUMENT IS, AND WHY IT IS NOT NARROWING. `FeedCriteria` carries two members and
+// neither is a filter: `feedHost` is the origin the feed's five URL sites are built from, which the
+// legacy read per-request from `CGI.HTTP_HOST` and which security review S-15 moved behind a
+// deployment-owned allow-list; `now` is the single clock reading every sale-price effective-date range
+// is evaluated against. Both are ambient request state the legacy took from the engine, made explicit
+// because there is no ambient request scope here to take them from. NEITHER IS CALLER-SUPPLIED - the
+// composition root assembles them, and it refuses a host that is not in the configured allow-list.
+//
+// So "parsing and validation" for this route still means proving that no caller can narrow the
+// selection - which is what the tests below do - and additionally that the one argument the port takes
+// is the composition root's and arrives whole.
+// ---------------------------------------------------------------------------
 
 describe('the reshaped port contract', () => {
   it('invokes the port with EXACTLY ONE argument, the criteria (F26)', async () => {
@@ -1459,8 +1480,15 @@ describe('the rows this tier forwards, unchanged', () => {
   });
 
   it('reaches the row source with NO argument, so no caller can narrow the selection', async () => {
-    // The port's one method takes no parameters and the ported repository read takes none either, so
-    // there is no surface on which a toggle, an override or an include-inactive flag could arrive.
+    // ★★ THE ROW SOURCE is what takes no parameters; the PORT takes one. QUOTE-THEN-REVISE: this
+    // comment read "The port's one method takes no parameters and the ported repository read takes
+    // none either", and a code review found the first half false - the port declares
+    // `generateProductFeed(criteria: FeedCriteria)` per AAP 0.4.2. The second half is the one this
+    // case is about and it is exact: `fetchProductFeedRows()` is nullary, the four selection
+    // conditions [integrationServices/google/controllers/feed.cfc:L68-L72] are compiled into the
+    // statement, and the criteria the port DOES take carries only an origin authority and an instant -
+    // so there is still no surface anywhere on which a toggle, an override or an include-inactive flag
+    // could arrive.
     const harness = harnessWithFeedService(makeCandidateCatalog());
 
     await harness.invoke(
@@ -2284,6 +2312,45 @@ describe('validation and safe error mapping', () => {
     expect(response.body.toLowerCase()).not.toContain('host');
     expect(response.body).not.toContain('header');
     expect(response.body).not.toContain(FEED_ROUTE.path);
+  });
+
+  it('★★★ serves NO document for the default UNCONFIGURED deployment, which authorizes no host', async () => {
+    // ★★★ THE FAIL-CLOSED DEFAULT, PINNED AT THE TRANSPORT TIER (CWE-346). The module header of
+    // `src/handlers/productFeedHandler.ts` has always claimed that "an unconfigured deployment
+    // therefore serves no feed at all whatever a caller sends", and the configuration layer used to
+    // contradict it: `FEED_ALLOWED_HOSTS` unset resolved to "no host policy", which the composition
+    // root read as ADMIT ANY WELL-FORMED HOST - so the documented default deployment wrote a
+    // caller-authored authority into every link of a merchant feed. Code review recorded the
+    // divergence between the published claim and the behaviour; the configuration layer was corrected
+    // to the claim.
+    //
+    // THIS SUITE DRIVES A DOUBLE OF THE COMPOSITION ROOT, so what it can pin is the transport half:
+    // when the root refuses the observed host - which is now what EVERY unconfigured deployment does
+    // for EVERY candidate - no feed document is produced, nothing is read through the port, and the
+    // caller gets the fixed 400 envelope with no detail. The configuration half is pinned in
+    // `tests/unit/lib/config.test.ts` and the admission half in `tests/unit/handlers/bootstrap.test.ts`.
+    const port = new RecordingProductFeedPort(RENDERED_DOCUMENT);
+    const { invoke } = harnessWith(
+      () => port,
+      new UntrustedFeedHostError(
+        FEED_HOST,
+        'this deployment authorizes no feed host at all; set FEED_ALLOWED_HOSTS to the authority ' +
+          'this feed is published on before requesting it',
+      ),
+    );
+
+    const response = await invoke(feedRequestEvent(), lambdaContext());
+
+    expect(response.statusCode).toBe(400);
+    expect(errorEnvelopeOf(response).category).toBe('invalidRequest');
+
+    // No document was generated, so nothing about the catalog reached a caller-chosen origin.
+    expect(port.argumentCounts).toStrictEqual([]);
+
+    // And the actionable configuration name stays out of the RESPONSE - it belongs to the operator's
+    // log line, not to whoever asked.
+    expect(response.body).not.toContain('FEED_ALLOWED_HOSTS');
+    expect(response.body).not.toContain(FEED_HOST);
   });
 
   it('reports a refused feed host as unusable input rather than as an authorization failure', async () => {

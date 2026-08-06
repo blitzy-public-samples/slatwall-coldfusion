@@ -526,9 +526,11 @@ export interface CurrencyConfig {
  * That reading was wrong, and the member, its `FeedUrlScheme` type, its `https`
  * default and its `FEED_URL_SCHEME` resolver are all removed. AAP 0.4.1's list
  * enumerates the hardcodings that carry a KNOWN LEGACY DEFECT worth annotating - the
- * empty category element is the one with the legacy TODO - and reading a
- * non-exhaustive list of annotated defects as an exhaustive licence to change
- * everything absent from it inverts it. The governing clauses are AAP 0.1.1, which
+ * empty category element is the one the AAP's own defect register singles out - and
+ * reading a non-exhaustive list of annotated defects as an exhaustive licence to change
+ * everything absent from it inverts it. (AAP 0.6.7 describes that element as "carrying a
+ * legacy TODO"; the template line is a bare empty element with no comment near it, which
+ * `src/integrations/google/rssFeedRenderer.ts` records where the element is emitted.) The governing clauses are AAP 0.1.1, which
  * requires preserving "the Google product-feed integration contract exactly", and AAP
  * 0.8.1, which freezes that contract; neither admits a scheme change, and AAP 0.6.7
  * permits exactly three divergences in this port, none of them this one. A security
@@ -537,43 +539,58 @@ export interface CurrencyConfig {
  */
 export interface FeedConfig {
   /**
-   * The hosts a product feed may be published for, normalized and de-duplicated -
-   * or `undefined` when this deployment configured no host policy at all.
+   * The hosts a product feed may be published for, normalized and de-duplicated. NEVER
+   * `undefined`, and an EMPTY list means this deployment publishes no feed.
    *
-   * ★★★ ABSENT AND EMPTY ARE DIFFERENT ANSWERS, AND CONFLATING THEM DISABLED THE FEED
-   * (F40). QUOTE-THEN-REVISE. This member was typed `readonly string[]` and documented:
-   * "EMPTY IS THE SAFE DEFAULT AND THE DEFAULT: `toTrustedFeedHost` refuses every
-   * candidate against an empty list, so a deployment that never configured a feed cannot
-   * publish one. That is a refusal, not a bypass, and it is why this key is optional -
-   * adding a sixth REQUIRED variable would break every existing deployment and every test
-   * that supplies only the five the database needs."
+   * ★★★ THERE IS NO ALLOW-ALL STATE, AND ITS REMOVAL IS A SECURITY FINDING'S RESOLUTION
+   * (CWE-346). This member was typed `readonly string[] | undefined`, where `undefined`
+   * meant "no host policy is configured" and `assertAllowedFeedHost` then admitted
+   * WHATEVER AUTHORITY THE REQUEST CARRIED. Because the variable is optional, that was the
+   * DOCUMENTED DEFAULT deployment: a caller-supplied `Host` header reached the five URL
+   * sites of a merchant feed, so an attacker able to reach the endpoint could have Google
+   * Merchant Center fetch a catalog whose every link pointed at a host of their choosing.
+   * Code review recorded it as Major; the previous revision's own handler comment already
+   * claimed "an unconfigured deployment therefore serves no feed at all", so the code was
+   * also contradicting its published contract.
    *
-   * The last clause was right and the first was wrong. `FEED_ALLOWED_HOSTS` is optional,
-   * so the OVERWHELMING majority of deployments never set it - and resolving that absence
-   * to an empty list made `assertAllowedFeedHost` refuse EVERY request, which turns a
-   * capability the source publishes into one that answers nothing until an operator
-   * discovers a variable the legacy never had. The legacy controller declares
-   * `this.publicMethods="product"` [integrationServices/google/controllers/feed.cfc:L54]
-   * with NO allow-list of any kind, and takes its authority from `CGI.HTTP_HOST` - that
-   * is, from the request. Defaulting to deny-all is not a hardening of that contract, it
-   * is a withdrawal of it.
+   * QUOTE-THEN-REVISE, BECAUSE THE READING THIS REPLACES IS NOT SILLY AND MUST NOT BE
+   * RE-ARGUED FROM SCRATCH. It said: "`FEED_ALLOWED_HOSTS` is optional, so the OVERWHELMING
+   * majority of deployments never set it - and resolving that absence to an empty list made
+   * `assertAllowedFeedHost` refuse EVERY request, which turns a capability the source
+   * publishes into one that answers nothing until an operator discovers a variable the legacy
+   * never had. The legacy controller declares `this.publicMethods="product"`
+   * [integrationServices/google/controllers/feed.cfc:L54] with NO allow-list of any kind, and
+   * takes its authority from `CGI.HTTP_HOST` - that is, from the request. Defaulting to
+   * deny-all is not a hardening of that contract, it is a withdrawal of it."
    *
-   * SO THE THREE STATES ARE NOW DISTINCT, exactly as the empty-versus-absent discipline
-   * this migration applies to `skuEligibleCurrencies` requires:
+   * Every factual claim there is true. What does not follow is the conclusion, for one
+   * reason the legacy could not have had: CFML read `CGI.HTTP_HOST` from a request arriving
+   * at a web server bound to the hostnames the deployment actually owns, so the header was
+   * constrained by the deployment before the application ever saw it. An API Gateway proxy
+   * event carries whatever `Host` the client wrote. Reproducing "take it from the request"
+   * on this platform is therefore NOT reproducing the legacy's provenance - it is dropping
+   * a check the legacy got from its host environment for free. The honest port of "the
+   * deployment decides which authorities it answers on" is a deployment-owned list.
    *
-   *   * `undefined` - the variable is UNSET. No host policy is configured, and the feed
-   *     answers on the authority the request carries, which is the source behaviour. The
-   *     host is still normalized, and the renderer still refuses a malformed authority
-   *     before it composes an origin, so "no allow-list" is not "no validation".
-   *   * a NON-EMPTY list - a policy IS configured. Only those authorities are served. This
-   *     is the S-15 remedy and it is unchanged: the list is process configuration, fixed
-   *     for the container's lifetime and unreachable from any request, so a caller cannot
-   *     write the list it is checked against.
-   *   * an EMPTY list - reachable only by setting the variable to a value that names no
-   *     host. That is an explicit operator decision to publish no feed, and it still
-   *     refuses everything. Deny-all remains available; it is no longer the default.
+   * SO THERE ARE TWO STATES, AND BOTH FAIL CLOSED ON AN UNLISTED HOST:
+   *
+   *   * an EMPTY list - the variable is unset, or set to a value naming no host. The feed
+   *     publishes nothing: `assertAllowedFeedHost` refuses every candidate, so
+   *     `productFeedPort` and `feedCriteria` are never published and the route answers a
+   *     refusal that NAMES the configuration to set. That is the fail-closed default, and
+   *     it is why the refusal is explicit rather than silent - an operator learns what to
+   *     configure instead of debugging an empty document.
+   *   * a NON-EMPTY list - only those authorities are served. This is the S-15 remedy,
+   *     unchanged: the list is process configuration, fixed for the container's lifetime and
+   *     unreachable from any request, so a caller cannot write the list it is checked
+   *     against.
+   *
+   * THE VARIABLE REMAINS OPTIONAL IN THE ENVIRONMENT CONTRACT, deliberately. A deployment
+   * that does not serve the feed must not be forced to configure it, and every existing test
+   * that supplies only the five database variables still boots - it simply gets a deployment
+   * with no feed, which is the honest description of a deployment that configured none.
    */
-  readonly allowedHosts: readonly string[] | undefined;
+  readonly allowedHosts: readonly string[];
 }
 
 // --- Defaults ---------------------------------------------------------------
@@ -1534,19 +1551,32 @@ function resolveDatabaseTls(
 /**
  * What {@link resolveFeedAllowedHosts} answers when it did not record a problem.
  *
- * A ONE-MEMBER WRAPPER, AND THE WRAPPER IS THE POINT. Every resolver in this file uses a
- * bare `undefined` return to mean "I recorded a problem, do not build a configuration",
- * and after F40 this resolver additionally needs to say "the variable is not set" - which
- * is a SUCCESS carrying an absent value. Two absences with two meanings cannot share one
- * `undefined`, so the success case is wrapped: an absent wrapper is a failure, and a
- * present wrapper whose member is `undefined` is an unset variable.
+ * A ONE-MEMBER WRAPPER, AND THE WRAPPER IS STILL THE POINT even though the member no longer
+ * admits `undefined`. Every resolver in this file uses a bare `undefined` return to mean "I
+ * recorded a problem, do not build a configuration". The wrapper keeps that ONE meaning for
+ * `undefined` at this resolver too: an absent wrapper is a failure, and a present wrapper
+ * always carries a list - empty when no host is authorized.
+ *
+ * ★ IT USED TO CARRY `readonly string[] | undefined`, so that "the variable is not set"
+ * could be a SUCCESS with an absent value distinct from a recorded problem. That third state
+ * is gone with the allow-all behaviour it existed to express - see
+ * {@link FeedConfig.allowedHosts} - so the member is total and only the failure/success
+ * distinction remains.
  *
  * Not exported. `FeedConfig.allowedHosts` is the shape every consumer reads; this type
- * exists only to keep the two absences apart between the resolver and its one caller.
+ * exists only to keep the failure absence apart from the resolved value.
  */
 interface ResolvedFeedAllowedHosts {
-  readonly allowedHosts: readonly string[] | undefined;
+  readonly allowedHosts: readonly string[];
 }
+
+/**
+ * The authorized-host list of a deployment that authorized none.
+ *
+ * Frozen once at module scope rather than built per call, so every unconfigured deployment
+ * shares one immutable value and no consumer can extend the list it is checked against.
+ */
+const EMPTY_FEED_ALLOWED_HOSTS: readonly string[] = Object.freeze([]);
 
 const HOST_AUTHORITY_SHAPE =
   /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?)*)(?::(\d{1,5}))?$/;
@@ -1660,20 +1690,22 @@ export function parseHostAuthority(candidate: string): HostAuthority | undefined
 /**
  * Resolves `FEED_ALLOWED_HOSTS`, a comma-separated list of bare host authorities.
  *
- * ★★★ UNSET YIELDS `undefined`, NOT AN EMPTY LIST (F40). QUOTE-THEN-REVISE: this
- * paragraph read "Unset or blank yields an EMPTY list, which refuses every feed
- * candidate. That is the safe default and is why no deployment is forced to configure a
- * feed." Those two sentences contradict each other - a default that refuses every request
- * DOES force a deployment to configure the feed, on pain of the capability not working -
- * and the source publishes the feed method publicly with no allow-list at all
- * [integrationServices/google/controllers/feed.cfc:L54]. See {@link FeedConfig} for the
- * three states and why they must stay distinct.
+ * ★★★ UNSET YIELDS AN EMPTY LIST, WHICH SERVES NO FEED - THE FAIL-CLOSED DEFAULT (CWE-346).
+ * This resolver has been written both ways and the whole record is on {@link FeedConfig},
+ * because the question is a security one and re-deciding it from a one-line comment is
+ * exactly what should not happen. The short form: an earlier revision mapped unset to an
+ * empty list and refused everything; a second mapped it to `undefined`, which the
+ * composition root read as ALLOW ANY REQUEST `Host`, putting a caller-authored authority
+ * into a merchant feed's URLs by default; this one maps unset and blank alike to an empty
+ * list, so a deployment that configured no feed serves none and a deployment that
+ * configured one serves exactly the authorities it named.
  *
- * BLANK IS NOT UNSET HERE, WHICH IS WHY THE RAW SOURCE IS READ RATHER THAN `readTrimmed`.
- * `readTrimmed` folds a whitespace-only value into `undefined`, and that fold is right for
- * a credential and wrong for a policy: `FEED_ALLOWED_HOSTS=` is a deliberate statement
- * that no host is served, and it must not become "no policy configured". A value that is
- * PRESENT therefore always yields a list - empty when it names nothing.
+ * BLANK AND UNSET ARE THEREFORE THE SAME ANSWER, AND THAT IS DELIBERATE - it is the one
+ * place this file does not draw the absent-versus-empty distinction, because both states
+ * mean the same thing about deployment intent: no authority has been authorized. The RAW
+ * source is still read rather than `readTrimmed`, so a whitespace-only value is parsed as a
+ * list that names nothing rather than being folded into a different code path; the outcome
+ * is identical either way and the parse stays honest about what it received.
  *
  * Each member is trimmed and lower-cased before validation, because DNS names are
  * case-insensitive and the membership check in `src/handlers/bootstrap.ts` compares
@@ -1697,7 +1729,11 @@ function resolveFeedAllowedHosts(
   const raw = source['FEED_ALLOWED_HOSTS'];
 
   if (raw === undefined) {
-    return Object.freeze({ allowedHosts: undefined });
+    // Fail closed. An UNSET policy authorizes no authority, so the feed publishes nothing
+    // until an operator names the host(s) this deployment answers on - see
+    // {@link FeedConfig.allowedHosts} for why "take it from the request `Host`" is not a
+    // faithful port of `CGI.HTTP_HOST` on this platform.
+    return Object.freeze({ allowedHosts: EMPTY_FEED_ALLOWED_HOSTS });
   }
 
   const members = raw
@@ -1709,7 +1745,7 @@ function resolveFeedAllowedHosts(
 
   if (malformed.length > 0) {
     problems.push(
-      `FEED_ALLOWED_HOSTS contains ${malformed.length} entr${malformed.length === 1 ? 'y' : 'ies'} that ${malformed.length === 1 ? 'is' : 'are'} not a bare host authority: ${malformed.map(describeReceived).join(', ')}. Supply hosts only - no scheme, credentials, path, query or fragment - separated by commas, for example "shop.example.com,shop.example.com:8443". A port, when written, must be 1 to ${String(MAX_HOST_AUTHORITY_PORT)} with no leading zero, and the whole entry at most ${String(MAX_HOST_AUTHORITY_LENGTH)} characters. Leave it UNSET to serve the feed on whatever authority the request carries, as the legacy did, or set it to an empty value to publish no product feed at all.`,
+      `FEED_ALLOWED_HOSTS contains ${malformed.length} entr${malformed.length === 1 ? 'y' : 'ies'} that ${malformed.length === 1 ? 'is' : 'are'} not a bare host authority: ${malformed.map(describeReceived).join(', ')}. Supply hosts only - no scheme, credentials, path, query or fragment - separated by commas, for example "shop.example.com,shop.example.com:8443". A port, when written, must be 1 to ${String(MAX_HOST_AUTHORITY_PORT)} with no leading zero, and the whole entry at most ${String(MAX_HOST_AUTHORITY_LENGTH)} characters. Leave it UNSET only if this deployment publishes no product feed: an unset or empty value authorizes no host, and the feed route then refuses every request rather than trusting the one it carries.`,
     );
     return undefined;
   }

@@ -452,10 +452,13 @@ const SKU_LIST_PRICE_RB_KEY = 'entity.sku.listPrice';
  * [model/service/SettingService.cfc:L192] and `productImageDefaultExtension =
  * {fieldType="text",defaultValue="jpg"}` [L191].
  *
- * Both keys ARE in the port's closed seven-key union [:L191, :L192], and the composition root
- * resolves them THROUGH it; they are held here as literals only because this suite exercises the
- * IMAGE SEAM directly, which receives already-resolved values rather than a resolver - which is the
- * whole reason the composition moved off the entity in the first place. The values match the
+ * NEITHER key is on the port: `SettingKey` is closed at FOUR and these two [:L191, :L192] are
+ * product-presentation settings the composition root resolves from the same `SwSetting` read. They
+ * are held here as literals only because this suite exercises the IMAGE SEAM directly, which receives
+ * already-resolved values rather than a resolver - which is the whole reason the composition moved off
+ * the entity in the first place. This paragraph said "Both keys ARE in the port's closed seven-key
+ * union" until a code review measured four; nothing about the seam changes, because the seam consumes
+ * resolved values either way. The values match the
  * composition root's exactly, so one setting still has one value. The delimiter's legacy option
  * list is exactly `['-','_']`
  * [model/service/SettingService.cfc:L346-L347], so `'-'` is a real value and not an invention.
@@ -3452,7 +3455,7 @@ describe('ProductService', () => {
       // NOT ONE port member is reached, which is the half of the old case that was
       // right and is kept: the review entity is not among the eighteen the ported
       // domain models, the account arrives from ambient request scope, and the
-      // setting at [L159] is outside the seven-key settings union.
+      // setting at [L159] is outside the four-key settings union.
       expect(productRepository.saves).toStrictEqual([]);
       expect(skuCreation.requests).toStrictEqual([]);
       expect(subscriptionTermProvider.requestedTermIDs).toStrictEqual([]);

@@ -21,12 +21,16 @@
 // TWO MEMBERS THE PLAN NAMES ARE WORTH STATING HERE, because a reader checking the census against
 // this file will look for both and find only one:
 //
-//   C3. `getTitle()` is **OMITTED**, for ONE reason: the legacy body [L540-L545]
-//       routes through `hibachiUtilityService`, which is not one of the thirteen
-//       ports and is not ported. `productTitleString` IS one of the seven keys the
-//       settings port publishes [model/service/SettingService.cfc:L193], so the
-//       setting is not a reason and is not offered as one. The omission is
-//       asserted; no fourteenth port is invented.
+//   C3. `getTitle()` **SHIPS**, and this note used to say it was OMITTED "for ONE
+//       reason: the legacy body [L540-L545] routes through `hibachiUtilityService`,
+//       which is not one of the thirteen ports and is not ported", adding that
+//       "`productTitleString` IS one of the seven keys the settings port publishes".
+//       Both halves have been corrected. The renderer is EXTRACTED (never modified)
+//       inside the entity, and `productTitleString`
+//       [model/service/SettingService.cfc:L193] is NOT one of the FOUR keys the
+//       settings port publishes - it reaches the entity as an already-resolved
+//       `productTitleTemplate` value. No fourteenth port is invented, and the
+//       B13.4 case below asserts the shipped member.
 //   C7. `getSalePriceDetailsForSkus()` **SHIPS** [L517-L522] under the shipped
 //       module's documented branch (a), memoized over an injected
 //       `salePriceResolver` - the SECOND interface exported by
@@ -287,13 +291,17 @@ function buildProductType(
 type SettingRead = string;
 
 /**
- * The settings port, over the SEVEN keys `settingsProvider.ts` publishes.
+ * The settings port, over the FOUR keys `settingsProvider.ts` publishes.
  *
  * CFML parity [model/service/SettingService.cfc:L178]: only `globalURLKeyProduct` is this entity's
  * concern, and its legacy default lives in the setting declaration rather than in the component.
- * The others are answered so the double satisfies the whole port contract - the catch-all return
- * below covers every key this entity never reads, including the three product-subsystem keys
- * [:L191, :L192, :L193].
+ * The others are answered so the double satisfies the whole port contract, and the catch-all return
+ * below covers every key this entity never reads.
+ *
+ * This heading said SEVEN keys, and named the three product-subsystem settings [:L191, :L192, :L193]
+ * among them, until a code review measured four. Those three never reach a resolver in this suite:
+ * `productTitleString` arrives as the resolved `productTitleTemplate` a `Product` is CONSTRUCTED
+ * with, which is what the `getTitle()` cases below exercise.
  */
 class SettingsProviderDouble {
   readonly reads: SettingRead[] = [];
@@ -3088,9 +3096,9 @@ describe('remaining delegations, warts and accessors', () => {
     // C4 - A PROMPT-CLAIMED MEMBER THAT DOES NOT SHIP. [model/entity/Product.cfc:L551-L553]
     // declares `returntype="numeric"` while returning the BOOLEAN setting `skuAllowBackorderFlag` -
     // a genuine legacy type mismatch. It is nonetheless omitted, because `skuAllowBackorderFlag`
-    // [model/service/SettingService.cfc:L219] is NOT among the seven keys `settingsProvider`
-    // publishes and is named there as explicitly excluded, so widening the contract would put an
-    // eighth key on a port the checkpoint fixes at seven.
+    // [model/service/SettingService.cfc:L219] is NOT among the FOUR keys `settingsProvider`
+    // publishes and is named there as explicitly excluded, so widening the contract would put a
+    // fifth key on a port the plan fixes at four.
     expect(declaresMember('getAllowBackorderFlag')).toBe(false);
 
     expect(declaresMember('getCalculatedAllowBackorderFlag')).toBe(true);
@@ -4871,33 +4879,35 @@ describe('getTitle: the productTitleString template, rendered (F13)', () => {
   it('MEMOIZES per instance, and caches an EMPTY render rather than repeating it', () => {
     // The legacy guard is `!structKeyExists(variables, "title")` [model/entity/Product.cfc:L541] -
     // key EXISTENCE, not truthiness - so a template that renders EMPTY is cached. Testing the string
-    // instead would re-render on every call, re-reading the setting and re-walking the graph.
-    let settingReads = 0;
-    const countingProvider = {
-      setting: (): string => {
-        settingReads += 1;
-
-        return '${brand.brandName}';
-      },
-    };
-
+    // instead would re-render on every call and re-walk the graph.
+    //
+    // ★★ THIS USED TO COUNT `setting()` CALLS ON A SECOND SETTINGS DOUBLE. The entity took a
+    // `ProductPresentationSettingsProvider`, so the memo could be observed by counting reads through
+    // it; that contract is gone - the composition root resolves the template once and hands over the
+    // VALUE - so there is no resolver left to count. The memo is observed through the RENDER instead:
+    // the cached answer survives a mutation that a fresh render WOULD pick up, which is a statement
+    // about the memo rather than about the renderer being deterministic. The property under test is
+    // unchanged - an empty render is cached, not repeated.
     const unbranded = makeProductFixture({
       brand: undefined,
-      productPresentationSettingsProvider: countingProvider,
+      productTitleString: '${brand.brandName} ${productName}',
     });
 
-    expect(unbranded.getTitle()).toBe('');
-    expect(unbranded.getTitle()).toBe('');
-    expect(settingReads).toBe(1);
+    expect(unbranded.getTitle()).toBe(' Test Product');
+    expect(unbranded.getTitle()).toBe(' Test Product');
+
+    unbranded.setProductName('renamed after the first render');
+
+    expect(unbranded.getTitle()).toBe(' Test Product');
   });
 
-  it('★ REFUSES rather than inventing a title when the presentation provider is absent', () => {
-    // The same discipline `getProductURL()` follows: the collaborator is optional at construction so
-    // hydration can build a product for paths that never read a setting, and a path that DOES read one
-    // says so instead of substituting a plausible answer.
-    const unwired = makeProductFixture({ productPresentationSettingsProvider: undefined });
+  it('★ REFUSES rather than inventing a title when the resolved template is absent', () => {
+    // The same discipline `getProductURL()` follows: the value is optional at construction so
+    // hydration can build a product for paths that never render a title, and a path that DOES render
+    // one says so instead of substituting a plausible answer.
+    const unwired = makeProductFixture({ productTitleString: undefined });
 
-    expect(() => unwired.getTitle()).toThrow(/product presentation settings provider/);
+    expect(() => unwired.getTitle()).toThrow(/resolved product title template/);
   });
 
   it('resolves the two OTHER fetch="join" associations, not only the brand', () => {
@@ -5024,7 +5034,13 @@ describe('ports, not locators: the composition surface this entity actually has'
     // not a port ACCESSOR, which is what this case is actually about: no `get<Port>` member exists,
     // so a caller cannot reach a collaborator through the entity.
     expect(declaresMember('getTitle')).toBe(true);
-    expect(declaresMember('getProductPresentationSettingsProvider')).toBe(false);
+
+    // ★★ AND NO ACCESSOR FOR THE TEMPLATE EITHER. This asserted the absence of
+    // `getProductPresentationSettingsProvider` while the entity held a second settings RESOLVER; that
+    // contract is gone and the entity holds a resolved STRING, so the member to prove unreachable is
+    // the value rather than the port. Same property, current name: a caller cannot read the template
+    // off the entity, only the rendered title.
+    expect(declaresMember('getProductTitleTemplate')).toBe(false);
   });
 
   it('B18.4 - a missing port produces a NAMED REFUSAL that cites its own legacy locator', () => {

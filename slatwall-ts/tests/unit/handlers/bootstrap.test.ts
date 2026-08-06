@@ -248,6 +248,8 @@ class RecordingExecutor implements PreparedStatementExecutor {
 
   private readonly rowsBySql = new Map<string, readonly SqlRow[]>();
 
+  private readonly rowsByFragment: { fragment: string; rows: readonly SqlRow[] }[] = [];
+
   /** Answer `sql` with `rows`. Every unseeded statement answers no rows. */
   public seed(sql: string, rows: readonly SqlRow[]): this {
     this.rowsBySql.set(sql, rows);
@@ -255,10 +257,36 @@ class RecordingExecutor implements PreparedStatementExecutor {
     return this;
   }
 
+  /**
+   * Answer any statement CONTAINING `fragment` with `rows`.
+   *
+   * ★★ NEEDED FOR THE ONE STATEMENT THIS FILE CANNOT NAME EXACTLY. `seed` matches by exact text, which
+   * is the right default - it makes a seeded statement a precise claim about what the graph issues - but
+   * `SELECT_BRAND_BY_BRAND_ID_SQL` is module-private and is ASSEMBLED from `BRAND_COLUMNS`, deliberately
+   * so that the brand read and the brand write cannot project different column sets. Restating its text
+   * here would defeat exactly that: the copy would keep passing after the projection widened. Matching
+   * on the table name instead means this seed keeps working when the projection changes and stops working
+   * when the TABLE does, which is the property worth having.
+   *
+   * Consulted only after the exact map, so an exact seed always wins.
+   */
+  public seedMatching(fragment: string, rows: readonly SqlRow[]): this {
+    this.rowsByFragment.push({ fragment, rows });
+
+    return this;
+  }
+
   public execute(sql: string, params?: readonly unknown[]): Promise<readonly SqlRow[]> {
     this.calls.push({ sql, params });
 
-    return Promise.resolve(this.rowsBySql.get(sql) ?? NO_ROWS);
+    const exact = this.rowsBySql.get(sql);
+    if (exact !== undefined) {
+      return Promise.resolve(exact);
+    }
+
+    const matched = this.rowsByFragment.find((candidate) => sql.includes(candidate.fragment));
+
+    return Promise.resolve(matched?.rows ?? NO_ROWS);
   }
 
   public executeMutation(sql: string, params?: readonly unknown[]): Promise<SqlMutationResult> {
@@ -1560,15 +1588,33 @@ describe('createRequestScope', () => {
     ]);
   });
 
-  it('★★★ publishes exactly FIVE READ-ONLY LOADS on `entityLoaders`, and NO mutation', async () => {
-    // ★★★ THE GUARD THAT KEEPS F3's ANSWER FROM BECOMING F18's DEFECT AGAIN. The five loads exist
-    // so a handler can bind a service argument exactly; if a save or a delete ever appeared beside
-    // them, the seven durable mutations withdrawn from this surface would be back under a new name.
+  it('★★★ publishes exactly SEVEN READ-ONLY LOADS on `entityLoaders`, and NO mutation', async () => {
+    // ★★★ THE GUARD THAT KEEPS F3's ANSWER FROM BECOMING F18's DEFECT AGAIN. The loads exist so a
+    // handler can bind a service argument exactly; if a save or a delete ever appeared beside them, the
+    // seven durable mutations withdrawn from this surface would be back under a new name.
+    //
+    // ★★ FIVE BECAME SEVEN, AND THE TWO ADDITIONS ARE THE OTHER HALF OF A CRITICAL FINDING'S FIX. A code
+    // review found `catalogQueryHandler` publishing three reads and withholding eleven AAP-0.4.2-mapped
+    // Product/Brand/Option actions, on the stated ground that "the composition root publishes no entity
+    // and no entity loader" - a premise this very object contradicted. Nine of those eleven bind a
+    // product or a product type, which the five loads above already covered; the remaining two bind a
+    // BRAND and a LIST OF OPTIONS, and neither had a load. `getBrandByBrandID` is the only load in this
+    // object with no repository behind it - `BrandService` declares one method
+    // [model/service/BrandService.cfc:L67] and everything else it had arrived by framework inheritance -
+    // so the statement is hosted here and projects the same `BRAND_COLUMNS` the brand WRITE projects,
+    // which is what keeps the read set and the write set from drifting. `getOptionsByOptionIDList`
+    // forwards the module-private option loader the two add-option process methods already used.
+    //
+    // BOTH ARE READS AND NEITHER WIDENS THE PORT INVENTORY. AAP 0.3.1 freezes that inventory at thirteen
+    // port files and no fourteenth appears: the brand load is a statement in this file and the option
+    // load forwards an existing loader, so the addition is to THIS object alone.
     const root = await bootWith(makeExecutor());
 
     const scope = await root.createRequestScope();
 
     expect(Object.keys(scope.entityLoaders).sort()).toEqual([
+      'getBrandByBrandID',
+      'getOptionsByOptionIDList',
       'getPriceGroup',
       'getPriceGroupRate',
       'getProductByProductID',
@@ -1587,6 +1633,10 @@ describe('createRequestScope', () => {
       'savePriceGroupRate',
       'deletePriceGroup',
       'loadDataFromFile',
+      // The two the brand and option additions would be paired with if either had brought a write.
+      'saveBrand',
+      'deleteBrand',
+      'saveOption',
     ]) {
       expect(scope.entityLoaders).not.toHaveProperty(forbidden);
     }
@@ -1615,6 +1665,118 @@ describe('createRequestScope', () => {
         skuID: 'no-such-sku',
       }),
     ).resolves.toBeUndefined();
+    await expect(scope.entityLoaders.getBrandByBrandID('no-such-brand')).resolves.toBeUndefined();
+    // The option load answers a MAP rather than an entity, so its miss is an ABSENT KEY rather than an
+    // `undefined` return - the caller walks its own list and reports one outcome for the request.
+    await expect(scope.entityLoaders.getOptionsByOptionIDList(['no-such-option'])).resolves.toEqual(
+      new Map(),
+    );
+  });
+
+  it('★★★ hydrates a brand from the ONE read in this file with no repository behind it', async () => {
+    // ★★★ THE LOAD A CRITICAL FINDING ADDED, AND THE ONLY ENTITY LOAD HOSTED HERE RATHER THAN
+    // FORWARDED. `BrandService.cfc` declares exactly one method [model/service/BrandService.cfc:L67] and
+    // every read it appeared to have arrived by framework inheritance, so there is no brand repository
+    // and no brand port - AAP 0.3.1 freezes the inventory at thirteen and no fourteenth was added. The
+    // statement therefore lives beside the brand WRITES that already lived here, projecting the same
+    // `BRAND_COLUMNS`, and this case is the only place `hydrateBrand` is exercised at all.
+    const executor = makeExecutor().seedMatching('FROM SwBrand', [
+      {
+        brandID: 'brand-0001',
+        activeFlag: 1,
+        publishedFlag: 0,
+        urlTitle: 'test-brand',
+        brandName: 'Test Brand',
+        brandWebsite: null,
+        remoteID: null,
+        createdDateTime: null,
+        createdByAccountID: null,
+        modifiedDateTime: null,
+        modifiedByAccountID: null,
+      },
+    ]);
+    const root = await bootWith(executor);
+
+    const scope = await root.createRequestScope();
+    const brand = await scope.entityLoaders.getBrandByBrandID('brand-0001');
+
+    expect(brand?.getBrandID()).toBe('brand-0001');
+    expect(brand?.getBrandName()).toBe('Test Brand');
+    expect(brand?.getUrlTitle()).toBe('test-brand');
+    // The two `bit` columns arrive as CFML's `1`/`0`, which is what the entity's own boolean input union
+    // accepts, and both renderings are read rather than only the truthy one.
+    expect(brand?.getActiveFlag()).toBe(true);
+    expect(brand?.getPublishedFlag()).toBe(false);
+    // ★ A SAVED ROW, NOT A NEW ONE. Every mutation this load serves names an EXISTING row, so a hydrated
+    // brand must answer `false` to `isNew()` - the property the routed transport policy rests on.
+    expect(brand?.isNew()).toBe(false);
+    // AND THE IDENTIFIER IS BOUND, NOT INTERPOLATED, which is what preserves `cfqueryparam` semantics.
+    const brandRead = executor.calls.find((call) => call.sql.includes('FROM SwBrand'));
+    expect(brandRead?.params).toEqual(['brand-0001']);
+    expect(brandRead?.sql).toContain('WHERE brandID = ?');
+    expect(executor.mutationCalls).toEqual([]);
+  });
+
+  it('★★ forwards the option-list load verbatim, and issues NO statement for an empty request', async () => {
+    // The sibling addition, and it is a FORWARD rather than an implementation: the module-private option
+    // loader `SkuService`'s option resolution already used owns the de-duplication, the case folding, the
+    // empty-request short circuit and the fetch shape. Reproducing any of them beside it would be a
+    // second copy that could drift, so what this case pins is that nothing was reproduced - an empty
+    // request costs no statement, and a populated one keys the map by the FOLDED identifier.
+    const executor = makeExecutor().seedMatching('FROM SwOption swOption', [
+      {
+        optionID: 'option-A',
+        optionCode: 'red',
+        optionName: 'Red',
+        optionDescription: null,
+        sortOrder: 1,
+        optionGroupID: 'group-colour',
+        defaultImageID: null,
+        remoteID: null,
+        createdDateTime: null,
+        createdByAccountID: null,
+        modifiedDateTime: null,
+        modifiedByAccountID: null,
+        optionGroup_optionGroupID: 'group-colour',
+        optionGroup_optionGroupName: 'Colour',
+        optionGroup_optionGroupCode: 'colour',
+        optionGroup_optionGroupImage: null,
+        optionGroup_optionGroupDescription: null,
+        optionGroup_imageGroupFlag: 0,
+        optionGroup_sortOrder: 1,
+        optionGroup_remoteID: null,
+        optionGroup_createdDateTime: null,
+        optionGroup_createdByAccountID: null,
+        optionGroup_modifiedDateTime: null,
+        optionGroup_modifiedByAccountID: null,
+      },
+    ]);
+    const root = await bootWith(executor);
+
+    const scope = await root.createRequestScope();
+
+    const before = executor.calls.length;
+    await expect(scope.entityLoaders.getOptionsByOptionIDList([])).resolves.toEqual(new Map());
+    expect(executor.calls).toHaveLength(before);
+
+    // A populated request DOES issue one, and it binds one placeholder per element rather than
+    // interpolating a list into the text. The identifiers are bound VERBATIM - the fold happens where
+    // the MAP is keyed, because it is MySQL's own collation that folds the comparison, exactly as
+    // `cfqueryparam` left it to.
+    const loaded = await scope.entityLoaders.getOptionsByOptionIDList(['option-A', 'option-B']);
+    const optionRead = executor.calls
+      .slice(before)
+      .find((call) => call.sql.includes('FROM SwOption swOption'));
+
+    expect(optionRead?.params).toEqual(['option-A', 'option-B']);
+    expect(optionRead?.sql).toContain('IN (?, ?)');
+    // ★ THE MAP IS KEYED BY THE FOLDED IDENTIFIER, which is what lets a caller that named
+    // `option-A` find the row the database matched under any casing. Only `option-A` was seeded, so
+    // `option-B` is ABSENT rather than present-and-undefined - the miss posture the load documents.
+    expect([...loaded.keys()]).toEqual(['option-a']);
+    expect(loaded.get('option-a')?.getOptionID()).toBe('option-A');
+    expect(loaded.has('option-b')).toBe(false);
+    expect(executor.mutationCalls).toEqual([]);
   });
 
   it('★★★ resolves a SKU whose identifier is cased differently, as CFML identifiers are', async () => {
@@ -1895,7 +2057,7 @@ describe('createRequestScope', () => {
     );
 
     expect(error.name).toBe('UntrustedFeedHostError');
-    expect(error.message).toContain('allow-list');
+    expect(error.message).toContain('authorized-host list');
   });
 
   it('refuses a feed host that is empty or only whitespace', async () => {
@@ -1927,7 +2089,7 @@ describe('createRequestScope', () => {
     );
 
     expect(error.name).toBe('UntrustedFeedHostError');
-    expect(error.message).toContain('allow-list');
+    expect(error.message).toContain('authorized-host list');
     expect(error.message).not.toContain('bare host authority');
   });
 
@@ -1957,7 +2119,7 @@ describe('createRequestScope', () => {
 
     // What it says instead: the reason, plus a summary built only from DERIVED facts - a length
     // and trait names that are constants in the source rather than substrings of the input.
-    expect(error.message).toContain('allow-list');
+    expect(error.message).toContain('authorized-host list');
     expect(error.message).toContain('The value itself is not reproduced');
     expect(error.message).toContain(String(secretBearingCandidate.length));
     expect(error.message).toContain('credentials');
@@ -1974,7 +2136,7 @@ describe('createRequestScope', () => {
     expect(typeof raised.candidateSummary).toBe('string');
     expect(String(raised.candidateSummary)).not.toContain('sup3rs3cret');
     expect(String(raised.candidateSummary)).toContain('credentials');
-    expect(raised.reason).toBe('it is not on this deployment\u2019s allow-list');
+    expect(raised.reason).toBe('it is not on this deployment\u2019s authorized-host list');
   });
 
   it('refuses BEFORE it builds anything, so no feed port holds an unlisted origin', async () => {
@@ -2032,44 +2194,69 @@ describe('createRequestScope', () => {
   });
 
   it('refuses a feed host against an EXPLICITLY empty allow-list, rather than admitting everything', async () => {
-    // QUOTE-THEN-REVISE. This case booted with NO `FEED_ALLOWED_HOSTS` at all and was annotated
-    // "so the configured list is EMPTY - the deliberate default, because an empty list matches
-    // nothing and a deployment that does not serve a feed therefore cannot accidentally serve
-    // one." F40: an UNSET variable is no longer an empty list, because the source publishes this
-    // feed publicly with no allow-list whatsoever, so deny-by-default withdrew the capability
-    // rather than hardening it. Deny-all is still available and still asserted here - it is now
-    // requested, by SETTING the variable to a value that names no host.
-    const root = await bootWith(
+    // QUOTE-THEN-REVISE, TWICE. This case first booted with NO `FEED_ALLOWED_HOSTS` at all, annotated
+    // "so the configured list is EMPTY - the deliberate default". It was then changed to set the
+    // variable to a value naming no host, because "F40: an UNSET variable is no longer an empty
+    // list". Both spellings mean the same thing again, so BOTH are asserted here.
+    const explicitlyEmpty = await bootWith(
       makeExecutor(),
       Object.freeze({ ...BASE_ENVIRONMENT, FEED_ALLOWED_HOSTS: '' }),
     );
 
-    const error = await rejectionOf(() => root.createRequestScope({ feedHost: FEED_HOST }));
+    const explicitError = await rejectionOf(() =>
+      explicitlyEmpty.createRequestScope({ feedHost: FEED_HOST }),
+    );
 
-    expect(error.name).toBe('UntrustedFeedHostError');
-    expect(error.message).toContain('allow-list');
+    expect(explicitError.name).toBe('UntrustedFeedHostError');
+    expect(explicitError.message).toContain('authorizes no feed host at all');
+
+    // And the UNSET spelling, which is the default deployment, refuses identically.
+    const unset = await bootWith(makeExecutor());
+
+    const unsetError = await rejectionOf(() => unset.createRequestScope({ feedHost: FEED_HOST }));
+
+    expect(unsetError.name).toBe('UntrustedFeedHostError');
+    expect(unsetError.message).toContain('authorizes no feed host at all');
   });
 
-  it('★★★ serves the feed on the request authority when NO allow-list is configured (F40)', async () => {
-    // THE SOURCE-EQUIVALENT DEFAULT. `integrationServices/google/controllers/feed.cfc:L54`
-    // declares `this.publicMethods="product"` and the view renders `http://#CGI.HTTP_HOST#`, so
-    // the legacy served the feed for whatever authority the request carried and had no
-    // allow-list to consult. A deployment that sets nothing must therefore get a WORKING feed.
+  it('★★★ publishes NO feed when no allow-list is configured, rather than serving the request authority', async () => {
+    // ★★★ THIS CASE ASSERTED THE OPPOSITE AND WAS NAMED FOR IT: "serves the feed on the request
+    // authority when NO allow-list is configured (F40)", reasoning that
+    // "`integrationServices/google/controllers/feed.cfc:L54` declares `this.publicMethods="product"`
+    // and the view renders `http://#CGI.HTTP_HOST#`, so the legacy served the feed for whatever
+    // authority the request carried and had no allow-list to consult. A deployment that sets nothing
+    // must therefore get a WORKING feed."
+    //
+    // Every legacy fact there is accurate. What it omits is that CFML read `CGI.HTTP_HOST` from a
+    // request that had already reached a web server bound to the hostnames the deployment owns, so the
+    // deployment constrained the value before the application saw it. An API Gateway proxy event
+    // carries whatever `Host` a client writes, so reproducing the READ without a list does not
+    // reproduce the legacy's provenance - it lets a caller choose the authority written into every
+    // link of a merchant feed a third party fetches and follows. Code review recorded it as CWE-346,
+    // Major. The deployment states its authorities; the request may only select among them.
     const executor = makeExecutor();
     const root = await bootWith(executor);
 
-    const scope = await root.createRequestScope({ feedHost: FEED_HOST });
+    const error = await rejectionOf(() => root.createRequestScope({ feedHost: FEED_HOST }));
 
-    expect(scope.productFeedPort).toBeDefined();
-    expect(scope.feedCriteria).toBeDefined();
-    expect(scope.feedCriteria?.feedHost).toBe(FEED_HOST);
+    expect(error.name).toBe('UntrustedFeedHostError');
+
+    // ★ THE REFUSAL IS ACTIONABLE, which is what answers the objection the previous version raised:
+    // an operator is told the variable to set rather than left with a capability that silently does
+    // nothing. The candidate itself is never reproduced.
+    expect(error.message).toContain('FEED_ALLOWED_HOSTS');
+    expect(error.message).not.toContain(FEED_HOST);
   });
 
-  it('normalizes the admitted authority even with no allow-list, and still refuses a blank one', async () => {
-    // "No membership test" is not "no validation". The candidate is still trimmed and case-folded,
-    // so the origin the renderer composes is canonical; and a candidate with nothing in it is still
-    // refused, because there is nothing to serve.
-    const root = await bootWith(makeExecutor());
+  it('normalizes the admitted authority against the configured list, and still refuses a blank one', async () => {
+    // Normalization is not membership, and both happen. The candidate is trimmed and case-folded, so
+    // the origin the renderer composes is canonical and matches an entry written in any casing; and a
+    // candidate with nothing in it is refused before the list is consulted at all, because there is
+    // nothing to serve.
+    const root = await bootWith(
+      makeExecutor(),
+      Object.freeze({ ...BASE_ENVIRONMENT, FEED_ALLOWED_HOSTS: FEED_HOST }),
+    );
 
     const scope = await root.createRequestScope({ feedHost: `  ${FEED_HOST.toUpperCase()}  ` });
 
@@ -4383,12 +4570,12 @@ describe('bootstrapCompositionRoot', () => {
     });
 
     it('refuses every host against an EXPLICITLY empty allow-list, publishing no feed at all', () => {
-      // QUOTE-THEN-REVISE. This booted with no `FEED_ALLOWED_HOSTS` and called that "the intended
-      // default rather than a degraded mode". F40 reversed which state is the default: UNSET is now
-      // no policy at all and serves the request's authority, matching a source method that is
-      // declared public and consults no list. Deny-all is requested by setting the variable empty,
-      // and that is what is asserted here. The variable stays OPTIONAL either way, which is what
-      // keeps every feed-less deployment starting.
+      // QUOTE-THEN-REVISE, TWICE. This booted with no `FEED_ALLOWED_HOSTS` and called that "the
+      // intended default rather than a degraded mode"; it was then changed to set the variable empty,
+      // because "F40 reversed which state is the default: UNSET is now no policy at all and serves the
+      // request's authority". Unset and empty mean the same thing again - no authority is authorized -
+      // so this asserts the explicit spelling and the case below asserts the default one. The variable
+      // stays OPTIONAL either way, which is what keeps every feed-less deployment starting.
       return expect(async () => {
         const root = await makeRoot({ env: { FEED_ALLOWED_HOSTS: '' } });
 
@@ -4396,13 +4583,17 @@ describe('bootstrapCompositionRoot', () => {
       }).rejects.toBeInstanceOf(UntrustedFeedHostError);
     });
 
-    it('★★★ admits the request authority when the deployment configured no list (F40)', async () => {
+    it('★★★ publishes no feed when the deployment configured no list, rather than admitting the request authority', async () => {
+      // ★★★ THIS ASSERTED THE OPPOSITE - "admits the request authority when the deployment configured
+      // no list (F40)" - which made a caller-authored `Host` the DEFAULT origin of a merchant feed.
+      // Code review recorded it as CWE-346, Major. The full argument, including why the legacy's
+      // `CGI.HTTP_HOST` read is not reproducible as-is on API Gateway, is at the `createRequestScope`
+      // case of the same name earlier in this file; this is the composition-root-level pin of it.
       const root = await makeRoot();
 
-      const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
-
-      expect(scope.productFeedPort).toBeDefined();
-      expect(scope.feedCriteria?.feedHost).toBe(ALLOWED_FEED_HOST);
+      await expect(root.createRequestScope({ feedHost: ALLOWED_FEED_HOST })).rejects.toBeInstanceOf(
+        UntrustedFeedHostError,
+      );
     });
 
     it('mints no feed port when the request names no host', async () => {
@@ -4617,9 +4808,15 @@ describe('bootstrapCompositionRoot', () => {
 
       lines.length = 0;
 
+      // ★ TWO DAYS AND ONE SECOND AHEAD, NOT EXACTLY ONE DAY, AND THE MARGIN IS THE POINT. The
+      // instant was `Date.now() + 86_400_000`, which made the assertion below race on a SINGLE
+      // MILLISECOND: the age is `reportInstant - retrievedAt`, so any time elapsed between this
+      // line and the report pushed it from exactly -86_400_000 ms to slightly more, and truncation
+      // toward zero then yielded `-0` instead of `-1`. A whole-day margin plus one second of slack
+      // makes the truncated value deterministic while asserting exactly the same property.
       await makeRoot({
         rates: overriddenTable,
-        ratesRetrievedAt: new Date(Date.now() + 86_400_000),
+        ratesRetrievedAt: new Date(Date.now() + 2 * 86_400_000 + 1_000),
       });
 
       const warned = lines.filter((line) =>
@@ -4630,7 +4827,7 @@ describe('bootstrapCompositionRoot', () => {
       expect(warned[0]?.level).toBe('warn');
       // A negative age, rounded toward zero, so an operator sees the direction rather than a
       // redacted marker. `ageInDays` is in the logger's diagnostic allow-list; `rowCount` too.
-      expect(warned[0]?.context['ageInDays']).toBe(-1);
+      expect(warned[0]?.context['ageInDays']).toBe(-2);
       expect(warned[0]?.context['rowCount']).toBe(1);
       // And it did NOT also claim the table was resolved normally.
       expect(
@@ -4787,8 +4984,8 @@ describe('bootstrapCompositionRoot', () => {
       const { lines } = captureLogLines();
       // The table quotes USD and NOT GBP, so the same-currency call under test is GBP-to-GBP: the
       // gate fails on a code that is not quotable, exactly as a cross-currency call would, and
-      // there is no same-currency short-circuit to rescue it. Booting with no table at all would
-      // now REFUSE rather than pass through, which is a different legacy state - see below.
+      // there is no same-currency short-circuit to rescue it. Booting with no table at all takes the
+      // SAME pass-through - the converter is a total function - which the case below pins.
       const root = await makeRoot({
         env: {
           ECB_REFERENCE_RATES: 'USD=1.0850',
@@ -4812,43 +5009,62 @@ describe('bootstrapCompositionRoot', () => {
       expect(reported[0]?.context['convertToCurrencyCode']).toBe('GBP');
     });
 
-    it('★★★ REFUSES a cross-currency conversion when NO rate table is available at all', async () => {
-      // ★★★ THE FAIL-CLOSED HALF, AND IT IS A DIFFERENT LEGACY STATE FROM THE PASS-THROUGH.
-      // Code review recorded that with no rates injected EVERY cross-currency conversion passed
-      // through 1:1 in production, while the legacy actively fetched and daily-refreshed the ECB
-      // table [model/service/CurrencyService.cfc:L102-L131]. Read that function to its end: the
-      // `catch` swallows a failed fetch and the NEXT statement returns
-      // `variables.europeanCentralBankRates`, which on a cold start was never assigned - CFML
-      // refuses that at runtime. So the legacy RAISES when it has no table; it does not price at
-      // par. Answering 1:1 here published base-currency numerals as foreign-currency prices,
-      // invisibly and for every eligible currency at once.
+    it('★★★ PASSES THROUGH a cross-currency conversion when NO rate table is available at all', async () => {
+      // ★★★ THIS CASE ASSERTED THE OPPOSITE, AND THE REVERSAL IS A REVIEW FINDING'S RESOLUTION.
+      // It read "REFUSES a cross-currency conversion when NO rate table is available at all" and
+      // pinned a `CurrencyRateTableUnavailableError`, on this reasoning, which is quoted rather than
+      // deleted because the legacy reading in it is correct: the legacy actively fetched and
+      // daily-refreshed the ECB table [model/service/CurrencyService.cfc:L102-L131], and read to its
+      // end that function's `catch` swallows a failed fetch while the NEXT statement returns
+      // `variables.europeanCentralBankRates`, which on a cold start was never assigned - CFML refuses
+      // that at runtime. So the legacy engine does raise when it has no table.
+      //
+      // WHAT THAT REASONING DID NOT WEIGH IS THE CONTRACT THE PORT PUBLISHES.
+      // `src/domain/ports/currencyConverter.ts` declares `convertCurrency` a TOTAL function -
+      // "@returns the converted amount, or `amount` unchanged when no rate is available" - and
+      // `src/handlers/priceResolutionHandler.ts` documents its `convertCurrency` operation as having
+      // no error path on the strength of it. Rejecting one of the two unavailable-rate states made the
+      // sole adapter disagree with both, and the rejection reached a routed operation as an
+      // unrecognised throw that `errorMapper` reduced to a generic 500. Code review recorded the
+      // caller/callee disagreement; the frozen contract is the total function, so the ADAPTER moved.
+      //
+      // THE MISCONFIGURATION IS STILL VISIBLE, which is what keeps this from being a silent
+      // mispricing: every pass-through notifies the observer - asserted below - and the composition
+      // root logs once at wiring time when it is handed an empty table.
+      const { lines } = captureLogLines();
       const root = await makeRoot();
       const scope = await root.createRequestScope();
 
-      await expect(
-        scope.currencyConverter.convertCurrency(
-          Money.fromDecimalString('100.00'),
-          toCurrencyCode('USD'),
-          toCurrencyCode('GBP'),
-        ),
-      ).rejects.toThrow(/No European Central Bank reference-rate table is available/u);
+      const converted = await scope.currencyConverter.convertCurrency(
+        Money.fromDecimalString('100.00'),
+        toCurrencyCode('USD'),
+        toCurrencyCode('GBP'),
+      );
 
-      // It names the two codes and NOTHING else - no amount, no configuration value.
-      await expect(
-        scope.currencyConverter.convertCurrency(
-          Money.fromDecimalString('100.00'),
-          toCurrencyCode('USD'),
-          toCurrencyCode('GBP'),
-        ),
-      ).rejects.toThrow(/so USD cannot be converted to GBP/u);
+      // The amount is returned AS RECEIVED - not rounded, not scaled, not marked.
+      expect(converted.toFixed2()).toBe('100.00');
+
+      // And the event is reported, naming the two codes and nothing else - no amount, no
+      // configuration value.
+      const reported = lines.filter((line) => line.message.includes('passed through'));
+      expect(reported).toHaveLength(1);
+      expect(reported[0]?.context['originalCurrencyCode']).toBe('USD');
+      expect(reported[0]?.context['convertToCurrencyCode']).toBe('GBP');
+
+      // The wiring-time line is emitted too, so an operator learns of the empty table before any
+      // request reaches a conversion.
+      expect(
+        lines.filter((line) => line.message.includes('No currency conversion rates are configured'))
+          .length,
+      ).toBeGreaterThanOrEqual(1);
     });
 
     it('★★ still converts the EURO PIVOT to itself with no table, because that needs no rate', async () => {
-      // The refusal above is scoped to conversions that actually need a quote. Both sides of a
-      // EUR-to-EUR call resolve as the pivot [model/service/CurrencyService.cfc:L87, L93], so the
-      // guard never fails and the emptiness test is never reached. A single-currency installation
-      // is therefore unaffected by the fail-closed rule: step 3 of the cascade
-      // [model/entity/Sku.cfc:L416-L428] only converts currencies that need converting.
+      // Both sides of a EUR-to-EUR call resolve as the pivot
+      // [model/service/CurrencyService.cfc:L87, L93], so the guard never fails and the pass-through
+      // branch is never reached at all - the conversion is performed, by arithmetic that needs no
+      // quote. A single-currency installation is therefore unaffected either way: step 3 of the
+      // cascade [model/entity/Sku.cfc:L416-L428] only converts currencies that need converting.
       const root = await makeRoot();
 
       const converted = await (
@@ -6701,14 +6917,17 @@ describe('the runtime guards behind this module type declarations', () => {
 // citation and every fixture below is the text that shipped, indented one level into a wrapping
 // `describe` so its module-scope constants cannot collide with this file's.
 //
-// The original file header's orientation still applies verbatim:
+// The original file header's orientation still applies, with its one stale path corrected:
 // slatwall-ts - characterisation suite for the European Central Bank currency
 // converter
 //
 // WHAT THIS SUITE PINS
-// `src/integrations/europeanCentralBankCurrencyConverter.ts`, the shipped
-// implementation of the `CurrencyConverter` port, against
-// `model/service/CurrencyService.cfc` read line by line. The currency cascade
+// The module-private converter class inside `src/handlers/bootstrap.ts` - the shipped
+// implementation of the `CurrencyConverter` port - against
+// `model/service/CurrencyService.cfc` read line by line. It read
+// `src/integrations/europeanCentralBankCurrencyConverter.ts`, the withdrawn module
+// named above, which is the one sentence of the moved header that could not survive
+// the move unchanged. The currency cascade
 // this adapter feeds is one of the three named MUST-PRESERVE areas (AAP 0.6.3),
 // so every assertion below cites the legacy line it holds in place.
 //
@@ -7005,37 +7224,43 @@ describe('the European Central Bank currency converter, moved into the compositi
       expect(converted.toFixed2()).toBe(SUB_CENT_AMOUNT_ROUNDED);
     });
 
-    it('★★★ REFUSES rather than answering at par when the rate table is EMPTY', async () => {
-      // ★★★ THIS CASE ASSERTED THE OPPOSITE UNTIL THIS REVISION, and it was reading the legacy one
-      // line short. Its reasoning was: "[L127-L128] the retrieval's `catch` IS EMPTY, so a failed
-      // fetch leaves the table as it was - possibly never populated at all", and it concluded that
-      // an empty table "must degrade to par rather than to a failure". Read the NEXT line. After
-      // the `catch`, [L130] is `return variables.europeanCentralBankRates;` - and on a cold start
-      // that variable was NEVER ASSIGNED, which CFML refuses at runtime. The legacy RAISES when it
-      // has no table at all; it prices at par only when the table it HAS does not quote a code
-      // [L100-L101].
+    it('★★★ answers at par when the rate table is EMPTY, on the same terms as an unlisted code', async () => {
+      // ★★★ THIS CASE HAS BEEN WRITTEN BOTH WAYS, AND THE FULL RECORD IS KEPT BECAUSE THE
+      // DISTINCTION IT TURNS ON IS MONEY.
       //
-      // The distinction is money. Code review recorded that with no rates configured every
-      // cross-currency conversion passed through 1:1 in production, publishing base-currency
-      // numerals as foreign-currency prices - invisibly, and for every eligible currency at once.
-      // Refusing surfaces the misconfiguration; the par answer for an UNLISTED code, which is the
-      // must-preserve behaviour, is asserted by the two cases above and below.
+      // It first asserted par, reasoning that "[L127-L128] the retrieval's `catch` IS EMPTY, so a
+      // failed fetch leaves the table as it was - possibly never populated at all". It was then
+      // reversed to assert a refusal, on the correct observation that the reasoning read the legacy
+      // one line short: after the `catch`, [L130] is
+      // `return variables.europeanCentralBankRates;`, and on a cold start that variable was NEVER
+      // ASSIGNED, which CFML refuses at runtime. The legacy engine does raise when it has no table
+      // at all, and it prices at par when the table it HAS does not quote a code [L100-L101].
+      //
+      // IT IS PAR AGAIN, AND NOT BECAUSE THAT LEGACY READING WAS WRONG. What the refusal broke is the
+      // CONTRACT the port publishes and its consumers are written against:
+      // `src/domain/ports/currencyConverter.ts` declares `convertCurrency` a TOTAL function, and
+      // `src/handlers/priceResolutionHandler.ts` documents its routed `convertCurrency` operation as
+      // having no error path on the strength of that. A partial implementation behind a total contract
+      // sent an unrecognised throw to a generic 500 on an operation documented as unable to fail; code
+      // review recorded the caller/callee disagreement and the frozen contract is the total function.
+      //
+      // SO THE MISCONFIGURATION IS SURFACED WHERE SURFACING BELONGS. Every pass-through notifies the
+      // observer, and the composition root logs once at wiring time when it is handed an empty table -
+      // both asserted in this file. An observability channel reports a wrong configuration; a throw
+      // from a total function reports a broken contract.
       const converter = converterWithRates({});
       const amount = money(TWENTY_EUR);
 
-      await expect(converter.convertCurrency(amount, EUR, USD)).rejects.toThrow(
-        /No European Central Bank reference-rate table is available/u,
-      );
-      await expect(converter.convertCurrency(amount, USD, EUR)).rejects.toThrow(
-        /No European Central Bank reference-rate table is available/u,
-      );
-      await expect(converter.convertCurrency(amount, USD, GBP)).rejects.toThrow(
-        /so USD cannot be converted to GBP/u,
-      );
+      // The SAME INSTANCE comes back, unrounded, exactly as it does for an unlisted code - so the
+      // two unavailable-rate states are now indistinguishable to a caller, which is what "total"
+      // means here.
+      expect(await converter.convertCurrency(amount, EUR, USD)).toBe(amount);
+      expect(await converter.convertCurrency(amount, USD, EUR)).toBe(amount);
+      expect(await converter.convertCurrency(amount, USD, GBP)).toBe(amount);
     });
 
     it('★★ answers at par for an UNLISTED code when the table is NON-EMPTY, which is [L100-L101]', async () => {
-      // The must-preserve pass-through, isolated from the emptiness case above. `CHF` is a
+      // The must-preserve pass-through, isolated from the empty-table case above. `CHF` is a
       // `SwCurrency` record and is deliberately absent from every rate table in this suite, so the
       // guard [L86] fails on the target alone while the source resolves normally.
       const converter = converterWithRates();

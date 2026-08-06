@@ -90,10 +90,12 @@
 //     and `numberFormat(newPrice, "0.00")` [model/service/PriceGroupService.cfc:L339] are
 //     presentation and belong to `src/lib/cfml/numberFormat.ts`, together with CFML's
 //     trailing-zero stringification. See `toDecimalString`.
-//   * The migration's two carried-forward TODOs - the issue #1766 return/exchange no-op
-//     at [model/service/PromotionService.cfc:L542-L544] and the empty
-//     `g:google_product_category` element in the product feed - sit in the modules that
-//     own them.
+//   * The migration's carried-forward legacy TODOs - five of them, at
+//     [model/service/PromotionService.cfc:L543], [model/dao/ProductDAO.cfc:L64],
+//     [model/dao/SkuDAO.cfc:L177], [model/service/CurrencyService.cfc:L81] and
+//     [model/entity/ProductType.cfc:L93] - sit in the modules that own them, as does the
+//     empty `g:google_product_category` element, which is a preserved legacy GAP rather
+//     than a legacy TODO: the template line carries no comment at all.
 // ---------------------------------------------------------------------------
 
 // The only import in this module, of any kind.

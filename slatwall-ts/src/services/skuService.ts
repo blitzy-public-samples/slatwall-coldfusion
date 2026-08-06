@@ -2217,7 +2217,7 @@ export class SkuService {
    * REFUSAL, and the reason is the ASSET ROOT rather than the key count. The path needs
    * `getHibachiScope().getBaseImageURL()` [model/entity/Sku.cfc:L146], which resolves
    * `globalAssetsImageFolderPath` [model/service/SettingService.cfc:L164] - a key the
-   * closed seven-key settings union deliberately excludes - so no image path can be
+   * closed four-key settings union deliberately excludes - so no image path can be
    * built here. The call is kept at its [L211] position rather than being
    * skipped, so the refusal surfaces where the legacy read the path. The store call is
    * kept too, so the port contract and the extension literal are both real rather

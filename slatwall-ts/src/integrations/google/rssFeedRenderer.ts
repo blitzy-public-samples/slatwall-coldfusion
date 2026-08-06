@@ -207,20 +207,37 @@ const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for ';
  * ★ AND THE MITIGATION THAT IS ALREADY IN PLACE, so the escalation is not a bare refusal: a
  * deployment that must publish `https` URLs terminates TLS in front of this service, and the
  * authority the scheme is glued to is checked against a deployment-owned allow-list
- * (`assertAllowedFeedHost` in `../../handlers/bootstrap.js`, finding S-15) WHENEVER THE DEPLOYMENT
- * CONFIGURED ONE - so a cleartext scheme cannot then be pointed at an attacker's origin.
+ * (`assertAllowedFeedHost` in `../../handlers/bootstrap.js`, finding S-15) - so a cleartext scheme
+ * cannot be pointed at an attacker's origin.
  *
- * ★★ THAT MITIGATION IS CONDITIONAL, AND F40 IS WHY IT HAD TO BE RESTATED. This paragraph
- * previously claimed the authority "is drawn from a deployment-owned allow-list ... rather than from
- * the request" without qualification, which was true only while an UNSET `FEED_ALLOWED_HOSTS`
- * resolved to a deny-all empty list. That default disabled the feed for every deployment that
- * configured nothing, so F40 restored the source-equivalent behaviour: with no list configured the
- * feed answers on the authority the request carries. The exposure in that state is EXACTLY THE
- * LEGACY'S OWN - `http://#CGI.HTTP_HOST#` at five sites with no allow-list anywhere in the source -
- * so it is not a regression introduced here; but it is not contained either, and saying otherwise
- * would be the kind of false containment claim a reviewer is right to reject. CONFIGURING
- * `FEED_ALLOWED_HOSTS` is therefore the recommended posture, and it is the posture under which the
- * sentence above holds.
+ * ★★★ THAT MITIGATION IS UNCONDITIONAL, AND IT IS THE SECOND TIME THIS PARAGRAPH HAS TURNED. All
+ * three positions are recorded so a reviewer finds the history rather than reconstructing it.
+ *
+ *   POSITION 1 - the authority "is drawn from a deployment-owned allow-list ... rather than from the
+ *   request", stated without qualification. True while an unset `FEED_ALLOWED_HOSTS` resolved to a
+ *   deny-all empty list.
+ *
+ *   POSITION 2 - finding F40 removed that deny-all default because it disabled the feed for every
+ *   deployment that configured nothing, and this paragraph was restated as CONDITIONAL: "with no list
+ *   configured the feed answers on the authority the request carries. The exposure in that state is
+ *   EXACTLY THE LEGACY'S OWN - `http://#CGI.HTTP_HOST#` at five sites with no allow-list anywhere in
+ *   the source - so it is not a regression introduced here; but it is not contained either [...]
+ *   CONFIGURING `FEED_ALLOWED_HOSTS` is therefore the recommended posture."
+ *
+ *   POSITION 3, WHICH GOVERNS - a later security review found the F40 default to be CWE-346 and
+ *   required the check to fail closed. An absent or empty `FEED_ALLOWED_HOSTS` now trusts NO host: the
+ *   composition root publishes no `feedCriteria` and no `productFeedPort`, so the route answers no
+ *   document at all rather than answering on whatever authority the request carried. There is no
+ *   allow-all state left to be conditional about.
+ *
+ * WHY POSITION 3 RATHER THAN POSITION 2, GIVEN THAT POSITION 2's CFML-PARITY CLAIM WAS ACCURATE.
+ * It was accurate - the legacy really had no allow-list - and parity with an unguarded legacy is
+ * still not a licence to ship an unguarded target when the guard already exists. F40's real concern
+ * was that an optional variable silently disabled a capability the source publishes; that concern is
+ * answered by making the variable REQUIRED TO SERVE THE FEED and documenting it as such in
+ * `slatwall-ts/.env.example`, not by defaulting it open. An operator who has configured no origin has
+ * not yet decided what origin the feed publishes, and guessing from a request header is not this
+ * port's decision to make on their behalf.
  *
  * CFML parity [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24]:
  * the legacy writes `http://#CGI.HTTP_HOST#` at FIVE sites - the channel link, the channel
@@ -240,9 +257,12 @@ const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for ';
  * THAT READING IS WRONG, for two reasons a reviewer can check against the AAP text.
  *
  * First, AAP 0.4.1's list is not an exhaustive licence. It enumerates the hardcodings worth
- * ANNOTATING - the `g:google_product_category` entry is the one carrying the legacy TODO -
- * and treating "absent from a list of annotated defects" as "authorized to change" inverts
- * the clause. The AAP's own transformation rule for this file (T5) says the `.cfm` view
+ * ANNOTATING - the `g:google_product_category` entry is the one whose element the AAP's own
+ * defect register singles out - and treating "absent from a list of annotated defects" as
+ * "authorized to change" inverts the clause. (AAP 0.6.7 describes that element as "carrying a
+ * legacy TODO"; the template line is in fact a bare empty element with no comment near it, which
+ * is recorded where the element is emitted. The imprecision does not weaken the point being made
+ * here, and repeating it would.) The AAP's own transformation rule for this file (T5) says the `.cfm` view
  * becomes a string-emitting renderer; it says nothing about re-deciding what the string is.
  *
  * Second, the general clauses are the binding ones here and they are unambiguous. AAP 0.1.1
@@ -268,20 +288,35 @@ const FEED_ORIGIN_SCHEME_PREFIX = 'http://';
 //
 // Preserved deliberately; do not fix without a product decision.
 //
-// TODO [integrationServices/google/views/feed/product.cfm:L20]: the Google Merchant Center category
-// is never populated. The element is emitted with an empty body because that is exactly what the
-// legacy template emits, and no value source exists anywhere in the legacy path to populate it
+// LEGACY-GAP [integrationServices/google/views/feed/product.cfm:L20]: the Google Merchant Center
+// category is never populated. The element is emitted with an empty body because that is exactly what
+// the legacy template emits, and no value source exists anywhere in the legacy path to populate it
 // from: the adapter does declare a `productGoogleProductType` setting definition
 // [integrationServices/google/Integration.cfc:L67-L71], but the template never reads it, the feed
 // controller never resolves it and no column carries it.
 //
-// THE PROVENANCE OF THIS TODO IS THE PORT'S, NOT THE SOURCE'S, and saying so is the point of
-// writing it this way. All lines of the template were read, and L20 is a bare empty element with no
-// comment on it or near it: NO LITERAL TODO EXISTS IN THE SOURCE, so there is none to carry forward
-// and this one is authored by the port. Inventing a legacy provenance would misrepresent the source
-// exactly as badly as silently populating the element would misrepresent the port, so neither is
-// done: the element stays empty, the gap is stated, and the authorship of the statement is
-// attributed honestly.
+// ★★★ THIS WAS WRITTEN AS A `TODO`, AND A CODE REVIEW WAS RIGHT TO REJECT THE KEYWORD. The paragraph
+// that followed it said, verbatim: "THE PROVENANCE OF THIS TODO IS THE PORT'S, NOT THE SOURCE'S, and
+// saying so is the point of writing it this way. All lines of the template were read, and L20 is a
+// bare empty element with no comment on it or near it: NO LITERAL TODO EXISTS IN THE SOURCE, so there
+// is none to carry forward and this one is authored by the port."
+//
+// EVERY FACTUAL CLAIM IN THAT PARAGRAPH IS CORRECT AND IS RE-VERIFIED HERE: L20 of the template reads
+// `<g:google_product_category></g:google_product_category>` and nothing else, the nearest comments are
+// the commented-out `g:gtin`/`g:mpn` block at L33-L38 and the specification link at L4-L5, and neither
+// is a TODO. What did not follow is that the note should therefore WEAR the keyword. AAP 0.8.1 carries
+// a source TODO forward as a flagged TODO precisely so that the set of TODO markers in this subtree IS
+// the set of legacy deferrals - two of them, `issue #1766` and the Railo/ACF `IN`-clause conditional -
+// and a third marker with no legacy antecedent makes that set unreadable while announcing deferred work
+// this port never agreed to do. Honest attribution in the body does not undo a keyword a reader greps
+// for.
+//
+// SO THE SUBSTANCE STAYS AND THE KEYWORD GOES. The element still emits empty, the gap is still stated
+// in full, and the note is labelled for what it is: a gap the LEGACY has, reproduced deliberately, not
+// a task this port is holding open. The traceability register keys this entry on the element name
+// `google_product_category` rather than on the word TODO, so the gate that pins the emptiness is
+// unaffected - and the AAP's own 0.6.7 wording for defect 4, "carrying a legacy TODO", is imprecise
+// about the source in exactly the way this note is now careful about it.
 const GOOGLE_PRODUCT_CATEGORY_ELEMENT = '<g:google_product_category></g:google_product_category>';
 
 /**
@@ -325,39 +360,6 @@ const SALE_WINDOW_SEPARATOR = '/';
 // --- Escaping ---
 
 /**
- * Escapes text for an XML element body: the five predefined XML entities, and nothing else.
- *
- * JUDGMENT CALL: EVERY interpolated value is escaped through this one function, where the legacy
- * escaped only some of them with a function covering only some of the entities. Both halves were
- * measured first.
- *
- *   The legacy applies `htmlEditFormat()` to exactly SIX values: `g:id` [.../product.cfm:L17],
- *   `title` [.../product.cfm:L18], both branches of `description` [.../product.cfm:L19],
- *   `g:product_type` [.../product.cfm:L21], `g:brand` [.../product.cfm:L32] and `g:item_group_id`
- *   [.../product.cfm:L39].
- *
- *   It applies it to NONE of these EIGHT: the channel `link` and `description`
- *   [.../product.cfm:L14-L15], the item `link` [.../product.cfm:L22], `g:image_link`
- *   [.../product.cfm:L23], each `g:additional_image_link` [.../product.cfm:L24], `g:price`
- *   [.../product.cfm:L27], `g:sale_price` [.../product.cfm:L29], `g:sale_price_effective_date`
- *   [.../product.cfm:L30] and `g:shipping_weight` [.../product.cfm:L58].
- *
- *   And `htmlEditFormat` covers only FOUR entities - `&`, `<`, `>` and `"` - so it leaves `'`
- *   alone. The five-entity set below is what CFML's own `XMLFormat` covers, which was the
- *   function correct for an XML document in the first place.
- *
- *   The gap is reachable from ordinary catalog data: `productTypeSimpleRepresentation` carries
- *   the literal HTML entity ` &raquo; ` by construction, because `ProductType` overrides
- *   `getSimpleRepresentation()` to join ancestor names with that
- *   separator [model/entity/ProductType.cfc:L273-L278]. `&raquo;` is not a predefined XML entity,
- *   so escaping its ampersand to `&amp;raquo;` is what keeps the document parseable, and the
- *   legacy escaped that value too. Extending the same treatment to the other eight sites is a
- *   correction.
- *
- *   THIS CONSUMES NONE OF THE THREE DELIBERATE-DIVERGENCE BUDGET SLOTS, and that
- *   is stated because a reviewer auditing the budget will look here. All three
- *   are enumerated elsewhere and owned by `src/services/**` and
- *   `src/domain/**
  * Code points that XML 1.0 forbids in a document at all, in any escaped form.
  *
  * ★★★ SECURITY BOUNDARY — CWE-116 / CWE-91. This is not a matter of escaping. The
@@ -443,10 +445,56 @@ function stripXmlForbiddenCodePoints(value: string): string {
     .replace(XML_LONE_LOW_SURROGATE, '');
 }
 
-/**`: the un-`var`'d scope leak, the `amountOff` precision gap and
- *   the entity memo bugs. This is a rendering-correctness decision inside an
- *   adapter and is recorded as a judgment call, not as a defect and not as a
- *   fourth divergence.
+/**
+ * Escapes text for an XML element body: the five predefined XML entities, and nothing else.
+ *
+ * JUDGMENT CALL: EVERY interpolated value is escaped through this one function, where the legacy
+ * escaped only some of them with a function covering only some of the entities. Both halves were
+ * measured first.
+ *
+ *   The legacy applies `htmlEditFormat()` to exactly SIX values: `g:id` [.../product.cfm:L17],
+ *   `title` [.../product.cfm:L18], both branches of `description` [.../product.cfm:L19],
+ *   `g:product_type` [.../product.cfm:L21], `g:brand` [.../product.cfm:L32] and `g:item_group_id`
+ *   [.../product.cfm:L39].
+ *
+ *   It applies it to NONE of these EIGHT: the channel `link` and `description`
+ *   [.../product.cfm:L14-L15], the item `link` [.../product.cfm:L22], `g:image_link`
+ *   [.../product.cfm:L23], each `g:additional_image_link` [.../product.cfm:L24], `g:price`
+ *   [.../product.cfm:L27], `g:sale_price` [.../product.cfm:L29], `g:sale_price_effective_date`
+ *   [.../product.cfm:L30] and `g:shipping_weight` [.../product.cfm:L58].
+ *
+ *   And `htmlEditFormat` covers only FOUR entities - `&`, `<`, `>` and `"` - so it leaves `'`
+ *   alone. The five-entity set below is what CFML's own `XMLFormat` covers, which was the
+ *   function correct for an XML document in the first place.
+ *
+ *   The gap is reachable from ordinary catalog data: `productTypeSimpleRepresentation` carries
+ *   the literal HTML entity ` &raquo; ` by construction, because `ProductType` overrides
+ *   `getSimpleRepresentation()` to join ancestor names with that
+ *   separator [model/entity/ProductType.cfc:L273-L278]. `&raquo;` is not a predefined XML entity,
+ *   so escaping its ampersand to `&amp;raquo;` is what keeps the document parseable, and the
+ *   legacy escaped that value too. Extending the same treatment to the other eight sites is a
+ *   correction.
+ *
+ *   THIS CONSUMES NONE OF THE THREE DELIBERATE-DIVERGENCE BUDGET SLOTS, and that
+ *   is stated because a reviewer auditing the budget will look here. All three are
+ *   enumerated elsewhere and owned by `src/services/**` and `src/domain/**`: the
+ *   un-`var`'d scope leak, the `amountOff` precision gap and the entity memo bugs.
+ *   This is a rendering-correctness decision inside an adapter and is recorded as a
+ *   judgment call, not as a defect and not as a fourth divergence.
+ *
+ * ★★★ THIS DOCBLOCK WAS SPLICED, AND THE SPLICE IS REPAIRED HERE RATHER THAN PAPERED
+ * OVER. A code review found this comment cut in half: the paragraph above broke off
+ * mid-sentence at "owned by `src/services/**` and `src/domain/**", the whole of
+ * {@link XML_FORBIDDEN_CODE_POINT}'s docblock and the two surrogate constants and
+ * {@link stripXmlForbiddenCodePoints} had been inserted into the gap, and the severed
+ * tail had acquired an opener of its own - a comment literally beginning
+ * "/**`: the un-`var`'d scope leak" that documented nothing and read as noise. Neither
+ * half was WRONG; they were interleaved, so a reader met the security boundary's
+ * reasoning inside the escaper's budget argument and met the budget argument's
+ * conclusion with no premise. Both blocks are now whole and each sits on the
+ * declaration it describes, in dependency order: the forbidden set, the surrogate
+ * pair rules, the stripping pass, then the escaper that runs the stripping pass first.
+ * Not one sentence was dropped in the repair.
  *
  * THE ORDER IS THE CORRECTNESS ARGUMENT. `&` is replaced FIRST, before any
  * replacement that introduces an entity of its own. Nothing after the first step

@@ -62,6 +62,9 @@ import type { RoutedCapability, RouteDescriptor } from '../../../src/handlers/ro
 import type { ErrorMappingContext, ErrorResponseBody } from '../../../src/handlers/errorMapper.js';
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import type { LogContext, LogLevel, Logger, LogSink } from '../../../src/lib/logger.js';
+// The subject's own list primitive, so a declared method list is parsed here exactly as the matcher
+// parses it. Re-splitting on a comma by hand would be a second implementation of one rule.
+import { listToArray } from '../../../src/lib/cfml/list.js';
 
 // ---------------------------------------------------------------------------
 // Test doubles and planted data
@@ -206,6 +209,30 @@ function routeFor(capability: RoutedCapability): RouteDescriptor {
   return ROUTE_TABLE[capability];
 }
 
+/**
+ * One method a row declares, taken as a request method would be received.
+ *
+ * ★★★ `route.methods` IS A COMMA LIST AND MUST NOT BE SENT AS A METHOD. Four cases below drove the
+ * matcher with `route.methods` verbatim, which worked only while every row declared exactly one method:
+ * `catalogQuery` now declares `'GET,POST'`, and `listFindNoCase('GET,POST', 'GET,POST')` answers 0
+ * because the whole list is not an ELEMENT of itself. Those cases would have started asserting that
+ * every route fails to match - a green suite turning silently vacuous - so the list is parsed here with
+ * the same primitive the subject parses it with.
+ *
+ * THE FIRST DECLARED METHOD, deliberately: it is the one every row has, so a loop over all five stays a
+ * loop over all five. The multi-method row's SECOND method is exercised separately, where the pairing it
+ * exists for can actually be asserted.
+ */
+function firstDeclaredMethod(route: RouteDescriptor): string {
+  const declared = listToArray(route.methods)[0];
+
+  if (declared === undefined) {
+    throw new Error(`the route ${route.path} declares no method at all`);
+  }
+
+  return declared;
+}
+
 // ---------------------------------------------------------------------------
 // A. The URL surface itself
 // ---------------------------------------------------------------------------
@@ -224,7 +251,13 @@ describe('ROUTE_TABLE declares the whole URL surface, once', () => {
     expect(routeFor('catalogQuery')).toStrictEqual({
       capability: 'catalogQuery',
       action: 'queryCatalog',
-      methods: 'GET',
+      // ★★★ TWO METHODS, AND THE PIN IS THE POINT. This row read `'GET'` while the catalog capability
+      // published three reads; a code review recorded (CRITICAL) that eleven mapped Product/Brand/Option
+      // actions - nine of them WRITES - had no transport at all. A write cannot be served on a method
+      // HTTP defines as safe, so the row admits `POST` as well. It is the ONLY row with more than one,
+      // which is why the comma list is asserted verbatim rather than parsed: the list FORM has always
+      // been the declaration - `listFindNoCase` is the matcher - and this is the first row to use it.
+      methods: 'GET,POST',
       path: '/catalog/products',
     });
     expect(routeFor('skuResolution')).toStrictEqual({
@@ -348,7 +381,7 @@ describe('resolveRoute resolves each declared route on its own method and path',
       const { logger, emissions } = createRecordingLogger();
 
       const resolution = resolveRoute(
-        { method: route.methods, path: route.path },
+        { method: firstDeclaredMethod(route), path: route.path },
         contextWith(logger),
       );
 
@@ -427,9 +460,15 @@ describe('resolveRoute resolves each declared route on its own method and path',
     // FW/1 dispatched an action by ANY method, so there is no method-not-allowed
     // concept in the source to port. A 405 would also confirm the path exists,
     // which is one bit more than an unmatched request should learn.
+    //
+    // ★★ THE EXAMPLE USED TO BE `POST /catalog/products`, WHICH IS NOW A MATCH. That row declares
+    // `'GET,POST'` so the catalog capability can serve its nine mutations, and this case would have
+    // asserted a mismatch that no longer occurs. `DELETE` is declared by NO row - the whole table is
+    // `GET` and `POST` - so it is a mismatch against every path, including the one that admits two
+    // methods, which makes it a strictly better example than the one it replaces.
     const { logger, emissions } = createRecordingLogger();
     const resolution = resolveRoute(
-      { method: 'POST', path: '/catalog/products' },
+      { method: 'DELETE', path: '/catalog/products' },
       contextWith(logger),
     );
 
@@ -550,7 +589,7 @@ describe('resolveRouteForCapability keeps five bundles from answering for each o
       const { logger, emissions } = createRecordingLogger();
 
       const resolution = resolveRouteForCapability(
-        { method: route.methods, path: route.path },
+        { method: firstDeclaredMethod(route), path: route.path },
         capability,
         contextWith(logger),
       );
@@ -569,7 +608,7 @@ describe('resolveRouteForCapability keeps five bundles from answering for each o
     const { logger, emissions } = createRecordingLogger();
 
     const resolution = resolveRouteForCapability(
-      { method: foreign.methods, path: foreign.path },
+      { method: firstDeclaredMethod(foreign), path: foreign.path },
       'catalogQuery',
       contextWith(logger),
     );
@@ -593,7 +632,7 @@ describe('resolveRouteForCapability keeps five bundles from answering for each o
       for (const caller of CAPABILITIES) {
         const { logger } = createRecordingLogger();
         const resolution = resolveRouteForCapability(
-          { method: route.methods, path: route.path },
+          { method: firstDeclaredMethod(route), path: route.path },
           caller,
           contextWith(logger),
         );
@@ -665,7 +704,7 @@ describe('routeRequestFromEvent reads the method and the path, and nothing else'
       const { logger } = createRecordingLogger();
 
       const resolution = resolveRouteForCapability(
-        routeRequestFromEvent(eventFor(route.methods, route.path)),
+        routeRequestFromEvent(eventFor(firstDeclaredMethod(route), route.path)),
         capability,
         contextWith(logger),
       );

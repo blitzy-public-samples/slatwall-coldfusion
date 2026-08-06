@@ -117,11 +117,7 @@ import type {
 } from '../../src/domain/entities/sku.js';
 import type { OptionSortTieBreaker } from '../../src/domain/entities/optionGroup.js';
 import type { CurrencyConverter } from '../../src/domain/ports/currencyConverter.js';
-import type {
-  ProductPresentationSettingKey,
-  SettingKey,
-  SettingsProvider,
-} from '../../src/domain/ports/settingsProvider.js';
+import type { SettingKey, SettingsProvider } from '../../src/domain/ports/settingsProvider.js';
 import type { SkuRepository } from '../../src/domain/ports/skuRepository.js';
 import type { CurrencyCode } from '../../src/domain/valueObjects/currencyCode.js';
 import type { CfBooleanInput } from '../../src/lib/cfml/truthiness.js';
@@ -292,10 +288,13 @@ interface SkuFixtureOverrides {
    * The three values are `getHibachiScope().getBaseImageURL()`
    * [model/entity/Sku.cfc:L146], `setting('productImageOptionCodeDelimiter')` [L136]
    * and `setting('productImageDefaultExtension')` [L138]. They arrive already resolved
-   * because the entity may not RESOLVE them, not because the port has never heard of
-   * them: two of the three ARE on the seven-key union
-   * `src/domain/ports/settingsProvider.ts` publishes, and only the base image URL - a
-   * framework scope accessor rather than a setting - sits off it entirely. Their legacy
+   * because the entity may not RESOLVE them, not because they are unreachable: two of the
+   * three are product-presentation settings the composition root resolves from the same
+   * `SwSetting` read as the port's four keys, and the third - the base image URL - is a
+   * framework scope accessor that never was a setting at all. This note claimed those two
+   * were "on the seven-key union `src/domain/ports/settingsProvider.ts` publishes" until a
+   * code review measured the union at FOUR; the distinction that matters here is RESOLVE
+   * versus COMPOSE, and it is untouched. Their legacy
    * defaults are `"-"` [model/service/SettingService.cfc:L192] and `"jpg"` [L191].
    */
   readonly imageSettingValues?: SkuImageSettingValues | undefined;
@@ -993,39 +992,41 @@ function selectPoolOptions(pool: readonly Option[], indexes: readonly number[]):
 }
 
 /**
- * The five settings this sku never reads, present only so the settings double satisfies the port's
+ * The two settings this sku never reads, present only so the settings double satisfies the port's
  * TOTAL contract: `SettingsProvider.setting` returns `string` and never `undefined`, so a partial
  * table would make that declaration a lie.
  *
- * Verified legacy defaults in declaration order - the two URL keys
- * [model/service/SettingService.cfc:L178, L179], then the three product-subsystem keys
- * `productImageDefaultExtension` ("jpg") [L191], `productImageOptionCodeDelimiter` ("-") [L192] and
- * `productTitleString` [L193]. The last is a TEMPLATE, not a title: its `${...}` markers are legacy
- * template syntax read by `hibachiUtilityService.replaceStringTemplate`
- * [model/entity/Product.cfc:L542], the value is a plain single-quoted string, and nothing in this
- * subtree evaluates it.
+ * Verified legacy defaults, in declaration order - the two URL keys
+ * [model/service/SettingService.cfc:L178, L179].
  *
- * The two image keys reach the SKU by a DIFFERENT route and deliberately not through this table:
- * `Sku.generateImageFileName()` [model/entity/Sku.cfc:L135, L138] resolves them on the PRODUCT, and
- * the port hands the already-resolved pair to the entity as `SkuImageSettingValues`. Answering them
- * here as well would create a second value for one setting inside one fixture, so the values match
- * the composition root's exactly.
+ * ★★ QUOTE-THEN-REVISE: FIVE CONSTANTS STOOD HERE. The other three were
+ * `productImageDefaultExtension` [:L191], `productImageOptionCodeDelimiter` [:L192] and
+ * `productTitleString` [:L193], present because the settings double answered a seven-key table. That
+ * table is the port's FOUR keys now - the second `ProductPresentationSettingsProvider` contract the
+ * three travelled on is gone - so there is no table to fill and the constants would be unread.
+ *
+ * The reasoning the removed block recorded still holds and is the reason nothing replaces them here:
+ * the two image keys reach the SKU by a DIFFERENT route, because `Sku.generateImageFileName()`
+ * [model/entity/Sku.cfc:L135, L138] resolves them on the PRODUCT and the port hands the
+ * already-resolved pair to the entity as `SkuImageSettingValues`. A suite that needs them supplies
+ * that value; answering them from a settings table as well would create a second value for one
+ * setting inside one fixture. `productTitleString` likewise reaches `Product` as a resolved template,
+ * and `./productFixtures.ts` owns that default beside the entity that renders it.
  */
 const GLOBAL_URL_KEY_PRODUCT = 'sp';
 const GLOBAL_URL_KEY_PRODUCT_TYPE = 'spt';
-const PRODUCT_IMAGE_DEFAULT_EXTENSION = 'jpg';
-const PRODUCT_IMAGE_OPTION_CODE_DELIMITER = '-';
-const PRODUCT_TITLE_STRING = '${brand.brandName} ${productName}';
 
 /**
  * A hand-written in-memory stand-in for the settings port, and the only place the base currency
  * enters the graph. The cascade reads `setting('skuCurrency')` at [model/entity/Sku.cfc:L385, L418,
  * L422, L425] and `setting('skuEligibleCurrencies')` at [L373, L375].
  *
- * The port publishes exactly SEVEN keys and is not widened: `skuAllowBackorderFlag` and the rest of
+ * The port publishes exactly FOUR keys and is not widened: `skuAllowBackorderFlag` and the rest of
  * its neighbours in the legacy declaration block [model/service/SettingService.cfc:L219-L228] are
  * deliberately absent, as is `globalAssetsImageFolderPath`, which `Option.getImageDirectory()`
- * [model/entity/Option.cfc:L81-L83] reads and which is out of scope.
+ * [model/entity/Option.cfc:L81-L83] reads and which is out of scope. This line said SEVEN while the
+ * three product-presentation keys travelled on a second resolver contract; that contract is gone and
+ * the table below is the four-key union exactly.
  *
  * JUDGMENT CALL: the double records nothing, a recorded call list not being observable through the
  * `Sku` this factory returns.
@@ -1034,22 +1035,20 @@ function makeFixtureSettingsProvider(
   skuCurrency: string,
   skuEligibleCurrencies: string,
 ): SettingsProvider {
-  // ★ THE TABLE SPANS BOTH SETTINGS CONTRACTS. `SettingsProvider` is frozen at FOUR keys and the
-  // three product-presentation keys travel on `ProductPresentationSettingsProvider`; the double
-  // implements both, exactly as the composition root does, so a fixture resolves a setting the same
-  // way production does.
-  const table: Readonly<Record<SettingKey | ProductPresentationSettingKey, string>> = {
+  // ★ THE TABLE IS THE PUBLISHED UNION, EXACTLY. `SettingsProvider` is frozen at FOUR keys. It once
+  // spanned seven, because the three product-presentation keys travelled on a second
+  // `ProductPresentationSettingsProvider` contract; that contract is gone and those three are resolved
+  // values now - the two this entity needs arrive on `SkuImageSettingValues` below. So the double
+  // answers the port and nothing wider, exactly as the composition root does.
+  const table: Readonly<Record<SettingKey, string>> = {
     globalURLKeyProduct: GLOBAL_URL_KEY_PRODUCT,
     globalURLKeyProductType: GLOBAL_URL_KEY_PRODUCT_TYPE,
-    productImageDefaultExtension: PRODUCT_IMAGE_DEFAULT_EXTENSION,
-    productImageOptionCodeDelimiter: PRODUCT_IMAGE_OPTION_CODE_DELIMITER,
-    productTitleString: PRODUCT_TITLE_STRING,
     skuCurrency,
     skuEligibleCurrencies,
   };
 
   return {
-    setting(settingName: SettingKey | ProductPresentationSettingKey): string {
+    setting(settingName: SettingKey): string {
       return table[settingName];
     },
   };
@@ -1118,9 +1117,12 @@ function makeFixtureCurrencyConverter(
       // unreachable from the cascade - Step 1 writes the base currency's price
       // unconditionally at [model/entity/Sku.cfc:L394], so Step 3's guard at
       // [L416] never lets the base currency reach a conversion - so the identity
-      // is kept here for predictability. It is NOT claimed as parity;
-      // `src/integrations/europeanCentralBankCurrencyConverter.ts` reproduces the
-      // real branch structure and its suite pins it.
+      // is kept here for predictability. It is NOT claimed as parity; the
+      // production converter inside `src/handlers/bootstrap.ts` reproduces the real
+      // branch structure and `tests/unit/handlers/bootstrap.test.ts` pins it. That
+      // pointer used to name
+      // `src/integrations/europeanCentralBankCurrencyConverter.ts`, a module
+      // withdrawn as unplanned architecture.
       if (cfEquals(originalCurrencyCode, convertToCurrencyCode)) {
         return Promise.resolve(amount);
       }

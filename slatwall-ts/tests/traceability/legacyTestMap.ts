@@ -120,9 +120,14 @@
 //      citation and fixture intact.
 //
 //   2. `src/lib/jsonDocumentKeys.ts`, which 0.3.1 enumerates nowhere - `src/lib/` is `config.ts` and
-//      `logger.ts`, and `src/lib/cfml/` is exactly five files. Its `findPrototypeKeyPath` moved into
-//      `src/lib/cfml/struct.ts` and its cases into that module's suite. The register entry it used to
-//      hold carries the full record.
+//      `logger.ts`, and `src/lib/cfml/` is exactly five files. Its detection now lives in
+//      `src/handlers/errorMapper.ts` as the boolean `containsPrototypeMemberKey`, and its cases in
+//      that module's suite. The register entry it used to hold carries the full record - INCLUDING
+//      why the first destination was wrong: this note previously said the export `findPrototypeKeyPath`
+//      moved into `src/lib/cfml/struct.ts`, and it did, until a security review found (MAJOR,
+//      CWE-209/CWE-532) that a RETURNED dotted path is assembled from the caller's own key names.
+//      Re-homing the leak satisfied the census and not the caller-echo rule; the second move satisfies
+//      both, because the census counts files while the rule constrains what a return value may contain.
 //
 // ★★★ AND THE REASON THIS NOTE NOW CITES A20 INSTEAD OF STATING A NUMBER ON ITS OWN AUTHORITY: while
 // only (1) had happened, this paragraph read "THE CENSUS IS BACK TO THE PLAN'S OWN EIGHTY-NINE" and
@@ -161,7 +166,9 @@
 //        in `frozenExemptPromotions`, each naming the recorded addition that superseded it)
 //     no recorded MODULE additions remain           64 mapped   25 exempt    0 pending
 //       (both former rows left the tree: the euro-pivot converter was re-homed into
-//        handlers/bootstrap.ts, and lib/jsonDocumentKeys.ts into lib/cfml/struct.ts)
+//        handlers/bootstrap.ts, and lib/jsonDocumentKeys.ts into handlers/errorMapper.ts -
+//        by way of lib/cfml/struct.ts, which held it only until a security review
+//        removed the path-returning form altogether)
 //
 // which reconciles as sixty-four covered, twenty-five exempt, zero pending, eighty-nine
 // modules - the plan's own eighty-nine, and what A2 measures off disk on every run.
@@ -1627,17 +1634,31 @@ export const LEGACY_TEST_MAP: {
     //
     // A scope census measured this subtree above AAP 0.3.1's enumerated layout, and that module was one
     // of the extras: 0.3.1 enumerates `src/lib/` as `config.ts` and `logger.ts`, and `src/lib/cfml/` as
-    // exactly five files, with no sixth anywhere. Its single export, `findPrototypeKeyPath`, moved into
+    // exactly five files, with no sixth anywhere. The detection now lives in
     // `src/handlers/errorMapper.ts` - which already owns the request-boundary units both of its callers
-    // imported, and which reshaped it into a BOOLEAN PREDICATE so no caller-authored path is published - and its cases
-    // moved into `tests/unit/lib/cfml/struct.test.ts` in full, with the module-local `parseDocument`
-    // fixture parser that supports them.
+    // imported - reshaped into the BOOLEAN PREDICATE `containsPrototypeMemberKey`, and its cases live in
+    // `tests/unit/handlers/errorMapper.test.ts` with the `parseDocument` fixture parser that supports
+    // them.
     //
-    // NO COVERAGE WAS LOST, which is why no `pendingModules` debt entry replaces this one: the module
-    // that now owns the behaviour already owns a suite, and A1/A5/A14 read both off disk. The two
-    // production call sites - `promotionApplicationHandler.ts` and `priceResolutionHandler.ts` - import
-    // the same name from the new path, and A20 below now MEASURES the census that this move corrected,
-    // because the previous census claim was prose and had gone stale by one without anyone noticing.
+    // ★★★ IT TOOK TWO MOVES, AND THE FIRST ONE'S RECORD STOOD HERE UNCORRECTED - a review finding in
+    // its own right. This note used to read that the export "`findPrototypeKeyPath`, moved into
+    // `src/handlers/errorMapper.ts` ... and its cases moved into
+    // `tests/unit/lib/cfml/struct.test.ts` in full", which cannot both be true and was not: the
+    // function went to `src/lib/cfml/struct.ts`, the predicate went to `errorMapper.ts`, and for a
+    // while BOTH existed. A security review then found (MAJOR, CWE-209/CWE-532) that a returned dotted
+    // path is assembled from the caller's own ancestor key names and reached a 400 body and the log
+    // stream, so the `struct.ts` export and its cases are deleted rather than moved again. The claim
+    // that the two production call sites "import the same name from the new path" was wrong too - the
+    // name is `containsPrototypeMemberKey`, and the reshaping is the entire point of the second move.
+    //
+    // NO COVERAGE WAS LOST, and that is checkable rather than asserted: `errorMapper.test.ts` pins
+    // own-key detection at the root, at depth and inside array elements, the inherited-key distinction,
+    // the prototype-adjacent names left to the strict schema, empty and scalar documents, overflow-safe
+    // nesting, wide and long documents, mutation-freedom of both the document and `Object.prototype`,
+    // repeat-call determinism, and one property the deleted suite could not express - that a predicate
+    // has no path to assemble. No `pendingModules` debt entry replaces this row because the module that
+    // owns the behaviour owns a suite, and A1/A5/A14 read both off disk. A20 below MEASURES the census
+    // this move corrected, because the previous census claim was prose and had gone stale by one.
     { module: 'src/lib/logger.ts', test: 'tests/unit/lib/logger.test.ts' },
     {
       module: 'src/repositories/mysql/connection.ts',
@@ -1734,13 +1755,28 @@ export const LEGACY_TEST_MAP: {
     // suite now exists, so the pending entry is deleted and the module appears here.
     // The suite is NET-NEW in full, as the pending entry recorded: `meta/tests/` holds
     // nothing for the handler tier, nothing for the Google adapter and nothing for the
-    // feed, so none of its 68 cases traces to a legacy antecedent and none of them may
-    // be reported as parity. What it pins is the behaviour the pending entry named -
-    // the observed host and the request instant the feed port closes over, and the
-    // mapping of every failure onto a response - plus the reshaped zero-parameter
-    // contract [integrationServices/google/controllers/feed.cfc:L58] and the four
-    // selection predicates [:L68-L70, :L72] applied unconditionally on every
-    // invocation.
+    // feed, so none of its cases traces to a legacy antecedent and none of them may be
+    // reported as parity. What it pins is the behaviour the pending entry named - the
+    // observed host and the request instant, and the mapping of every failure onto a
+    // response - plus the reshaped contract
+    // [integrationServices/google/controllers/feed.cfc:L58] and the four selection
+    // predicates [:L68-L70, :L72] applied unconditionally on every invocation.
+    //
+    // ★★★ TWO CLAIMS IN THAT PARAGRAPH WERE STALE AND A CODE REVIEW WAS RIGHT ABOUT BOTH.
+    // It said the suite pins "the observed host and the request instant the feed port
+    // CLOSES OVER", and it called the reshaping "the reshaped ZERO-PARAMETER contract".
+    // Neither survives the shipped source. AAP 0.4.2 freezes the ported method as
+    // `generateProductFeed(criteria: FeedCriteria)` and AAP 0.9.2 gates on that row, so
+    // the host and the instant are the METHOD ARGUMENT rather than constructor state the
+    // port closes over: the composition root normalizes the host, checks it against the
+    // deployment's allow-list, pins the instant, and publishes the pair as
+    // `RequestScope.feedCriteria` for the handler to forward whole. The reshaping is real
+    // and is still one of the three the plan permits - `void product(required struct rc)`
+    // mutating a request context and deferring to a view becomes a method RETURNING the
+    // document - but its arity is ONE, not zero, and the argument carries no narrowing:
+    // `FeedCriteria` declares exactly `feedHost` and `now`, and neither is a filter. The
+    // fixed case count was dropped in the same pass, because a written count of cases is
+    // the same kind of claim that went stale here.
     {
       module: 'src/handlers/productFeedHandler.ts',
       test: 'tests/unit/handlers/productFeedHandler.test.ts',
@@ -2713,17 +2749,34 @@ export const LEGACY_TEST_MAP: {
 
   adapterTransportPolicies: [
     {
+      // ★★★ THIS ROW DESCRIBED A POLICY THAT WAS ADOPTED AND THEN REVERSED, AND A CODE REVIEW CAUGHT
+      // THE ROW RATHER THAN THE CODE. It read: "A routed request that OMITS a parameter the operation
+      // needs is refused at the schema with the field path, instead of reaching the service and
+      // returning the reproduced raise as an opaque 500 [...] Only the ROUTED path answers the omission
+      // earlier." The shipped schema declares `skuCode: z.string().optional()` and the handler forwards
+      // absence AS absence, so no refusal happens at the schema and the routed path answers no earlier
+      // than an in-process caller does. `src/handlers/skuResolutionHandler.ts` carries the whole record
+      // of the reversal at the schema: the required-`skuCode` rule was a FOURTH signature reshaping,
+      // AAP 0.9.2 budgets three and closes the budget explicitly, and a boundary does not get to
+      // redefine exact parity on its own authority however reasonable the local outcome. The QA finding
+      // that motivated it - an omission reaching the service, hitting the reproduced raise and coming
+      // back as an opaque 500 - is real and is preserved as a product decision about the SERVICE's
+      // contract, to be taken there and recorded in the plan.
       summary:
-        'A routed request that OMITS a parameter the operation needs is refused at the schema ' +
-        'with the field path, instead of reaching the service and returning the reproduced raise ' +
-        'as an opaque 500. Present-but-empty is still admitted unchanged, so the distinction drawn ' +
-        'is ABSENT versus EMPTY - which is the distinction the legacy signature itself draws.',
+        'A routed request FORWARDS an optional parameter\u2019s absence AS absence rather than ' +
+        'narrowing it into a required field: `skuCode` is declared optional at the transport because ' +
+        'the mapped signature declares it optional, so an omission reaches the service exactly as an ' +
+        'in-process call does and receives whatever the service does with an absent argument. ' +
+        'Present-but-empty is admitted unchanged too, so this tier draws NEITHER distinction - which ' +
+        'is what interface parity at the mapped surface requires.',
       owningModule: 'src/handlers/skuResolutionHandler.ts',
       assertedBy: 'tests/unit/handlers/skuResolutionHandler.test.ts',
       unchangedServiceContract:
-        'SkuService.getSkuBySkuCode still declares skuCode optional and still raises on absence for ' +
-        'every in-process caller, reproducing the required-argument raise at ' +
-        'model/dao/SkuDAO.cfc:L102. Only the ROUTED path answers the omission earlier.',
+        'SkuService.getSkuBySkuCode declares skuCode optional - the legacy is ' +
+        '`public any function getSkuBySkuCode( string skuCode )` with no `required` attribute, and AAP ' +
+        '0.4.2 carries that verbatim as getSkuBySkuCode(skuCode?: string). The service and repository ' +
+        'tiers retain responsibility for the raise an absent DAO argument reaches at ' +
+        'model/dao/SkuDAO.cfc:L102, and this transport neither anticipates it nor suppresses it.',
     },
     {
       summary:
@@ -2738,17 +2791,25 @@ export const LEGACY_TEST_MAP: {
         'this module as having no legacy equivalent at all.',
     },
     {
+      // The summary used to end "refused with its dotted path", which was the policy until a security
+      // review found (MAJOR, CWE-209/CWE-532) that the path was assembled from the caller's own
+      // ancestor key names and reached both a 400 body and the log stream. The refusal now publishes
+      // the offending key NAME - a literal of the owning module, and the only name involved the caller
+      // did not choose - and the detection is a boolean predicate that has no path to assemble.
       summary:
-        'A parsed request document carrying an own `__proto__` key is refused with its dotted path. ' +
-        'This closes an asymmetry in zod strict-object validation, under which `constructor` is ' +
-        'refused as unrecognized while `__proto__` is silently dropped.',
-      owningModule: 'src/lib/cfml/struct.ts',
-      assertedBy: 'tests/unit/lib/cfml/struct.test.ts',
+        'A parsed request document carrying an own `__proto__` key is refused with a fixed, ' +
+        'server-authored field issue naming the offending key and nothing else - no ancestor path, ' +
+        'and no depth. This closes an asymmetry in zod strict-object validation, under which ' +
+        '`constructor` is refused as unrecognized while `__proto__` is silently dropped.',
+      owningModule: 'src/handlers/errorMapper.ts',
+      assertedBy: 'tests/unit/handlers/errorMapper.test.ts',
       unchangedServiceContract:
         'Measured against zod 4.4.3, Object.prototype was verified UNMODIFIED in every case, so ' +
         'this closes an inconsistency rather than an active vulnerability, and no legacy request ' +
-        'shape is refused - the legacy exposed no JSON body for these capabilities. Defence in ' +
-        'depth against a future merge-style consumer.',
+        'shape is refused - the legacy exposed no JSON body for these capabilities. No service ' +
+        'method observes the check: it runs on the parsed body before any service is called, and a ' +
+        'document that passes reaches the service byte-for-byte as before. Defence in depth against ' +
+        'a future merge-style consumer.',
     },
     {
       summary:
@@ -2768,11 +2829,45 @@ export const LEGACY_TEST_MAP: {
       owningModule: 'src/handlers/catalogQueryHandler.ts',
       assertedBy: 'tests/unit/handlers/catalogQueryHandler.test.ts',
       unchangedServiceContract:
-        'The three published operations are administrative in the source too: ' +
-        'getUnusedProductOptions and getUnusedProductOptionGroups are consumed only by ' +
-        'admin/views/entity/preprocessproduct_addoption.cfm:L60 and its optiongroup sibling, under ' +
-        "controllers declaring this.publicMethods='', and searchProductsByProductType has no " +
-        'legacy caller at all. No service method inspects the principal.',
+        'All FOURTEEN published operations are administrative in the source too. The five reads: ' +
+        'getUnusedProductOptions, getUnusedProductOptionGroups, getFormattedOptionGroups and ' +
+        'getOptionsForSelect are consumed only by admin/views/entity/preprocessproduct_addoption.cfm:L60 ' +
+        "and its optiongroup sibling, under controllers declaring this.publicMethods='', and " +
+        'searchProductsByProductType has no legacy caller at all. The nine mutations - the six in-scope ' +
+        'processProduct/save Product actions plus saveProductType, deleteProduct and saveBrand - are ' +
+        'reached in the legacy through admin/ alone, so publishing them strengthens the gate rather ' +
+        'than reopening the question. No service method inspects the principal.',
+    },
+    {
+      summary:
+        'Each catalog operation is served on exactly one HTTP method, checked inside the handler with ' +
+        'listFindNoCase after the router has matched the row\u2019s GET,POST comma list - so a read named ' +
+        'on POST and a mutation named on GET are both refused with a 400 that names the selector and ' +
+        'neither the method sent nor the method that would have worked.',
+      owningModule: 'src/handlers/catalogQueryHandler.ts',
+      assertedBy: 'tests/unit/handlers/catalogQueryHandler.test.ts',
+      unchangedServiceContract:
+        'The legacy slice has no HTTP vocabulary at all to preserve: the in-scope services are invoked ' +
+        'by CFML method call from admin/ controllers, and FW/1 routed by subsystem convention rather ' +
+        'than by verb. Pairing an operation with a method is therefore a transport decision this port ' +
+        'makes, and it changes no service signature, no argument and no result - the same method is ' +
+        'called with the same arguments whichever verb carried the request.',
+    },
+    {
+      summary:
+        'Every catalog mutation names an EXISTING row by identifier, which the handler hydrates through ' +
+        'RequestScope.entityLoaders before calling the service; an identifier naming no row is served as ' +
+        'a 200 carrying a closed unresolved reason rather than as a 404, and a ported save rule that ' +
+        'failed is a 400 built from the entity\u2019s own error register rather than a throw.',
+      owningModule: 'src/handlers/catalogQueryHandler.ts',
+      assertedBy: 'tests/unit/handlers/catalogQueryHandler.test.ts',
+      unchangedServiceContract:
+        'Each ported service method keeps its legacy signature exactly: the entity is the first ' +
+        'parameter, as model/service/ProductService.cfc:L113, L128, L216, L198, L208, L264, L294, L317 ' +
+        'and model/service/BrandService.cfc:L67 all declare it. The three saves already returned the ' +
+        'same entity whether it validated or not - org/Hibachi/HibachiService.cfc:L151-L167 - and ' +
+        'deleteProduct already answered false rather than raising when its delete-context rule refused, ' +
+        'so reading the returned value is transport work over an unchanged contract.',
     },
   ],
 
@@ -6005,35 +6100,51 @@ describe('A17 package shape: one archive per capability, recoverable annotations
     expect(readme).toContain('AAP amendment');
   });
 
-  it('★★★ states the feed-scheme containment as CONDITIONAL on a configured allow-list (F40/F49)', () => {
+  it('★★★ states the feed-scheme containment as UNCONDITIONAL, because the host check fails closed', () => {
     // ★★ A FOURTH REVIEW RE-RAISED THE CLEARTEXT SCHEME (F49) AND REACHED THE SAME DISPOSITION: the
     // change needs an authorized divergence, AAP 0.1.1 and 0.8.1 freeze the feed contract, AAP 0.6.7
     // admits exactly three divergences in this port and this is not one, so the scheme stays the
     // legacy literal and the escalation is the deliverable. What that review's own guidance leaves
-    // actionable without an amendment is the accuracy of the record - and F40 made part of it stale.
+    // actionable without an amendment is the accuracy of the record.
     //
-    // The old record claimed, unqualified, that the authority "comes from a deployment-owned
-    // allow-list rather than from the request". That held only while an UNSET `FEED_ALLOWED_HOSTS`
-    // resolved to deny-all, which is the very default F40 removed because it disabled a capability
-    // the source publishes. With no list configured the feed now answers on the request's authority -
-    // the legacy's own exposure, not a new one - so the containment is real and CONDITIONAL, and both
-    // records must say so. This gate is what keeps them from drifting back to the absolute claim.
+    // ★★★ AND THIS GATE ITSELF WENT STALE, WHICH IS THE MOST INSTRUCTIVE PART OF ITS HISTORY. It used
+    // to REQUIRE the two records to describe the containment as CONDITIONAL, and it was right to while
+    // finding F40's default stood: F40 had removed a deny-all empty list because it disabled a
+    // capability the source publishes, so with nothing configured the feed answered on the request's
+    // authority. A LATER security review found that default to be CWE-346 and required the check to
+    // fail closed. An absent or empty `FEED_ALLOWED_HOSTS` now trusts NO host - the composition root
+    // publishes no `feedCriteria` and no `productFeedPort`, so the route answers no document rather
+    // than answering on whatever the request carried - and there is no allow-all state left to be
+    // conditional about.
+    //
+    // A GATE THAT PINS PROSE HAS TO TURN WITH THE CODE, and this one did not: the code changed, both
+    // records were corrected, and this assertion was the last thing still demanding the old wording.
+    // It is inverted now, and it pins the THREE-POSITION history in the renderer as well as the
+    // conclusion - so a future revision cannot quietly drop the record of either turn.
     const renderer = readSubtreeFile('src/integrations/google/rssFeedRenderer.ts');
     const readme = readSubtreeFile('README.md');
 
-    expect(renderer).toContain('THAT MITIGATION IS CONDITIONAL');
-    expect(renderer).toContain('WHENEVER THE DEPLOYMENT');
-    expect(renderer).toContain('EXACTLY THE\n * LEGACY');
+    // The renderer states the conclusion, and keeps both superseded positions on the record.
+    expect(renderer).toContain('THAT MITIGATION IS UNCONDITIONAL');
+    expect(renderer).toContain('POSITION 3, WHICH GOVERNS');
+    expect(renderer).toContain('trusts NO host');
+    // The F40 reasoning is QUOTED rather than deleted, which is what makes the turn auditable.
+    expect(renderer).toContain('EXACTLY THE LEGACY');
+    expect(renderer).toContain(
+      'CONFIGURING `FEED_ALLOWED_HOSTS` is therefore the recommended posture',
+    );
+    // And the absolute claim that position 1 made without qualification stays absent, because the
+    // containment is stated together with the fail-closed mechanism rather than asserted bare.
     expect(renderer).not.toContain(
       'authority the scheme is glued to is drawn from a deployment-owned allow-list',
     );
 
     expect(readme).toContain('What already contains it, and how far.');
-    expect(readme).toContain('whenever the deployment configured one');
-    expect(readme).toContain('conditional');
-    expect(readme).not.toContain(
-      'The authority the scheme is glued to comes from a deployment-owned',
-    );
+    expect(readme).toContain('unconditional');
+    expect(readme).toContain('trusts NO host');
+    // The superseded wording must not be presented as current anywhere - it appears in the README only
+    // inside the quotation that records the correction.
+    expect(readme).not.toContain('the containment is real and it is **conditional**');
   });
 });
 
@@ -6129,9 +6240,12 @@ describe('A20 source census and the one-runtime-unit rule, as AAP 0.3.1 states i
   it('★★★ keeps the production census at the plan\u2019s own eighty-nine modules', () => {
     // The prose claim "the census is back to the plan's own eighty-nine" stood in this file's header
     // while the real count was NINETY - the extra being `src/lib/jsonDocumentKeys.ts`, a module AAP
-    // 0.3.1 does not enumerate anywhere. Its `findPrototypeKeyPath` moved into
-    // `src/lib/cfml/struct.ts`, which already owns every struct-KEY concern in the port, and its cases
-    // moved with it. That a written census went stale unnoticed is exactly why this is now measured.
+    // 0.3.1 does not enumerate anywhere. Its detection now lives in `src/handlers/errorMapper.ts` as
+    // the boolean `containsPrototypeMemberKey`, beside the refusal vocabulary its two callers already
+    // imported, and its cases live in that module's suite. That a written census went stale unnoticed
+    // is exactly why this is now measured - and note that the census is indifferent to WHICH enumerated
+    // module absorbs a stray unit, which is why it stayed green through an intermediate destination
+    // (`src/lib/cfml/struct.ts`) that a later security review rejected on other grounds.
     expect(
       listTypeScriptFiles('src').length,
       'the production module count left AAP 0.3.1\u2019s enumerated layout; add the file to the plan ' +
@@ -7722,23 +7836,32 @@ describe('A18 the environment delivery-size contract fits the platform quota', (
     const maxima = documentedMaxima();
     const template = readSubtreeFile('.env.example');
 
-    // ★★★ A COMMENTED-OUT DECLARATION STILL COUNTS AS DECLARED, and the one key that needs this is
-    // why. `FEED_ALLOWED_HOSTS` ships COMMENTED (`#FEED_ALLOWED_HOSTS=`) on purpose: the variable has
-    // three meaningful states, and an ACTIVE empty line is the deny-all one - so a template that
-    // declared it live would make every deployment copying this file unchanged refuse every product
-    // feed, withdrawing a capability the legacy publishes. Leaving it commented is what makes a
-    // copied file arrive UNSET.
+    // ★★★ A COMMENTED-OUT DECLARATION STILL COUNTS AS DECLARED, and the tolerance is deliberate
+    // even though no key needs it today. It is what stops a contract variable from escaping this
+    // completeness check by being commented out: a key that can grow without a documented maximum is
+    // the defect this case exists to catch, and `#` is not a way to hide from it.
     //
-    // That decision must not cost the key its bound. This case exists so no contract variable can
-    // grow without a documented maximum, and `FEED_ALLOWED_HOSTS` is one of the two that CAN grow -
-    // it is bounded at 512 bytes in `CONTRACT_KEY_MAX_VALUE_BYTES` and counted in the aggregate
-    // quota. Reading only live lines would have quietly dropped the widest variable in the contract
-    // from the completeness check, so the two requirements are held together instead of traded.
+    // ★★★ QUOTE-THEN-REVISE. This note used to say the tolerance existed for ONE key: "`FEED_ALLOWED_HOSTS`
+    // ships COMMENTED (`#FEED_ALLOWED_HOSTS=`) on purpose: the variable has three meaningful states,
+    // and an ACTIVE empty line is the deny-all one - so a template that declared it live would make
+    // every deployment copying this file unchanged refuse every product feed, withdrawing a capability
+    // the legacy publishes." That was true of finding F40's three-state model, where UNSET meant "no
+    // host policy - answer on whatever authority the request carries". A later security review found
+    // that default to be CWE-346 and required the check to fail closed, which collapsed the three
+    // states into two: UNSET and ACTIVE-EMPTY now resolve to the SAME empty list and BOTH deny every
+    // host. With no behavioural difference left to protect, commenting the key out bought nothing and
+    // cost an operator the chance to see it while filling the template in, so it ships LIVE now like
+    // the other eighteen. The regex keeps the `#?` for the reason above, not for this key.
+    //
+    // Either way the key keeps its bound. `FEED_ALLOWED_HOSTS` is one of the two contract variables
+    // that CAN grow - bounded at 512 bytes in `CONTRACT_KEY_MAX_VALUE_BYTES` and counted in the
+    // aggregate quota - and reading only live lines would have made that bound evadable.
     //
     // The optional `#` is FLUSH-ONLY, which is the file's own convention and is what keeps this
-    // precise: a declaration is written hard against the margin (`#FEED_ALLOWED_HOSTS=`), while the
-    // five illustrative lines are indented after the `#` (`#   FEED_ALLOWED_HOSTS=shop.example.com`)
-    // and are correctly not read as declarations.
+    // precise: a declaration is written hard against the margin - live (`FEED_ALLOWED_HOSTS=`) or, if
+    // one were ever commented, `#` immediately before the name - while the five illustrative lines in
+    // that section are indented after the `#` (`#   FEED_ALLOWED_HOSTS=shop.example.com`) and are
+    // correctly not read as declarations.
     const declared = [...template.matchAll(/^#?([A-Z][A-Z0-9_]*)=/gm)].map(([, key]) => key ?? '');
 
     expect(maxima.size).toBe(19);

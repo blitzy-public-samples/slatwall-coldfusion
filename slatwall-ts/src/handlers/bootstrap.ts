@@ -257,12 +257,7 @@ import type { FeedCriteria, ProductFeedPort } from '../domain/ports/productFeedP
 import type { ProductTypeRepository } from '../domain/ports/productTypeRepository.js';
 import type { PromotionRepository } from '../domain/ports/promotionRepository.js';
 import type { SalePriceDetail, SalePriceResolver } from '../domain/ports/promotionRepository.js';
-import type {
-  ProductPresentationSettingKey,
-  ProductPresentationSettingsProvider,
-  SettingKey,
-  SettingsProvider,
-} from '../domain/ports/settingsProvider.js';
+import type { SettingKey, SettingsProvider } from '../domain/ports/settingsProvider.js';
 import type { SkuRepository } from '../domain/ports/skuRepository.js';
 import type {
   SubscriptionBenefitHandle,
@@ -514,13 +509,15 @@ export interface LoadedSku {
  * The READ-ONLY entity loads published to the request tier.
  *
  * ★ EVERY METHOD IS A LOAD, AND EVERY NAME IS THE NAME OF THE READ IT DELEGATES TO. Four
- * of the five carry their repository method's name verbatim -
+ * of the seven carry their repository method's name verbatim -
  * `ProductRepository.getProductByProductID`,
  * `ProductTypeRepository.getProductTypeByProductTypeID`,
  * `PriceGroupRepository.getPriceGroup` and `PriceGroupRepository.getPriceGroupRate` - so a
- * reviewer can bind caller to definer by name with nothing to translate. The fifth is a
- * COMPOSITION of two reads and no repository has a name for it, so it is named for what it
- * takes.
+ * reviewer can bind caller to definer by name with nothing to translate. The other three
+ * have no single repository read to be named after, so each is named for what it takes:
+ * the SKU load is a COMPOSITION of two reads, the option load forwards a module-private
+ * collaborator, and the brand load is a framework-generated statement hosted in this file
+ * because `BrandService.cfc` declares no read at all.
  *
  * ★ A MISS IS `undefined`, NEVER AN EMPTY ENTITY AND NEVER A THROW. An identifier naming
  * nothing is a domain outcome a caller reports, not an exception: the same posture
@@ -582,6 +579,69 @@ export interface RequestEntityLoaders {
    * than to one derived by re-running the cascade.
    */
   getPriceGroupRate(priceGroupRateID: string): Promise<PriceGroupRate | undefined>;
+
+  // ★★★ THE TWO LOADS BELOW WERE ADDED FOR THE CATALOG CAPABILITY, AND THEIR ABSENCE WAS A
+  // REVIEW FINDING RATHER THAN A DESIGN. A code review recorded (CRITICAL) that
+  // `catalogQueryHandler` published three reads and omitted eleven mapped Product/Brand/Option
+  // actions, and that the handler's stated ground for the omission - that "`RequestScope`
+  // publishes no entity and no entity loader, so every service member whose first parameter is
+  // an entity has no admissible argument here" - was FALSE by the time it was read: this member
+  // exists. It was true when written, and the five loads below it were added for
+  // `priceResolutionHandler` (finding F3) without the catalog claim being revisited.
+  //
+  // TWO OF THE ELEVEN NEEDED AN ENTITY NEITHER THE FIVE NOR ANY PORT COULD PRODUCE - a `Brand`
+  // and a set of `Option`s - so those two loads are added here, on exactly the terms the five
+  // above are declared on: both are READS, neither takes an entity, a payload or a save
+  // context, and a miss is `undefined` or an absent map key rather than a throw. The nine
+  // remaining actions take a `Product` or a `ProductType`, which the first two loads already
+  // answer.
+  //
+  // NO PORT GAINED A MEMBER AND THERE IS STILL NO FOURTEENTH PORT. `getOptionsByOptionIDList`
+  // forwards {@link SqlOptionEntityLoader.getOptionsByID}, a module-private collaborator that
+  // already existed for `SkuService`'s option resolution; `getBrandByBrandID` reads
+  // {@link SELECT_BRAND_BY_BRAND_ID_SQL}, a framework-generated statement hosted here beside the
+  // two framework-generated brand WRITES, because `BrandService.cfc` declares no read and no
+  // brand port exists to declare one on.
+
+  /**
+   * The brand a caller named, or nothing.
+   *
+   * ★ THIS IS THE ONE LOAD WITH NO REPOSITORY BEHIND IT, and that is a fact about the legacy
+   * rather than an omission here. `BrandService.cfc` declares exactly one function, `saveBrand`
+   * [model/service/BrandService.cfc:L67]; every read arrived by framework inheritance. The
+   * statement is therefore hosted in this module, projecting {@link BRAND_COLUMNS} - the same
+   * constant the insert and the update are built from - so a brand loaded here carries every
+   * value a subsequent save will write.
+   *
+   * FETCH SHAPE: the row and no association. All eight of `Brand`'s associations are
+   * `inverse="true"` [model/entity/Brand.cfc:L60-L61, L66-L72], so a brand save writes none of
+   * them and materializing them would issue queries no caller reads.
+   */
+  getBrandByBrandID(brandID: string): Promise<Brand | undefined>;
+
+  /**
+   * The options a caller named, keyed by CASE-FOLDED identifier, in one statement.
+   *
+   * A MAP RATHER THAN AN ARRAY, because that is what lets a caller tell WHICH of the identifiers
+   * it supplied matched nothing: an array of the rows that happened to come back cannot be
+   * aligned with the list that was asked for once one is missing. A key that matches no row is
+   * ABSENT from the map, which is the same "miss is nothing" posture every load above takes.
+   *
+   * ★ CASE-FOLDED, BECAUSE CFML IDENTIFIERS ARE. The fold is the same one `getSkuBySkuIdentity`
+   * applies to `skuID` and the same one the order-view hydration applies to every identifier it
+   * reads, so a differently-cased but valid identifier resolves here exactly as it does there.
+   * NO ORDER IS PUBLISHED - `IN (...)` guarantees none, and a caller walks its own list.
+   *
+   * FETCH SHAPE: each option arrives with its `OptionGroup`, and that group with an EMPTY options
+   * collection - identical to the singular form, for the reason recorded there: both in-scope
+   * readers of an option loaded this way take only the group's identifier
+   * [model/service/ProductService.cfc:L144].
+   *
+   * AN EMPTY REQUEST ISSUES NO STATEMENT and answers an empty map. Parity, not optimisation: N
+   * singular loads issue N statements, so zero cost zero. It also prevents `IN ()`, a MySQL
+   * syntax error.
+   */
+  getOptionsByOptionIDList(optionIDs: readonly string[]): Promise<ReadonlyMap<string, Option>>;
 }
 
 // ===========================================================================
@@ -983,7 +1043,7 @@ export interface RequestScope extends SalePriceResolver {
   // what it does and does not claim.
 
   /**
-   * The five READ-ONLY entity loads a handler may perform to bind a service argument.
+   * The seven READ-ONLY entity loads a handler may perform to bind a service argument.
    *
    * ★★★ WHY THIS MEMBER EXISTS, AND WHY IT IS NOT THE SIX REPOSITORIES COMING BACK.
    * Several ported service methods take an ENTITY - `getRateForProductBasedOnPriceGroup`
@@ -1003,13 +1063,22 @@ export interface RequestScope extends SalePriceResolver {
    * ★★ AND THE NARROWING IS THE POINT. The six raw repositories were withdrawn from this
    * interface because they carried SEVEN DURABLE MUTATIONS onto the request tier - see the
    * note above where they used to sit - and nothing here reopens that. This surface is
-   * READ ONLY BY CONSTRUCTION: five methods, every one a load, and the type makes
+   * READ ONLY BY CONSTRUCTION: seven methods, every one a load, and the type makes
    * `saveProduct`, `deleteProduct`, `saveSku`, `saveProductType`, `savePriceGroup`,
    * `savePriceGroupRate` and `deletePriceGroup` a compile error to reach. It publishes
    * strictly less than `productRepository` alone did.
    *
+   * ★ IT GREW FROM FIVE TO SEVEN AND STAYED READ-ONLY, which is the property that matters
+   * rather than the count. The two added loads answer a `Brand` and a set of `Option`s for
+   * the catalog capability - see `RequestEntityLoaders` for why each was unobtainable
+   * before - and neither takes an entity, a payload or a save context, so no mutation
+   * became reachable. A handler that wants to WRITE still has to go through the service
+   * that owns the invariants, which is the whole point of the withdrawal above.
+   *
    * NOR DOES IT ADD A PORT. Every method below is either a repository read that already
-   * exists or - for the SKU - a COMPOSITION of two that do. No port file gained a member
+   * exists, a COMPOSITION of two that do, a forward to a module-private collaborator that
+   * already existed, or - for the brand alone - a framework-generated statement hosted in
+   * this file beside the two framework-generated brand writes. No port file gained a member
    * and there is no fourteenth port.
    */
   readonly entityLoaders: RequestEntityLoaders;
@@ -1320,14 +1389,13 @@ export interface CompositionDiagnostics {
    * make "this deployment admits no host" indistinguishable from "this member is not implemented",
    * and the second is not a fact about the deployment at all.
    *
-   * `FEED_ALLOWED_HOSTS` does carry a third state that this count deliberately does NOT try to
-   * express: UNSET answers the feed on whatever authority the request carries, exactly as the legacy
-   * `http://#CGI.HTTP_HOST#` did, while set-but-EMPTY publishes no feed. Both admit zero NAMED
-   * hosts, so both read `0` here. That distinction is a policy question rather than a count, it is
-   * resolved on the configuration surface where it is actionable - `resolveFeedAllowedHosts` in
-   * `src/lib/config.ts` keeps `allowedHosts` as `readonly string[] | undefined` for exactly this
-   * reason, and its guidance sentence states both readings - and encoding it a second time as an
-   * `undefined` count would put two different kinds of answer in one field.
+   * `0` HAS EXACTLY ONE MEANING NOW: this deployment authorizes no feed host, so it publishes no
+   * feed. QUOTE-THEN-REVISE - this said `FEED_ALLOWED_HOSTS` "does carry a third state that this
+   * count deliberately does NOT try to express: UNSET answers the feed on whatever authority the
+   * request carries, exactly as the legacy `http://#CGI.HTTP_HOST#` did, while set-but-EMPTY
+   * publishes no feed." That third state was the CWE-346 exposure code review recorded, and it is
+   * gone: unset and empty both resolve to an empty authorized list and both refuse every candidate.
+   * One reading, one count, and `0` is actionable on its own.
    */
   readonly feed: {
     readonly allowedHostCount: number;
@@ -2382,6 +2450,18 @@ const SELECT_PROMOTION_BY_ID = 'bootstrapSelectPromotionByID';
 const SELECT_URL_TITLE_FAMILY = 'bootstrapSelectUrlTitleFamily';
 const SELECT_ADDRESS_ZONE_LOCATIONS = 'bootstrapSelectAddressZoneLocations';
 
+// The brand read behind `RequestEntityLoaders.getBrandByBrandID`.
+//
+// ★★ IT IS HOSTED HERE FOR THE SAME REASON THE TWO BRAND WRITES ARE, AND FOR NO NEW ONE.
+// `BrandService.cfc` declares exactly one function, `saveBrand` [model/service/BrandService.cfc:L67];
+// every brand READ a caller might expect arrived by inheritance from the framework base
+// [org/Hibachi/HibachiService.cfc], which is deliberately not ported. There is consequently no
+// `BrandRepository` port to carry this - the port set is closed at thirteen and none of the thirteen
+// is about brands - and no legacy DAO statement to transcribe either. So it is a framework-generated
+// read, alongside `INSERT_BRAND` and `UPDATE_BRAND`, which Hibernate likewise produced from the same
+// persistent-property metadata this statement projects.
+const SELECT_BRAND_BY_BRAND_ID = 'bootstrapSelectBrandByBrandID';
+
 // The two statements behind per-SKU setting resolution. They are a PAIR and neither is useful alone:
 // the settings read supplies the candidate rows, the path read supplies the walk order those rows are
 // probed in [model/service/SettingService.cfc:L550-L558].
@@ -3030,6 +3110,33 @@ const SELECT_BRAND_BY_URL_TITLE_SQL = [
   'LIMIT 1',
 ].join(' ');
 
+/**
+ * Read one brand by its own primary key, projecting exactly the columns the write set names.
+ *
+ * ★★★ IT PROJECTS {@link BRAND_COLUMNS} RATHER THAN A HAND-WRITTEN LIST, and that is the whole reason
+ * a caller can hand the result straight back to `BrandService.saveBrand`. The insert and the update
+ * are built from the same constant, so read set and write set cannot drift: a column added there is
+ * selected here, and a brand loaded through this statement carries every value an UPDATE will
+ * overwrite. A hand-copied projection is how a save silently blanks a column nobody selected.
+ *
+ * NO ASSOCIATION IS MATERIALIZED, and that follows from the mapping rather than from convenience.
+ * All eight of `Brand`'s associations are declared `inverse="true"`
+ * [model/entity/Brand.cfc:L60-L61, L66-L72], so the brand owns none of them and a brand save writes no
+ * link-table row - which is exactly what `SqlBrandFrameworkWrites` documents. The entity therefore
+ * applies its own `[]` defaults, which is also what `meta/tests/unit/entity/BrandTest.cfc`'s
+ * `defaults_are_correct()` asserts, the one legacy assertion that touches this table.
+ *
+ * ★ `LIMIT 1` because `brandID` is the primary key [model/entity/Brand.cfc:L52] and a second row
+ * cannot exist. It is stated anyway, on the same terms every other single-row read in this file states
+ * it: a statement that can only return one row costs nothing to say so, and a schema drift that made
+ * it untrue would otherwise silently hand back the first of several.
+ */
+const SELECT_BRAND_BY_BRAND_ID_SQL = [
+  `SELECT ${BRAND_COLUMNS.join(', ')} FROM SwBrand`,
+  'WHERE brandID = ?',
+  'LIMIT 1',
+].join(' ');
+
 // --- Row readers -----------------------------------------------------------
 
 type ColumnLookup = { readonly found: true; readonly value: unknown } | { readonly found: false };
@@ -3233,18 +3340,36 @@ function readFlag(row: SqlRow, columnName: string, statementLabel: string): CfBo
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// 4.1  settingsProvider - SYNCHRONOUS, seven keys, non-optional `string`
+// 4.1  settingsProvider - SYNCHRONOUS, four published keys, non-optional `string`
 // ---------------------------------------------------------------------------
 
 /**
- * Every setting name this composition resolves: the four of the frozen settings port plus the three
- * of the product-presentation contract.
+ * The three product-presentation setting names this composition resolves EAGERLY, as data.
  *
- * ONE UNION SO THERE IS ONE TABLE. The provider below implements both contracts, and a single
- * exhaustive record is what makes "one authority per setting" mechanical rather than asserted - the
- * compiler requires an entry for every name, and `setting()` can answer either contract from it.
+ * ★★★ MODULE-PRIVATE, AND DELIBERATELY NOT A PORT CONTRACT. These three used to be published from
+ * `../domain/ports/settingsProvider.js` as `ProductPresentationSettingKey`, alongside a second
+ * `ProductPresentationSettingsProvider` resolver interface. Code review recorded that pair as a
+ * widening of the frozen settings architecture: what AAP 0.3.1 freezes is the resolution surface the
+ * DOMAIN may reach, so a second resolver interface widened it wherever it was declared. The three
+ * keys are still resolved here, from the same rows, but what leaves this file is the ANSWER - two
+ * strings on `SkuImageSettingValues` and one string as a product's `productTitleTemplate`.
+ *
+ * The name therefore lives at composition scope, where it names a column this file reads, and is not
+ * exported: nothing outside this module needs to spell it.
  */
-type BootstrapSettingName = SettingKey | ProductPresentationSettingKey;
+type ProductPresentationSettingName =
+  'productImageDefaultExtension' | 'productImageOptionCodeDelimiter' | 'productTitleString';
+
+/**
+ * Every setting name this composition resolves: the four of the frozen settings port plus the three
+ * product-presentation values it resolves eagerly.
+ *
+ * ONE UNION SO THERE IS ONE TABLE. A single exhaustive record is what makes "one authority per
+ * setting" mechanical rather than asserted - the compiler requires an entry for every name, the
+ * published `setting()` answers the four, and the three presentation values are read back out of the
+ * same table rather than off the constants.
+ */
+type BootstrapSettingName = SettingKey | ProductPresentationSettingName;
 
 /**
  * The seven names, folded, exactly as they are spelled in `model/service/SettingService.cfc`.
@@ -3339,26 +3464,30 @@ async function readGeneralSettingValues(
  * collaborator, and `<associatedEntity>.setting(...)`. All four collapse into
  * this one injected resolver; it is NOT an entity-graph traversal.
  *
- * `SettingKey` is locked at SEVEN literals by
- * `src/domain/ports/settingsProvider.ts`, and this provider supplies EVERY ONE OF
- * THEM - there is no second settings surface anywhere in the composition. The
- * three product/image keys are IN the union and are resolved here:
- * `productImageDefaultExtension` [model/service/SettingService.cfc:L191],
- * `productImageOptionCodeDelimiter` [L192] and `productTitleString` [L193]. The
- * image subsystem's `SkuImageSettingValues` is therefore DERIVED from this
- * provider at section 6 step 5 rather than built from the constants directly,
- * which is what makes the provider the single authority for a setting's value.
+ * `SettingKey` is locked at FOUR literals by
+ * `src/domain/ports/settingsProvider.ts`, and this provider publishes EXACTLY
+ * THOSE FOUR - there is no second settings surface anywhere in the composition.
+ *
+ * ★★ QUOTE-THEN-REVISE: this read "`SettingKey` is locked at SEVEN literals ... The three
+ * product/image keys are IN the union". The union is four, and the three product-presentation keys
+ * are NOT in it. They are still resolved by this class - the internal table below holds all seven, so
+ * a setting still has exactly one resolution - but they leave the composition root as VALUES rather
+ * than as an askable key: `productImageDefaultExtension` [model/service/SettingService.cfc:L191] and
+ * `productImageOptionCodeDelimiter` [L192] become the two members of `SkuImageSettingValues` at
+ * section 6 step 5, and `productTitleString` [L193] becomes the `productTitleTemplate` a hydrated
+ * `Product` carries. That is what makes this class the single authority for a setting's value while
+ * the domain sees one contract.
  *
  * `skuAllowBackorderFlag` [L219], `globalURLKeyBrand` [L177], the shipping-weight
  * keys [L232-L233] and the missing-image and assets-folder keys [L184, L164] are
  * deliberately ABSENT - each belongs to a subsystem this migration does not port,
  * and the last two travel with the subsystems that own them (sections 4.5 and
- * 4.7). NO EIGHTH KEY MAY BE ADDED to make anything compile.
+ * 4.7). NO EIGHTH NAME MAY BE ADDED to make anything compile.
  *
  * `setting()` returns `string`, never `string | undefined`, which is why
  * `skuEligibleCurrencies` MUST be resolved before an instance exists.
  */
-class BootstrapSettingsProvider implements SettingsProvider, ProductPresentationSettingsProvider {
+class BootstrapSettingsProvider implements SettingsProvider {
   private readonly values: Readonly<Record<BootstrapSettingName, string>>;
 
   /**
@@ -3381,8 +3510,9 @@ class BootstrapSettingsProvider implements SettingsProvider, ProductPresentation
     // The seven names in the order their declarations appear in
     // `model/service/SettingService.cfc`, so the table can be checked against the
     // legacy file top to bottom: L178, L179, L191, L192, L193, L221, L222. FOUR of them are
-    // `SettingKey` and THREE are `ProductPresentationSettingKey`; one object answers both
-    // contracts so that a setting has exactly one resolution and one value.
+    // `SettingKey` - the published surface - and THREE are `ProductPresentationSettingName`,
+    // resolved here and handed inward as plain values. One table so that a setting has exactly one
+    // resolution and one value.
     //
     // ★ EVERY ONE OF THEM IS `configured ?? declared default` - the legacy cascade's last two
     // steps, in order [model/service/SettingService.cfc:L481-L486, L594-L608]. Before this the
@@ -3442,10 +3572,45 @@ class BootstrapSettingsProvider implements SettingsProvider, ProductPresentation
    * askable; what changed is only that a legal name spelled in another case resolves the way CFML
    * resolved it.
    *
-   * @param settingName one of the seven names this composition declares.
+   * @param settingName one of the FOUR keys `SettingsProvider` publishes.
    * @returns the declared value.
    */
-  public setting(settingName: BootstrapSettingName): string {
+  public setting(settingName: SettingKey): string {
+    return this.declaredValue(settingName);
+  }
+
+  /**
+   * The three product-presentation values, resolved, as PLAIN FROZEN DATA.
+   *
+   * ★★★ NOT A SECOND `setting()` OVERLOAD AND NOT A SECOND CONTRACT. It is a snapshot: the caller
+   * receives three strings and cannot ask this object anything further. That is the whole difference
+   * between this and the `ProductPresentationSettingsProvider` interface it replaces - an entity
+   * holding three resolved strings can render what it was given and resolve nothing, where an entity
+   * holding a resolver could reach a key nobody authorized.
+   *
+   * READ OUT OF THE SAME TABLE the four published keys are answered from, so one installation cannot
+   * resolve `skuCurrency` and `productTitleString` from two different reads of `SwSetting`.
+   *
+   * Frozen because the result travels into tier-1 state that outlives a request: `readonly` erases at
+   * emit, and a consumer must not be able to rewrite an installation's image extension for every
+   * later invocation on a warm container - the same hazard sealing this instance closes.
+   */
+  public presentationValues(): Readonly<Record<ProductPresentationSettingName, string>> {
+    return Object.freeze({
+      productImageDefaultExtension: this.declaredValue('productImageDefaultExtension'),
+      productImageOptionCodeDelimiter: this.declaredValue('productImageOptionCodeDelimiter'),
+      productTitleString: this.declaredValue('productTitleString'),
+    });
+  }
+
+  /**
+   * One name's resolved value, looked up the way CFML looks up a struct key.
+   *
+   * Module-private, and the single place the table is read, so the case-folding argument above holds
+   * for the published `setting()` and for {@link BootstrapSettingsProvider.presentationValues}
+   * identically rather than being restated for each.
+   */
+  private declaredValue(settingName: BootstrapSettingName): string {
     return structGet(this.values, settingName) ?? this.values[settingName];
   }
 }
@@ -3633,48 +3798,36 @@ type EuroPivotScaling =
  * no rate accessor and no currency-record accessor: each would either widen the
  * port or expose the state whose containment is the point.
  */
-/**
- * No reference-rate table was available, so a cross-currency conversion could not be performed.
- *
- * ★★★ THIS IS A FAIL-CLOSED REFUSAL, AND IT IS DELIBERATELY NOT THE PASS-THROUGH.
- * `model/service/CurrencyService.cfc` has TWO failure states and they behave differently. When the
- * rate table is present but a code is unlisted, [L100-L101] returns the amount UNCONVERTED and the
- * cascade prices it at par - that is must-preserve behaviour and it is preserved. When the table was
- * never obtained at all, [L104-L131] swallows the fetch failure and the next statement reads
- * `variables.europeanCentralBankRates`, which was never assigned; CFML refuses that at runtime. So an
- * absent table RAISES in the legacy engine, and it raises here.
- *
- * Without this distinction the deployed service answered 1:1 for every cross-currency conversion
- * whenever `ECB_REFERENCE_RATES` was unset - publishing base-currency numerals as foreign-currency
- * prices, invisibly. Code review recorded that as a currency-parity defect.
- *
- * IT NAMES THE TWO CODES AND NOTHING ELSE. No amount, no rate, no configuration value: an error
- * message is not a place to publish money or configuration, and the two codes are what identify the
- * conversion that could not be made.
- *
- * Exported so a handler's error mapper and this file's own suite can recognise it by type rather than
- * by message text.
- */
-export class CurrencyRateTableUnavailableError extends Error {
-  public constructor(
-    public readonly originalCurrencyCode: string,
-    public readonly convertToCurrencyCode: string,
-  ) {
-    super(
-      `No European Central Bank reference-rate table is available, so ${originalCurrencyCode} ` +
-        `cannot be converted to ${convertToCurrencyCode}. The legacy service fetched and daily ` +
-        'refreshed these rates [model/service/CurrencyService.cfc:L102-L131] and raised when it ' +
-        'had none; supply the table through ECB_REFERENCE_RATES rather than pricing at par.',
-    );
-    this.name = 'CurrencyRateTableUnavailableError';
-  }
-}
+// ---------------------------------------------------------------------------
+// ★★★ `CurrencyRateTableUnavailableError` WAS DECLARED HERE, AND ITS REMOVAL IS A REVIEW FINDING.
+//
+// It refused a cross-currency conversion whenever the injected rate table was EMPTY, on the argument
+// that `model/service/CurrencyService.cfc` has two distinct failure states: table present with an
+// unlisted code, which [L100-L101] answers by returning the amount unconverted; and table never
+// obtained, where [L104-L131] swallows the fetch failure and the next statement reads a variable that
+// was never assigned, which CFML refuses at runtime. That reading of the legacy source stands.
+//
+// WHAT DID NOT STAND IS THE CONTRACT IT BROKE. `../domain/ports/currencyConverter.ts` publishes
+// `convertCurrency` as a TOTAL function - "@returns the converted amount, or `amount` unchanged when
+// no rate is available" - and `./priceResolutionHandler.ts` documents its `convertCurrency` operation
+// as having no error path at all, on the strength of that promise. The sole adapter rejecting one of
+// the two unavailable-rate states made the published port a lie and left the routed operation with an
+// unhandled rejection class that mapped to a generic 500. Code review recorded the disagreement as a
+// caller/callee contract defect, and the frozen contract is the total function.
+//
+// SO AN UNAVAILABLE RATE - FOR EITHER REASON - PASSES THE AMOUNT THROUGH, and the misconfiguration is
+// surfaced where surfacing belongs: `CurrencyPassThroughObserver` is notified on every pass-through,
+// the composition root emits one operator line the moment it wires a converter over an empty table,
+// and neither of those changes a number. An observability channel reports a wrong configuration; a
+// thrown error in a total function reports a broken contract.
+// ---------------------------------------------------------------------------
 
-// ★ EXPORTED FOR ONE REASON, STATED SO IT IS NOT MISTAKEN FOR PART OF THE COMPOSITION CONTRACT:
-// its characterisation suite has to be able to name it. The rate-table type, the record projection
-// and the pass-through observer beside it are NOT exported, because nothing outside this file names
-// them. No production module imports this class - `createRequestGraph` below is its only
-// constructor call site, and the domain sees it only through `CurrencyConverter`.
+// ★ NOTHING IN THIS SECTION IS EXPORTED, and that is now uniform. The note that stood here explained
+// why one class was: "its characterisation suite has to be able to name it." That class is gone - see
+// the block above - and with it the one exception. The converter, its rate-table type, its record
+// projection and its pass-through observer are all module-private, because nothing outside this file
+// names any of them: `createRequestGraph` below is the converter's only constructor call site, and the
+// domain sees it only through `CurrencyConverter`.
 //
 // ★★★ THIS CLASS IS NOT A THIRD-PARTY INTEGRATION ADAPTER, AND THE DISTINCTION HAS NOW BEEN RAISED
 // TWICE. A code review recorded it as "a wired non-Google ECB adapter, contrary to explicit
@@ -3874,33 +4027,24 @@ export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
       const target: EuroPivotScaling | undefined = this.resolveScaling(convertToCurrencyCode);
 
       if (source === undefined || target === undefined) {
-        // ★★★ NO RATE TABLE AT ALL IS A DIFFERENT STATE FROM AN UNLISTED CODE, AND IT FAILS
-        // CLOSED. Code review recorded that without injected rates EVERY cross-currency
-        // conversion passed through 1:1 in production, while the legacy
-        // [model/service/CurrencyService.cfc:L102-L131] actively FETCHED and daily-refreshed the
-        // reference rates - so the two systems were not doing the same thing at all. Map the
-        // legacy states honestly:
+        // ★★★ THIS BRANCH USED TO SPLIT INTO TWO, AND ONE HALF THREW. An empty rate table was
+        // refused with `CurrencyRateTableUnavailableError` while an unlisted code passed through,
+        // on the reading of the legacy's two failure states recorded where that class was declared.
+        // The port publishes `convertCurrency` as a TOTAL function and the routed price operation
+        // documents no error path, so the refusal broke the contract it was reached through; code
+        // review recorded that and the total function is the frozen contract. BOTH unavailable-rate
+        // states therefore take the [L100-L101] pass-through below, and there is no emptiness test
+        // here at all.
         //
-        //   * table present, one code unlisted  -> [L100-L101] returns the amount unconverted.
-        //     Preserved exactly, below. This is the must-preserve pass-through.
-        //   * table never obtained              -> [L104-L131] swallows the fetch failure, and the
-        //     very next line `return variables.europeanCentralBankRates` reads a variable that was
-        //     NEVER ASSIGNED, which CFML refuses at runtime. The legacy RAISES here; it does not
-        //     price at par.
+        // THE MISCONFIGURATION IS STILL REPORTED, and that is what makes this a contract fix rather
+        // than a regression to silence. Every pass-through notifies
+        // {@link CurrencyPassThroughObserver}, so an operator sees one line per conversion that could
+        // not be made; and `createModuleScopeGraph` emits its own line the moment it wires a converter
+        // over an empty table, before any request arrives. Neither of those alters a number.
         //
-        // An empty table is the second state: no rate source was ever obtained. Answering 1:1 for
-        // it would publish a foreign-currency price at the base-currency numeral - a wrong number
-        // that is indistinguishable from a right one - for every eligible currency at once. Raising
-        // instead surfaces the misconfiguration where it can be fixed, and it cannot fire on a
-        // single-currency installation, because step 3 of the cascade
-        // [model/entity/Sku.cfc:L416-L428] only converts currencies that need converting.
-        //
-        // The euro pivot is deliberately NOT exempted from the emptiness test by accident: a
-        // EUR-to-EUR conversion resolves both sides as `{ kind: 'euro' }` and never reaches this
-        // branch, so an empty table still converts the pivot to itself.
-        if (Object.keys(this.rates).length === 0) {
-          throw new CurrencyRateTableUnavailableError(originalCurrencyCode, convertToCurrencyCode);
-        }
+        // The euro pivot is unaffected either way: a EUR-to-EUR conversion resolves both sides as
+        // `{ kind: 'euro' }` and never reaches this branch, so the pivot still converts to itself
+        // whatever the table holds.
 
         // [L100-L101] The pass-through. Returned as received, deliberately NOT
         // rounded, and - to the CALLER - deliberately not distinguishable from a
@@ -4503,34 +4647,42 @@ export class UntrustedFeedHostError extends Error {
 }
 
 /**
- * Admit a feed host, enforcing this DEPLOYMENT's allow-list when it configured one, and answer
- * the normalized form.
+ * Admit a feed host by MEMBERSHIP OF THIS DEPLOYMENT'S AUTHORIZED LIST, and answer the
+ * normalized form.
  *
  * TWO REFUSALS AND NO MORE. An empty or whitespace-only candidate is refused because there is
- * nothing to serve; a candidate absent from a CONFIGURED list is refused because a list the
- * request cannot write is the only kind worth consulting.
+ * nothing to serve; a candidate absent from the authorized list is refused because a list the
+ * request cannot write is the only kind worth consulting. Membership is required
+ * UNCONDITIONALLY - there is no configuration state that skips it.
  *
- * ★★★ NO CONFIGURED LIST IS NOT AN EMPTY LIST (F40). QUOTE-THEN-REVISE: this note ended "An
- * EMPTY LIST therefore refuses everything, which is the deliberate default: a deployment that
- * configured no `FEED_ALLOWED_HOSTS` does not serve a feed, and cannot be made to serve one by a
- * request." The second half was the defect. `FEED_ALLOWED_HOSTS` is optional, so "configured
- * nothing" is the ordinary state of nearly every deployment, and treating it as deny-all meant
- * the feed - which the source publishes PUBLICLY at
- * [integrationServices/google/controllers/feed.cfc:L54] and serves on whatever `CGI.HTTP_HOST`
- * the request carried - answered nothing at all until an operator set a variable the legacy
- * never had. That is not hardening a contract, it is withdrawing one, and AAP 0.1.1 requires the
- * feed contract be preserved exactly.
+ * ★★★ AN UNSET ALLOW-LIST NO LONGER ADMITS THE REQUEST'S OWN HOST, AND THAT IS A SECURITY
+ * FINDING'S RESOLUTION (CWE-346). This function had an `allowedHosts === undefined` early return,
+ * defended at length. QUOTE-THEN-REVISE, keeping the defence because its legacy reading is sound:
+ * "`FEED_ALLOWED_HOSTS` is optional, so 'configured nothing' is the ordinary state of nearly every
+ * deployment, and treating it as deny-all meant the feed - which the source publishes PUBLICLY at
+ * [integrationServices/google/controllers/feed.cfc:L54] and serves on whatever `CGI.HTTP_HOST` the
+ * request carried - answered nothing at all until an operator set a variable the legacy never had.
+ * That is not hardening a contract, it is withdrawing one."
  *
- * So `allowedHosts === undefined` - the variable UNSET - admits the request's own normalized
- * authority, which is source-equivalent. A PRESENT list is enforced, and an explicitly empty one
- * still refuses everything, so deny-all remains reachable as a deliberate operator choice. The
- * S-15 remedy is untouched either way: when a list exists it is process configuration that no
- * request can write, which is the whole of what S-15 asked for.
+ * WHAT THAT MISSES IS WHERE `CGI.HTTP_HOST` CAME FROM. CFML received it from a web server bound to
+ * the hostnames the deployment owns, so the legacy's "authority from the request" was already
+ * constrained by the deployment before the application saw it. An API Gateway proxy event carries
+ * whatever `Host` a client writes. Reproducing the READ without that constraint does not reproduce
+ * the legacy's provenance - it publishes a caller-chosen authority into the five URL sites of a
+ * merchant feed, which is precisely the substitution CWE-346 names, and code review recorded it as
+ * Major. The faithful port of "the deployment decides which authorities it answers on" is the
+ * deployment-owned list.
  *
- * ★ AND "NO ALLOW-LIST" IS NOT "NO VALIDATION". The candidate is still normalized here, and
- * `../integrations/google/rssFeedRenderer.js` still owns the authority grammar and the
- * 259-character bound and still refuses a malformed host before it composes an origin. What the
- * unset case removes is the MEMBERSHIP test, which the legacy did not perform, and nothing else.
+ * SO THE FEED FAILS CLOSED WHEN NOTHING IS AUTHORIZED, AND SAYS SO. `AppConfig.feed.allowedHosts`
+ * is always a list - empty when the variable is unset or names nothing - and an empty list refuses
+ * every candidate here, which means `RequestScope.productFeedPort` and
+ * `RequestScope.feedCriteria` are never published for that deployment. The refusal is explicit,
+ * not silent: an operator sees the named configuration rather than an empty document. Deny-all is
+ * the DEFAULT now instead of merely being reachable, and authorizing a host is one variable.
+ *
+ * ★ NORMALIZATION IS STILL NOT VALIDATION, and both still happen. The candidate is normalized
+ * here, and `../integrations/google/rssFeedRenderer.js` still owns the authority grammar and the
+ * 259-character bound and still refuses a malformed host before it composes an origin.
  *
  * NORMALIZATION IS `trim().toLowerCase()` ON BOTH SIDES, and it is the only rewriting performed.
  * Host names are case-insensitive, so folding is parity rather than leniency, and the entries a
@@ -4543,30 +4695,31 @@ export class UntrustedFeedHostError extends Error {
  * not a bare authority cannot equal an allow-list entry that is one.
  *
  * @param candidate the host observed on the request; never trusted for provenance.
- * @param allowedHosts the frozen, deployment-owned list resolved once at module scope, or
- *   `undefined` when this deployment configured no host policy.
- * @returns the normalized host, which is what the feed service closes over.
- * @throws UntrustedFeedHostError when the candidate is empty, or when a list is configured and
- *   does not contain it.
+ * @param allowedHosts the frozen, deployment-owned list resolved once at module scope. EMPTY when
+ *   this deployment authorized no host, which refuses every candidate.
+ * @returns the normalized host, which is what the feed criteria carries.
+ * @throws UntrustedFeedHostError when the candidate is empty, or when it is not a member of the
+ *   authorized list - including the case where that list authorizes nothing at all.
  */
-function assertAllowedFeedHost(
-  candidate: string,
-  allowedHosts: readonly string[] | undefined,
-): string {
+function assertAllowedFeedHost(candidate: string, allowedHosts: readonly string[]): string {
   const normalized = candidate.trim().toLowerCase();
 
   if (normalized.length === 0) {
     throw new UntrustedFeedHostError(candidate, 'it is empty or contains only whitespace');
   }
 
-  if (allowedHosts === undefined) {
-    return normalized;
-  }
-
+  // ★ NO `allowedHosts === undefined` ESCAPE. An unconfigured deployment reaches this test with an
+  // empty list and fails it, which is what makes the feed fail closed by default.
   const permitted = allowedHosts.some((allowed) => allowed.trim().toLowerCase() === normalized);
 
   if (!permitted) {
-    throw new UntrustedFeedHostError(candidate, 'it is not on this deployment\u2019s allow-list');
+    throw new UntrustedFeedHostError(
+      candidate,
+      allowedHosts.length === 0
+        ? 'this deployment authorizes no feed host at all; set FEED_ALLOWED_HOSTS to the ' +
+            'authority this feed is published on before requesting it'
+        : 'it is not on this deployment\u2019s authorized-host list',
+    );
   }
 
   return normalized;
@@ -5130,7 +5283,7 @@ function buildSkuSettingCandidates(
 // given a default - they have been given a wrong answer that is indistinguishable from a right one.
 //
 // ★★ AND "NO IN-SCOPE PORT EXPOSES IT" WAS TRUE BUT IRRELEVANT, for the same reason it was in F13 and
-// F14. `src/domain/ports/settingsProvider.ts` is locked at its seven keys and stays locked; the thirteen
+// F14. `src/domain/ports/settingsProvider.ts` is locked at its four keys and stays locked; the thirteen
 // ports are unchanged. What the absence of a port rules out is a PORT-SHAPED solution, not a solution.
 // This resolver is a module-local structural collaborator over `PreparedStatementExecutor`, the same
 // construct `SqlUrlTitleGenerator`, `SqlPriceGroupFrameworkReads`, `SqlBrandFrameworkWrites` and
@@ -5392,6 +5545,35 @@ function hydrateOptionGroup(
     // The entity supplies its own tie-breaker when none is handed in; this root
     // has no reason to substitute a different one.
     optionSortTieBreaker: undefined,
+  });
+}
+
+/**
+ * Hydrate one `SwBrand` row into the entity `BrandService.saveBrand` declares.
+ *
+ * The literal passes the whole record in one go rather than through a draft, because `Brand`'s
+ * constructor declares every slot `?: T | undefined` - the same reason
+ * `mysqlProductRepository.toBrandFromGraphRow` builds its brand that way. Every association is
+ * OMITTED so the entity applies its own `[]` defaults; see {@link SELECT_BRAND_BY_BRAND_ID_SQL} for
+ * why omitting them is what the mapping says rather than a shortcut.
+ *
+ * ★ THE COLUMN NAMES CARRY NO ALIAS PREFIX, unlike the brand half of a product graph row. This
+ * statement reads `SwBrand` alone, so there is no second table whose `brandName` it could collide
+ * with, and inventing a prefix would put a value in the projection that no reader asks for.
+ */
+function hydrateBrand(row: SqlRow, statementLabel: string): Brand {
+  return new Brand({
+    brandID: readIdentifier(row, 'brandID', statementLabel),
+    activeFlag: readFlag(row, 'activeFlag', statementLabel),
+    publishedFlag: readFlag(row, 'publishedFlag', statementLabel),
+    urlTitle: readOptionalText(row, 'urlTitle', statementLabel),
+    brandName: readOptionalText(row, 'brandName', statementLabel),
+    brandWebsite: readOptionalText(row, 'brandWebsite', statementLabel),
+    remoteID: readOptionalText(row, 'remoteID', statementLabel),
+    createdDateTime: readTimestamp(row, 'createdDateTime', statementLabel),
+    createdByAccountID: readOptionalText(row, 'createdByAccountID', statementLabel),
+    modifiedDateTime: readTimestamp(row, 'modifiedDateTime', statementLabel),
+    modifiedByAccountID: readOptionalText(row, 'modifiedByAccountID', statementLabel),
   });
 }
 
@@ -6411,17 +6593,23 @@ interface ModuleScopeGraph {
   readonly settingsProvider: SettingsProvider;
 
   /**
-   * The SAME `BootstrapSettingsProvider` instance `settingsProvider` above holds, published under
-   * its second contract.
+   * The resolved `productTitleString` value, as a PLAIN STRING.
    *
-   * TWO MEMBERS, ONE OBJECT, AND THAT IS THE POINT. `src/domain/ports/settingsProvider.ts` is frozen
-   * by the plan at four keys, so `productTitleString` travels on
-   * {@link ProductPresentationSettingsProvider} instead - but a setting must still have exactly ONE
-   * resolution, so the same instance answers both. Binding a second instance here would let one
-   * installation resolve `skuCurrency` and `productTitleString` from two different reads of the same
-   * `SwSetting` table.
+   * ★★★ QUOTE-THEN-REVISE. This member was `productPresentationSettingsProvider`, typed to a second
+   * resolver contract and bound to the same `BootstrapSettingsProvider` instance as
+   * `settingsProvider` above, on the argument that "TWO MEMBERS, ONE OBJECT ... a setting must still
+   * have exactly ONE resolution". The one-resolution property was real and is preserved - this value
+   * is read out of that same instance's single table, at
+   * {@link BootstrapSettingsProvider.presentationValues} - but publishing a second RESOLVER widened
+   * the settings surface the domain could reach, which code review recorded. A string cannot be
+   * asked for a fifth key.
+   *
+   * It is the template `Product.getTitle()` [model/entity/Product.cfc:L542] renders, and it is
+   * resolved at THIS tier because module scope is where settings resolution happens once per
+   * container; `imageSettingValues` below carries the other two presentation values on exactly the
+   * same terms.
    */
-  readonly productPresentationSettingsProvider: ProductPresentationSettingsProvider;
+  readonly productTitleTemplate: string;
   readonly currencyRecords: readonly CurrencyRecordProjection[];
   readonly europeanCentralBankRates: EuropeanCentralBankRateTable;
   // NO `addressZoneEvaluator`. It USED TO SIT HERE, as a parameterless
@@ -6619,10 +6807,16 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
   // `getHibachiScope().getBaseImageURL()` [model/transient/HibachiScope.cfc:L186-L188]
   // over `globalAssetsImageFolderPath` [L164], which is deliberately outside the
   // union - so it stays a constant of this layer.
+  // ★ ALL THREE PRESENTATION VALUES ARE TAKEN IN ONE READ, and the two image members below are then
+  // projected off it. They used to be two `settingsProvider.setting('productImage...')` calls against
+  // a seven-key union; the union is four, so the three values that are NOT on it come back together
+  // as data. Same table, same single authority, one fewer contract for the domain to depend on.
+  const presentationValues = settingsProvider.presentationValues();
+
   const imageSettingValues: SkuImageSettingValues = {
     baseImageURL: BASE_IMAGE_URL_DEFAULT,
-    productImageOptionCodeDelimiter: settingsProvider.setting('productImageOptionCodeDelimiter'),
-    productImageDefaultExtension: settingsProvider.setting('productImageDefaultExtension'),
+    productImageOptionCodeDelimiter: presentationValues.productImageOptionCodeDelimiter,
+    productImageDefaultExtension: presentationValues.productImageDefaultExtension,
   };
 
   const feedSettingValues: ResolvedFeedSettingValues = {
@@ -6636,8 +6830,8 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
     dialect,
     executor,
     settingsProvider,
-    // The same sealed instance under its second contract - see the member's own note.
-    productPresentationSettingsProvider: settingsProvider,
+    // The resolved value, not the resolver - see the member's own note and section 4.1.
+    productTitleTemplate: presentationValues.productTitleString,
     currencyRecords,
     europeanCentralBankRates,
     urlTitleGenerator: new SqlUrlTitleGenerator(executor),
@@ -6773,12 +6967,12 @@ function projectCompositionDiagnostics(config: AppConfig): CompositionDiagnostic
       certificateAuthorityConfigured: config.tls.certificateAuthority !== undefined,
     }),
     feed: Object.freeze({
-      // ★ A COUNT, AND `0` WHEN NOTHING IS CONFIGURED. The member is always present and always a
-      // number, so "no host is admitted" reads as a value rather than as a missing key. The
-      // unset-versus-set-but-empty distinction `FEED_ALLOWED_HOSTS` carries is a policy reading, not
-      // a count, and it stays on the configuration surface (`FeedConfig.allowedHosts` is
-      // `undefined` when unset) instead of being folded into this number a second time.
-      allowedHostCount: config.feed.allowedHosts?.length ?? 0,
+      // ★ A COUNT, AND `0` MEANS THIS DEPLOYMENT PUBLISHES NO FEED. The member is always present
+      // and always a number, so "no host is admitted" reads as a value rather than as a missing key.
+      // `FeedConfig.allowedHosts` is now always a list - empty when the variable is unset or names
+      // nothing - so the optional chain that used to be needed here is gone with the third state it
+      // covered.
+      allowedHostCount: config.feed.allowedHosts.length,
     }),
     currency: Object.freeze({
       referenceRateCount: Object.keys(config.currency.europeanCentralBankRates).length,
@@ -6969,8 +7163,9 @@ interface RequestGraph {
 
   /** The five ported services published whole, plus the two published narrowed. */
   /**
-   * The five read-only entity loads, projected onto {@link RequestScope.entityLoaders}
-   * unchanged. Held here because it closes over this request's repositories.
+   * The seven read-only entity loads, projected onto {@link RequestScope.entityLoaders}
+   * unchanged. Held here because it closes over this request's repositories, this request's
+   * statement executor and the module-scope option loader.
    */
   readonly entityLoaders: RequestEntityLoaders;
 
@@ -7485,10 +7680,16 @@ function createRequestGraph(
       // ★ THE ANSWER TO FINDING F13, AT ITS WIRING END. `Product.getTitle()`
       // [model/entity/Product.cfc:L540-L545] renders the `productTitleString` template, and
       // `saveProduct` derives the generated URL slug from it
-      // [model/service/ProductService.cfc:L269]. Without this collaborator every hydrated product
-      // would raise on that path instead of rendering, so it is supplied at the one construction
-      // site that hydrates products.
-      productPresentationSettingsProvider: graph.productPresentationSettingsProvider,
+      // [model/service/ProductService.cfc:L269]. Without this value every hydrated product would
+      // raise on that path instead of rendering, so it is supplied at the one construction site that
+      // hydrates products.
+      //
+      // ★★ IT IS THE RESOLVED TEMPLATE, NOT A RESOLVER. This used to pass
+      // `graph.productPresentationSettingsProvider`, a second settings contract code review recorded
+      // as a widening of the frozen architecture. The value is resolved once at module scope from the
+      // same table `settingsProvider` answers from, so nothing about which template a product renders
+      // changed - only that a hydrated product can no longer ask for anything else.
+      productTitleTemplate: graph.productTitleTemplate,
       skuRepository: mysqlSkuRepository,
       optionRepository,
       subscriptionTermProvider: graph.subscriptionTermProvider,
@@ -7502,19 +7703,29 @@ function createRequestGraph(
   // `RequestGraph.productRepository`. Every service constructor below takes the port-typed name.
   const productRepository: ProductRepository = mysqlProductRepository;
 
-  // --- THE FIVE READ-ONLY ENTITY LOADS ------------------------------------
+  // --- THE SEVEN READ-ONLY ENTITY LOADS ------------------------------------
   // ★★★ THE ANSWER TO FINDING F3, AND IT IS DELIBERATELY BUILT FROM READS THAT ALREADY
   // EXIST. A ported service method that declares a `Product`, a `ProductType`, a `Sku` or
   // a `PriceGroupRate` can only be bound EXACTLY if the boundary publishes a way to turn
-  // an identifier into that entity. Four of the five below forward a repository read
+  // an identifier into that entity. Four of the seven below forward a repository read
   // verbatim; the SKU is a composition of two, because no port returns a SKU by its own
   // identifier WITH its product wired through, and a SKU without a product cannot be
   // priced [model/service/PriceGroupService.cfc:L154, L102].
   //
-  // ★★ IT IS READ ONLY BY CONSTRUCTION. `RequestEntityLoaders` declares five loads and
+  // ★★ THE LAST TWO WERE ADDED FOR THE CATALOG CAPABILITY, AND THE COMMENT ABOVE USED TO SAY
+  // "FIVE". A later code review recorded (CRITICAL) that `catalogQueryHandler` omitted eleven
+  // mapped Product/Brand/Option actions and grounded the omission on this member NOT EXISTING -
+  // a claim that was true when it was written and false once F3 was answered here. Nine of the
+  // eleven take a `Product` or a `ProductType`, which the first two loads already answered; the
+  // other two needed a `Brand` and a set of `Option`s, and neither was obtainable through any
+  // port. So both are added, as reads.
+  //
+  // ★★ IT IS STILL READ ONLY BY CONSTRUCTION. `RequestEntityLoaders` declares seven loads and
   // nothing else, so none of the seven durable mutations that got the raw repositories
   // withdrawn from the request tier is reachable through it - and this object closes over
-  // the repositories rather than publishing them, so a caller cannot widen back to one.
+  // the repositories rather than publishing them, so a caller cannot widen back to one. Growing
+  // by two loads changed the count and not that property: neither addition takes an entity, a
+  // payload or a save context.
   //
   // FROZEN, like every other object this file publishes: the members are the loads, and
   // substituting one on a scope another consumer holds is what freezing refuses.
@@ -7567,6 +7778,26 @@ function createRequestGraph(
 
     getPriceGroupRate: (priceGroupRateID: string): Promise<PriceGroupRate | undefined> =>
       priceGroupRepository.getPriceGroupRate(priceGroupRateID),
+
+    getBrandByBrandID: async (brandID: string): Promise<Brand | undefined> => {
+      // The one load with no repository behind it, because `BrandService.cfc` declares no read -
+      // see `RequestEntityLoaders.getBrandByBrandID`. It reads the request's own executor, exactly
+      // as `SqlBrandFrameworkWrites` writes through it, so the read and the write that follows it
+      // sit on the same connection and inside the same unit of work.
+      const rows = await graph.executor.execute(SELECT_BRAND_BY_BRAND_ID_SQL, [brandID]);
+      const row = rows[0];
+
+      return row === undefined ? undefined : hydrateBrand(row, SELECT_BRAND_BY_BRAND_ID);
+    },
+
+    getOptionsByOptionIDList: (
+      optionIDs: readonly string[],
+    ): Promise<ReadonlyMap<string, Option>> =>
+      // Forwarded verbatim to the collaborator that already existed for `SkuService`'s option
+      // resolution. Nothing is re-implemented here: the de-duplication, the case folding, the
+      // empty-request short circuit and the fetch shape are all its own, and reproducing any of
+      // them would be a second copy that could drift from the first.
+      graph.optionEntityLoader.getOptionsByID(optionIDs),
   });
 
   // --- THE SEVEN SERVICES, AS ONE UNINTERRUPTED GROUP ---------------------
@@ -7899,14 +8130,18 @@ function createRequestGraph(
   // other. A request that carries no feed host therefore has no criteria to pass and no port to pass
   // it to.
   //
-  // THE HOST IS THE NORMALIZED FORM, ALLOW-LISTED WHEN A LIST EXISTS. `assertAllowedFeedHost` trims
-  // and case-folds the candidate; when `graph.config.feed.allowedHosts` is a list it checks
-  // MEMBERSHIP and throws `UntrustedFeedHostError` otherwise, returning the value it matched, so the
-  // origin that reaches the renderer is byte for byte the one the deployment approved. When the
-  // deployment configured no list the normalized candidate is admitted, which is the source
-  // behaviour (F40); an explicitly EMPTY list still refuses everything, which is the safe failure
-  // and not a bypass. Both published scope routes ALSO run this same check before any projection is
-  // built, so an unlisted host is refused whether or not this expression is ever evaluated.
+  // THE HOST IS THE NORMALIZED FORM, AND MEMBERSHIP IS UNCONDITIONAL. `assertAllowedFeedHost` trims
+  // and case-folds the candidate, checks MEMBERSHIP of `graph.config.feed.allowedHosts`, throws
+  // `UntrustedFeedHostError` otherwise, and returns the value it matched - so the origin that reaches
+  // the renderer is byte for byte one the deployment approved.
+  //
+  // ★★★ THERE IS NO UNSET-ADMITS-ANYTHING PATH ANY MORE. This comment used to read "When the
+  // deployment configured no list the normalized candidate is admitted, which is the source behaviour
+  // (F40)". That admitted a caller-authored `Host` into a merchant feed's URLs by default, which code
+  // review recorded as CWE-346; an unconfigured deployment now reaches the membership test with an
+  // EMPTY list and is refused, so no feed is published until an authority is authorized. Both
+  // published scope routes ALSO run this same check before any projection is built, so an unlisted
+  // host is refused whether or not this expression is ever evaluated.
   //
   // A FRESH `Date`, drawn the way `RequestScope.now` draws its own: nothing shares the instance, so
   // no consumer can move the feed's `<lastBuildDate>` or any generated-at stamp by mutating it.

@@ -11,16 +11,27 @@
 // list) [:L222]. The defaults live at those declarations, not in the entities that read them -
 // notably there is no hardcoded "USD" anywhere in `model/entity/Sku.cfc`.
 //
-// ★★★ FOUR, NOT SEVEN - AND THE THREE THAT LEFT DID NOT DISAPPEAR. This union carried seven
-// literals for one revision: the four above plus `productImageDefaultExtension` [:L191],
-// `productImageOptionCodeDelimiter` [:L192] and `productTitleString` [:L193]. The transformation plan
-// specifies this port as "a read-only accessor for exactly four keys, with the legacy defaults
-// mirrored" and cites exactly [:L178], [:L179], [:L221] and [:L222]; widening it to seven widened a
-// FROZEN interface, and code review recorded that as a scope violation. The three product-presentation
-// keys are still resolved, still from the same `SwSetting` table and still by the same composition
-// root - through {@link ProductPresentationSettingsProvider} below, a SEPARATE narrow contract with a
-// separate consumer set. Nothing is lost and nothing is duplicated: one authority per setting, two
-// contracts because there are two concerns.
+// ★★★ FOUR, NOT SEVEN, AND NOT FOUR-PLUS-A-SECOND-CONTRACT EITHER - AND THE THREE THAT LEFT DID NOT
+// DISAPPEAR. This union carried seven literals for one revision: the four above plus
+// `productImageDefaultExtension` [:L191], `productImageOptionCodeDelimiter` [:L192] and
+// `productTitleString` [:L193]. The transformation plan specifies this port as "a read-only accessor
+// for exactly four keys, with the legacy defaults mirrored" and cites exactly [:L178], [:L179],
+// [:L221] and [:L222]; widening it to seven widened a FROZEN interface, and code review recorded that
+// as a scope violation.
+//
+// THE FIRST CORRECTION MOVED THE THREE ONTO A SECOND PROVIDER CONTRACT DECLARED IN THIS FILE, AND
+// THAT WAS STILL A WIDENING. A reviewer reading the plan's port inventory finds thirteen ports with
+// one settings resolver among them; publishing a fourteenth resolver INTERFACE inside the thirteenth
+// port's file relocated the extra contract rather than removing it, and code review recorded that in
+// turn. Co-location is not narrowing.
+//
+// SO THE THREE ARE NO LONGER A CONTRACT AT ALL. They are RESOLVED ONCE, at composition time, and
+// handed inward as PLAIN IMMUTABLE VALUES - the extension and the delimiter as the image-naming
+// values a `Sku` is constructed with [model/entity/Sku.cfc:L135, L138], and the title template as the
+// `productTitleTemplate` a `Product` is constructed with [model/entity/Product.cfc:L542]. Nothing in
+// `src/domain/**` calls a resolver for any of them, no second resolution path or cache exists, and
+// every one of the three still comes from the same `SwSetting` rows through the same composition
+// root: one authority per setting, and now exactly ONE settings contract.
 //
 // THE UNION IS CLOSED AT FOUR, AND A FIFTH KEY IS A SCOPE VIOLATION RATHER THAN A CONVENIENCE.
 // `skuAllowBackorderFlag` [:L219], `globalURLKeyBrand` ("sb") [:L177], `imageAltString` [:L183],
@@ -153,7 +164,7 @@ export type SettingKey =
  * never observe a value resolved for another. This is a correctness constraint on where the state
  * lives, not a tuning choice.
  *
- * ★★★ AAP SURFACE RECONCILIATION - EXACTLY FOUR KEYS, AND WHY A SECOND CONTRACT SHARES THIS FILE.
+ * ★★★ AAP SURFACE RECONCILIATION - EXACTLY FOUR KEYS, AND EXACTLY ONE CONTRACT IN THIS FILE.
  * Recorded here, at the contract, because a reviewer checking this port against the plan will reach
  * both questions and is entitled to find the answers at the port.
  *
@@ -165,22 +176,34 @@ export type SettingKey =
  *   found it had drifted to seven, which was corrected by narrowing it back rather than by
  *   re-arguing the number.
  *
- *   THE SECOND CONTRACT IN THIS FILE IS THREE PRESENTATION KEYS, AND IT IS A TYPE, NOT ARCHITECTURE.
- *   {@link ProductPresentationSettingsProvider} carries `productImageDefaultExtension`,
- *   `productImageOptionCodeDelimiter` and `productTitleString` - the three keys that were removed
- *   from `SettingKey`, and every one of them is demanded by a mapped AAP 0.4.2 method:
- *   `processProduct_updateDefaultImageFileNames` needs the extension and the delimiter through
- *   `Sku.generateImageFileName()` [model/entity/Sku.cfc:L133-L138], and `Product.getTitle()` needs
- *   the title template [model/service/ProductService.cfc:L269]. Deleting them would leave those
- *   methods unimplementable, which AAP 0.9.2 gates against.
+ *   QUOTE-THEN-REVISE - THE SECOND CONTRACT THAT USED TO BE DEFENDED HERE IS GONE. This section read
+ *   "THE SECOND CONTRACT IN THIS FILE IS THREE PRESENTATION KEYS, AND IT IS A TYPE, NOT
+ *   ARCHITECTURE", and went on to argue that co-locating a `ProductPresentationSettingsProvider`
+ *   interface beside this one cost nothing because both were interfaces and the file emitted no
+ *   runtime value. The premise was true and the conclusion did not follow. What AAP 0.3.1 freezes is
+ *   the SETTINGS RESOLUTION SURFACE the domain may reach, not a file count: a second resolver
+ *   interface is a second contract for the domain to depend on wherever it is declared, so moving it
+ *   into this file relocated the widening instead of removing it. Code review recorded that, and
+ *   this is the correction.
  *
- *   WHY IT IS CO-LOCATED RATHER THAN GIVEN A FILE. AAP 0.3.1 freezes the port inventory at THIRTEEN
- *   enumerated files and AAP 0.9.5 holds the change set to that inventory, so a fourteenth port file
- *   is not available. Co-location is therefore the only placement consistent with the frozen layout -
- *   and it costs nothing at run time: both declarations are INTERFACES, this file emits no runtime
- *   value at all, and the "one exported unit per file" practice in AAP 0.8.3 is about the emitted
- *   unit. The composition root implements both contracts on one object, so no second resolution path,
- *   cache or adapter is introduced anywhere.
+ *   THE THREE KEYS STILL EXIST AND ARE STILL RESOLVED - AS VALUES, NOT THROUGH A PORT.
+ *   `productImageDefaultExtension` [model/service/SettingService.cfc:L191] and
+ *   `productImageOptionCodeDelimiter` [:L192] reach `Sku.generateImageFileName()`
+ *   [model/entity/Sku.cfc:L133-L138] as the two members of the image-naming values the SKU is
+ *   CONSTRUCTED with, and `productTitleString` [:L193] reaches `Product.getTitle()`
+ *   [model/entity/Product.cfc:L542] as the `productTitleTemplate` the product is CONSTRUCTED with.
+ *   Both are resolved once, at composition time, from the same `SwSetting` rows this port reads, and
+ *   both arrive as plain immutable strings. So the mapped AAP 0.4.2 methods that need them -
+ *   `processProduct_updateDefaultImageFileNames` and `getTitle` - remain implemented, which is what
+ *   AAP 0.9.2 gates on, and the domain gained no second resolver to call.
+ *
+ *   WHY VALUES RATHER THAN A KEY ON THIS UNION. The distinguishing property is WHEN each key is
+ *   needed. The four keys below are resolved ON DEMAND from inside an entity method -
+ *   `Sku.getCurrencyCode()` [model/entity/Sku.cfc:L360-L365], `Product.getProductURL()`
+ *   [model/entity/Product.cfc:L208] - so the entity must hold something it can ask. The three
+ *   presentation keys are needed at exactly one point each and are known before the entity exists,
+ *   so handing over the ANSWER is strictly narrower than handing over the ability to ask: an entity
+ *   holding a string cannot resolve a fifth key, and one holding a resolver can.
  */
 export interface SettingsProvider {
   /**
@@ -221,7 +244,7 @@ export interface SettingsProvider {
    * so the method is not renamed to `get`, `getSetting` or `resolve`, and the argument keeps the
    * legacy name `settingName` [model/entity/HibachiEntity.cfc:L129].
    *
-   * @param settingName - One of the seven keys in {@link SettingKey}. A key
+   * @param settingName - One of the FOUR keys in {@link SettingKey}. A key
    *   outside that union is rejected at compile time; the legacy engine deferred
    *   the equivalent rejection to a runtime throw
    *   [model/service/SettingService.cfc:L513].
@@ -233,113 +256,33 @@ export interface SettingsProvider {
 }
 
 // ---------------------------------------------------------------------------
-// The product-presentation settings: a SECOND, SEPARATE narrow contract.
+// THE PRODUCT-PRESENTATION SETTINGS, AND WHY THIS FILE NO LONGER DECLARES A CONTRACT FOR THEM
 // ---------------------------------------------------------------------------
 //
-// ★★★ WHY THIS IS NOT THREE MORE MEMBERS OF `SettingKey`. The transformation plan freezes
-// {@link SettingsProvider} at four keys and cites the four declarations it mirrors. These three keys
-// are genuine settings of the in-scope product subsystem - a generated image file name reads two of
-// them [model/entity/Sku.cfc:L135, L138] and `Product.getTitle()` reads the third
-// [model/entity/Product.cfc:L542] - so they are neither out of scope nor inventable. What they are not
-// is part of the FROZEN four-key surface, and a frozen interface that grows by three is no longer
-// frozen. They therefore travel on their own contract, with their own consumer set.
+// ★★★ A SECOND RESOLVER INTERFACE USED TO BE DECLARED BELOW THIS LINE, AND ITS REMOVAL IS A REVIEW
+// FINDING. `ProductPresentationSettingKey` and `ProductPresentationSettingsProvider` published
+// `productImageDefaultExtension` [model/service/SettingService.cfc:L191],
+// `productImageOptionCodeDelimiter` [:L192] and `productTitleString` [:L193] as a second `setting()`
+// surface, on the argument that a co-located INTERFACE emits nothing and therefore widens nothing.
+// It widened the one thing that matters: what the domain layer is able to ask for. Two resolver
+// contracts are two contracts wherever they are written down.
 //
-// ONE AUTHORITY PER SETTING STILL HOLDS, which is the property the seven-key union was protecting.
-// The composition root implements BOTH contracts on one object, so a value the domain sees can still
-// only have come from one resolution, and both resolutions read the same `SwSetting` rows through the
-// same relationship cascade. What changed is which contract publishes which key, not where a key's
-// value comes from.
+// WHERE EACH OF THE THREE LIVES NOW - resolved once in `src/handlers/bootstrap.ts`, from the same
+// `SwSetting` rows the four keys above are read from, and handed inward as PLAIN IMMUTABLE STRINGS:
 //
-// THE CONSUMER SETS ARE GENUINELY DIFFERENT, which is the substantive argument for two contracts
-// rather than one. `SettingsProvider` is injected into ENTITIES that resolve a setting on demand -
-// `Sku.getCurrencyCode()` [model/entity/Sku.cfc:L360-L365], `Product.getProductURL()`
-// [model/entity/Product.cfc:L208]. These three are resolved ONCE at composition time and handed
-// inward as already-resolved values: the two image keys become the image-naming value struct the SKU
-// is constructed with, and the title template is consumed by the product-title renderer. Nothing in
-// `src/domain/**` calls `setting()` for any of them.
-
-export type ProductPresentationSettingKey =
-  /**
-   * The file extension appended to a generated SKU image file name.
-   *
-   * `productImageDefaultExtension = {fieldType="text",defaultValue="jpg"}`
-   * [model/service/SettingService.cfc:L191] - default `"jpg"`.
-   *
-   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L138], which appends
-   * `".#getProduct().setting('productImageDefaultExtension')#"` after the sanitized product code and
-   * the option string. THE LEGACY READ IS ON THE PRODUCT, NOT ON THE SKU - the line resolves the
-   * setting through `getProduct()` - which is exactly why ONE FLAT PROVIDER serves both entities
-   * instead of each owning its own resolution surface.
-   *
-   * The value is the extension WITHOUT the separating dot; the dot is written at the call site.
-   */
-  | 'productImageDefaultExtension'
-  /**
-   * The separator placed before each image-group option code in a generated file name.
-   *
-   * `productImageOptionCodeDelimiter = {fieldType="select", defaultValue="-"}`
-   * [model/service/SettingService.cfc:L192] - default `"-"`, whose legacy option list is exactly
-   * `['-','_']` [model/service/SettingService.cfc:L346-L347].
-   *
-   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L135], once per option whose option
-   * group carries `getImageGroupFlag()`. IT IS A PREFIX PER CONTRIBUTING OPTION, NOT A JOIN
-   * SEPARATOR: the legacy concatenates the delimiter AHEAD of each code, so a single contributing
-   * option still yields a leading delimiter and none is emitted when no option group is flagged.
-   * Resolved through `getProduct()` exactly as the extension above is.
-   */
-  | 'productImageOptionCodeDelimiter'
-  /**
-   * The template a product's display title is rendered from.
-   *
-   * `productTitleString = {fieldType="text", defaultValue="${brand.brandName} ${productName}"}`
-   * [model/service/SettingService.cfc:L193].
-   *
-   * THE DEFAULT IS A TEMPLATE, NOT A TITLE. `Product.getTitle()`
-   * [model/entity/Product.cfc:L540-L545] passes it as
-   * `replaceStringTemplate(template=setting('productTitleString'), object=this)`, and the utility
-   * resolves each `${...}` marker against the entity graph. Those markers are LEGACY TEMPLATE SYNTAX
-   * with no JavaScript meaning: the value is a plain string on this port and is never evaluated here.
-   *
-   * PUBLISHED AND RESOLVED HERE, YET STILL NOT CONSUMED BY `Product.getTitle()` - and the reason has
-   * nothing to do with this key. The renderer it needs, `hibachiUtilityService.replaceStringTemplate`
-   * [model/entity/Product.cfc:L542], is a framework utility under `org/Hibachi/`, the boundary this
-   * migration extracts from and never ports, so it has no target counterpart. The key is a genuine
-   * setting of the in-scope product subsystem and belongs in this union whether or not that one
-   * renderer ever arrives.
-   */
-  | 'productTitleString';
-
-/**
- * The product-presentation settings resolution surface.
- *
- * A SEPARATE CONTRACT FROM {@link SettingsProvider}, for the reasons in the section header above:
- * that port is frozen at four keys, and these three are resolved once at composition time rather
- * than on demand from inside an entity.
- *
- * IMPLEMENTED IN THE COMPOSITION ROOT, on the same object that implements {@link SettingsProvider},
- * so a setting still has exactly one resolution and one value. There is no adapter file for it; like
- * the four other adapter-less ports it is constructed by `src/handlers/bootstrap.ts`.
- *
- * REQUEST-SCOPED, NOT MODULE-SCOPED - the same correctness constraint {@link SettingsProvider}
- * records, for the same reason: the legacy resolver memoizes onto the component
- * [model/service/SettingService.cfc:L452-L459], which on a warm container would be state shared
- * between unrelated invocations.
- */
-export interface ProductPresentationSettingsProvider {
-  /**
-   * Resolve one product-presentation setting to its effective value.
-   *
-   * SYNCHRONOUS AND NEVER `undefined`, on the same terms as `SettingsProvider.setting`: the legacy
-   * resolver always answers, seeding the declared `defaultValue` before any probe runs
-   * [model/service/SettingService.cfc:L481-L486]. An implementation that cannot resolve a configured
-   * value must supply the declared default rather than return nothing.
-   *
-   * NAMED `setting` VERBATIM FROM CFML, exactly as the sibling port's method is, because the legacy
-   * reads are all `setting('<key>')` [model/entity/Sku.cfc:L135, L138; model/entity/Product.cfc:L542].
-   *
-   * @param settingName - one of the three keys in {@link ProductPresentationSettingKey}.
-   * @returns the configured value for this installation, or the default declared in
-   *   `model/service/SettingService.cfc`.
-   */
-  setting(settingName: ProductPresentationSettingKey): string;
-}
+//   * `productImageOptionCodeDelimiter` and `productImageDefaultExtension` are the two members of the
+//     image-naming values a `Sku` is CONSTRUCTED with, read at [model/entity/Sku.cfc:L135] and
+//     [:L138] by `generateImageFileName()`. `src/domain/entities/sku.ts` declares that shape itself.
+//   * `productTitleString` is the `productTitleTemplate` a `Product` is CONSTRUCTED with, read at
+//     [model/entity/Product.cfc:L542] by `getTitle()`. `src/domain/entities/product.ts` declares that
+//     member itself.
+//
+// The legacy resolves all three through `getProduct().setting(...)`, so ONE composition-time
+// resolution serving both entities is the same authority the legacy had - and an entity holding a
+// resolved string cannot reach a fifth key, where an entity holding a resolver can. That is the whole
+// of the narrowing.
+//
+// NOTHING WAS LOST. Both mapped AAP 0.4.2 methods that consume these keys are implemented and
+// covered: `processProduct_updateDefaultImageFileNames` [model/service/ProductService.cfc:L208] and
+// `Product.getTitle()`. This file's exported surface is now exactly what AAP 0.3.1 and AAP 0.4.1
+// specify for it: one closed four-key union and one synchronous resolver.

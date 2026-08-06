@@ -561,12 +561,14 @@ export class Option {
    * `getURLFromPath(setting('globalAssetsImageFolderPath')) & '/option/'`, and BOTH inner calls are
    * unavailable to a domain entity in this port:
    *
-   *   * The `SettingsProvider` port surface is CLOSED at seven keys, in the order
+   *   * The `SettingsProvider` port surface is CLOSED at FOUR keys, in the order
    *     `model/service/SettingService.cfc` declares them - `globalURLKeyProduct` [:L178],
-   *     `globalURLKeyProductType` [:L179], `productImageDefaultExtension` [:L191],
-   *     `productImageOptionCodeDelimiter` [:L192], `productTitleString` [:L193], `skuCurrency`
-   *     [:L221] and `skuEligibleCurrencies` [:L222]. `globalAssetsImageFolderPath` [:L164] is not
-   *     among them and no eighth key may be added.
+   *     `globalURLKeyProductType` [:L179], `skuCurrency` [:L221] and `skuEligibleCurrencies`
+   *     [:L222]. QUOTE-THEN-REVISE: this list once named SEVEN, adding
+   *     `productImageDefaultExtension` [:L191], `productImageOptionCodeDelimiter` [:L192] and
+   *     `productTitleString` [:L193]; those three are resolved at composition time and handed to
+   *     entities as PLAIN VALUES rather than published on this port. `globalAssetsImageFolderPath`
+   *     [:L164] is on neither list and no fifth key may be added.
    *   * `getURLFromPath()` [org/Hibachi/HibachiObject.cfc:L83-L92] is a framework helper on the
    *     unported Hibachi base. It replaces `\` with `/` and then strips the expanded web root, i.e.
    *     it converts an absolute filesystem path into a web-relative URL using RUNTIME knowledge -

@@ -203,16 +203,22 @@ import type { RoundingRuleService } from '../../services/roundingRuleService.js'
  * than being read here. Every other route was closed, and each closure is a
  * deliberate constraint of this migration rather than an inconvenience:
  *
- *   * `src/domain/ports/settingsProvider.ts` is LOCKED to SEVEN keys, in legacy
+ *   * `src/domain/ports/settingsProvider.ts` is LOCKED to FOUR keys, in legacy
  *     declaration order - `globalURLKeyProduct` [model/service/SettingService.cfc:L178],
- *     `globalURLKeyProductType` [:L179], `productImageDefaultExtension` [:L191],
- *     `productImageOptionCodeDelimiter` [:L192], `productTitleString` [:L193],
- *     `skuCurrency` [:L221] and `skuEligibleCurrencies` [:L222] - and neither
- *     missing-image key [:L184, :L164] is among them. Adding an eighth is a scope
- *     violation, and so is extending a sibling's locked contract from here.
- *     `globalURLKeyProduct` IS on that union, which is exactly why the composition
- *     root resolves this bag's copy of it THROUGH the provider rather than from a
- *     literal of its own - one setting, one authority.
+ *     `globalURLKeyProductType` [:L179], `skuCurrency` [:L221] and
+ *     `skuEligibleCurrencies` [:L222] - and neither missing-image key [:L184, :L164] is
+ *     among them. Adding a fifth is a scope violation, and so is extending a sibling's
+ *     locked contract from here. `globalURLKeyProduct` IS on that union, which is exactly
+ *     why the composition root resolves this bag's copy of it THROUGH the provider rather
+ *     than from a literal of its own - one setting, one authority.
+ *
+ *     This bullet said SEVEN, and listed `productImageDefaultExtension` [:L191],
+ *     `productImageOptionCodeDelimiter` [:L192] and `productTitleString` [:L193] among the
+ *     members, until a code review measured four. Those three are product-presentation
+ *     settings resolved once in `src/handlers/bootstrap.ts` and handed inward as plain
+ *     strings; the foot of `settingsProvider.ts` carries the record. The bullet's point is
+ *     unchanged and slightly stronger - the union is NARROWER than it was described as, so
+ *     the case for handing resolved values in rather than widening a port is firmer.
  *   * The port set is LOCKED at thirteen, so a fourteenth port for feed
  *     presentation values is equally out of the question.
  *   * This file reads no environment variable at all - no `process.env`, no
@@ -232,9 +238,10 @@ import type { RoundingRuleService } from '../../services/roundingRuleService.js'
  * ★★ THIS INTERFACE ONCE DECLARED "four values" AND CARRIED `skuShippingWeight` AND
  * `skuShippingWeightUnitCode` AS TWO OF THEM.
  *   The removed clause read "`src/domain/ports/settingsProvider.ts` is LOCKED to
- *   seven keys, and neither shipping-weight key is among them" - and that count was
- *   right, so only its second half mattered. The union has exactly SEVEN members
- *   [model/service/SettingService.cfc:L178, L179, L191, L192, L193, L221, L222], and
+ *   seven keys, and neither shipping-weight key is among them" - only its second half
+ *   ever mattered, and the count itself has since been corrected here and in the bullet
+ *   above. The union has exactly FOUR members
+ *   [model/service/SettingService.cfc:L178, L179, L221, L222], and
  *   the shipping-weight keys [:L232, :L233] are excluded from it; but they never
  *   belonged on a per-REPOSITORY interface either, and THAT is the real defect: the
  *   legacy resolves them PER SKU, inside the row loop
@@ -304,7 +311,7 @@ export interface ResolvedFeedSettingValues {
    *     three candidates is configured and reachable in the deployed environment, once
    *     per invocation, and hand that in.
    *   * Neither `imageMissingImagePath` nor `globalMissingImagePath` is one of the
-   *     seven keys `src/domain/ports/settingsProvider.ts` admits, and the legacy
+   *     four keys `src/domain/ports/settingsProvider.ts` admits, and the legacy
    *     literal embeds an application value. Resolving any of them here would put
    *     configuration inside a repository.
    *
@@ -649,8 +656,8 @@ export interface GoogleProductFeedRow {
    * substitution is not performed. Absent when `SwSku.imageFile` is SQL `NULL`".
    *   ALL THREE of that block's premises were sound - the image service is out of
    *   scope, `src/domain/ports/imageStore.ts` cannot resolve a path, and
-   *   `imageMissingImagePath` really "is deliberately not among the seven keys the
-   *   settings contract admits", because the union holds exactly SEVEN members and
+   *   `imageMissingImagePath` really "is deliberately not among the keys the
+   *   settings contract admits", because the union holds exactly FOUR members and
    *   neither missing-image key [model/service/SettingService.cfc:L184, :L164] is one
    *   of them. What did not follow from any of the three was the CONCLUSION. A
    *   repository that cannot RESOLVE a fallback can still be HANDED one, which is what

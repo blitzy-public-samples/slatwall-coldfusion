@@ -304,9 +304,11 @@ type SettingsCallLog = string[];
  * A recording stand-in for the settings port.
  *
  * The port declares `setting(name): string` and never `undefined`, so the table
- * is TOTAL over the seven keys the shipped `SettingKey` union publishes
- * [model/service/SettingService.cfc:L178, L179, L191, L192, L193, L221, L222] - the catch-all
- * return below answers every key this sku never reads. The parameter is
+ * is TOTAL over the four keys the shipped `SettingKey` union publishes
+ * [model/service/SettingService.cfc:L178, L179, L221, L222] - the catch-all
+ * return below answers every key this sku never reads. It once had to be total over SEVEN, because
+ * three product-presentation keys travelled on a second settings contract; those are resolved values
+ * now and this sku receives the two it needs as `SkuImageSettingValues`. The parameter is
  * typed `string` rather than the port's narrower union so that no port module
  * has to be imported; a function accepting `string` satisfies one declared to
  * accept a subset of `string`.
@@ -370,9 +372,12 @@ function makeCurrencyConverterLog(): CurrencyConverterLog {
  * parity: the legacy has no equal-code test, so it divides and multiplies by the
  * same rate and rounds, answering the input rounded to cents. The cascade cannot
  * reach that case — Step 1 writes the base currency's price unconditionally at
- * [model/entity/Sku.cfc:L394], so Step 3's guard at [L416] excludes it — and
- * `src/integrations/europeanCentralBankCurrencyConverter.ts` reproduces the real
- * branch structure with its own suite.
+ * [model/entity/Sku.cfc:L394], so Step 3's guard at [L416] excludes it — and the
+ * production converter inside `src/handlers/bootstrap.ts` reproduces the real
+ * branch structure, pinned by `tests/unit/handlers/bootstrap.test.ts`. This
+ * pointer used to name
+ * `src/integrations/europeanCentralBankCurrencyConverter.ts`, a module withdrawn
+ * as unplanned architecture.
  */
 function makeRecordingCurrencyConverter(
   rates: Readonly<Record<string, string>>,

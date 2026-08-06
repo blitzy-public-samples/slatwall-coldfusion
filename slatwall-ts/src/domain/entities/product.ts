@@ -135,14 +135,22 @@
 // [org/Hibachi/HibachiUtilityService.cfc:L70-L100] is 30 lines of regex scan, marker stripping and
 // whole-string replacement, and it is reproduced inside `getTitle()` below, at its own documented
 // outcomes, rather than left as a hole in a behaviour-carrying entity method AAP 0.4.2 maps. The
-// template value itself arrives through the narrow `ProductPresentationSettingsProvider` contract,
-// because `productTitleString` [model/service/SettingService.cfc:L193] is not one of the four keys
-// `SettingKey` is frozen at.
+// template value itself arrives as `productTitleTemplate`, a PLAIN RESOLVED STRING on this entity's
+// construction input, because `productTitleString` [model/service/SettingService.cfc:L193] is not one
+// of the four keys `SettingKey` is frozen at.
+//
+// ★★ IT USED TO ARRIVE THROUGH A SECOND `ProductPresentationSettingsProvider` PORT-STYLE CONTRACT,
+// AND THAT CONTRACT IS GONE. Code review recorded the extra resolver as a widening of the frozen
+// settings architecture - relocating it into `../ports/settingsProvider.js` had moved it rather than
+// removed it - so the composition root now resolves the template ONCE and hands over the answer. The
+// rendering below is byte-for-byte unchanged; only the shape of what reaches it is. It is the same
+// arrangement `./sku.ts` already used for the two image-naming keys, which is why the two entities no
+// longer disagree about how a presentation setting arrives.
 //
 // `getTemplate` (`productDisplayTemplate` [:L190]), the whole image cluster and
 // `getAllowBackorderFlag` (`skuAllowBackorderFlag` [:L219]) remain omitted, on a ground the title
-// member never shared: none of those keys is published by either settings contract, and no key may be
-// added to either.
+// member never shared: none of those keys is a `SettingKey` member, none is resolved at composition
+// time for this entity, and no key may be added to the frozen union.
 //
 // ASYNC APPLIES PER METHOD, NOT PER ENTITY: a method stays synchronous when it only traverses
 // already-materialized state or performs pure arithmetic, and becomes `async` only where its body
@@ -162,10 +170,7 @@ import { cfBoolean, cfLen, cfTruthy, type CfBooleanInput } from '../../lib/cfml/
 import type { AttributeSetSummary, ProductRepository } from '../ports/productRepository.js';
 import type { OptionRepository, SelectOption } from '../ports/optionRepository.js';
 import type { SalePriceDetail, SalePriceResolver } from '../ports/promotionRepository.js';
-import type {
-  ProductPresentationSettingsProvider,
-  SettingsProvider,
-} from '../ports/settingsProvider.js';
+import type { SettingsProvider } from '../ports/settingsProvider.js';
 import type { SkuRepository } from '../ports/skuRepository.js';
 import type { SubscriptionTermProvider } from '../ports/subscriptionTermProvider.js';
 import { Money } from '../valueObjects/money.js';
@@ -602,7 +607,11 @@ export type ProductHydrationInput = {
   readonly nextOptionGroupSortOrder?: number;
 
   /**
-   * Resolves the seven published settings keys. SYNCHRONOUS: `setting(key: SettingKey): string`.
+   * Resolves the FOUR published settings keys. SYNCHRONOUS: `setting(key: SettingKey): string`.
+   *
+   * QUOTE-THEN-REVISE: this said "the seven published settings keys", from a revision in which
+   * `SettingKey` carried seven literals. It is closed at four, and the sentence is corrected rather
+   * than left to imply a surface the port does not publish.
    *
    * Needed for exactly ONE key on this component - `globalURLKeyProduct`, read at [L208] and
    * [L212]. That key's default value is declared at [model/service/SettingService.cfc:L178] and
@@ -612,19 +621,32 @@ export type ProductHydrationInput = {
   readonly settingsProvider?: SettingsProvider;
 
   /**
-   * Resolves `productTitleString`, the ONE product-presentation key this component reads - at
-   * [model/entity/Product.cfc:L542], inside `getTitle()`.
+   * The ALREADY-RESOLVED value of `productTitleString`, the one product-presentation setting this
+   * component reads - at [model/entity/Product.cfc:L542], inside `getTitle()`.
    *
-   * A SECOND, SEPARATE PROVIDER RATHER THAN A FIFTH KEY ON THE FIRST ONE, because
-   * `../ports/settingsProvider.js` is frozen by the plan at four keys and `productTitleString` is
-   * not one of them. The composition root implements BOTH contracts on ONE object, so a setting
-   * still has exactly one resolution and one value - see that port file's section header.
+   * ★★★ A PLAIN IMMUTABLE STRING, NOT A RESOLVER, AND THAT IS A REVIEW FINDING'S RESOLUTION. This
+   * member used to be `productPresentationSettingsProvider`, typed to a second
+   * `ProductPresentationSettingsProvider` contract, defended on the ground that
+   * `../ports/settingsProvider.js` is frozen at four keys so a fifth key was unavailable. The premise
+   * holds; the remedy did not. A second resolver interface is a second settings contract for the
+   * domain to depend on, wherever it is declared, so it widened the frozen architecture rather than
+   * respecting it. Handing over the ANSWER is strictly narrower than handing over the ability to ask:
+   * this entity can render the template it was given and can resolve nothing else.
+   *
+   * RESOLVED ONCE, AT COMPOSITION TIME, from the same `SwSetting` rows {@link SettingsProvider} reads,
+   * so a setting still has exactly one resolution and one value. It is the same arrangement
+   * {@link SkuConstructorInput}'s image-naming values already use for the other two presentation keys.
    *
    * That key's default value is declared at [model/service/SettingService.cfc:L193] and MUST NOT be
    * transcribed into this file in any form, not even inside a comment (E6, prohibition 5). It is a
-   * TEMPLATE rather than a title; `getTitle()` renders it.
+   * TEMPLATE rather than a title; `getTitle()` renders it, and the `${...}` markers in it are LEGACY
+   * TEMPLATE SYNTAX with no JavaScript meaning - the value is never evaluated, only scanned.
+   *
+   * OPTIONAL, on exactly the terms `settingsProvider` is optional: hydration builds products for
+   * paths that never render a title, and `getTitle()` refuses by naming the missing collaborator
+   * rather than substituting a template of its own.
    */
-  readonly productPresentationSettingsProvider?: ProductPresentationSettingsProvider;
+  readonly productTitleTemplate?: string;
 
   /**
    * Discharges the [L367] and [L626] reaches.
@@ -944,18 +966,17 @@ export class Product {
   private readonly nextOptionGroupSortOrder: number | undefined;
 
   // -------------------------------------------------------------------------
-  // INJECTED PORTS - the five collaborators that discharge the surviving outward reaches (T1/T2)
+  // INJECTED PORTS - the collaborators that discharge the surviving outward reaches (T1/T2)
   // -------------------------------------------------------------------------
 
   /** Resolves `globalURLKeyProduct` for [L208] and [L212]. Synchronous. */
   private readonly settingsProvider: SettingsProvider | undefined;
 
   /**
-   * Resolves `productTitleString` for [L542]. Synchronous. A SEPARATE contract from the four-key
-   * port above - see the constructor-input member for why.
+   * The resolved `productTitleString` value `getTitle()` renders at [L542]. DATA, NOT A PORT - see
+   * the constructor-input member for why the second resolver contract it replaced is gone.
    */
-  private readonly productPresentationSettingsProvider:
-    ProductPresentationSettingsProvider | undefined;
+  private readonly productTitleTemplate: string | undefined;
 
   /** Discharges [L367] `getSkusBySelectedOptions` and [L626] `getTransactionExistsFlag`. */
   private readonly skuRepository: SkuRepository | undefined;
@@ -1151,8 +1172,8 @@ export class Product {
     if (input.settingsProvider !== undefined) {
       this.settingsProvider = input.settingsProvider;
     }
-    if (input.productPresentationSettingsProvider !== undefined) {
-      this.productPresentationSettingsProvider = input.productPresentationSettingsProvider;
+    if (input.productTitleTemplate !== undefined) {
+      this.productTitleTemplate = input.productTitleTemplate;
     }
     if (input.skuRepository !== undefined) {
       this.skuRepository = input.skuRepository;
@@ -1736,20 +1757,25 @@ export class Product {
    *
    * @returns the rendered title. NEVER `undefined` - the legacy return type is `string` and the
    *   renderer always answers, at worst the template with every marker rendered empty or literal.
-   * @throws when the product-presentation settings provider was not supplied, on the same terms as
-   *   `getProductURL()`: the collaborator is optional at construction so hydration can build a
-   *   product for paths that never read a setting, and a path that does read one says so.
+   * @throws when the resolved title template was not supplied, on the same terms as
+   *   `getProductURL()` refuses a missing settings provider: the value is optional at construction so
+   *   hydration can build a product for paths that never render a title, and a path that does render
+   *   one says so rather than substituting a template of its own.
    */
   public getTitle(): string {
     if (this.titleRendered) {
       return this.title;
     }
 
-    if (this.productPresentationSettingsProvider === undefined) {
-      throw this.missingCollaborator('product presentation settings provider', 'L542');
-    }
+    // ★ THE VALUE, NOT A RESOLVER. This used to read
+    // `this.productPresentationSettingsProvider.setting('productTitleString')`; the composition root
+    // now resolves that key once and hands over the answer, so the refusal names the missing VALUE
+    // and no second settings contract reaches the domain layer. Everything below is unchanged.
+    const template: string | undefined = this.productTitleTemplate;
 
-    const template: string = this.productPresentationSettingsProvider.setting('productTitleString');
+    if (template === undefined) {
+      throw this.missingCollaborator('resolved product title template', 'L542');
+    }
 
     // CFML parity [org/Hibachi/HibachiUtilityService.cfc:L71]:
     //   reMatchNoCase("\${[^}]+}", arguments.template)
@@ -3556,7 +3582,7 @@ export class Product {
   //
   // LEGACY-NOTE [model/entity/Product.cfc:L178-L180, L223-L225, L267-L339, L497-L515]: the image path
   // requires `globalAssetsImageFolderPath` [model/service/SettingService.cfc:L164], which is NOT one
-  // of the seven keys published by ../ports/settingsProvider.js - and `imageStore` is a STUB port
+  // of the four keys published by ../ports/settingsProvider.js - and `imageStore` is a STUB port
   // for out-of-scope branches only. This is the same reasoning that omitted `Option.getImageDirectory()`
   // [model/entity/Option.cfc:L81-L83] and the whole of `Sku`'s image path, and the annotation wording
   // is matched to src/domain/entities/sku.ts so the two largest entities read consistently.
@@ -3577,7 +3603,7 @@ export class Product {
   //
   // LEGACY-NOTE [model/entity/Product.cfc:L399-L492, L547-L553]: `Stock`, `Location` and every
   // inventory entity are out of scope, and `skuAllowBackorderFlag` [model/service/SettingService.cfc:L219]
-  // is not one of the seven keys ../ports/settingsProvider.js declares - it is explicitly excluded from
+  // is not one of the four keys ../ports/settingsProvider.js declares - it is explicitly excluded from
   // that union. The persisted snapshots `calculatedQATS` [L63] and
   // `calculatedAllowBackorderFlag` [L64] ARE preserved and readable, so the schema contract is
   // intact; only the RECOMPUTATION is out of scope. `getQuantity` also holds the only three
@@ -3594,7 +3620,7 @@ export class Product {
   //
   // LEGACY-NOTE [model/entity/Product.cfc:L146-L153, L171-L176, L215-L221, L370-L398]: the Mura CMS
   // bridge is out of scope, `Content` and `Template` are not among the eighteen entities,
-  // `productDisplayTemplate` is not one of the seven `SettingKey` members, and two of the four
+  // `productDisplayTemplate` is not one of the four `SettingKey` members, and two of the four
   // build a `HibachiSmartList`. Schema continuity is unaffected: `Category.cmsCategoryID` (index
   // `RI_CMSCATEGORYID`) and its `site` association survive as inert persisted columns in
   // src/domain/entities/category.ts.
@@ -3626,18 +3652,20 @@ export class Product {
   // [L536], preserved as an inert constant in `ProductLegacyMetadata` because JavaRB is not ported.
   //
   // ---------------------------------------------------------------------------------------------
-  // CLUSTER 6 - THE PRODUCT TITLE.  ONE MEMBER.  getTitle()  [L540-L545]
+  // CLUSTER 6 - THE PRODUCT TITLE.  NOTHING IS OMITTED HERE.  getTitle()  [L540-L545]  IS PORTED.
   //
-  // LEGACY-NOTE [model/entity/Product.cfc:L540-L545]: `getTitle()` reads
-  // `setting('productTitleString')` - declared at [model/service/SettingService.cfc:L193] - and
-  // hands it to `hibachiUtilityService.replaceStringTemplate(...)` via `getService` at [L542]. ONE
-  // boundary blocks it, and it is NOT a settings boundary: `productTitleString` IS one of the seven
-  // keys ../ports/settingsProvider.js declares - the fifth of them - and this entity holds the
-  // provider that resolves it, exactly as the class header records. What is missing is the
-  // RENDERER: `replaceStringTemplate` is an unported Hibachi utility, so the `${...}` markers in
-  // the value have nothing to resolve them. The default template text is deliberately NOT quoted
-  // here and NOT carried in `ProductLegacyMetadata`. The persisted snapshot `calculatedTitle` [L65]
-  // IS preserved.
+  // ★★ QUOTE-THEN-REVISE. This cluster used to register `getTitle()` as an OMISSION, on the ground
+  // that "`productTitleString` IS one of the seven keys ../ports/settingsProvider.js declares - the
+  // fifth of them" while "what is missing is the RENDERER". Both halves are now wrong. `SettingKey`
+  // is closed at FOUR and `productTitleString` is not among them; and the renderer is no longer
+  // missing - `replaceStringTemplate` [org/Hibachi/HibachiUtilityService.cfc:L70-L100] is EXTRACTED
+  // (not modified) inside {@link Product.getTitle} above, at its own documented outcomes.
+  //
+  // What reaches that method is `productTitleTemplate`, the composition root's already-resolved value
+  // for `setting('productTitleString')` [model/service/SettingService.cfc:L193] - data rather than a
+  // resolver, for the reason recorded on the constructor-input member. The default template text is
+  // deliberately NOT quoted here and NOT carried in `ProductLegacyMetadata`. The persisted snapshot
+  // `calculatedTitle` [L65] IS preserved and is deliberately NOT a substitute for the live render.
   //
   // ---------------------------------------------------------------------------------------------
   // CLUSTER 7 - NOTHING IS OMITTED HERE.  `getSalePriceDetailsForSkus()` IS PORTED, under §3.9

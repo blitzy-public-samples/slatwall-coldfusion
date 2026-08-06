@@ -123,12 +123,20 @@
 //     see Option C. `mysql2`, `decimal.js` and `zod` are bundled, never externalised.
 //   * NO `define`. Configuration is environment-driven and the runtime injects environment
 //     variables natively, so baking a host, database name, user or credential into a build artifact
-//     is exactly what that design prevents. `src/lib/config.ts` owns SEVENTEEN of the nineteen keys
-//     in the committed contract and is the only module that validates one; `src/lib/logger.ts` reads
-//     `LOG_LEVEL` for itself, and `TEST_LIVE_DATABASE` is read by `tests/setup.ts`, which never
-//     reaches an artifact. All three are named because "one module reads the environment" would be
-//     a claim this build cannot make good on - and the property that actually matters here is that
-//     NO value is resolved at BUILD time, whichever module reads it at run time.
+//     is exactly what that design prevents. `src/lib/config.ts` owns EIGHTEEN of the nineteen keys in
+//     the committed contract and is the only module that validates one; the nineteenth,
+//     `TEST_LIVE_DATABASE`, is read by `tests/setup.ts`, which never reaches an artifact. So
+//     `src/lib/config.ts` IS the sole reader of `process.env` under `src/**`, and the property that
+//     matters most here is independent of that anyway: NO value is resolved at BUILD time, whichever
+//     module reads it at run time.
+//
+//     QUOTE-THEN-REVISE: this bullet read "owns SEVENTEEN of the nineteen keys [...]
+//     `src/lib/logger.ts` reads `LOG_LEVEL` for itself [...] All three are named because 'one module
+//     reads the environment' would be a claim this build cannot make good on". It was accurate when
+//     written and a code review found it stale: the logging threshold is resolved in
+//     `src/lib/config.ts` now - see the comment at its `resolveLogging` call, which states that it is
+//     resolved there rather than by the logger precisely so the sole-reader property holds - so the
+//     count is eighteen and the caveat no longer applies.
 //   * NO `banner`. See Option B.
 //   * NO plugin. The dependency set is fixed at exact pinned versions, and a plugin package would
 //     breach that standard for no behavioural gain.

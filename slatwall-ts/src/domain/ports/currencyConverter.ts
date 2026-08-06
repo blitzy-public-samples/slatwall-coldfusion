@@ -323,13 +323,17 @@
 //   idiomatically. The lint configuration deliberately enables no
 //   naming-convention rule, for precisely this reason.
 //
-//   Four modules now depend on these names - `src/domain/entities/sku.ts`,
-//   `src/integrations/europeanCentralBankCurrencyConverter.ts`,
+//   Three modules now depend on these names - `src/domain/entities/sku.ts`,
 //   `src/handlers/priceResolutionHandler.ts` and the composition root
-//   `src/handlers/bootstrap.ts` - so a rename would break the currency cascade,
-//   its only adapter and its entrypoint together. They were published as
-//   canonical while nothing yet depended on them, precisely so that they would
-//   never have to change once something did. They are not to be renamed.
+//   `src/handlers/bootstrap.ts`, which is also where the only implementation
+//   lives - so a rename would break the currency cascade, its adapter and its
+//   entrypoint together. QUOTE-THEN-REVISE: this named FOUR, listing
+//   `src/integrations/europeanCentralBankCurrencyConverter.ts` as the adapter;
+//   that module was withdrawn as unplanned architecture and its behaviour moved
+//   into the composition root, so the count and the path are corrected here. The
+//   names were published as canonical while nothing yet depended on them,
+//   precisely so that they would never have to change once something did. They
+//   are not to be renamed.
 //
 // NO USER RULES WERE PROVIDED
 //   Stated explicitly rather than passed over. The project rules document was
@@ -500,10 +504,32 @@ export interface CurrencyConverter {
    * by the source rate unless the source is already EUR, multiplying by the target rate, and rounding
    * the result to two decimal places.
    *
+   * ★★★ A TOTAL FUNCTION. It answers for EVERY pair of codes and has NO failure mode of its own: when
+   * a rate is unavailable - because a code is unlisted, because the table is empty, or because no
+   * table was configured at all - the amount is returned UNCHANGED. That is the [L100-L101] behaviour
+   * above, and it is the contract every consumer is written against: `Sku.getCurrencyDetails()`
+   * consumes the result as a price [model/entity/Sku.cfc:L416-L428], and
+   * `src/handlers/priceResolutionHandler.ts` publishes its `convertCurrency` operation with no error
+   * path.
+   *
+   * ★★ AND THE SOLE ADAPTER USED TO BREAK IT. It rejected an EMPTY rate table with a
+   * `CurrencyRateTableUnavailableError`, distinguishing "table never obtained" from "code unlisted" on
+   * the strength of the legacy's own two failure states. Code review recorded the caller/callee
+   * disagreement that produced: a promise of totality reached through a partial implementation, with
+   * the rejection class arriving at a routed operation documented as unable to fail. The frozen
+   * contract is this one, so the adapter was made total rather than this promise weakened.
+   *
+   * AN UNAVAILABLE RATE IS THEREFORE AN OBSERVABILITY EVENT, NOT AN ERROR. An implementation MUST
+   * report it - the composition root's converter notifies a pass-through observer on every occurrence
+   * and logs once at wiring time when it is handed an empty table - and MUST NOT signal it in the
+   * return value, because the legacy return carries no such distinction and a substituted marker
+   * would be indistinguishable from a real price.
+   *
    * @param amount the amount expressed in `originalCurrencyCode`.
    * @param originalCurrencyCode the currency `amount` is denominated in.
    * @param convertToCurrencyCode the currency to express the result in.
-   * @returns the converted amount, or `amount` unchanged when no rate is available.
+   * @returns the converted amount, or `amount` unchanged when no rate is available. NEVER rejects for
+   *   an unavailable rate.
    */
   convertCurrency(
     amount: Money,

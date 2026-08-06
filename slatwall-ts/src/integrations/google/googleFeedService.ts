@@ -397,11 +397,16 @@ export class GoogleFeedService implements ProductFeedPort {
    *   and must not be moved into it: this module may hold no allow-list, and a request may not supply
    *   one.
    *
-   *   WHICH MAKES A FORWARDED HEADER SAFE WITHOUT MAKING IT TRUSTED: where a deployment has supplied
-   *   a list, the header can only SELECT AMONG ALREADY-APPROVED ORIGINS AND CAN NEVER INTRODUCE ONE.
-   *   An empty allow-list refuses everything, which is the safe failure and not a bypass. The legacy
-   *   endpoint is public and unauthenticated as a matter of source fact
-   *   [integrationServices/google/controllers/feed.cfc:L54-L56], and that is unchanged.
+   *   WHICH MAKES A FORWARDED HEADER SAFE WITHOUT MAKING IT TRUSTED: the header can only SELECT AMONG
+   *   ALREADY-APPROVED ORIGINS AND CAN NEVER INTRODUCE ONE. ★★ THAT USED TO BE QUALIFIED "where a
+   *   deployment has supplied a list", and the qualification was the hole: when none was supplied the
+   *   composition root admitted the header itself, so the default deployment forwarded exactly the
+   *   unchecked header this obligation forbids. Code review recorded it as CWE-346. The
+   *   qualification is gone - membership is unconditional, an unconfigured deployment authorizes NO
+   *   host, and an empty authorized list refuses everything, which is the safe failure and not a
+   *   bypass. The legacy endpoint is public and unauthenticated as a matter of source fact
+   *   [integrationServices/google/controllers/feed.cfc:L54-L56], and that is unchanged: what the
+   *   deployment now decides is which AUTHORITY it publishes on, not who may ask.
    *
    *   NO SCHEME CROSSES THIS BOUNDARY. `criteria.feedHost` is the AUTHORITY only; the scheme is the
    *   frozen legacy `http://` literal owned by `FEED_ORIGIN_SCHEME_PREFIX` in

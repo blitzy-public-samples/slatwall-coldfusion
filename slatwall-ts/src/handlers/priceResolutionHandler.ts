@@ -836,7 +836,14 @@ export interface PriceResolutionScope {
   readonly currentAccountContext: CurrentAccountContext;
 
   /**
-   * The five READ-ONLY loads by identifier this entrypoint binds its service arguments from.
+   * The READ-ONLY loads by identifier this entrypoint binds its service arguments from.
+   *
+   * ★ THE COUNT USED TO BE STATED HERE AS FIVE AND IS NOT STATED ANY MORE. It is
+   * `RequestEntityLoaders`' count, not this module's, and it moved to seven when the catalog
+   * capability needed a brand and an option set; restating it here is how a second copy of a
+   * number goes stale. THIS entrypoint binds from exactly five of them, which is what the
+   * five `Awaited<ReturnType<...>>` aliases below enumerate - derived from the interface, so
+   * they cannot drift from it.
    *
    * ★★★ THIS MEMBER REPLACED `productService.findProducts` AND `skuService.getProductSkus`, AND THE
    * REPLACEMENT IS THE STRUCTURAL HALF OF FINDING F3. Those two reads were the ONLY published way to
@@ -845,10 +852,13 @@ export interface PriceResolutionScope {
    * product's SKUs to reach one row, and that an operation named `...BasedOnPriceGroup` had its price
    * group chosen for it because nothing could load one.
    *
-   * `RequestEntityLoaders` publishes exactly what binding needs and nothing else: five loads, each
-   * delegating to ONE repository read, with no save, no delete and no entity-taking member reachable
-   * through it. The withdrawal of the six MySQL repositories from `RequestScope` - made because they
-   * carried seven durable mutations - therefore still holds in full.
+   * `RequestEntityLoaders` publishes exactly what binding needs and nothing else: a load per entity a
+   * handler has to bind, each answering ONE identifier, with no save, no delete and no entity-taking
+   * member reachable through it. THIS module reaches five of them; the catalog capability added two more
+   * for a `Brand` and a set of `Option`s, and both are reads on the same terms. The withdrawal of the six
+   * MySQL repositories from `RequestScope` - made because they carried seven durable mutations -
+   * therefore still holds in full, and the count is deliberately not restated here: the member's own
+   * declaration is where it is enumerated.
    *
    * THE SEARCH READS ARE GONE RATHER THAN KEPT ALONGSIDE, deliberately: leaving `findProducts` on this
    * interface would leave the name-search path reachable, and a later change could quietly resurrect
@@ -1462,6 +1472,20 @@ export async function dispatchPriceResolution(
     // either code is missing from the rate table, so there is no error path here, no warning in the
     // response, no "conversion unavailable" status and no rate-source indicator. A caller cannot tell
     // a converted amount from an unconverted one, exactly as in the legacy.
+    //
+    // ★★★ AND THE ADAPTER NOW HOLDS THAT UP, WHICH IT BRIEFLY DID NOT. `./bootstrap.js`'s converter
+    // rejected an EMPTY rate table with a dedicated error class, distinguishing "no table was ever
+    // obtained" from "this code is unlisted". That made this comment a claim about a contract the sole
+    // implementation did not keep: the rejection arrived here as an unrecognised throw and
+    // `./errorMapper.js` reduced it to a generic 500 on an operation documented as unable to fail.
+    // Code review recorded the caller/callee disagreement, `../domain/ports/currencyConverter.js`
+    // publishes the total function as the frozen contract, and the adapter was made total. UNAVAILABLE
+    // RATES ARE REPORTED THROUGH OBSERVABILITY - a pass-through observer per occurrence and one
+    // wiring-time log line - never through this response.
+    //
+    // NOTHING WAS ADDED HERE FOR IT. There is still no error path, no status and no indicator on this
+    // operation, which is the whole point: the fix belonged in the implementation that broke the
+    // contract, not in the caller that trusted it.
     //
     // The port's `// TODO: add integration support` carry-forward [model/service/CurrencyService.cfc:L81]
     // stays where it is, flagged and NOT silently completed, and this module adds nothing that would

@@ -3419,7 +3419,7 @@ describe('SkuService', () => {
       //
       // AN EARLIER REVISION ASSERTED A REJECTION HERE and defended it on one ground: that
       // `Sku.getImagePath()` [model/entity/Sku.cfc:L145-L147] reads an asset root that is not
-      // among the seven keys `src/domain/ports/settingsProvider.ts` publishes -
+      // among the four keys `src/domain/ports/settingsProvider.ts` publishes -
       // `globalAssetsImageFolderPath` [model/service/SettingService.cfc:L164], which that union
       // excludes by name. THE PREMISE IS TRUE AND THE CONCLUSION DOES NOT FOLLOW. It
       // establishes that the ENTITY may not

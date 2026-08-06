@@ -876,10 +876,11 @@ describe('renderGoogleProductFeed - element 16, the unguarded shipping weight', 
   //   skuShippingWeightUnitCode  [model/service/SettingService.cfc:L233]  "lb"
   //
   // AND ITS BINDING RECONCILIATION. The settings contract at
-  // `src/domain/ports/settingsProvider.ts` is locked to a SEVEN-key union that
+  // `src/domain/ports/settingsProvider.ts` is locked to a FOUR-key union that
   // EXCLUDES both shipping-weight keys, and the port set is locked at thirteen, so
-  // admitting an eighth key or adding a fourteenth port would be a scope
-  // violation. That contract is therefore NOT extended, NOT reshaped and NOT
+  // admitting a fifth key or adding a fourteenth port would be a scope violation.
+  // (This read SEVEN-key, and "an eighth key", until a code review measured the
+  // shipped union; the exclusion it turns on was never in doubt.) That contract is therefore NOT extended, NOT reshaped and NOT
   // imported by this suite - a hard ban. Both weight values instead arrive as
   // already-resolved STRING FIELDS on the read-only projection, which is the right
   // shape anyway: a pure renderer has no business resolving configuration. The two

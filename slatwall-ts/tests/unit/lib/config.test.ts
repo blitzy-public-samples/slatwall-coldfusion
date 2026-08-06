@@ -125,22 +125,32 @@ describe('appConfig.load', () => {
     // of them had.
     const config = load();
 
-    // QUOTE-THEN-REVISE: this asserted `toStrictEqual([])`, and an empty list is what
-    // `assertAllowedFeedHost` refuses everything against - so the baseline case was pinning a
-    // deployment that cannot serve the feed the source publishes publicly (F40). UNSET is now
-    // `undefined`, which means NO HOST POLICY and admits the request's own authority. An empty
-    // list is still reachable, and still deny-all, but only by asking for it.
-    expect(config.feed.allowedHosts).toBeUndefined();
+    // QUOTE-THEN-REVISE, TWICE. It first asserted `toStrictEqual([])`; it was then changed to
+    // `toBeUndefined()` because "an empty list is what `assertAllowedFeedHost` refuses everything
+    // against - so the baseline case was pinning a deployment that cannot serve the feed the source
+    // publishes publicly (F40)", with `undefined` meaning NO HOST POLICY and admitting the request's
+    // own authority. That second state is the CWE-346 exposure code review recorded: it made a
+    // caller-authored `Host` the DEFAULT origin of a merchant feed. It is an empty list again, and
+    // the earlier objection is answered by making the refusal ACTIONABLE rather than by trusting the
+    // request - the refusal names `FEED_ALLOWED_HOSTS`, and authorizing a host is one variable.
+    expect(config.feed.allowedHosts).toStrictEqual([]);
     expect(config.currency.europeanCentralBankRates).toStrictEqual({});
     expect(config.currency.ratesRetrievedAt).toBeUndefined();
   });
 
-  it('★★★ distinguishes an UNSET feed allow-list from an explicitly empty one (F40)', () => {
-    // The three states, pinned side by side. The middle one is the whole finding: a variable that
-    // is PRESENT and names nothing is an operator saying "publish no feed", and a variable that is
-    // ABSENT is an operator who never made that decision at all. Folding the second into the first
-    // is what disabled the capability by default.
-    expect(load().feed.allowedHosts).toBeUndefined();
+  it('★★★ resolves an UNSET feed allow-list to the SAME empty list an explicitly empty one gives', () => {
+    // ★★★ THIS CASE ASSERTED THE OPPOSITE AND WAS NAMED FOR IT: "distinguishes an UNSET feed
+    // allow-list from an explicitly empty one (F40)", with `undefined` for unset and `[]` for empty,
+    // reasoning that "a variable that is PRESENT and names nothing is an operator saying 'publish no
+    // feed', and a variable that is ABSENT is an operator who never made that decision at all".
+    //
+    // The distinction is real and the CONSEQUENCE drawn from it was the defect: `undefined` was read
+    // by the composition root as "admit whatever `Host` the request carries", so the operator who
+    // "never made that decision" got the least safe one made for them, by default, on a merchant feed
+    // whose links a third party fetches (CWE-346). This file draws absent-versus-empty distinctions
+    // everywhere it changes an OUTCOME; here both states mean the same thing about deployment intent -
+    // no authority has been authorized - so they resolve to one value and the feed fails closed.
+    expect(load().feed.allowedHosts).toStrictEqual([]);
     expect(load({ FEED_ALLOWED_HOSTS: '' }).feed.allowedHosts).toStrictEqual([]);
     expect(load({ FEED_ALLOWED_HOSTS: '   ' }).feed.allowedHosts).toStrictEqual([]);
     expect(load({ FEED_ALLOWED_HOSTS: ',,' }).feed.allowedHosts).toStrictEqual([]);
@@ -148,8 +158,9 @@ describe('appConfig.load', () => {
       'shop.example.com',
     ]);
 
-    // A present-but-empty value still FREEZES what it publishes, so deny-all cannot be widened at
-    // run time any more than an allow-list can.
+    // Every one of those states FREEZES what it publishes, so neither deny-all nor an allow-list can
+    // be widened at run time.
+    expect(Object.isFrozen(load().feed.allowedHosts)).toBe(true);
     expect(Object.isFrozen(load({ FEED_ALLOWED_HOSTS: '' }).feed.allowedHosts)).toBe(true);
   });
 
@@ -970,7 +981,9 @@ describe('appConfig.load', () => {
       ECB_REFERENCE_RATES: 'USD=1.0850',
       ECB_RATES_RETRIEVED_AT: RETRIEVED_AT,
     });
-    expect(ratesOnly.feed.allowedHosts).toBeUndefined();
+    // An empty list, not `undefined`: a deployment that configured rates and no feed hosts
+    // authorizes no feed authority and therefore publishes no feed.
+    expect(ratesOnly.feed.allowedHosts).toStrictEqual([]);
     expect(ratesOnly.currency.europeanCentralBankRates).toStrictEqual({ USD: '1.0850' });
   });
 

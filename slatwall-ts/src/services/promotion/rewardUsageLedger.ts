@@ -93,7 +93,7 @@
  * branch opening at [model/service/PromotionService.cfc:L345] and the
  * order-level branch opening at [model/service/PromotionService.cfc:L415].
  *
- * LEGACY-NOTE [model/service/PromotionService.cfc:L542-L544]: the project's one carried-forward legacy TODO - `// TODO [issue #1766]`, the return/exchange branch that does nothing - sits in the facade's span and is NOT absorbed here.
+ * LEGACY-NOTE [model/service/PromotionService.cfc:L542-L544]: the legacy TODO the plan names by ticket number - `// TODO [issue #1766]`, the return/exchange branch that does nothing - sits in the facade's span and is NOT absorbed here. (It is the headline one rather than the only one: the in-scope slice carries five legacy TODOs, and the other four are at [model/dao/ProductDAO.cfc:L64], [model/dao/SkuDAO.cfc:L177], [model/service/CurrencyService.cfc:L81] and [model/entity/ProductType.cfc:L93], each carried forward in the module that owns it.)
  * It is recorded only so that its absence from this file reads as a boundary decision rather than as an omission.
  *
  * ==================== THE 1000000 SENTINEL DOES ARITHMETIC =================

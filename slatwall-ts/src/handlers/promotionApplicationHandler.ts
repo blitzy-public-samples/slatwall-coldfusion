@@ -2538,13 +2538,30 @@ export const handler: PromotionApplicationHandler = createPromotionApplicationHa
 // against whichever reward happened to be last, for EVERY key in the ledger.
 // Preserved deliberately; do not fix without a product decision.
 //
-//   TODO [defect 9]: enforcing the limit against `prID` instead of the leaked
-//   `reward` changes the amount a customer is charged. It needs a product decision
-//   and a repricing plan, not a code change. This handler returns whatever intents
-//   that loop leaves behind and repairs nothing: it adds no `ORDER BY` and no sort
-//   to the reward collection, which `getActivePromotionRewards`
-//   [model/dao/PromotionDAO.cfc:L51-L132] deliberately leaves unordered, so which
-//   reward is "last" stays as non-deterministic in the target as it is in the source.
+//   WHY IT IS NOT REPAIRED [defect 9]: enforcing the limit against `prID` instead
+//   of the leaked `reward` changes the amount a customer is charged. It needs a
+//   product decision and a repricing plan, not a code change. This handler returns
+//   whatever intents that loop leaves behind and repairs nothing: it adds no
+//   `ORDER BY` and no sort to the reward collection, which
+//   `getActivePromotionRewards` [model/dao/PromotionDAO.cfc:L51-L132] deliberately
+//   leaves unordered, so which reward is "last" stays as non-deterministic in the
+//   target as it is in the source.
+//
+//   ★★★ THIS PARAGRAPH OPENED `TODO [defect 9]:` AND A CODE REVIEW WAS RIGHT TO
+//   REJECT THE KEYWORD. Every word of the reasoning is unchanged; only the label
+//   moved. AAP 0.6.7 places defect 9 among the twenty legacy defects REPRODUCED
+//   deliberately - it is the leaked-`reward` over-use strip, the sharpest example in
+//   the register of why this port is not a cleanup exercise - and a reproduced defect
+//   is a settled decision, not a task. AAP 0.8.1 carries a SOURCE TODO forward as a
+//   flagged TODO so that the TODO markers in this subtree are exactly the legacy
+//   deferrals - five of them across the whole in-scope slice, at
+//   [model/service/PromotionService.cfc:L543], [model/dao/ProductDAO.cfc:L64],
+//   [model/dao/SkuDAO.cfc:L177], [model/service/CurrencyService.cfc:L81] and
+//   [model/entity/ProductType.cfc:L93]. [model/service/PromotionService.cfc:L468-L521]
+//   carries no TODO of its own, so writing one here announced deferred work the plan
+//   had already decided against and diluted the five markers that mean something. The
+//   `// TODO [issue #1766]` this file DOES carry forward, further below, is the first of
+//   those five and is unaffected.
 //
 // ---------------------------------------------------------------------------
 // LEGACY-DEFECT [model/service/PromotionService.cfc:L621-L623]: the qualification

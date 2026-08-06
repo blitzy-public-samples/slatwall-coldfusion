@@ -1081,8 +1081,32 @@ const MAX_ROUTE_DIAGNOSTIC_LENGTH = 120;
  * DROPPED rather than substituted: `?`, `#`, `&` and `=` are the markers that say "structured path
  * ends, opaque caller payload begins", so the interesting boundary is where they FIRST occur, and
  * keeping anything after one would keep exactly the part that carries a token.
+ *
+ * ★★★ THE COMMA WAS ADDED, AND IT IS THE ONE CHARACTER IN THIS CLASS THAT COMES FROM THE ROUTE TABLE
+ * RATHER THAN FROM A CALLER. QUOTE-THEN-REVISE: the class was `/[^A-Za-z0-9/_. -]/` and was written
+ * when every row of `ROUTE_TABLE` declared exactly one method, so `METHOD /path` never contained a
+ * separator. A code review then required the catalog row to serve `GET,POST`, and
+ * {@link routeDiagnosticLabel} renders a row's declaration VERBATIM - so the label became
+ * `GET,POST /catalog/products`, the cut fired on the table's OWN comma, and every catalog log line read
+ * `GET[trailing content dropped]`. That is worse than uninformative: it names a reduction that did not
+ * happen, hides which route was served, and destroys the grouping key the label exists to be.
+ *
+ * ADMITTING IT CHANGES NO SECURITY PROPERTY, and that is checkable rather than asserted. The three
+ * defences of {@link sanitizeRouteDiagnostic} are unaffected: the cut still fires on `?`, `#`, `&` and
+ * `=`, {@link MAX_ROUTE_SEGMENT_LENGTH} still replaces any segment long enough to be a credential, and
+ * {@link MAX_ROUTE_DIAGNOSTIC_LENGTH} still bounds the whole label. Nor does the comma give a caller
+ * anything new: `/`, `_`, `.`, `-` and space are already admitted, so a caller that wanted to place
+ * text on the line could already do so with any of them - and the emission is serialized as JSON, where
+ * a comma inside a string value is data and cannot open a field. What the comma is NOT is a
+ * "structured path ends" marker, which is the sole ground the four cut characters are chosen on: it is
+ * an RFC 3986 sub-delimiter, legal inside a path segment, and it separates nothing opaque.
+ *
+ * THE ALTERNATIVE WAS TO MANGLE THE TABLE'S DECLARATION - render `GET,POST` as `GET POST` or `GET.POST`
+ * so it fit the existing class - and it was rejected: the label would then agree with no route table,
+ * no router primitive and no `listFindNoCase` call, which is a worse trade than one legal path
+ * character.
  */
-const ROUTE_DIAGNOSTIC_DISALLOWED = /[^A-Za-z0-9/_. -]/;
+const ROUTE_DIAGNOSTIC_DISALLOWED = /[^A-Za-z0-9/_., -]/;
 
 /** The path separator, used to bound each segment independently. */
 const ROUTE_SEGMENT_SEPARATOR = '/';
@@ -1971,17 +1995,28 @@ export function resolveRequestPrincipal(event: APIGatewayProxyEvent): RequestPri
 // both call sites cap the request body's byte length before parsing, so the node count is bounded by
 // that cap, and a document produced by `JSON.parse` cannot contain a cycle.
 //
-// Both properties are held by {@link containsPrototypeMemberKey} above, which is the only form of this
-// guard the subtree publishes.
+// Both properties are held by {@link containsPrototypeMemberKey} above, which is now the only form of
+// this guard the subtree publishes. Verifiably so: `findPrototypeKeyPath` is not exported from
+// anywhere, and a search of `src/**` for it returns no declaration and no import.
 // ===========================================================================
 // ---------------------------------------------------------------------------
-// A PATH-RETURNING FORM OF THIS GUARD WAS BRIEFLY PUBLISHED HERE, AND IT IS DELIBERATELY GONE.
+// A PATH-RETURNING FORM OF THIS GUARD WAS BRIEFLY PUBLISHED, AND IT IS DELIBERATELY GONE.
 //
 // Two code reviews landed on the same helper from opposite directions. One required the detection
-// folded out of an unplanned module and into this one; the other recorded that RETURNING the offending
-// key's dotted ancestor path re-published caller-authored text (CWE-209/CWE-532), since the caller
-// chooses every segment of it. Both are satisfied by the predicate above: the detection lives here,
-// and {@link PROTOTYPE_MEMBER_FIELD_ISSUE} publishes a path this module owns rather than one the
+// folded out of an unplanned module and into an enumerated one; the other recorded that RETURNING the
+// offending key's dotted ancestor path re-published caller-authored text (CWE-209/CWE-532), since the
+// caller chooses every segment of it. Both are satisfied by the predicate above: the detection lives
+// here, and {@link PROTOTYPE_MEMBER_FIELD_ISSUE} publishes a path this module owns rather than one the
 // caller wrote. A predicate structurally cannot assemble a caller path, which is why the path-returning
 // form is not kept alongside it "just in case" - keeping it would leave the leak one import away.
+//
+// ★★★ AND THIS PARAGRAPH RAN AHEAD OF THE FACTS, WHICH IS ITSELF A REVIEW FINDING. It was written
+// while a SECOND copy of the path-returning function was still exported from `../lib/cfml/struct.ts`,
+// where the layout review had relocated it. The sentence above said the form was "gone" and the one
+// before it said the predicate was "the only form ... the subtree publishes"; neither was true of the
+// subtree, only of this file. The response was to make the claims true rather than to soften them: the
+// `struct.ts` export, its module-private stack helpers and its suite are deleted, with the reasoning
+// recorded at the site each occupied, and every behavioural property they pinned is asserted against
+// the predicate in `tests/unit/handlers/errorMapper.test.ts`. Nothing was weakened here, and nothing
+// was silently dropped there.
 // ---------------------------------------------------------------------------

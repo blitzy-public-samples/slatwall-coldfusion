@@ -1922,7 +1922,7 @@ type ProductHydrationCollaborators = Readonly<
   Pick<
     ProductHydrationInput,
     | 'settingsProvider'
-    | 'productPresentationSettingsProvider'
+    | 'productTitleTemplate'
     | 'skuRepository'
     | 'optionRepository'
     | 'subscriptionTermProvider'
@@ -2974,8 +2974,12 @@ function rebuildProduct(
     draft.modifiedByAccountID = modifiedByAccountID;
   }
 
-  if (collaborators.productPresentationSettingsProvider !== undefined) {
-    draft.productPresentationSettingsProvider = collaborators.productPresentationSettingsProvider;
+  // ★ THE RESOLVED TITLE TEMPLATE IS DATA, NOT A PORT, and it is forwarded here for the same reason
+  // every other hydration input is: the composition root resolved it once and this is the one place a
+  // `Product` is built. It used to be `productPresentationSettingsProvider`, a second settings
+  // resolver contract code review recorded as a widening of the frozen settings architecture.
+  if (collaborators.productTitleTemplate !== undefined) {
+    draft.productTitleTemplate = collaborators.productTitleTemplate;
   }
 
   if (collaborators.settingsProvider !== undefined) {
@@ -3273,8 +3277,23 @@ export class MysqlProductRepository implements ProductRepository {
    * lines. The port declares this method, so it is implemented; what it is implemented AS is an explicit
    * refusal.
    *
-   * // TODO: the bulk import path is not ported. This declaration exists because the port declares it and
-   * // because the legacy function exists; the body is deliberately absent rather than approximated.
+   * // EXCLUSION [AAP 0.9.5]: the bulk import path is not ported. This declaration exists because the
+   * // port declares it and because the legacy function exists; the body is deliberately absent rather
+   * // than approximated.
+   *
+   * ★★★ THAT LINE WAS WRITTEN AS A `// TODO:` AND A CODE REVIEW WAS RIGHT TO REJECT THE KEYWORD. It read
+   * "// TODO: the bulk import path is not ported...", and the sentence is accurate - what it is NOT is a
+   * deferral. AAP 0.9.5 lists `loadDataFromFile` [model/service/ProductService.cfc:L65] among the
+   * out-of-scope methods that nonetheless appear in in-scope files, so it is EXCLUDED WORK rather than
+   * outstanding work, and there is no legacy TODO at [model/dao/ProductDAO.cfc:L73] to carry forward
+   * either. AAP 0.8.1 carries a source TODO across as a flagged TODO precisely so that the TODO markers
+   * in this subtree ARE the legacy deferrals, and the in-scope slice carries exactly FIVE of them -
+   * [model/service/PromotionService.cfc:L543], [model/dao/ProductDAO.cfc:L64],
+   * [model/dao/SkuDAO.cfc:L177], [model/service/CurrencyService.cfc:L81] and
+   * [model/entity/ProductType.cfc:L93], measured by sweeping every in-scope CFC and CFM. This module
+   * already carries the second of those, the Railo/ACF `IN`-clause conditional, three declarations up. A
+   * sixth marker announcing work the plan EXCLUDED makes that set unreadable while implying a debt
+   * nobody owes. Re-labelled, with the whole of the reasoning below unchanged.
    *
    * // JUDGMENT CALL: an explicit refusal is the only honest body. Silently inventing a working importer
    * // would be the single largest unrequested behaviour in this subtree, and returning quietly would be
@@ -4492,9 +4511,8 @@ export class MysqlProductRepository implements ProductRepository {
     // The remaining collaborator ports, forwarded exactly as injected. Each is optional on the entity, so
     // each is assigned only when present - see {@link ProductHydrationCollaborators} for what each absence
     // costs and where it is documented.
-    if (this.collaborators.productPresentationSettingsProvider !== undefined) {
-      draft.productPresentationSettingsProvider =
-        this.collaborators.productPresentationSettingsProvider;
+    if (this.collaborators.productTitleTemplate !== undefined) {
+      draft.productTitleTemplate = this.collaborators.productTitleTemplate;
     }
 
     if (this.collaborators.settingsProvider !== undefined) {
@@ -4955,7 +4973,8 @@ export class MysqlProductRepository implements ProductRepository {
 // A 254-line delimited-file importer: it derives a delimiter from the file extension, reads the file,
 // walks its rows, and inserts or updates products, SKUs, options and attribute values as it goes. The
 // port declares the METHOD, so this module implements it - as an explicitly unimplemented, throwing
-// stub carrying its own `TODO:` and its own reasoning. See `MysqlProductRepository.loadDataFromFile`.
+// stub carrying its own EXCLUSION label and its own reasoning. See
+// `MysqlProductRepository.loadDataFromFile`.
 //
 // The body is excluded because a WORKING importer is not what the port asks for and inventing one
 // would be worse than the throw: a caller would believe an import had happened. The execution-model

@@ -101,7 +101,7 @@
 //     success context through the real instance with stdout captured, which is the only way to observe
 //     what an operator would actually receive.
 //     `src/domain/ports/settingsProvider.ts` is likewise not imported: the subject resolves no
-//     setting, and the seven-key provider reaches the SKU through the fixture that builds it.
+//     setting, and the four-key provider reaches the SKU through the fixture that builds it.
 //
 // NO INVENTED NON-FUNCTIONAL REQUIREMENT APPEARS ANYWHERE IN THIS FILE
 //   No service-level objective, no timing, duration, rate or availability figure, and no benchmark.
@@ -379,9 +379,10 @@ const WITHHELD_PRICE_GROUP_MEMBERS: readonly string[] = [
 // ★★★ EVERY TYPE BELOW NOW DERIVES FROM `entityLoaders` RATHER THAN FROM TWO SEARCH READS.
 // The subject used to publish `productService.findProducts` and `skuService.getProductSkus` on its
 // scope, because those were the only published reads that could reach a SKU, and it searched product
-// NAMES to find one. Finding F3 replaced that with five READ-ONLY loads by identifier, so the entity
-// types come off the loads and the two search reads are gone from the scope entirely - which is what
-// makes the removed selector a compile error rather than merely unused.
+// NAMES to find one. Finding F3 replaced that with READ-ONLY loads by identifier - five of them then,
+// seven now that the catalog capability added a brand and an option-list load - so the entity types come
+// off the loads and the two search reads are gone from the scope entirely, which is what makes the
+// removed selector a compile error rather than merely unused.
 
 type ResolvedProduct = NonNullable<
   Awaited<ReturnType<PriceResolutionScope['entityLoaders']['getProductByProductID']>>
@@ -804,18 +805,19 @@ function makeCurrencyConverterDouble(answer?: Money): CurrencyConverterDouble {
   };
 }
 
-/** One recorded entity load, by the loader that was asked and the identifier it was given. */
+/**
+ * One recorded entity load, by the loader that was asked and the identifier it was given.
+ *
+ * The union is DERIVED from the interface rather than transcribed, so it cannot fall behind it: when
+ * `RequestEntityLoaders` grew from five loads to seven, a hand-written union would have kept compiling
+ * while the two tripwires below had nowhere to record a breach.
+ */
 interface RecordedLoad {
-  readonly loader:
-    | 'getProductByProductID'
-    | 'getProductTypeByProductTypeID'
-    | 'getSkuBySkuIdentity'
-    | 'getPriceGroup'
-    | 'getPriceGroupRate';
+  readonly loader: keyof PriceResolutionScope['entityLoaders'];
   readonly identifier: string;
 }
 
-/** What the five loaders answer, and the record of what was asked of them. */
+/** What the loaders answer, and the record of what was asked of them. */
 interface EntityLoadersDouble {
   readonly loaders: PriceResolutionScope['entityLoaders'];
   readonly loads: readonly RecordedLoad[];
@@ -831,7 +833,8 @@ interface LoadableWorld {
 }
 
 /**
- * Build the five READ-ONLY loads.
+ * Build the READ-ONLY loads this capability binds through, plus a raising tripwire on each of the two it
+ * must never reach.
  *
  * ★★★ THIS REPLACED `makeCatalogReadsDouble`, AND THE REPLACEMENT IS THE STRUCTURAL HALF OF FINDING
  * F3. That double answered `findProducts` and `getProductSkus` UNFILTERED, deliberately, because
@@ -921,6 +924,35 @@ function makeEntityLoadersDouble(world: LoadableWorld = {}): EntityLoadersDouble
 
         return Promise.resolve(
           held !== undefined && held.getPriceGroupRateID() === priceGroupRateID ? held : undefined,
+        );
+      },
+
+      // ★★ THE LAST TWO LOADS ARE TRIPWIRES, NOT DOUBLES, AND THAT IS THE POINT OF DECLARING THEM.
+      // `RequestEntityLoaders` grew from five loads to seven when the catalog capability needed a
+      // `Brand` and a set of `Option`s. This entrypoint binds from exactly five of them and must bind
+      // from no more: a price-resolution request names a SKU, a product, a product type, a price group
+      // or a rate, and nothing about pricing reaches a brand or an option entity. Implementing both as
+      // raising stubs makes that a FAILURE rather than a silently satisfied dependency, which is
+      // strictly stronger than omitting them - an omission would only have been a compile error until
+      // someone reached for one.
+      getBrandByBrandID: (brandID: string): Promise<never> => {
+        loads.push({ loader: 'getBrandByBrandID', identifier: brandID });
+
+        return Promise.reject(
+          new Error(
+            'priceResolutionHandler reached getBrandByBrandID; no pricing operation names a brand',
+          ),
+        );
+      },
+
+      getOptionsByOptionIDList: (optionIDs: readonly string[]): Promise<never> => {
+        loads.push({ loader: 'getOptionsByOptionIDList', identifier: optionIDs.join(',') });
+
+        return Promise.reject(
+          new Error(
+            'priceResolutionHandler reached getOptionsByOptionIDList; no pricing operation names ' +
+              'an option entity',
+          ),
         );
       },
     },
@@ -4909,7 +4941,11 @@ async function openEntrypoint(): Promise<EntrypointBed> {
 }
 
 /**
- * Programme the five read-only entity loads the current request scope publishes.
+ * Programme the read-only entity loads the current request scope publishes.
+ *
+ * FIVE ARE ANSWERED AND TWO RAISE. The brand and option-list loads exist for the catalog capability, and
+ * no pricing operation names a brand or an option - so they are installed as tripwires rather than left
+ * unprogrammed, which is what turns "this module reached one of them" from a silent pass into a failure.
  *
  * The real composition root owns the repository instances and closes over them in
  * `RequestScope.entityLoaders`. Installing answers on the concrete repository prototypes therefore

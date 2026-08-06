@@ -5,9 +5,13 @@
 //   src/lib/cfml/struct.ts - the single place where CFML's case-insensitive
 //   struct-key semantics are translated into TypeScript for the AWS Lambda
 //   `nodejs20.x` port of the Slatwall 3.1.39 catalog + promotions/pricing slice
-//   (version.txt = 3.1.39). Six pure functions and one type, ZERO imports and no
-//   state, so this suite needs no mock, container or server: every case below is a
-//   plain object literal built inside its test.
+//   (version.txt = 3.1.39). SEVEN pure functions, one type and one error class,
+//   ZERO imports and no state, so this suite needs no mock, container or server:
+//   every case below is a plain object literal built inside its test. Seven is
+//   derived by reading the module's `export` lines rather than restated: an earlier
+//   revision said six, and a later one grafted an eighth function on without
+//   revising either count - see the record at the foot of this file for why that
+//   eighth is gone again.
 //
 // THE NULL SEMANTICS PINNED HERE ARE LOAD-BEARING ON MONEY
 //   Absence propagates as `undefined`. Always. Not 0, not '', not null, not {},
@@ -75,7 +79,6 @@ import {
   CfmlComparisonError,
   cfEquals,
   cfFoldKey,
-  findPrototypeKeyPath,
   structFindKey,
   structGet,
   structGetPath,
@@ -1044,195 +1047,40 @@ describe('case-insensitivity is total, not partial', () => {
 // ---------------------------------------------------------------------------
 
 // ===========================================================================
-// findPrototypeKeyPath - relocated with the implementation it covers
+// findPrototypeKeyPath - THESE CASES ARE GONE BECAUSE THE EXPORT IS GONE
 // ===========================================================================
 //
-// ★★★ THESE CASES WERE THEIR OWN SUITE, `tests/unit/lib/jsonDocumentKeys.test.ts`. They moved here
-// because the implementation moved: `findPrototypeKeyPath` is now part of `src/lib/cfml/struct.ts`,
-// for the scope-census reason recorded at that section. AAP 0.9.4 requires every in-scope module to
-// carry coverage, so the cases are relocated in full rather than dropped - not one assertion is
-// lost, and the count below is the count that stood before the move.
+// ★★★ A RELOCATED SUITE STOOD HERE, AND ITS REMOVAL IS A REVIEW FINDING. It covered
+// `findPrototypeKeyPath`, which walked a parsed JSON request document and RETURNED the dotted path of
+// the first `__proto__` own key it found. Its own preamble explained why it had been moved into this
+// file, and the sentence is quoted rather than paraphrased because it is the premise being revisited:
 //
-// They are appended rather than interleaved so that a reviewer diffing against the deleted suite
-// sees an unbroken block.
-
-/**
- * Parse a document the way the handlers do, and refuse to hand back anything but an object.
- *
- * The narrowing is the point: `findPrototypeKeyPath` declares `object`, and both call sites have
- * already established that much before they reach it. A helper that returned `unknown` would push a
- * cast into every case.
- *
- * Relocated with the cases below, unchanged. It is module-local rather than exported because it is a
- * fixture parser for this block alone.
- */
-function parseDocument(text: string): object {
-  const parsed: unknown = JSON.parse(text);
-
-  if (typeof parsed !== 'object' || parsed === null) {
-    throw new Error(`the fixture ${text} did not parse to an object`);
-  }
-
-  return parsed;
-}
-
-describe('findPrototypeKeyPath', () => {
-  describe('the documents it must REFUSE', () => {
-    it('★★ finds a `__proto__` own key at the ROOT', () => {
-      // The exact body QA testing submitted to the price-resolution endpoint. Before this guard it
-      // was accepted: zod's `strictObject` reported no unrecognized key even though `Object.keys`
-      // lists it, and the request went on to be priced.
-      expect(
-        findPrototypeKeyPath(parseDocument('{"operation":"x","__proto__":{"polluted":1}}')),
-      ).toBe('__proto__');
-    });
-
-    it('★★★ finds one NESTED inside a member, which is the case a root-only guard would miss', () => {
-      // The measured asymmetry this module exists for: at this same position a `constructor` key is
-      // REFUSED by the strict object with `unrecognized_keys`, while `__proto__` is accepted and
-      // dropped. The path names the member so the caller can find it.
-      expect(
-        findPrototypeKeyPath(parseDocument('{"order":{"orderID":"o-1","__proto__":{"p":1}}}')),
-      ).toBe('order.__proto__');
-    });
-
-    it('★★ finds one inside an ARRAY ELEMENT, and names the element by index', () => {
-      // Array indices are spelled as the AAP's own field paths spell them - `order.orderItems.1.…` -
-      // so a refusal reads the same way as every other field issue this service publishes.
-      expect(
-        findPrototypeKeyPath(
-          parseDocument(
-            '{"order":{"orderItems":[{"skuID":"s-1"},{"skuID":"s-2","__proto__":{"p":1}}]}}',
-          ),
-        ),
-      ).toBe('order.orderItems.1.__proto__');
-    });
-
-    it('reports the FIRST offending key in document order when there are several', () => {
-      // Determinism, so a suite can assert an exact path rather than a set, and so two runs on the
-      // same body produce the same refusal. Depth-first over own keys in insertion order.
-      expect(
-        findPrototypeKeyPath(
-          parseDocument('{"a":{"__proto__":{"p":1}},"b":{"__proto__":{"p":2}}}'),
-        ),
-      ).toBe('a.__proto__');
-    });
-
-    it('finds one several levels down, past objects and arrays alike', () => {
-      expect(
-        findPrototypeKeyPath(parseDocument('{"a":[{"b":{"c":[{"__proto__":{"p":1}}]}}]}')),
-      ).toBe('a.0.b.c.0.__proto__');
-    });
-
-    it('finds a `__proto__` key whose VALUE is a harmless scalar, not only an object', () => {
-      // The guard is about the KEY. A caller sending `"__proto__": "x"` is sending a member this
-      // request does not accept, exactly as one sending an object is, and the reason it is refused
-      // does not depend on what would have happened had it been merged somewhere.
-      expect(findPrototypeKeyPath(parseDocument('{"__proto__":"x"}'))).toBe('__proto__');
-      expect(findPrototypeKeyPath(parseDocument('{"__proto__":null}'))).toBe('__proto__');
-    });
-  });
-
-  describe('the documents it must ADMIT', () => {
-    it('★★★ answers `undefined` for an ORDINARY document, which is the happy path of every request', () => {
-      expect(
-        findPrototypeKeyPath(
-          parseDocument(
-            '{"operation":"updateOrderAmountsWithPromotions","order":{"orderID":"o-1",' +
-              '"orderItems":[{"orderItemID":"oi-1","skuID":"s-1","quantity":2}]}}',
-          ),
-        ),
-      ).toBeUndefined();
-    });
-
-    it('★★ does not report the INHERITED `__proto__` every object carries', () => {
-      // The whole guard would be useless the other way round: `'__proto__' in {}` is `true` for every
-      // ordinary object, so an `in` test would refuse every request ever sent. `Object.hasOwn` is what
-      // distinguishes a key the CALLER wrote from one the language provides.
-      const ordinary = parseDocument('{"a":1}');
-
-      expect('__proto__' in ordinary).toBe(true);
-      expect(Object.hasOwn(ordinary, '__proto__')).toBe(false);
-      expect(findPrototypeKeyPath(ordinary)).toBeUndefined();
-    });
-
-    it('admits a member merely NAMED like the key, without matching it', () => {
-      // Substring and prefix matching would both refuse these. The test is key equality.
-      expect(
-        findPrototypeKeyPath(
-          parseDocument('{"proto":1,"_proto_":2,"__proto":3,"proto__":4,"__prototype__":5}'),
-        ),
-      ).toBeUndefined();
-    });
-
-    it('admits `constructor` and `prototype`, which are NOT this module\u2019s concern', () => {
-      // `constructor` is already refused by every `strictObject` in this service as an ordinary
-      // unrecognized key - measured, and recorded on the module - so refusing it a second time here
-      // would duplicate a rule that already works and would change the reason a caller is given.
-      expect(
-        findPrototypeKeyPath(parseDocument('{"constructor":{"a":1},"prototype":{"b":2}}')),
-      ).toBeUndefined();
-    });
-
-    it('admits an empty object and an empty array', () => {
-      expect(findPrototypeKeyPath(parseDocument('{}'))).toBeUndefined();
-      expect(findPrototypeKeyPath(parseDocument('[]'))).toBeUndefined();
-    });
-
-    it('traverses `null` members and scalars without faulting', () => {
-      // `typeof null === 'object'`, so a walk that reached `Object.hasOwn(null, …)` would THROW - and
-      // a security guard that throws converts a refusal into an unrecognized 500.
-      expect(
-        findPrototypeKeyPath(parseDocument('{"a":null,"b":1,"c":"x","d":true,"e":[null,null]}')),
-      ).toBeUndefined();
-    });
-  });
-
-  describe('the properties that keep it from becoming a failure of its own', () => {
-    it('★★★ survives 10 000 levels of nesting WITHOUT a stack overflow', () => {
-      // The reason the walk is iterative rather than recursive. QA testing sent a 2 000-level document
-      // to this very endpoint; a recursive implementation raises `RangeError: Maximum call stack size
-      // exceeded`, which `./errorMapper.js` would map to an unrecognized 500 - a guard added for
-      // robustness becoming the outage. Ten thousand is deeper than anything a bounded body can carry,
-      // and it is asserted on BOTH answers so neither the miss nor the hit path recurses.
-      const depth = 10_000;
-      const clean = `${'{"a":'.repeat(depth)}1${'}'.repeat(depth)}`;
-      const offending = `${'{"a":'.repeat(depth)}{"__proto__":1}${'}'.repeat(depth)}`;
-
-      expect(findPrototypeKeyPath(parseDocument(clean))).toBeUndefined();
-      expect(findPrototypeKeyPath(parseDocument(offending))).toBe(`${'a.'.repeat(depth)}__proto__`);
-    });
-
-    it('survives a WIDE document, and one holding a long array', () => {
-      const wide = `{${Array.from({ length: 5_000 }, (_unused, index) => `"k${String(index)}":${String(index)}`).join(',')}}`;
-      const long = `{"a":[${Array.from({ length: 5_000 }, () => '{"b":1}').join(',')}]}`;
-
-      expect(findPrototypeKeyPath(parseDocument(wide))).toBeUndefined();
-      expect(findPrototypeKeyPath(parseDocument(long))).toBeUndefined();
-    });
-
-    it('★★ MUTATES NOTHING - neither the document it walks nor `Object.prototype`', () => {
-      // A guard against prototype pollution that polluted anything would be self-defeating, and a
-      // guard that deleted the offending key would be making a decision the CALLER should be told
-      // about instead. This asserts the reporting-only contract.
-      const document = parseDocument('{"a":1,"__proto__":{"polluted":"yes"}}');
-      const before = JSON.stringify(document);
-
-      expect(findPrototypeKeyPath(document)).toBe('__proto__');
-      expect(JSON.stringify(document)).toBe(before);
-      expect(Object.hasOwn(document, '__proto__')).toBe(true);
-
-      // And the finding's own central observation, re-asserted here rather than taken on trust: the
-      // parse itself never reached the prototype setter.
-      expect(Object.prototype).not.toHaveProperty('polluted');
-      expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
-    });
-
-    it('is a pure function of its argument, answering identically on repeat calls', () => {
-      const document = parseDocument('{"order":{"__proto__":{"p":1}}}');
-
-      expect(findPrototypeKeyPath(document)).toBe('order.__proto__');
-      expect(findPrototypeKeyPath(document)).toBe('order.__proto__');
-    });
-  });
-});
+//   "THESE CASES WERE THEIR OWN SUITE, `tests/unit/lib/jsonDocumentKeys.test.ts`. They moved here
+//    because the implementation moved [...] AAP 0.9.4 requires every in-scope module to carry
+//    coverage, so the cases are relocated in full rather than dropped - not one assertion is lost,
+//    and the count below is the count that stood before the move."
+//
+// THE 0.9.4 OBLIGATION WAS READ CORRECTLY. Coverage follows the implementation and may not simply be
+// deleted. What did not follow is that THIS is the module the implementation belongs to. A later
+// review found (MAJOR, CWE-209/CWE-532) that a returned path is assembled from the caller's own
+// ancestor key names, so `{"api_token_value":{"__proto__":{}}}` yielded `api_token_value.__proto__`
+// into a 400 body and a log line. The export is therefore removed rather than re-homed, and a suite
+// cannot outlive the symbol it calls.
+//
+// NOT ONE PROPERTY WAS DROPPED - THEY ARE ASSERTED WHERE THE GUARD NOW LIVES.
+// `tests/unit/handlers/errorMapper.test.ts` pins `containsPrototypeMemberKey`, the boolean form in
+// `src/handlers/errorMapper.ts`, over the same ground: own-key detection at the root, at every depth
+// and inside array elements; the offending key holding an object, a scalar or null; the INHERITED
+// `__proto__` that every object carries answered `false` while `'__proto__' in document` is `true`;
+// `constructor` and `prototype` left to the strict schema; empty and scalar documents; caller-supplied
+// nesting that would overflow a recursive walk; a very wide document and a very long array; walking
+// without mutating the document or `Object.prototype`; determinism across repeat calls; and one case
+// this suite could not have written at all - that a PREDICATE has no path to assemble, which is the
+// property the removal exists to obtain. `parseDocument`, the `JSON.parse` fixture helper these cases
+// needed so the key is an own DATA property rather than a setter invocation, lives there too.
+//
+// WHAT REMAINS THE CONCERN OF THIS SUITE is unchanged: `isOwnKeyOf` still routes every own-key test in
+// the module through `Object.prototype.hasOwnProperty.call`, and the cases above still pin that a
+// folded lookup never reaches an inherited member such as `toString`, `valueOf` or `hasOwnProperty`.
+// That is this file's prototype-safety guarantee, and it never depended on the walk.
+// ===========================================================================

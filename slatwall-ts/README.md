@@ -275,8 +275,8 @@ and `coverage/` and fail on generated output. The scripts name their inputs expl
 is an allow-list rather than a deny-list and cannot be widened by a directory appearing later.
 
 The quoting is load-bearing and must not be "tidied away": an unquoted `src/**/*.ts` is expanded by
-the **shell**, and a shell without `globstar` matches one directory level — twenty of the ninety-one
-modules under `src/`. Quoted, the glob reaches Prettier intact and Prettier expands it recursively.
+the **shell**, and a shell without `globstar` matches one directory level — a small fraction of the
+modules under `src/`, since all but a handful sit two or more levels deep. Quoted, the glob reaches Prettier intact and Prettier expands it recursively.
 The failure mode of removing the quotes is a formatting gate that passes while checking a third of
 the tree, so if you change these scripts, verify the change by planting a deliberate violation in a
 deeply nested file and confirming the check reports it.
@@ -346,15 +346,21 @@ That last setting is the audit trail, and an earlier revision of this section cr
 mechanism for it. The preserved-defect annotations this port is required to carry —
 `// LEGACY-DEFECT [...]` and `// DELIBERATE DIVERGENCE [...]`, the format AAP 0.6.7 mandates — are
 ordinary line comments, and a bundler discards ordinary comments regardless of what `minify` is set
-to. Measured on this checkout: 141 `LEGACY-DEFECT` markers exist across `src/**`; the build reports
-100 of them recoverable from `productFeedHandler.cjs.map`, while only 48 survive in that artifact's
-own text. Embedding the sources in the map is what makes every one of them recoverable, with its
-legacy `[<path>:<locator>]` citation intact, so the `.cjs.map` is a local build-and-audit companion
-rather than a debugging nicety. It intentionally contains the GPL v3.0 TypeScript source and module
-paths, so this is not a claim that the map is disclosure-free or suitable for indiscriminate
-publication. What the build does guarantee is that no environment value is substituted into it:
-`src/lib/config.ts` is the only runtime reader of `process.env` under `src/**`, and esbuild uses no
-build-time `define`.
+to. The `.cjs.map` is what recovers them, and the recovery is what the build reports: run
+`npm run bundle` and each artifact's line reads `Annotations recoverable from <artifact>.cjs.map:
+LEGACY-DEFECT xN, DELIBERATE DIVERGENCE xM`, counted at build time from the sources the map embeds.
+Embedding the sources in the map is what makes every one of them recoverable, with its legacy
+`[<path>:<locator>]` citation intact, so the `.cjs.map` is a local build-and-audit companion rather
+than a debugging nicety. It intentionally contains the GPL v3.0 TypeScript source and module paths, so
+this is not a claim that the map is disclosure-free or suitable for indiscriminate publication. What
+the build does guarantee is that no environment value is substituted into it: `src/lib/config.ts` is
+the only runtime reader of `process.env` under `src/**`, and esbuild uses no build-time `define`.
+
+A written TOTAL for those annotations is deliberately not restated in this file. An earlier revision
+claimed "141 markers across `src/**`"; a code review measured 142, and the change set that followed
+that review added one more. Read the count off `npm run bundle`, or off
+`grep -rc 'LEGACY-DEFECT \[' src/` — never off a paragraph, which is the lesson that one figure has now
+taught twice.
 
 `minify: false` is still set and still worth setting: an unminified artifact is diffable and its
 stack traces stay legible. It is simply not what carries the annotations.
@@ -634,13 +640,13 @@ none is invented here.
 
 ### Optional — five keys
 
-| Key                      | Accepted values                 | Notes                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------ | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DB_TLS_MIN_VERSION`     | `TLSv1.2` (default), `TLSv1.3`  | A floor, not a selection. TLS 1.0 and 1.1 are deliberately not accepted.                                                                                                                                                                                                                                                                                                                                              |
-| `DB_TLS_CA`              | PEM certificate authority       | Supply when `DB_TLS_MODE` is `verify-ca` or `verify-identity` and the CA is not in the system trust store.                                                                                                                                                                                                                                                                                                            |
-| `FEED_ALLOWED_HOSTS`     | comma-separated host list       | The deployment-owned allow-list the product feed's absolute URLs are built from, so a request can never choose the emitted origin. Entries are bare host authorities validated by the same parser `src/integrations/google/rssFeedRenderer.ts` applies to the host it publishes — one grammar, so an authorized host can never be refused at render time — with a port, when written, of 1–65535 and no leading zero. |
-| `ECB_REFERENCE_RATES`    | `CODE=rate` pairs               | Deployment-supplied conversion rates for the currency cascade's conversion step. Absent, conversions pass through unchanged.                                                                                                                                                                                                                                                                                          |
-| `ECB_RATES_RETRIEVED_AT` | ISO-8601 instant, zone required | When the rates above were captured, so a stale set is visible rather than silently trusted. A zone designator (`Z` or `±HH:MM`) is mandatory, an impossible calendar date is refused rather than rolled forward, and a future instant is refused — it would make the age negative, which every staleness check reads as fresh.                                                                                        |
+| Key                      | Accepted values                 | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------ | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DB_TLS_MIN_VERSION`     | `TLSv1.2` (default), `TLSv1.3`  | A floor, not a selection. TLS 1.0 and 1.1 are deliberately not accepted.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `DB_TLS_CA`              | PEM certificate authority       | Supply when `DB_TLS_MODE` is `verify-ca` or `verify-identity` and the CA is not in the system trust store.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `FEED_ALLOWED_HOSTS`     | comma-separated host list       | **Required to serve the feed.** The deployment-owned allow-list the product feed's absolute URLs are built from, so a request can never choose the emitted origin. **Absent or empty means NO host is trusted and the feed route answers no document** — it fails closed, and there is no allow-all state. Entries are bare host authorities validated by the same parser `src/integrations/google/rssFeedRenderer.ts` applies to the host it publishes — one grammar, so an authorized host can never be refused at render time — with a port, when written, of 1–65535 and no leading zero. |
+| `ECB_REFERENCE_RATES`    | `CODE=rate` pairs               | Deployment-supplied conversion rates for the currency cascade's conversion step. Absent, conversions pass through unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `ECB_RATES_RETRIEVED_AT` | ISO-8601 instant, zone required | When the rates above were captured, so a stale set is visible rather than silently trusted. A zone designator (`Z` or `±HH:MM`) is mandatory, an impossible calendar date is refused rather than rolled forward, and a future instant is refused — it would make the age negative, which every staleness check reads as fresh.                                                                                                                                                                                                                                                                |
 
 ### Connections, and what not to commit
 
@@ -753,14 +759,26 @@ Two things hold either way:
 > **What already contains it, and how far.** Every emitted value is XML-escaped, and a deployment
 > that must publish `https` URLs terminates TLS in front of this service. The authority the scheme is
 > glued to is checked against a deployment-owned allow-list rather than taken on trust from the
-> request (`assertAllowedFeedHost`, finding S-15) — **whenever the deployment configured one.** With
-> `FEED_ALLOWED_HOSTS` unset the feed answers on the authority the request carries, which is exactly
-> what the legacy did (`http://#CGI.HTTP_HOST#`, no allow-list anywhere in the source) and is the
-> behaviour restored so that an optional variable no longer silently disables a capability the source
-> publishes. So the containment is real and it is **conditional**: configuring `FEED_ALLOWED_HOSTS`
-> is the recommended posture and the one under which a cleartext scheme cannot be pointed at an
-> attacker's origin. The feed is machine-read by Google Merchant Center and carries the product
-> names, images and prices the store publishes anyway, which is why both reviews graded it MINOR.
+> request (`assertAllowedFeedHost`, finding S-15), and that check is **unconditional**: an absent or
+> empty `FEED_ALLOWED_HOSTS` trusts NO host, so the route answers no document rather than answering on
+> whatever authority the request carried. Configuration therefore decides whether the feed serves at
+> all, never which authority it trusts once it does — so there is no allow-all state left for the
+> containment to be conditional about.
+>
+> **This paragraph said the opposite until a code review (CWE-346) corrected it, and the earlier
+> reasoning is worth recording because it was not frivolous.** It read: the check applies "**whenever
+> the deployment configured one**. With `FEED_ALLOWED_HOSTS` unset the feed answers on the authority
+> the request carries, which is exactly what the legacy did (`http://#CGI.HTTP_HOST#`, no allow-list
+> anywhere in the source) and is the behaviour restored so that an optional variable no longer silently
+> disables a capability the source publishes." The CFML parity claim is accurate — the legacy had no
+> allow-list at all — but parity with an unguarded legacy is not a licence to ship an unguarded target
+> when the guard already exists, and the "silently disables" worry is answered by making the variable
+> **required to serve the feed** and saying so in the environment contract rather than by defaulting it
+> open. An operator who has not configured an origin has not yet decided what origin the feed publishes,
+> and guessing from a request header is the decision this port must not make on their behalf.
+>
+> The feed is machine-read by Google Merchant Center and carries the product names, images and prices
+> the store publishes anyway, which is why both reviews graded the remaining cleartext-scheme gap MINOR.
 
 ---
 
@@ -789,21 +807,27 @@ integrations **implement** those ports; the handlers are where the two halves ar
 not repositories, not handlers, not integrations, and not an outward package such as `mysql2`,
 `dotenv` or the Lambda typings.
 
-**Two modules exist beyond the plan's own file enumeration**, both wired and both carrying a dedicated
-suite. They are called out here because a reviewer holding the plan will not find them in it, and
-because their layer placement is the point rather than an accident:
+**No module exists beyond the plan's own file enumeration**, and `A20` asserts that against disk on
+every run: `src/**` holds exactly the eighty-nine modules AAP 0.3.1 enumerates.
+
+**Two used to, and this is the record of both being folded in.** A reviewer working from an older copy
+of this file will find them named here, so the destinations are stated rather than left to inference:
 
 - `src/integrations/europeanCentralBankCurrencyConverter.ts` — the reference-rate adapter satisfying the
-  `CurrencyConverter` port. It sits in a **restricted** layer deliberately: the SKU currency cascade
-  reaches conversion through the port and can never reach this adapter directly, which is exactly what
-  the boundary rule enforces. Its rates arrive as configuration (`ECB_REFERENCE_RATES`); it opens no
-  socket, because no HTTP client or XML parser is in the pinned dependency set.
+  `CurrencyConverter` port. Its placement _beside the Google adapter_ made it read as a peer integration,
+  which a review recorded as a scope breach. The class now lives in `src/handlers/bootstrap.ts`, where
+  AAP 0.3.1 puts an implementation that has no adapter file of its own. The behaviour is unchanged: its
+  rates arrive as configuration (`ECB_REFERENCE_RATES`), and it opens no socket, because no HTTP client
+  or XML parser is in the pinned dependency set.
 - `src/lib/jsonDocumentKeys.ts` — the own-key guard that stops a `__proto__` member in parsed JSON from
-  reaching a lookup. It sits in `src/lib/**`, so the domain **may** import it, and correctly so: it is a
-  semantic-parity helper with no I/O, no driver and no environment read.
+  reaching a lookup. It is now the boolean `containsPrototypeMemberKey` in `src/handlers/errorMapper.ts`,
+  beside the refusal vocabulary its two callers already imported. A security review required that shape
+  specifically: the guard's earlier form RETURNED the offending key's dotted path, assembled from the
+  caller's own ancestor key names, and that path reached both a 400 body and the log stream
+  (CWE-209/CWE-532). A predicate cannot leak what it does not construct.
 
 The boundary rule matches on the **layer a path sits in**, never on a list of known filenames, which is
-why both were already policed before either was written down here.
+why both were policed before either was written down here and why neither move required a rule change.
 
 That is not a review convention. `eslint.config.mjs` expresses it as `no-restricted-imports` pattern
 groups at severity `error`, so a violation is a **build failure**, and `tsconfig.json` declares no
@@ -872,6 +896,59 @@ empty subsystem resolves to `''`; a subsystem not in `admin,frontend,public` res
 `integrationServices/<subsystem>/`; anything else resolves to `<subsystem>/`. The route table is
 explicit rather than convention-derived, and the router contains **no business logic** — it dispatches
 and nothing more.
+
+**The whole URL surface is five rows, and this is it.** Every one is matched case-insensitively on both
+method and path, and `methods` is a CFML comma list read with `listFindNoCase`, exactly as
+[`Application.cfc:L133`] read one.
+
+| Method     | Path                      | Capability             | Action                |
+| ---------- | ------------------------- | ---------------------- | --------------------- |
+| `GET,POST` | `/catalog/products`       | `catalogQuery`         | `queryCatalog`        |
+| `GET`      | `/catalog/skus`           | `skuResolution`        | `resolveSkus`         |
+| `POST`     | `/promotions/application` | `promotionApplication` | `applyPromotions`     |
+| `POST`     | `/prices/resolution`      | `priceResolution`      | `resolvePrices`       |
+| `GET`      | `/feeds/google/products`  | `productFeed`          | `generateProductFeed` |
+
+**A capability has exactly one path, and the operation travels as a query parameter.** Enumerating a
+sub-surface per ported method would invent a URL vocabulary this migration was never asked to design —
+the legacy slice has no HTTP vocabulary at all to copy, because its services are invoked by CFML method
+call from `admin/` controllers. So `?operation=<portedMethodName>` names the method, spelled exactly as
+the service spells it, and it is **required** with no default: a default would silently answer a
+different question than the one asked.
+
+**`catalogQuery` is the one row declaring two methods, and it serves fourteen operations.** Each is
+served on exactly one of them, checked inside the handler — a read named on `POST` and a mutation named
+on `GET` are both refused with a **400**, not a 405, because the operation is not part of the path and
+only the handler knows which verb a given operation answers on.
+
+| Method | Operations                                                                                                                                                                                                                                  |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `findProducts`, `getFormattedOptionGroups`, `getUnusedProductOptions`, `getUnusedProductOptionGroups`, `getOptionsForSelect`                                                                                                                |
+| `POST` | `processProduct_addOptionGroup`, `processProduct_addOption`, `processProduct_updateSkus`, `processProduct_deleteDefaultImage`, `processProduct_updateDefaultImageFileNames`, `saveProduct`, `saveProductType`, `deleteProduct`, `saveBrand` |
+
+Four things about that surface are policy rather than accident, and each is stated at the handler:
+
+- **Every mutation names an EXISTING row by identifier**, hydrated through `RequestScope.entityLoaders`
+  before the service is called. Row **creation** is not published: a routed creation protocol is an
+  entity-construction concern the plan describes nowhere.
+- **An identifier that names no row is a 200 carrying a closed `unresolved` reason**, not a 404. The
+  shared error mapper reaches 404 on one category only — `routeNotFound` — and the router already
+  answers 404 for a path no row declares; reusing it here would collapse two different facts onto one
+  status.
+- **A ported save rule that failed is a 400** built from the entity's own error register. The three
+  ported saves do not throw for a failed save-context rule — the legacy `HibachiService.save`
+  [`org/Hibachi/HibachiService.cfc:L151-L167`] returns the same entity whether it validated or not — so
+  deciding a status from a returned value is transport work.
+- **`deleteProduct` answering `false` is a 200**, because that is the ported delete-context refusal
+  [`model/service/ProductService.cfc:L317-L339`] working correctly rather than a failure.
+
+**This section listed three catalog operations until a code review found eleven missing.** The route was
+`GET`-only, and eleven AAP-0.4.2-mapped Product, Brand and Option actions had no transport at all —
+catalog persistence and the whole of `BrandService` were unreachable from Lambda. The stated ground was
+that the composition root published "no entity and no entity loader", which `RequestScope.entityLoaders`
+had contradicted since the price route was built. Retry semantics for the nine mutations are published
+per operation as data rather than as a mechanism; see the AAP 0.6.5 note in
+`src/handlers/catalogQueryHandler.ts` for why no response ledger was reintroduced.
 
 ---
 
@@ -944,17 +1021,30 @@ them:
 - **Three signature reshapings**, and no fourth. `updateOrderAmountsWithPromotions` returns
   applied-promotion intents instead of mutating the order aggregate in place; the two smart-list
   methods become typed repository queries rather than a reimplemented query language; and the feed
-  adapter's `product(rc)` becomes **`generateProductFeed()`** returning the document as a string.
-  That third one is **nullary**, and the absence of a parameter is the design rather than an omission.
-  The port, the service and the handler all declare `generateProductFeed(): Promise<string>`, because
-  the legacy controller applied a fixed filter set (active SKU, active product, published product,
-  positive quantity available to sell) and read nothing from the request context that selected rows;
-  the route is public and carries no query grammar, so there is no criteria object to accept and none
-  is invented. The two values the render does need — the feed host and the clock — are **closed over
-  when the request scope is built** (`createProductFeedPort(feedHost)` in `src/handlers/bootstrap.ts`
-  hands the allow-list-checked host and the scope's clock to `GoogleFeedService`), so the origin comes
-  from `FEED_ALLOWED_HOSTS` and never from the caller. A `criteria` parameter would be a
-  request-controlled surface where the port deliberately has none.
+  adapter's `product(rc)` becomes
+  **`generateProductFeed(criteria: FeedCriteria): Promise<string>`**, returning the document as a
+  string instead of mutating a request context and deferring to a view. That is the declaration AAP
+  0.4.2 freezes, and the port, the service and the handler all carry it verbatim.
+
+  **This bullet claimed the method was nullary until a code review measured it, and the claim had
+  argued itself into a contradiction.** It read: "That third one is **nullary**, and the absence of a
+  parameter is the design rather than an omission [...] A `criteria` parameter would be a
+  request-controlled surface where the port deliberately has none." Two things are true and one was
+  not. It is true that the legacy controller applied a fixed filter set — active SKU, active product,
+  published product, positive quantity available to sell — and read nothing from the request context
+  that selected rows. It is true that **no caller may narrow the selection**, and none can: those four
+  conditions are compiled into the statement and `fetchProductFeedRows()` is genuinely nullary. What
+  was false is that a parameter would therefore be request-controlled. `FeedCriteria` declares exactly
+  two members and neither is a filter — `feedHost`, the origin the five absolute-URL sites are built
+  from, and `now`, the single instant every sale-price effective-date range is evaluated against. Both
+  are **ambient request state the legacy read from the CFML engine** (`CGI.HTTP_HOST` and `now()`),
+  made explicit as an argument because transformation rule T6 removes ambient scope and there is none
+  here to read them from. Neither is caller-supplied: the composition root normalizes the host, checks
+  it against `FEED_ALLOWED_HOSTS`, pins the instant, and publishes the pair as
+  `RequestScope.feedCriteria` for the handler to forward whole. So the origin still comes from
+  configuration and never from the caller — that guarantee is unchanged — and the parameter is what
+  makes the two values visible in the contract instead of hidden in a closure.
+
 - **Five visibility widenings**, and no sixth. `getDiscountAmount` and the four qualification helpers
   are `private` in the legacy source and are exported here so they can be tested directly. Widening
   visibility changes no behaviour; it is recorded rather than buried.
@@ -1000,22 +1090,45 @@ A deployment that configures a different base currency keeps working, and that s
 `BootstrapSettingsProvider` was built from the declared defaults alone, `SwSetting` was never read for
 a general setting, and `setting('skuCurrency')` therefore answered the literal `USD` however the shop
 was configured. Code review recorded that as a critical money defect. The root now issues one eager,
-relationship-free read of `SwSetting` for the seven names the two settings contracts publish — the
-legacy's own final probe [`model/service/SettingService.cfc:L490, L595-L608`] — and a configured row
-wins over its declared default. A row whose value is **empty** wins too, because the legacy sets
+relationship-free read of `SwSetting` for the setting names it resolves — the legacy's own final probe
+[`model/service/SettingService.cfc:L490, L595-L608`] — and a configured row wins over its declared
+default.
+
+**That sentence said "the seven names the two settings contracts publish", and there is only one
+contract and there are only four names.** AAP 0.4.1 and 0.4.2 describe `settingsProvider.ts` as a
+"read-only accessor for exactly four keys" — `skuCurrency`, `skuEligibleCurrencies`,
+`globalURLKeyProduct` and `globalURLKeyProductType` — and a second port interface had grown beside it
+for the product-title template, taking the written total to seven. A code review found the second
+contract to be scope the plan does not authorize, and it is gone: the presentation settings the product
+entity needs are resolved **once** in the composition root and handed to the entity as a plain frozen
+value, which is the pattern `Sku.imageSettingValues` already used. So one contract, four keys, and the
+eager `SwSetting` read covers those four plus the presentation names the root resolves for itself. A row whose value is **empty** wins too, because the legacy sets
 `foundValue = true` in the same breath as the assignment [`model/service/SettingService.cfc:L525-L527`];
 for `skuEligibleCurrencies` that is the difference between a deliberately closed cascade gate
 [`model/entity/Sku.cfc:L373`] and a fully priced catalog.
 
 Cross-currency conversion is configured, never assumed. `ECB_REFERENCE_RATES` supplies the reference
-table and `ECB_RATES_RETRIEVED_AT` its age. With **no table at all**, a conversion that needs a quote
-is **refused** rather than answered at par: an absent table is the legacy's cold-start failure state,
-where the swallowed fetch error is followed by a read of an unassigned variable
-[`model/service/CurrencyService.cfc:L104-L131`], and answering 1:1 there would publish base-currency
-numerals as foreign-currency prices invisibly. A table that is present but does not quote one of the
-two codes still passes the amount through unconverted, because that is what
-[`model/service/CurrencyService.cfc:L100-L101`] does and the SKU cascade consumes the result as a
-price.
+table and `ECB_RATES_RETRIEVED_AT` its age. **`convertCurrency` is a total function**: whenever a quote
+cannot be produced — no table configured at all, or a table that does not quote one of the two codes —
+the amount passes through **unconverted**, because that is exactly what
+[`model/service/CurrencyService.cfc:L100-L101`] does and the SKU cascade consumes the result as a price.
+The absence is recorded on the log stream for an operator, once per resolution, and it is never raised
+to a caller.
+
+**This paragraph described the empty-table case as a refusal, and a code review found the adapter
+throwing where its own port contract promised pass-through.** The removed text argued: "With **no table
+at all**, a conversion that needs a quote is **refused** rather than answered at par: an absent table is
+the legacy's cold-start failure state, where the swallowed fetch error is followed by a read of an
+unassigned variable [`model/service/CurrencyService.cfc:L104-L131`], and answering 1:1 there would
+publish base-currency numerals as foreign-currency prices invisibly." The hazard it names is real and the
+legacy line it cites is real. What made the conclusion untenable is where the throw landed: the SKU
+currency cascade's conversion step [`model/entity/Sku.cfc:L416-L428`] calls the converter for every
+eligible currency that has no explicit override, so an unconfigured rate table did not fail one
+conversion — it failed the whole `getCurrencyDetails()` build, and with it every price the SKU could
+answer for any currency, including the base one. An operator's missing configuration became a total
+pricing outage. Pass-through with an operator-visible log line is both the legacy behaviour and the
+AAP 0.4.2 contract, and the staleness signal `ECB_RATES_RETRIEVED_AT` exists to make the gap visible
+without weaponizing it.
 
 ### The cross-service ordering constraint
 
@@ -1123,13 +1236,29 @@ that exactly one such refusal exists, that its legacy citation and classificatio
 the site, and that the cited legacy file is real. If the plan owner rules that it _is_ a fourth
 divergence, that is an **AAP 0.6.7 amendment**, never a quiet edit to the budget.
 
-### Preserved TODOs stay TODOs
+### Preserved TODOs stay TODOs — and nothing else becomes one
 
 The return/exchange branch at [`model/service/PromotionService.cfc:L542-L544`] carries a legacy
 `TODO [issue #1766]` and does nothing. It is ported verbatim, still does nothing, and keeps its ticket
-reference; a regression test named for the ticket documents the gap. The Google feed's
-`g:google_product_category` element is emitted **empty**, exactly as the legacy template emits it, and
-stays flagged. Completing either one silently is the failure mode this rule exists to prevent.
+reference; a regression test named for the ticket documents the gap.
+
+**The rule has a second half that is easy to miss: a TODO in this subtree means a TODO in the source.**
+The in-scope slice carries exactly five, measured by sweeping every in-scope `.cfc` and `.cfm` —
+[`model/service/PromotionService.cfc:L543`], [`model/dao/ProductDAO.cfc:L64`],
+[`model/dao/SkuDAO.cfc:L177`], [`model/service/CurrencyService.cfc:L81`] and
+[`model/entity/ProductType.cfc:L93`] — and each is carried forward in the module that owns it. A code
+review found three markers with no such antecedent and they are re-labelled for what they are: a
+`LEGACY-GAP`, an `EXCLUSION [AAP 0.9.5]`, and a "why it is not repaired" note on a reproduced defect.
+Inventing a TODO makes the five that mean something unreadable while announcing work this port never
+agreed to do.
+
+The Google feed's `g:google_product_category` element is the sharpest example. It is emitted **empty**,
+exactly as the legacy template emits it, and it stays flagged — but the legacy line
+[`integrationServices/google/views/feed/product.cfm:L20`] is a bare empty element with **no comment on
+it or near it**, so it is a preserved GAP rather than a preserved TODO. AAP 0.6.7 describes it as
+"carrying a legacy TODO"; the template does not, and the renderer records the discrepancy where the
+element is emitted. Completing either the ticket or the category silently is the failure mode this rule
+exists to prevent; mislabelling a decision as a deferral is the failure mode its second half prevents.
 
 ### Re-verify locators rather than trusting citations
 
@@ -1216,12 +1345,21 @@ editing this table fails the run, so the table cannot go stale in silence.
 | `tests/traceability`             | 1     | The coverage floor and the parity ledger, derived from the source tree. |
 
 **How the module census partitions, so the numbers can be checked rather than trusted.** `src/**`
-holds **91** modules. The ledger declares **66 covered** (each paired with the suite that owns it) and
+holds **89** modules. The ledger declares **64 covered** (each paired with the suite that owns it) and
 **25 exempt** (each a type-only module, or a runtime module that names the suite which exercises it),
-and the pending register is **empty** — 66 + 25 + 0 = 91. The suite census balances alongside it: 66
-covered suites plus 1 supplementary equals the 67 files in `tests/unit/**` and
-`tests/integration/**`. Every one of those figures is derived from disk by the traceability suite, so
-this paragraph is a convenience and the assertions are the authority.
+and the pending register is **empty** — 64 + 25 + 0 = 89. One of the 64 is a declared naming
+exception, where the suite name drops the module's `.sql` infix. Every one of those figures is derived
+from disk by the traceability suite, so this paragraph is a convenience and the assertions are the
+authority.
+
+**Those five numbers were `91 / 66 / 25 / 0 / 91` here until a code review measured them.** The prose
+had gone stale in the shrink direction, which is the direction that is easy to miss: two modules named
+in an earlier revision of this file — `src/integrations/europeanCentralBankCurrencyConverter.ts` and
+`src/lib/jsonDocumentKeys.ts` — were folded into modules AAP 0.3.1 already enumerates, the converter
+into `src/handlers/bootstrap.ts` and the prototype-key guard into `src/handlers/errorMapper.ts`, and
+the written census was never re-derived. The lesson is the one this section already argues for
+everywhere else: `A20` asserts the module count against disk on every run, so trust the gate and read
+this paragraph as commentary.
 
 An empty pending register is a **measurement, not an achievement**: it records that every debt entered
 there — the composition root, the five capability entrypoints and the router — has been discharged, and
@@ -1359,12 +1497,18 @@ Out of scope, and not partially implemented here:
   >
   > The target is **strictly less** of an integration than the source: there is no `fetch`, no HTTP
   > client and no URL anywhere in it. The rate table arrives as configuration and is read once at
-  > composition, so the legacy's daily fetch is deliberately not ported. What _did_ change is recorded
-  > with the conversion itself — an unavailable rate table now fails closed instead of pricing every
-  > foreign currency at the base numeral. The half of that finding which was valid — the class living
-  > at `src/integrations/europeanCentralBankCurrencyConverter.ts`, beside the Google adapter, where it
-  > genuinely did read as a peer integration — is fixed: that file is gone and the class sits in the
-  > composition root, where AAP 0.3.1 puts implementations that have no adapter file of their own.
+  > composition, so the legacy's daily fetch is deliberately not ported. The half of that finding which
+  > was valid — the class living at a file of its own beside the Google adapter, where it genuinely did
+  > read as a peer integration — is fixed: that file is gone and the class sits in the composition root,
+  > where AAP 0.3.1 puts implementations that have no adapter file of their own.
+  >
+  > **A sentence here also claimed the conversion "now fails closed instead of pricing every foreign
+  > currency at the base numeral", and that behaviour was itself reverted.** A later code review found
+  > the adapter throwing where the `CurrencyConverter` port promised pass-through, and the blast radius
+  > was the whole SKU cascade rather than one conversion — see the currency-cascade section for the full
+  > reasoning. `convertCurrency` is a total function: an unavailable rate table passes the amount through
+  > unconverted and logs the gap for an operator, which is both the legacy behaviour
+  > [`model/service/CurrencyService.cfc:L100-L101`] and the AAP 0.4.2 contract.
 
 - The **presentation subsystems** `admin/`, `frontend/`, `public/`, `assets/`, `templates/`, `tags/`
   and `custom/`, together with every vendored front-end library.
@@ -1424,16 +1568,35 @@ spread across five files and never summarised is one nobody can review.
 recognises exactly two claims: `accountID` (`AUTHORIZER_ACCOUNT_CLAIM`) and `adminAccountFlag`
 (`AUTHORIZER_ADMIN_CLAIM`, truthy only for the frozen set `['true', '1']`, compared with CFML
 case-folding). This subtree **issues no token, validates no signature and implements no login**: it
-trusts the authorizer's output and nothing else, which is why an unauthenticated deployment of these
-handlers admits everyone by construction.
+trusts the authorizer's output and nothing else.
 
-| Capability             | Requires an identified caller?                                                                                                                                                |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `catalogQuery`         | **Yes.** An unidentified caller is refused.                                                                                                                                   |
-| `skuResolution`        | **Yes.** An unidentified caller is refused.                                                                                                                                   |
-| `promotionApplication` | **Yes.** An unidentified caller is refused.                                                                                                                                   |
-| `priceResolution`      | **Partly.** Refused unless the requested operation is in `ANONYMOUS_PERMITTED_OPERATIONS`, which holds exactly one member: `calculateSkuPriceBasedOnCurrentAccount`.          |
-| `productFeed`          | **No — and it reads no principal at all.** The feed is machine-read by Google Merchant Center; what governs it is the `FEED_ALLOWED_HOSTS` allow-list, not a caller identity. |
+Each capability decides admission in **two** steps, and only the first is common to all of them:
+whether the caller is **identified** (a missing or unusable `accountID` earns **401**), and then
+whether the caller is **permitted the operation** (**403**). Both refusals publish the same fixed
+sentence and name no claim, no operation and no principal, so an attacker learns which of the two
+occurred and nothing else.
+
+| Capability             | Identity required?                                                                                                                                                    | Authorization beyond identity                                                                                                                                                                                                                                                                                |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `catalogQuery`         | **Yes** — 401 otherwise.                                                                                                                                              | **Yes — 403 without `adminAccountFlag`, on every one of its fourteen operations.** None of them has a non-administrative legacy antecedent: the five reads are the `admin/` option-editing and catalog-search paths, and the nine mutations are product, product-type and brand writes and a product delete. |
+| `skuResolution`        | **Yes** — 401 otherwise.                                                                                                                                              | **No.** Its two operations are the option-to-SKU resolution a storefront legitimately performs, so identity is the whole gate.                                                                                                                                                                               |
+| `promotionApplication` | **Yes** — 401 otherwise.                                                                                                                                              | **No.** It prices the caller's own order view and writes nothing durable.                                                                                                                                                                                                                                    |
+| `priceResolution`      | **Partly** — refused unless the requested operation is in `ANONYMOUS_PERMITTED_OPERATIONS`, which holds exactly one member: `calculateSkuPriceBasedOnCurrentAccount`. | **No.** All twelve of its operations are reads; the four price-group writes are withheld from the routed surface entirely rather than gated.                                                                                                                                                                 |
+| `productFeed`          | **No — and it reads no principal at all.** The feed is machine-read by Google Merchant Center.                                                                        | **Origin, not identity.** What governs it is the configured `FEED_ALLOWED_HOSTS` allow-list, which fails closed — see the feed section.                                                                                                                                                                      |
+
+**Two sentences that used to sit here were wrong, and a code review was right about both.** They read
+"an unauthenticated deployment of these handlers admits everyone by construction" and
+"**`adminAccountFlag` is carried, not enforced as a role.** It is resolved and threaded into the request
+scope so a durable-write path can consult it; it is not a permission system, and no handler treats its
+absence as anything other than 'not an admin'."
+
+The first inverted its own conclusion: with no authorizer attached the claim set is EMPTY, so every row
+above that requires identity refuses every request. That fails **closed**, not open — as the first
+bullet below has always said two paragraphs later. The second was true of an earlier revision and is
+now the opposite of the code: `catalogQueryHandler` refuses an identified caller carrying no
+`adminAccountFlag` with a 403, before the operation selector is read and before any statement is
+prepared. The claim is _enforced_ on that capability, and treating its absence as merely informational
+is exactly the gap (CWE-862) that the finding closed.
 
 Two consequences worth stating plainly, because both are the deployment's responsibility and neither is
 this subtree's to discharge:
@@ -1441,11 +1604,14 @@ this subtree's to discharge:
 - **Attaching an authorizer is a deployment decision that this repository cannot make.** There is no
   infrastructure-as-code here (by design), so nothing in this change set configures one. A deployment
   that routes API Gateway to these handlers **without** an authorizer gets an empty claim set, and every
-  "requires an identified caller" row above then refuses every request — which fails closed, but is a
+  "identity required" row above then refuses every request — which fails closed, but is a
   misconfiguration rather than a working state.
-- **`adminAccountFlag` is carried, not enforced as a role.** It is resolved and threaded into the
-  request scope so a durable-write path can consult it; it is not a permission system, and no handler
-  treats its absence as anything other than "not an admin".
+- **`adminAccountFlag` is a single boolean, not a role system.** It is enforced where the source puts
+  the operation behind `admin/` — today that is `catalogQuery`, in full — and it is threaded into the
+  request scope for consumers that need it. What this subtree does **not** have is per-operation
+  permissions, roles, scopes or a policy engine: there is one administrative bit, and a capability
+  either requires it or does not. Nothing here invents the permission subsystem the legacy `hb_permission`
+  attributes hint at, because AAP 0.2.2 excludes the account module that would own it.
 
 ### Execution-model facts of the target platform
 
@@ -1504,8 +1670,10 @@ place at enterprise standard, and they are the house rules here.
 7. **One exported runtime unit per file, and no barrel files** — gated mechanically by `A20`; see the
    import-conventions section for why "unit" is a runtime unit rather than a symbol.
 8. **In-code annotation of every judgment call and every preserved defect**, using the uniform
-   `LEGACY-DEFECT` marker — 141 of them across `src/**`, covering a register of thirty numbered entries
-   plus eight secondary items — and, for the three sanctioned exceptions, `DELIBERATE DIVERGENCE`.
+   `LEGACY-DEFECT` marker — covering the register of twenty numbered entries plus eight secondary items
+   that AAP 0.6.7 enumerates — and, for the three sanctioned exceptions, `DELIBERATE DIVERGENCE`. The
+   marker total is reported by `npm run bundle` per artifact rather than written here; a hardcoded
+   figure in this position went stale once already.
 9. **Licence continuity** via [`NOTICE-GPL.md`](./NOTICE-GPL.md), which records that the
    `/integrationServices/` special exception does not extend to this subtree.
 

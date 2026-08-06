@@ -47,45 +47,87 @@
 // ★ THE THREE LINES OF THE SUBJECT THIS SUITE DELIBERATELY DOES NOT REACH, named so the gap reads as
 // a decision rather than an oversight:
 //
-//   * the `return` guard inside the ledger's eviction loop, taken only if the map's iterator were
-//     exhausted while the map still reported more entries than its bound - defensive by construction
-//     and unreachable while both statements are true of the same `Map`;
 //   * the production default `bootstrapCompositionRoot()` inside `createCatalogQueryHandler`, which
 //     MUST NOT be invoked: calling it would resolve the real configuration and build a connection
 //     pool, which is the one thing this suite exists not to do;
-//   * the action-mismatch refusal, unreachable while the FROZEN shared route table assigns
-//     `queryCatalog` to `catalogQuery`. The shipped module records it as an impossible case that is
-//     handled rather than asserted away, and reaching it would mean reshaping the exported table -
-//     a hack that would prove nothing about the request path.
+//   * the action-mismatch refusal at `resolution.route.action !== IMPLEMENTED_ACTION`, unreachable
+//     while the FROZEN shared route table assigns `queryCatalog` to `catalogQuery`. The shipped module
+//     records it as an impossible case that is handled rather than asserted away, and reaching it would
+//     mean reshaping the exported table - a hack that would prove nothing about the request path;
+//   * the `z.strictObject.parse(undefined)` arm every mutation carries, unreachable because the handler
+//     refuses `missingRequestBody` before `planInvocation` is called. The shipped module states its
+//     outcome - an ordinary 400 naming the document root - and reaching it would mean calling
+//     `planInvocation` directly, which asserts nothing about the request path either.
+//
+// ★★ QUOTE-THEN-REVISE. That list used to open with a fourth entry: "the `return` guard inside the
+// ledger's eviction loop, taken only if the map's iterator were exhausted while the map still reported
+// more entries than its bound". It was accurate when written and is now vacuous - security review
+// finding F5 removed the per-container response ledger from the shipped module altogether, so there is
+// no eviction loop left to leave unreached. The third entry above replaced it, and it is a real
+// unreached line rather than a placeholder kept to preserve a count of three.
 //
 // ---------------------------------------------------------------------------
-// TWO PLACES WHERE THE SHIPPED SOURCE DIFFERS FROM THIS SUITE'S BRIEF, MIRRORED AS SHIPPED
+// TWO PLACES WHERE THIS SUITE ONCE DIFFERED FROM ITS BRIEF, AND WHAT A CODE REVIEW DID TO BOTH
 //
-// Both are recorded here rather than worked around, because the instruction is to mirror what
-// shipped and to raise the difference - never to reshape `src/**` so a test can pass.
+// ★★★ QUOTE-THEN-REVISE, AND THE FIRST OF THE TWO IS NOW THE OPPOSITE OF WHAT IT SAID. Both entries
+// used to record a difference between the brief and the shipped source and mirror the source as it
+// stood. A code review then found the difference itself to be the defect - CRITICAL, one finding
+// against the handler and one against this file - so the source changed and these two records change
+// with it. They are kept rather than deleted because the reasoning that produced the narrow surface is
+// exactly what a reader needs in order to trust the wide one.
 //
-//  1. THE PUBLISHED SURFACE IS THREE OPERATIONS, NOT SIXTEEN. The brief lists the whole of
-//     `ProductService`, plus `BrandService.saveBrand` and `OptionService.getOptionsForSelect`. The
-//     shipped module publishes exactly `findProducts`, `getUnusedProductOptions` and
-//     `getUnusedProductOptionGroups`, and documents every other member as a DELIBERATE
-//     NON-EXPOSURE in four categories: out of scope by AAP 0.9.5; owned by `skuResolutionHandler`;
-//     unreachable because the composition root publishes no entity and no entity loader, so a
-//     method whose first parameter is an entity has no admissible argument at this tier; and not
-//     this service's to publish at all. This suite therefore EXERCISES the three and asserts
-//     NON-EXPOSURE for the rest, at the route and operation level, with a tripwire on every
-//     unpublished member proving no service call escapes.
+//  1. THE PUBLISHED SURFACE IS FOURTEEN OPERATIONS. IT USED TO BE THREE, AND THAT WAS THE FINDING.
+//     This entry used to read, verbatim:
 //
-//  2. THE `Product_UpdateSkus` CONDITIONAL RULES ARE NOT REACHABLE FROM HERE, SO THEY ARE NOT
-//     ASSERTED HERE. [model/validation/Product_UpdateSkus.json] gates `price` on
+//         "THE PUBLISHED SURFACE IS THREE OPERATIONS, NOT SIXTEEN. The brief lists the whole of
+//          `ProductService`, plus `BrandService.saveBrand` and `OptionService.getOptionsForSelect`.
+//          The shipped module publishes exactly `findProducts`, `getUnusedProductOptions` and
+//          `getUnusedProductOptionGroups`, and documents every other member as a DELIBERATE
+//          NON-EXPOSURE in four categories: out of scope by AAP 0.9.5; owned by
+//          `skuResolutionHandler`; unreachable because the composition root publishes no entity and
+//          no entity loader, so a method whose first parameter is an entity has no admissible
+//          argument at this tier; and not this service's to publish at all. This suite therefore
+//          EXERCISES the three and asserts NON-EXPOSURE for the rest, at the route and operation
+//          level, with a tripwire on every unpublished member proving no service call escapes."
+//
+//     Three of those four non-exposure categories were sound and still are. AAP 0.9.5 does exclude
+//     `processProduct_addProductReview`, `processProduct_addSubscriptionTerm`,
+//     `processProduct_uploadDefaultImage` and `loadDataFromFile`; `skuResolutionHandler` does own the
+//     SKU reads; and `BrandService`'s framework members are not this capability's to publish. The
+//     FOURTH was false at the moment it was written: the composition root DOES publish entity loaders
+//     - `RequestScope.entityLoaders` - so "a method whose first parameter is an entity has no
+//     admissible argument at this tier" was not true, and eleven AAP-0.4.2-sanctioned actions were
+//     unreachable from Lambda on the strength of a premise the same composition root contradicted.
+//     Catalog persistence and the whole of `BrandService` had no transport at all.
+//
+//     The shipped module now publishes FOURTEEN operations: five reads on GET
+//     (`findProducts`, `getFormattedOptionGroups`, `getUnusedProductOptions`,
+//     `getUnusedProductOptionGroups`, `getOptionsForSelect`) and nine mutations on POST
+//     (`processProduct_addOptionGroup`, `processProduct_addOption`, `processProduct_updateSkus`,
+//     `processProduct_deleteDefaultImage`, `processProduct_updateDefaultImageFileNames`,
+//     `saveProduct`, `saveProductType`, `deleteProduct`, `saveBrand`). Every one is administrative,
+//     every mutation names an EXISTING row by identifier, and each identifier is hydrated through
+//     `RequestScope.entityLoaders` rather than reconstructed here. This suite therefore EXERCISES all
+//     fourteen and asserts NON-EXPOSURE only for the members that remain genuinely unpublished.
+//
+//  2. THE `Product_UpdateSkus` CONDITIONAL RULES ARE NOW REACHABLE, AND ARE STILL NOT RESTATED HERE.
+//     This entry used to read, verbatim: "THE `Product_UpdateSkus` CONDITIONAL RULES ARE NOT
+//     REACHABLE FROM HERE, SO THEY ARE NOT ASSERTED HERE ... That operation is not published by this
+//     capability ... Asserting the two conditional paths through this entrypoint would require
+//     inventing a route the shipped router does not have."
+//
+//     The premise expired with entry 1: `processProduct_updateSkus` IS published now, so the route
+//     exists and nothing needs inventing. The CONCLUSION survives unchanged, for a different and
+//     better reason. [model/validation/Product_UpdateSkus.json] gates `price` on
 //     `showPrice{updatePriceFlag eq 1}` and `listPrice` on `showListPrice{updateListPriceFlag eq 1}`,
-//     and those rules ARE ported - as a module-private zod schema inside
+//     and those rules are ported as a module-private zod schema inside
 //     `src/services/productService.ts` that `processProduct_updateSkus`
-//     [model/service/ProductService.cfc:L216-L233] parses with before any mutation. That operation
-//     is not published by this capability, and the handler deliberately neither duplicates nor
-//     restates the schema. Asserting the two conditional paths through this entrypoint would
-//     require inventing a route the shipped router does not have. What IS asserted here is the
-//     honest transport-level fact: the operation is refused, and no schema for those rules exists in
-//     this tier to drift from the one that owns them.
+//     [model/service/ProductService.cfc:L216-L233] parses with before any mutation. The handler
+//     forwards the submitted payload and restates NOTHING: no second copy of the conditional gate
+//     lives at this tier, so there is no second copy to drift. What this suite asserts is the
+//     transport fact - the payload arrives at the service unaltered, and a rule the SERVICE refuses
+//     surfaces as a refusal rather than as a partial mutation - and the conditional paths themselves
+//     stay asserted in `tests/unit/services/productService.test.ts`, which owns them.
 //
 // IMPORT DISCIPLINE. Explicit relative specifiers carrying the `.js` extension NodeNext resolution
 // requires, named imports only, and `import type` on its own statement for every type-only import.
@@ -142,7 +184,18 @@ import type {
   CatalogQueryResultDocument,
   CatalogSelectOptionProjection,
 } from '../../../src/handlers/catalogQueryHandler.js';
-import { createCatalogQueryHandler, handler } from '../../../src/handlers/catalogQueryHandler.js';
+// ★★ `CATALOG_OPERATION_TRANSPORT` IS A VALUE IMPORT, AND IT IS IMPORTED RATHER THAN RESTATED. The
+// subject publishes the retry semantics AS DATA - one frozen record naming, per operation, the single
+// method it is served on and whether re-sending it converges - because AAP 0.6.5 asks for stated retry
+// semantics on a bulk mutation path and a per-container response ledger was removed from this module by
+// security review. Importing the table is what turns that documentation into something a test can pin;
+// restating it here would let the two copies disagree silently, which is the failure the whole
+// derive-rather-than-restate discipline in this file exists to prevent.
+import {
+  CATALOG_OPERATION_TRANSPORT,
+  createCatalogQueryHandler,
+  handler,
+} from '../../../src/handlers/catalogQueryHandler.js';
 import type { ErrorResponseBody, SuccessResponseBody } from '../../../src/handlers/errorMapper.js';
 import { ROUTE_TABLE } from '../../../src/handlers/router.js';
 import type { LogSink } from '../../../src/lib/logger.js';
@@ -151,11 +204,34 @@ import { logger } from '../../../src/lib/logger.js';
 // which is what the real request scope's real instances inherit from.
 import { BrandService } from '../../../src/services/brandService.js';
 import { OptionService } from '../../../src/services/optionService.js';
-import type { ProductPage, ProductQueryCriteria } from '../../../src/services/productService.js';
+import type {
+  FormattedOptionGroup,
+  ProductPage,
+  ProductQueryCriteria,
+} from '../../../src/services/productService.js';
 import {
   ProductPagingCriteriaError,
   ProductService,
 } from '../../../src/services/productService.js';
+import type { SelectOption } from '../../../src/domain/ports/optionRepository.js';
+// ★★ TWO REPOSITORY CLASSES, IMPORTED AS VALUES FOR THE SAME REASON THE THREE SERVICES ARE. Two of the
+// seven read-only entity loads on `RequestScope.entityLoaders` FORWARD a repository read verbatim, and the
+// published loaders object is frozen - so the load is programmed on the prototype the real graph's real
+// repository inherits from. Nothing is constructed from either class here.
+import { MysqlProductRepository } from '../../../src/repositories/mysql/mysqlProductRepository.js';
+import { MysqlProductTypeRepository } from '../../../src/repositories/mysql/mysqlProductTypeRepository.js';
+// ★ THE FOUR ENTITY TYPES ARE TYPE-ONLY, and nothing in this suite constructs one: the product comes from
+// the fixture factory, the product type off the product's own graph, and the brand and options are
+// hydrated by the composition root from the rows the executor answers. They are named because the recorded
+// call records are typed by them, which is what makes a delegation assertion checkable rather than `any`.
+import type { Brand } from '../../../src/domain/entities/brand.js';
+import type { Option } from '../../../src/domain/entities/option.js';
+import type { Product } from '../../../src/domain/entities/product.js';
+import type { ProductType } from '../../../src/domain/entities/productType.js';
+// The subject's own list primitive, so a declared method list and an option-identifier list are parsed
+// here exactly as the subject parses them. Re-splitting on a comma by hand would be a second
+// implementation of one rule.
+import { listToArray } from '../../../src/lib/cfml/list.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
 
@@ -178,6 +254,47 @@ const SKU_RESOLUTION_ROUTE = ROUTE_TABLE.skuResolution;
 
 /** A third, whose method differs, used to prove the method is part of the match. */
 const PROMOTION_APPLICATION_ROUTE = ROUTE_TABLE.promotionApplication;
+
+/**
+ * The FIRST method the catalog row declares, as a request would carry it.
+ *
+ * ★★ `CATALOG_ROUTE.methods` IS A COMMA LIST AND IS NOT A METHOD. The row reads `'GET,POST'` - five reads
+ * on the first, nine mutations on the second - so the declaration has to be parsed before it can be sent.
+ * Parsed with the subject's own primitive rather than split by hand, so this suite reads the declaration
+ * exactly as `./router.js` reads it.
+ */
+function firstDeclaredCatalogMethod(): string {
+  const declared = listToArray(CATALOG_ROUTE.methods)[0];
+
+  if (declared === undefined) {
+    throw new Error('the catalog route declares no method at all');
+  }
+
+  return declared;
+}
+
+/**
+ * The method a given catalog operation is served on.
+ *
+ * READ FROM THE ROW'S DECLARED LIST, never from a literal: the reads take the first declared method and
+ * the mutations take the second, so a table that reordered or renamed its methods moves this suite with
+ * it. A capability declaring only one method would fail loudly here rather than silently sending `GET`
+ * for a write.
+ */
+function methodForOperation(operation: CatalogQueryOperation): string {
+  const declared = listToArray(CATALOG_ROUTE.methods);
+  const index = MUTATION_OPERATIONS.includes(operation) ? 1 : 0;
+  const method = declared[index];
+
+  if (method === undefined) {
+    throw new Error(
+      `the catalog route declares ${String(declared.length)} methods; ${operation} needs the ` +
+        `one at index ${String(index)}`,
+    );
+  }
+
+  return method;
+}
 
 // ---------------------------------------------------------------------------
 // Non-sensitive sentinels
@@ -205,18 +322,60 @@ const SENTINEL_SKU_CODE = 'TESTPRODUCTXXX-1';
 /** The opaque account identifier the default authorizer context establishes. */
 const CALLER_ACCOUNT_ID = 'eeee1111222233334444555566667777';
 
+/** A saved brand's primary key, in the same 32-hexadecimal shape. */
+const SENTINEL_BRAND_ID = 'ffff1111222233334444555566667777';
+
+/** The brand name the synthetic `SwBrand` row carries. */
+const SENTINEL_BRAND_NAME = 'Test Brand';
+
+/** The brand slug the synthetic `SwBrand` row carries. */
+const SENTINEL_BRAND_URL_TITLE = 'test-brand';
+
+/** A saved option's primary key. */
+const FIRST_OPTION_ID = '1111aaaa2222bbbb3333cccc4444dddd';
+
+/** A second option, so a two-element list can assert the caller's own order is preserved. */
+const SECOND_OPTION_ID = '5555eeee6666ffff77778888aaaa9999';
+
+/** The option group both synthetic options belong to. */
+const SENTINEL_OPTION_GROUP_ID = '9999ffff8888eeee7777dddd6666cccc';
+
+/**
+ * Identifiers that are well-formed and name NO ROW, one per loadable entity.
+ *
+ * ★★ THE MISS IS DRIVEN BY THE CALLER'S OWN IDENTIFIER, NOT BY EMPTYING A FIXTURE. Every mutation binds
+ * an existing row, and "the row is not there" is a domain outcome the subject publishes as `unresolved`
+ * in a 200 rather than as a 404 - so the honest way to reach it is to NAME a row that does not exist,
+ * exactly as a caller would. Withdrawing the fixture instead would reach the same branch while proving
+ * nothing about the identifier the request carried.
+ *
+ * Each is a well-formed 32-hexadecimal key, so nothing about the refusal can be attributed to a
+ * malformed value: the schema admits all four and the load simply answers nothing.
+ */
+const ABSENT_PRODUCT_ID = '0000dead0000dead0000dead0000dead';
+const ABSENT_PRODUCT_TYPE_ID = '1111dead1111dead1111dead1111dead';
+const ABSENT_BRAND_ID = '2222dead2222dead2222dead2222dead';
+const ABSENT_OPTION_ID = '3333dead3333dead3333dead3333dead';
+
 /**
  * The default authorizer context: an identified caller carrying the ADMINISTRATIVE claim.
  *
  * ★★★ THE DEFAULT USED TO BE `{ accountID: CALLER_ACCOUNT_ID }` ALONE, AND THAT WAS THE DEFECT
- * (F45, CWE-862). Every one of the three operations this capability publishes is administrative in
- * the source - `getUnusedProductOptions` and `getUnusedProductOptionGroups` are consumed only by
+ * (F45, CWE-862). Every one of the FOURTEEN operations this capability publishes is administrative in
+ * the source - `getUnusedProductOptions`, `getUnusedProductOptionGroups`, `getFormattedOptionGroups` and
+ * `getOptionsForSelect` are the option-editing reads consumed only by
  * `admin/views/entity/preprocessproduct_addoption.cfm:L60` and its option-group twin, inside an
- * application whose controllers declare `this.publicMethods=''`, and `findProducts` stands in for
+ * application whose controllers declare `this.publicMethods=''`; `findProducts` stands in for
  * `searchProductsByProductType` [model/dao/ProductDAO.cfc:L419-L437], which has no caller anywhere in
- * the legacy tree and whose statement carries no `activeFlag`/`publishedFlag` predicate. A default
- * principal WITHOUT the claim therefore drove 130 cases through a gate that should have refused it,
- * and the suite could not have noticed the missing authorization because it never asserted it.
+ * the legacy tree and whose statement carries no `activeFlag`/`publishedFlag` predicate; and the nine
+ * MUTATIONS are reached in the legacy through `admin/` alone. A default principal WITHOUT the claim
+ * therefore drove 130 cases through a gate that should have refused it, and the suite could not have
+ * noticed the missing authorization because it never asserted it.
+ *
+ * ★★ THE COUNT WENT FROM THREE TO FOURTEEN AFTER THIS DEFAULT WAS FIXED, WHICH MADE THE GATE MATTER
+ * MORE RATHER THAN LESS. A later code review found eleven AAP-0.4.2-mapped actions unreachable from
+ * Lambda, nine of them writes, and publishing them behind this gate is what makes the widened surface
+ * safe - the admission cases loop over all fourteen for exactly that reason.
  *
  * The default now carries the claim, so every operation case exercises a caller the route legitimately
  * serves, and the gate itself is asserted explicitly by the cases that omit or falsify the claim.
@@ -241,6 +400,15 @@ const SENTINEL_SALE_PRICE = '17.49';
 
 /** The product-type identifier the legacy helper uses verbatim [meta/tests/unit/Helper.cfc:L58]. */
 const MERCHANDISE_PRODUCT_TYPE_ID = '444df2f7ea9c87e60051f3cd87b435a1';
+
+/**
+ * The product type the product fixture's own graph carries.
+ *
+ * ALIASED RATHER THAN RESTATED, so the identifier the product-type LOAD is programmed with is provably
+ * the same one the fixture's entity answers - which is what makes the delegation assertion mean
+ * something rather than comparing two independently written literals.
+ */
+const SENTINEL_PRODUCT_TYPE_ID = MERCHANDISE_PRODUCT_TYPE_ID;
 
 /** An option-group identifier list, deliberately UNTIDY - see the forwarding assertions. */
 const UNTIDY_OPTION_GROUP_ID_LIST = ' Zulu , alpha ,alpha,,BRAVO ';
@@ -321,6 +489,25 @@ interface EventOverrides {
    * no authorizer context.
    */
   readonly authorizer?: Readonly<Record<string, unknown>> | null | undefined;
+
+  /**
+   * The raw request body, exactly as API Gateway would deliver it.
+   *
+   * ★★ A STRING RATHER THAN AN OBJECT, deliberately. The subject decodes a body with `JSON.parse` and
+   * has to decide what an unparsable one, an array one, a base64 one and an oversized one mean; handing
+   * it a pre-parsed object would remove every one of those decisions from reach. Defaults to `null`,
+   * which is what the platform delivers for a request that carries no body - and is what the five READ
+   * operations are driven with.
+   */
+  readonly body?: string | null | undefined;
+
+  /**
+   * Whether the platform base64-encoded the body. Defaults to `false`.
+   *
+   * Modelled because the subject branches on it: API Gateway sets it for a binary media type, and a
+   * caller that does so is not making a different request.
+   */
+  readonly isBase64Encoded?: boolean | undefined;
 }
 
 /**
@@ -333,7 +520,13 @@ interface EventOverrides {
  * it.
  */
 function makeEvent(overrides: EventOverrides = {}): APIGatewayProxyEvent {
-  const method = overrides.method ?? CATALOG_ROUTE.methods;
+  // ★★★ THE DEFAULT IS THE FIRST METHOD THE ROW DECLARES, NOT THE WHOLE DECLARATION. `CATALOG_ROUTE.methods`
+  // is a CFML COMMA LIST and now reads `'GET,POST'`, because the capability serves five reads on `GET`
+  // and nine mutations on `POST`. Sending the list verbatim as a method would match nothing -
+  // `listFindNoCase('GET,POST', 'GET,POST')` answers 0, since the whole list is not an ELEMENT of itself -
+  // and every case that relies on this default would have started asserting against a 404. Parsed with the
+  // subject's own list primitive so the two cannot disagree about what a declared method is.
+  const method = overrides.method ?? firstDeclaredCatalogMethod();
   const path = overrides.path ?? CATALOG_ROUTE.path;
 
   const repeated: Record<string, string[]> = {};
@@ -344,11 +537,11 @@ function makeEvent(overrides: EventOverrides = {}): APIGatewayProxyEvent {
   }
 
   return {
-    body: null,
+    body: overrides.body === undefined ? null : overrides.body,
     headers: overrides.headers === undefined ? {} : { ...overrides.headers },
     multiValueHeaders: {},
     httpMethod: method,
-    isBase64Encoded: false,
+    isBase64Encoded: overrides.isBase64Encoded ?? false,
     path,
     pathParameters: null,
     queryStringParameters:
@@ -445,6 +638,14 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
  * so a subject that stopped emitting one would fail here loudly instead of satisfying an assertion
  * against a document that no longer has the shape claimed for it. The nested payload is re-checked
  * where it is read, in {@link readProductPage} and {@link readSelectRows}.
+ *
+ * ★★★ THE PAYLOAD IS A TWO-ARM UNION NOW, AND BOTH ARMS ARE ADMITTED HERE. This predicate used to
+ * require `payload['result'] !== undefined`, which was exactly right while every served document carried
+ * a payload. Nine of the fourteen operations bind an EXISTING row by identifier, and an identifier that
+ * names no row is a domain outcome the subject publishes as `{operation, unresolved}` in a 200 - a
+ * document with no `result` member at all. Requiring one would make this predicate reject a served
+ * response the subject legitimately emits, so it now accepts EXACTLY ONE of the two members and rejects
+ * a document carrying both or neither.
  */
 function isServedBody(value: unknown): value is ServedEnvelope {
   if (
@@ -458,9 +659,16 @@ function isServedBody(value: unknown): value is ServedEnvelope {
 
   const payload = value['result'];
 
-  return (
-    isRecord(payload) && typeof payload['operation'] === 'string' && payload['result'] !== undefined
-  );
+  if (!isRecord(payload) || typeof payload['operation'] !== 'string') {
+    return false;
+  }
+
+  const carriesResult = payload['result'] !== undefined;
+  const carriesUnresolved = typeof payload['unresolved'] === 'string';
+
+  // EXACTLY ONE, checked as an exclusive or rather than as two independent tests, because a document
+  // carrying both would mean the subject had emitted a shape its own union cannot describe.
+  return carriesResult !== carriesUnresolved;
 }
 
 /**
@@ -680,6 +888,24 @@ type OptionServiceDouble = Pick<
  */
 type BrandServiceDouble = Pick<BrandService, 'saveBrand'>;
 
+// ---------------------------------------------------------------------------
+// The nine mutation payload types, DERIVED FROM THE SERVICE SIGNATURES
+//
+// ★★ NOT RESTATED, on exactly the reasoning the `Pick<>` surfaces above are chosen for. A hand-copied
+// payload shape keeps compiling when the service's own input type gains or loses a member, so a body
+// fixture built against it would silently stop matching what the handler forwards. Reading each through
+// `Parameters<...>` makes a service signature change a compile error in this file, which is where it should
+// surface.
+// ---------------------------------------------------------------------------
+
+type AddOptionGroupPayload = Parameters<ProductService['processProduct_addOptionGroup']>[1];
+type AddOptionPayload = Parameters<ProductService['processProduct_addOption']>[1];
+type UpdateSkusPayload = Parameters<ProductService['processProduct_updateSkus']>[1];
+type DeleteDefaultImagePayload = Parameters<ProductService['processProduct_deleteDefaultImage']>[1];
+type SaveProductPayload = Parameters<ProductService['saveProduct']>[1];
+type SaveProductTypePayload = Parameters<ProductService['saveProductType']>[1];
+type SaveBrandPayload = Parameters<BrandService['saveBrand']>[1];
+
 /**
  * A configuration source answering the five keys that have no default, and nothing else.
  *
@@ -705,17 +931,124 @@ const CATALOG_ENVIRONMENT: EnvironmentSource = Object.freeze({
 });
 
 /**
+ * A `SwBrand` row the brand loader can hydrate, or none.
+ *
+ * ★★★ THE BRAND LOAD IS THE ONE ENTITY BINDING THIS SUITE DRIVES THROUGH REAL SQL, and that is not an
+ * accident of convenience. `RequestEntityLoaders.getBrandByBrandID` has NO REPOSITORY BEHIND IT -
+ * `BrandService.cfc` declares only `saveBrand` [model/service/BrandService.cfc:L67] and every brand read
+ * arrived by framework inheritance, so the statement is hosted in the composition root itself. There is
+ * consequently no prototype to programme, and answering the statement is the only way to exercise it -
+ * which also means `hydrateBrand` and the projection of {@link BRAND_COLUMNS} are covered rather than
+ * assumed.
+ *
+ * Every value is a synthetic sentinel. `activeFlag` and `publishedFlag` are the CFML `1`/`0` renderings a
+ * MySQL `bit` column answers with, which is what the entity's own boolean input union accepts.
+ */
+function brandRow(brandID: string): SqlRow {
+  return {
+    brandID,
+    activeFlag: 1,
+    publishedFlag: 1,
+    urlTitle: SENTINEL_BRAND_URL_TITLE,
+    brandName: SENTINEL_BRAND_NAME,
+    brandWebsite: null,
+    remoteID: null,
+    createdDateTime: null,
+    createdByAccountID: null,
+    modifiedDateTime: null,
+    modifiedByAccountID: null,
+  };
+}
+
+/**
+ * One `SwOption` row joined to its `SwOptionGroup`, in the projection the option load asks for.
+ *
+ * The group's columns carry the `optionGroup_` alias prefix the statement aliases them with, and
+ * `optionGroup_sortOrder` is a NUMBER because the group hydration reads it as a required integer. Both
+ * facts are read off the composition root's own projection rather than guessed, which is what keeps this
+ * row hydratable if the projection is ever widened.
+ */
+function optionRow(optionID: string): SqlRow {
+  return {
+    optionID,
+    optionCode: `${optionID}-code`,
+    optionName: `${optionID}-name`,
+    optionDescription: null,
+    sortOrder: 1,
+    optionGroupID: SENTINEL_OPTION_GROUP_ID,
+    defaultImageID: null,
+    remoteID: null,
+    createdDateTime: null,
+    createdByAccountID: null,
+    modifiedDateTime: null,
+    modifiedByAccountID: null,
+    optionGroup_optionGroupID: SENTINEL_OPTION_GROUP_ID,
+    optionGroup_optionGroupName: 'Colour',
+    optionGroup_optionGroupCode: 'colour',
+    optionGroup_optionGroupImage: null,
+    optionGroup_optionGroupDescription: null,
+    optionGroup_imageGroupFlag: 0,
+    optionGroup_sortOrder: 1,
+    optionGroup_remoteID: null,
+    optionGroup_createdDateTime: null,
+    optionGroup_createdByAccountID: null,
+    optionGroup_modifiedDateTime: null,
+    optionGroup_modifiedByAccountID: null,
+  };
+}
+
+/**
  * The statement executor the real graph is assembled over.
  *
- * Answers every read with NO ROWS and refuses every write. This suite asserts nothing about SQL - the
- * three published operations are answered from data on the class prototypes - so the executor exists
- * only to keep the composition root away from a connection pool. A write reaching it would be a
- * finding, since a query capability performs none.
+ * ★★ IT ANSWERS EXACTLY TWO STATEMENTS AND NOTHING ELSE, and the two it answers are the two entity loads
+ * that have no prototype to programme. Everything else reads NO ROWS: the fourteen published operations
+ * are answered from data installed on the service class prototypes, and the product and product-type
+ * loads are programmed on their repository prototypes, so the executor exists mainly to keep the
+ * composition root away from a connection pool.
+ *
+ * ★ RECOGNITION IS BY THE TABLE THE STATEMENT NAMES, not by an exact string. An exact match would make
+ * this suite fail on a reformatted statement rather than on a changed one, and the projection is asserted
+ * anyway - by the row hydrating at all.
+ *
+ * A MUTATION OR A TRANSACTION REACHING IT IS STILL A FINDING. The nine published mutations reach the
+ * SERVICE, whose prototype is programmed here, so no statement of theirs is executed: a write arriving at
+ * this executor would mean the handler had bypassed the service that owns the invariants, which is
+ * exactly the arrangement `RequestScope` withdrew the six raw repositories to prevent.
  */
 class CatalogExecutor implements PreparedStatementExecutor {
+  /** Brand identifiers this executor will answer a row for. Empty means every brand is a miss. */
+  public readonly knownBrandIDs = new Set<string>();
+
+  /** Option identifiers this executor will answer a row for. Empty means every option is a miss. */
+  public readonly knownOptionIDs = new Set<string>();
+
+  /** Every statement it was asked to execute, in order, for a case that wants to assert the shape. */
+  public readonly executed: string[] = [];
+
   public execute(sql: string, params?: readonly unknown[]): Promise<readonly SqlRow[]> {
-    void sql;
-    void params;
+    this.executed.push(sql);
+
+    const bound = params ?? [];
+
+    if (sql.includes('FROM SwBrand')) {
+      const brandID = bound[0];
+
+      return Promise.resolve(
+        typeof brandID === 'string' && this.knownBrandIDs.has(brandID) ? [brandRow(brandID)] : [],
+      );
+    }
+
+    if (sql.includes('FROM SwOption swOption')) {
+      const rows: SqlRow[] = [];
+
+      for (const optionID of bound) {
+        if (typeof optionID === 'string' && this.knownOptionIDs.has(optionID)) {
+          rows.push(optionRow(optionID));
+        }
+      }
+
+      return Promise.resolve(rows);
+    }
 
     return Promise.resolve([]);
   }
@@ -724,7 +1057,9 @@ class CatalogExecutor implements PreparedStatementExecutor {
     void params;
 
     throw new Error(
-      `a mutation reached the catalog-query capability, which publishes reads: ${sql}`,
+      `a mutation statement reached the catalog capability's executor: ${sql}. Every published ` +
+        'mutation goes through the service that owns its invariants, whose prototype this suite ' +
+        'programmes, so no statement of its own should arrive here.',
     );
   }
 
@@ -734,7 +1069,8 @@ class CatalogExecutor implements PreparedStatementExecutor {
     void work;
 
     throw new Error(
-      'a transaction was opened by the catalog-query capability, which writes nothing',
+      "a transaction was opened against the catalog capability's executor; every published mutation " +
+        'is answered by a programmed service prototype, which opens none',
     );
   }
 }
@@ -790,8 +1126,14 @@ class RecordingCompositionRoot implements CompositionRoot {
  *
  * ★ ON THE PROTOTYPES, BECAUSE THAT IS WHAT THE REAL SCOPE'S REAL INSTANCES INHERIT FROM, and one
  * typed `vi.spyOn` per member, so each installation is checked against the shipped signature. Every
- * member of all three surfaces is installed - the three published answers AND the fifteen tripwires -
- * so no call can reach a real implementation and no real implementation can reach a repository.
+ * member of all three surfaces is installed - the fourteen published answers AND the five remaining
+ * tripwires - so no call can reach a real implementation and no real implementation can reach a
+ * repository.
+ *
+ * ★★ THE SPLIT USED TO BE "the three published answers AND the fifteen tripwires", and a code review
+ * moved eleven names across the line. Nine of the fifteen refusals were AAP-0.4.2-mapped Product and
+ * Brand actions this capability was found to be withholding, so they are recording implementations now;
+ * the five that stay refusals are the ones the source genuinely puts out of reach.
  *
  * Restored by this file's `afterEach`, by the global hook in `tests/setup.ts` and by
  * `vitest.config.ts`'s `restoreMocks`, three belts for one obligation.
@@ -857,6 +1199,67 @@ function installServiceAnswers(
   );
 
   vi.spyOn(BrandService.prototype, 'saveBrand').mockImplementation(brandService.saveBrand);
+}
+
+/**
+ * The world the two REPOSITORY-BACKED entity loads answer from.
+ *
+ * ★★★ PROGRAMMED ON THE REPOSITORY PROTOTYPES, WHICH IS THE SAME MECHANISM THE SERVICES USE AND FOR THE
+ * SAME REASON. `RequestScope.entityLoaders` is `Object.freeze`d, so a spy cannot be installed on the
+ * published object - but two of its seven loads FORWARD a repository read verbatim, and the real graph's
+ * real repositories inherit from these prototypes. Programming them is therefore programming the loads
+ * without touching the frozen surface, without a cast, and without hand-writing a `RequestScope`.
+ *
+ * ★★ EACH LOAD MATCHES ON THE IDENTIFIER IT IS GIVEN rather than answering unconditionally. A double that
+ * answered any identifier would let a case pass while the subject forwarded the WRONG one, which is
+ * precisely the class of defect the loaders were introduced to close. So a mismatch is a MISS, and a miss
+ * is `undefined` - never a fabricated entity and never a throw, which is the posture
+ * `RequestEntityLoaders` documents.
+ *
+ * THE OTHER TWO LOADS ARE NOT PROGRAMMED HERE. `getBrandByBrandID` has no repository behind it and
+ * `getOptionsByOptionIDList` forwards a module-private collaborator, so both are driven through the
+ * injected executor - see {@link CatalogExecutor}, which answers exactly those two statements.
+ */
+function installEntityLoads(world: LoadableCatalogWorld): void {
+  vi.spyOn(MysqlProductRepository.prototype, 'getProductByProductID').mockImplementation(
+    (productID: string): Promise<Product | undefined> => {
+      world.productLoads.push(productID);
+
+      const held = world.product;
+
+      return Promise.resolve(
+        held !== undefined && held.getProductID() === productID ? held : undefined,
+      );
+    },
+  );
+
+  vi.spyOn(
+    MysqlProductTypeRepository.prototype,
+    'getProductTypeByProductTypeID',
+  ).mockImplementation((productTypeID: string): Promise<ProductType | undefined> => {
+    world.productTypeLoads.push(productTypeID);
+
+    const held = world.productType;
+
+    return Promise.resolve(
+      held !== undefined && held.getProductTypeID() === productTypeID ? held : undefined,
+    );
+  });
+}
+
+/** What the two repository-backed loads hold, and the record of what was asked of them. */
+interface LoadableCatalogWorld {
+  /** The one product that can be loaded, or none. Mutable, so a case can programme a miss. */
+  product: Product | undefined;
+
+  /** The one product type that can be loaded, or none. */
+  productType: ProductType | undefined;
+
+  /** Every product identifier the load was asked for, in order. */
+  readonly productLoads: string[];
+
+  /** Every product-type identifier the load was asked for, in order. */
+  readonly productTypeLoads: string[];
 }
 
 /**
@@ -927,6 +1330,27 @@ interface CatalogQueryOutcomes {
   /** When set, `getUnusedProductOptions` throws this instead of resolving. */
   unusedOptionsRejectsWith: Error | undefined;
 
+  /** What `getFormattedOptionGroups` answers. */
+  formattedOptionGroups: readonly FormattedOptionGroup[];
+
+  /** What `deleteProduct` answers. `false` is the ported delete-context refusal, not an error. */
+  productDeleted: boolean;
+
+  /** When set, `processProduct_updateSkus` throws this - the SKU batch bound's shape. */
+  updateSkusRejectsWith: Error | undefined;
+
+  /**
+   * Save-context rules to record on the entity instead of validating, as `[property, message]` pairs.
+   *
+   * ★★ THE FAILURE IS PROGRAMMED ON THE ENTITY, NOT AS A THROW, because that is the ported contract - the
+   * three saves RETURN the entity with its errors and never raise for a failed rule. What a case asserts
+   * is therefore that the ADAPTER reads the register and answers 400, which is a transport decision, and
+   * that the messages published are the register's own server-authored ones.
+   */
+  saveProductRuleFailures: readonly (readonly [string, string])[];
+  saveProductTypeRuleFailures: readonly (readonly [string, string])[];
+  saveBrandRuleFailures: readonly (readonly [string, string])[];
+
   /** When set, every published operation awaits it before answering. */
   gate: Promise<void> | undefined;
 }
@@ -935,6 +1359,31 @@ interface CatalogQueryOutcomes {
 interface RecordedUnusedOptionsCall {
   readonly productID: string;
   readonly existingOptionGroupIDList: string;
+}
+
+/**
+ * One process-method call: the BOUND ENTITY and the payload, both by reference.
+ *
+ * The entity is what proves the hydration - a case asserts that the instance handed to the service is the
+ * one the loader answered for the identifier the request named, which is the whole of what "hydrate IDs
+ * through request-scope loaders" means. The payload is what proves the schema forwarded absence AS
+ * absence rather than substituting a value.
+ */
+interface RecordedProductCall<TPayload> {
+  readonly product: Product;
+  readonly input: TPayload;
+}
+
+/**
+ * One save call: the bound entity and its payload.
+ *
+ * Generic over BOTH, because three different entities are saved through this capability and each carries a
+ * different payload. The member is named `entity` rather than `product`/`productType`/`brand` so the three
+ * records read identically at the assertion site, which is what lets one helper compare all three.
+ */
+interface RecordedSaveCall<TEntity, TPayload> {
+  readonly entity: TEntity;
+  readonly data: TPayload;
 }
 
 /** One fully wired subject plus everything a test needs to observe about it. */
@@ -959,6 +1408,29 @@ interface CatalogQueryTestBed {
 
   /** Every list string `getUnusedProductOptionGroups` was handed, in call order. */
   readonly unusedProductOptionGroupsCalls: string[];
+
+  /** Every product `getFormattedOptionGroups` was handed, in call order. */
+  readonly formattedOptionGroupsCalls: Product[];
+
+  /** Every option array `getOptionsForSelect` was handed, BY REFERENCE and in order. */
+  readonly optionsForSelectCalls: (readonly Option[])[];
+
+  /** The nine mutation call records, each holding the bound entity and the payload verbatim. */
+  readonly addOptionGroupCalls: RecordedProductCall<AddOptionGroupPayload>[];
+  readonly addOptionCalls: RecordedProductCall<AddOptionPayload>[];
+  readonly updateSkusCalls: RecordedProductCall<UpdateSkusPayload>[];
+  readonly deleteDefaultImageCalls: RecordedProductCall<DeleteDefaultImagePayload>[];
+  readonly updateDefaultImageFileNamesCalls: Product[];
+  readonly saveProductCalls: RecordedSaveCall<Product, SaveProductPayload>[];
+  readonly saveProductTypeCalls: RecordedSaveCall<ProductType, SaveProductTypePayload>[];
+  readonly saveBrandCalls: RecordedSaveCall<Brand, SaveBrandPayload>[];
+  readonly deleteProductCalls: Product[];
+
+  /** The statement executor the graph was built over, so a case can programme a load or a miss. */
+  readonly executor: CatalogExecutor;
+
+  /** The two repository-backed loads' world, so a case can programme a miss or read what was asked. */
+  readonly world: LoadableCatalogWorld;
 
   /** Any unpublished service member that was reached. Asserted EMPTY by every test. */
   readonly unpublishedTouches: string[];
@@ -985,10 +1457,34 @@ function makeTestBed(): CatalogQueryTestBed {
   const findProductsCalls: ProductQueryCriteria[] = [];
   const unusedProductOptionsCalls: RecordedUnusedOptionsCall[] = [];
   const unusedProductOptionGroupsCalls: string[] = [];
+  const formattedOptionGroupsCalls: Product[] = [];
+  const optionsForSelectCalls: (readonly Option[])[] = [];
+  const addOptionGroupCalls: RecordedProductCall<AddOptionGroupPayload>[] = [];
+  const addOptionCalls: RecordedProductCall<AddOptionPayload>[] = [];
+  const updateSkusCalls: RecordedProductCall<UpdateSkusPayload>[] = [];
+  const deleteDefaultImageCalls: RecordedProductCall<DeleteDefaultImagePayload>[] = [];
+  const updateDefaultImageFileNamesCalls: Product[] = [];
+  const saveProductCalls: RecordedSaveCall<Product, SaveProductPayload>[] = [];
+  const saveProductTypeCalls: RecordedSaveCall<ProductType, SaveProductTypePayload>[] = [];
+  const saveBrandCalls: RecordedSaveCall<Brand, SaveBrandPayload>[] = [];
+  const deleteProductCalls: Product[] = [];
   const unpublishedTouches: string[] = [];
   const logLines: string[] = [];
   const counters = { rootsResolved: 0, scopesOpened: 0 };
   const scopeInputs: (RequestScopeInput | undefined)[] = [];
+
+  // The product fixture is built ONCE per bed and is the entity every product-bound operation binds to.
+  // Its identifier is the saved-row sentinel, so `isNew()` is false and the routed contract's "an existing
+  // row, named by identifier" policy is exercised rather than sidestepped.
+  const loadableProduct = makeProductFixture({ productID: FIRST_PRODUCT_ID });
+  const loadableProductType = loadableProduct.getProductType();
+
+  const world: LoadableCatalogWorld = {
+    product: loadableProduct,
+    productType: loadableProductType,
+    productLoads: [],
+    productTypeLoads: [],
+  };
 
   const outcomes: CatalogQueryOutcomes = {
     productPage: makeProductPage([]),
@@ -996,6 +1492,12 @@ function makeTestBed(): CatalogQueryTestBed {
     unusedOptions: [],
     unusedOptionGroups: [],
     unusedOptionsRejectsWith: undefined,
+    formattedOptionGroups: [],
+    productDeleted: true,
+    updateSkusRejectsWith: undefined,
+    saveProductRuleFailures: [],
+    saveProductTypeRuleFailures: [],
+    saveBrandRuleFailures: [],
     gate: undefined,
   };
 
@@ -1018,12 +1520,96 @@ function makeTestBed(): CatalogQueryTestBed {
       return outcomes.productPage;
     },
 
-    // The fourteen tripwires. Each names the legacy locator its non-exposure is argued from, so the
-    // list reads against the shipped module's own four categories rather than as an opaque block.
-    deleteProduct: () =>
-      refuseUnpublishedCall(unpublishedTouches, 'ProductService.deleteProduct [L317]'),
-    getFormattedOptionGroups: () =>
-      refuseUnpublishedCall(unpublishedTouches, 'ProductService.getFormattedOptionGroups [L70]'),
+    // ★★★ NINE OF THE FOURTEEN TRIPWIRES BECAME REAL ANSWERS, AND THAT IS THE CRITICAL FINDING'S FIX.
+    // This block used to refuse all fourteen. A code review recorded that eleven of them are AAP 0.4.2
+    // mapped actions with "no transport schema, dispatch, DTO or test", so the tripwires were asserting
+    // the incompleteness rather than guarding against it. The nine product members below now RECORD what
+    // they were handed and answer, so a case can assert the argument the handler bound; the five that
+    // remain refusals are the ones the source genuinely puts out of reach, each still naming the legacy
+    // locator its non-exposure is argued from.
+
+    getFormattedOptionGroups: (product): FormattedOptionGroup[] => {
+      formattedOptionGroupsCalls.push(product);
+
+      return [...outcomes.formattedOptionGroups];
+    },
+
+    processProduct_addOptionGroup: async (product, input): Promise<Product> => {
+      addOptionGroupCalls.push({ product, input });
+      await passThroughGate();
+
+      return product;
+    },
+
+    processProduct_addOption: async (product, input): Promise<Product> => {
+      addOptionCalls.push({ product, input });
+      await passThroughGate();
+
+      return product;
+    },
+
+    processProduct_updateSkus: async (product, input): Promise<Product> => {
+      updateSkusCalls.push({ product, input });
+      await passThroughGate();
+
+      if (outcomes.updateSkusRejectsWith !== undefined) {
+        throw outcomes.updateSkusRejectsWith;
+      }
+
+      return product;
+    },
+
+    processProduct_deleteDefaultImage: async (product, input): Promise<Product> => {
+      deleteDefaultImageCalls.push({ product, input });
+      await passThroughGate();
+
+      return product;
+    },
+
+    processProduct_updateDefaultImageFileNames: async (product): Promise<Product> => {
+      updateDefaultImageFileNamesCalls.push(product);
+      await passThroughGate();
+
+      return product;
+    },
+
+    saveProduct: async (product, data): Promise<Product> => {
+      saveProductCalls.push({ entity: product, data });
+      await passThroughGate();
+
+      // ★★ A FAILED SAVE-CONTEXT RULE IS RECORDED ON THE ENTITY AND THE ENTITY IS STILL RETURNED, which
+      // is the ported contract: the legacy `HibachiService.save` returns the same entity whether it
+      // validated or not, and `src/services/productService.ts` records that its two throwing classes were
+      // REMOVED for exactly that reason. Programming the failure this way is what lets a case assert that
+      // the ADAPTER turns the register into a 400 rather than the service throwing one.
+      for (const [propertyIdentifier, message] of outcomes.saveProductRuleFailures) {
+        product.addError(propertyIdentifier, message);
+      }
+
+      return product;
+    },
+
+    saveProductType: async (productType, data): Promise<ProductType> => {
+      saveProductTypeCalls.push({ entity: productType, data });
+      await passThroughGate();
+
+      for (const [propertyIdentifier, message] of outcomes.saveProductTypeRuleFailures) {
+        productType.addError(propertyIdentifier, message);
+      }
+
+      return productType;
+    },
+
+    deleteProduct: async (product): Promise<boolean> => {
+      deleteProductCalls.push(product);
+      await passThroughGate();
+
+      return outcomes.productDeleted;
+    },
+
+    // --- The five that stay refusals -----------------------------------------
+    // Out of scope by AAP 0.9.5 though reachable from an in-scope file, or owned by another capability.
+    // Each names the legacy locator its non-exposure is argued from.
     getProductSkusBySelectedOptions: () =>
       refuseUnpublishedCall(
         unpublishedTouches,
@@ -1031,13 +1617,6 @@ function makeTestBed(): CatalogQueryTestBed {
       ),
     loadDataFromFile: () =>
       refuseUnpublishedCall(unpublishedTouches, 'ProductService.loadDataFromFile [L65]'),
-    processProduct_addOption: () =>
-      refuseUnpublishedCall(unpublishedTouches, 'ProductService.processProduct_addOption [L128]'),
-    processProduct_addOptionGroup: () =>
-      refuseUnpublishedCall(
-        unpublishedTouches,
-        'ProductService.processProduct_addOptionGroup [L113]',
-      ),
     processProduct_addProductReview: () =>
       refuseUnpublishedCall(
         unpublishedTouches,
@@ -1048,27 +1627,11 @@ function makeTestBed(): CatalogQueryTestBed {
         unpublishedTouches,
         'ProductService.processProduct_addSubscriptionTerm [L173]',
       ),
-    processProduct_deleteDefaultImage: () =>
-      refuseUnpublishedCall(
-        unpublishedTouches,
-        'ProductService.processProduct_deleteDefaultImage [L198]',
-      ),
-    processProduct_updateDefaultImageFileNames: () =>
-      refuseUnpublishedCall(
-        unpublishedTouches,
-        'ProductService.processProduct_updateDefaultImageFileNames [L208]',
-      ),
-    processProduct_updateSkus: () =>
-      refuseUnpublishedCall(unpublishedTouches, 'ProductService.processProduct_updateSkus [L216]'),
     processProduct_uploadDefaultImage: () =>
       refuseUnpublishedCall(
         unpublishedTouches,
         'ProductService.processProduct_uploadDefaultImage [L235]',
       ),
-    saveProduct: () =>
-      refuseUnpublishedCall(unpublishedTouches, 'ProductService.saveProduct [L264]'),
-    saveProductType: () =>
-      refuseUnpublishedCall(unpublishedTouches, 'ProductService.saveProductType [L294]'),
   };
 
   const optionService: OptionServiceDouble = {
@@ -1092,26 +1655,49 @@ function makeTestBed(): CatalogQueryTestBed {
       return outcomes.unusedOptionGroups;
     },
 
-    getOptionsForSelect: () =>
-      refuseUnpublishedCall(unpublishedTouches, 'OptionService.getOptionsForSelect [L55]'),
+    getOptionsForSelect: (options): SelectOption[] => {
+      // Recorded BY REFERENCE, and that is the assertion this double exists for: the handler loads the
+      // caller's named options and hands the array straight through, so identity - and above all ORDER -
+      // is what a delegation case wants to inspect.
+      optionsForSelectCalls.push(options);
+
+      return options.map((option): SelectOption => ({
+        name: option.getOptionName() ?? '',
+        value: option.getOptionID(),
+      }));
+    },
   };
 
   const brandService: BrandServiceDouble = {
-    saveBrand: () => refuseUnpublishedCall(unpublishedTouches, 'BrandService.saveBrand [L67]'),
+    saveBrand: async (brand, data): Promise<Brand> => {
+      saveBrandCalls.push({ entity: brand, data });
+      await passThroughGate();
+
+      for (const [propertyIdentifier, message] of outcomes.saveBrandRuleFailures) {
+        brand.addError(propertyIdentifier, message);
+      }
+
+      return brand;
+    },
   };
 
   // The programmed answers reach the REAL services through their prototypes. Installed here, once per
   // bed, so a test that never invokes the subject still gets its tripwires armed.
   installServiceAnswers(productService, optionService, brandService);
 
+  // And the two repository-backed entity loads, on the same terms and for the same reason.
+  installEntityLoads(world);
+
   // ONE REAL GRAPH PER BED, built lazily on first resolution and reused, which is what the production
   // memo does per container. `bootstrapCompositionRoot` with overrides bypasses the module memo by
   // design, so nothing is left behind for a sibling file - and `resetCompositionRoot()` in the hooks is
   // a second belt.
+  const executor = new CatalogExecutor();
+
   let rootPromise: Promise<CompositionRoot> | undefined;
   const openRoot = async (): Promise<CompositionRoot> => {
     const inner = await bootstrapCompositionRoot({
-      executor: new CatalogExecutor(),
+      executor,
       environment: CATALOG_ENVIRONMENT,
     });
 
@@ -1147,6 +1733,19 @@ function makeTestBed(): CatalogQueryTestBed {
     findProductsCalls,
     unusedProductOptionsCalls,
     unusedProductOptionGroupsCalls,
+    formattedOptionGroupsCalls,
+    optionsForSelectCalls,
+    addOptionGroupCalls,
+    addOptionCalls,
+    updateSkusCalls,
+    deleteDefaultImageCalls,
+    updateDefaultImageFileNamesCalls,
+    saveProductCalls,
+    saveProductTypeCalls,
+    saveBrandCalls,
+    deleteProductCalls,
+    executor,
+    world,
     unpublishedTouches,
     logLines,
     counters,
@@ -1173,23 +1772,182 @@ function queryFor(
   return { operation, ...pageDefault, ...parameters };
 }
 
-/** The published operations, as the three selector values a caller may send. */
-const PUBLISHED_OPERATIONS: readonly CatalogQueryOperation[] = [
+/**
+ * The five operations served on the first declared method, with their criteria in the query string.
+ *
+ * ★★★ THIS LIST WAS THREE, AND THE TWO ADDITIONS ARE PART OF THE CRITICAL FINDING'S FIX.
+ * `getFormattedOptionGroups` [model/service/ProductService.cfc:L70] and `getOptionsForSelect`
+ * [model/service/OptionService.cfc:L55] are reads - both are SYNCHRONOUS pure transformations in the
+ * services tier - and both were previously asserted UNREACHABLE on the ground that this tier could obtain
+ * no entity to hand them. That ground was false: `RequestScope.entityLoaders` publishes read-only loads by
+ * identifier, so each is now named by identifier and bound behind the composition root.
+ */
+const READ_OPERATIONS: readonly CatalogQueryOperation[] = [
   'findProducts',
+  'getFormattedOptionGroups',
   'getUnusedProductOptions',
   'getUnusedProductOptionGroups',
+  'getOptionsForSelect',
 ];
 
-/** A minimal, valid parameter set for each published operation. */
+/**
+ * The nine operations served on the second declared method, with their payload in the request body.
+ *
+ * ★★★ EVERY ONE OF THESE WAS A NON-EXPOSURE TRIPWIRE, and the review that found them recorded the
+ * consequence precisely: "catalog persistence and all `BrandService` functionality" were unreachable from
+ * Lambda. Nine of the eleven omitted actions are writes; the remaining two are the reads above.
+ */
+const MUTATION_OPERATIONS: readonly CatalogQueryOperation[] = [
+  'processProduct_addOptionGroup',
+  'processProduct_addOption',
+  'processProduct_updateSkus',
+  'processProduct_deleteDefaultImage',
+  'processProduct_updateDefaultImageFileNames',
+  'saveProduct',
+  'saveProductType',
+  'deleteProduct',
+  'saveBrand',
+];
+
+/**
+ * All fourteen published operations, in the order the subject documents them.
+ *
+ * ASSEMBLED FROM THE TWO LISTS rather than written a third time, so the split and the whole cannot
+ * disagree - and a case that loops over "every published operation" provably covers both halves.
+ */
+const PUBLISHED_OPERATIONS: readonly CatalogQueryOperation[] = [
+  ...READ_OPERATIONS,
+  ...MUTATION_OPERATIONS,
+];
+
+/**
+ * A minimal, valid QUERY-STRING parameter set for each published operation.
+ *
+ * The nine mutations map to the EMPTY set, and that is asserted behaviour rather than a filler: every
+ * mutation publishes no query parameter at all, so anything beyond the selector is refused rather than
+ * ignored. Their payloads live in {@link VALID_BODIES}.
+ */
 const VALID_PARAMETERS: Readonly<Record<CatalogQueryOperation, Readonly<Record<string, string>>>> =
   {
     findProducts: { keyword: 'jorden', pageRecordsShow: '25' },
+    getFormattedOptionGroups: { productID: FIRST_PRODUCT_ID },
     getUnusedProductOptions: {
       productID: FIRST_PRODUCT_ID,
       existingOptionGroupIDList: UNTIDY_OPTION_GROUP_ID_LIST,
     },
     getUnusedProductOptionGroups: { existingOptionGroupIDList: UNTIDY_OPTION_GROUP_ID_LIST },
+    getOptionsForSelect: { optionIDs: `${FIRST_OPTION_ID},${SECOND_OPTION_ID}` },
+    processProduct_addOptionGroup: {},
+    processProduct_addOption: {},
+    processProduct_updateSkus: {},
+    processProduct_deleteDefaultImage: {},
+    processProduct_updateDefaultImageFileNames: {},
+    saveProduct: {},
+    saveProductType: {},
+    deleteProduct: {},
+    saveBrand: {},
   };
+
+/**
+ * A minimal, valid JSON BODY for each published operation, or `undefined` for the five reads.
+ *
+ * ★★ EVERY MUTATION BODY NAMES AN EXISTING ROW BY IDENTIFIER, which is the routed transport policy the
+ * subject documents: row CREATION is not published, because a routed creation protocol is an
+ * entity-construction concern the AAP describes nowhere. Each identifier is a saved-row sentinel, so
+ * `isNew()` is false on every entity these bodies reach.
+ *
+ * ★ NO BODY CARRIES AN `operation` MEMBER. The selector is the query-string parameter for all fourteen,
+ * and the mutation schemas are strict objects with no such member - so a body that tried to name one would
+ * be refused as an unrecognized member. That is asserted directly rather than left implicit.
+ */
+const VALID_BODIES: Readonly<
+  Record<CatalogQueryOperation, Readonly<Record<string, unknown>> | undefined>
+> = {
+  findProducts: undefined,
+  getFormattedOptionGroups: undefined,
+  getUnusedProductOptions: undefined,
+  getUnusedProductOptionGroups: undefined,
+  getOptionsForSelect: undefined,
+  processProduct_addOptionGroup: {
+    productID: FIRST_PRODUCT_ID,
+    optionGroup: SENTINEL_OPTION_GROUP_ID,
+  },
+  processProduct_addOption: { productID: FIRST_PRODUCT_ID, option: FIRST_OPTION_ID },
+  processProduct_updateSkus: {
+    productID: FIRST_PRODUCT_ID,
+    updatePriceFlag: 1,
+    price: SENTINEL_UNIT_PRICE,
+  },
+  processProduct_deleteDefaultImage: { productID: FIRST_PRODUCT_ID },
+  processProduct_updateDefaultImageFileNames: { productID: FIRST_PRODUCT_ID },
+  saveProduct: { productID: FIRST_PRODUCT_ID, productName: 'Renamed Product' },
+  saveProductType: { productTypeID: SENTINEL_PRODUCT_TYPE_ID, productTypeName: 'Merchandise' },
+  deleteProduct: { productID: FIRST_PRODUCT_ID },
+  saveBrand: { brandID: SENTINEL_BRAND_ID, brandName: 'Renamed Brand' },
+};
+
+/**
+ * Invoke one published operation the way a caller would have to.
+ *
+ * ★★★ ONE ENTRY POINT FOR ALL FOURTEEN, so a loop over the published surface drives each on the method it
+ * is served on, with its criteria in the place that operation carries them. Without it, every such loop
+ * would have to branch - and a loop that branched would be a loop that could get the branch wrong and
+ * still pass.
+ *
+ * The two prerequisites the mutations need are established here as well: the brand and the two options are
+ * made loadable, because nine of the fourteen bind an entity and a case about SOMETHING ELSE should not
+ * have to know that. A case that is ABOUT a miss programmes the miss explicitly and is unaffected, since
+ * this only ADDS to the known sets.
+ */
+async function invokeOperation(
+  bed: CatalogQueryTestBed,
+  operation: CatalogQueryOperation,
+  overrides: EventOverrides = {},
+): Promise<APIGatewayProxyResult> {
+  bed.executor.knownBrandIDs.add(SENTINEL_BRAND_ID);
+  bed.executor.knownOptionIDs.add(FIRST_OPTION_ID);
+  bed.executor.knownOptionIDs.add(SECOND_OPTION_ID);
+
+  const body = VALID_BODIES[operation];
+
+  return await bed.invoke({
+    method: methodForOperation(operation),
+    query: queryFor(operation, VALID_PARAMETERS[operation]),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...overrides,
+  });
+}
+
+/**
+ * The `result` payload of a served document, or a failure naming what it carried instead.
+ *
+ * ★ NEEDED BECAUSE THE DOCUMENT IS A UNION NOW. A served response can carry `result` OR `unresolved`, and
+ * the two are separate arms so neither can be read off the other without narrowing. Reading through this
+ * helper means a case asserting a payload fails with "it was unresolved" rather than with a property
+ * access on a type that does not have it.
+ */
+function readServedPayload(response: APIGatewayProxyResult): unknown {
+  const document = readServedBody(response).result;
+
+  if ('unresolved' in document) {
+    throw new Error(
+      `the response reported an unresolved outcome (${document.unresolved}) rather than a payload`,
+    );
+  }
+
+  return document.result;
+}
+
+/** The `unresolved` reason of a served document, or a failure naming what it carried instead. */
+function readUnresolvedReason(response: APIGatewayProxyResult): string {
+  const document = readServedBody(response).result;
+
+  if (!('unresolved' in document)) {
+    throw new Error('the response carried a payload rather than an unresolved outcome');
+  }
+
+  return document.unresolved;
+}
 
 // ---------------------------------------------------------------------------
 // Reading one element, one page, one row set, one field report
@@ -1211,24 +1969,82 @@ function atIndex<TElement>(items: readonly TElement[], index: number): TElement 
 /**
  * The product page a served response carries.
  *
- * Narrowed with `in` rather than with an array check: the published `result` member is a union of a
- * page and a row array, and only the page declares `records`.
+ * ★ NARROWED TWICE NOW, AND BOTH NARROWINGS ARE STRUCTURAL - no cast and no assertion. The DOCUMENT is a
+ * union of a payload arm and an `unresolved` arm, and the PAYLOAD is then a union of seven projections of
+ * which only the page declares `records`. Both steps are `in` tests, which the compiler narrows on, so a
+ * response carrying the wrong shape fails with a described error rather than with an unchecked access.
  */
 function readProductPage(response: APIGatewayProxyResult): CatalogProductPageProjection {
-  const result = readServedBody(response).result.result;
-  if (!('records' in result)) {
-    throw new Error('expected a product page, and the response carried a select-row array');
+  const document = readServedBody(response).result;
+
+  if ('unresolved' in document) {
+    throw new Error(
+      `the response reported an unresolved outcome (${document.unresolved}) rather than a page`,
+    );
   }
-  return result;
+
+  const payload = document.result;
+
+  if (!('records' in payload)) {
+    throw new Error('expected a product page, and the response carried another projection');
+  }
+
+  return payload;
 }
 
-/** The select rows a served response carries. */
+/** The select rows a served response carries, narrowed the same structural way. */
 function readSelectRows(response: APIGatewayProxyResult): readonly CatalogSelectOptionProjection[] {
-  const result = readServedBody(response).result.result;
-  if ('records' in result) {
-    throw new Error('expected select rows, and the response carried a product page');
+  const document = readServedBody(response).result;
+
+  if ('unresolved' in document) {
+    throw new Error(
+      `the response reported an unresolved outcome (${document.unresolved}) rather than rows`,
+    );
   }
-  return result;
+
+  const payload = document.result;
+
+  if (!Array.isArray(payload)) {
+    throw new Error('expected an array of select rows, and the response carried an object');
+  }
+
+  // ★ THE ELEMENT TYPE IS NARROWED BY THE OPERATION, NOT BY INSPECTION. Three operations answer
+  // `SelectOption` rows and one answers `FormattedOptionGroup` rows, and the two shapes are distinguishable
+  // - a group declares `options`. Asserting that here is what keeps this reader honest for the three it is
+  // used by without silently accepting the fourth.
+  for (const row of payload) {
+    if (isRecord(row) && 'options' in row) {
+      throw new Error(
+        'expected select rows, and the response carried formatted option GROUPS; read those with ' +
+          'readFormattedOptionGroups instead',
+      );
+    }
+  }
+
+  return payload as readonly CatalogSelectOptionProjection[];
+}
+
+/** The formatted option groups a served response carries. */
+function readFormattedOptionGroups(
+  response: APIGatewayProxyResult,
+): readonly FormattedOptionGroup[] {
+  const document = readServedBody(response).result;
+
+  if ('unresolved' in document) {
+    throw new Error(
+      `the response reported an unresolved outcome (${document.unresolved}) rather than groups`,
+    );
+  }
+
+  const payload = document.result;
+
+  if (!Array.isArray(payload)) {
+    throw new Error(
+      'expected an array of formatted option groups, and the response carried an object',
+    );
+  }
+
+  return payload as readonly FormattedOptionGroup[];
 }
 
 /** The field-level report a client-shaped failure carries, or a described failure. */
@@ -1316,7 +2132,11 @@ describe('catalogQueryHandler', () => {
 
       expect(response.statusCode).toBe(200);
       expect(CATALOG_ROUTE.path).toBe('/catalog/products');
-      expect(CATALOG_ROUTE.methods).toBe('GET');
+      // ★★★ THIS LITERAL WAS `'GET'`, AND WIDENING IT IS PART OF THE CRITICAL FINDING'S FIX. The row now
+      // declares a COMMA LIST: the five reads answer on the first method and the nine mutations on the
+      // second. Pinned verbatim here, in declaration order, because the order is load-bearing -
+      // `methodForOperation` reads index 0 for a read and index 1 for a mutation.
+      expect(CATALOG_ROUTE.methods).toBe('GET,POST');
       expect(CATALOG_ROUTE.action).toBe('queryCatalog');
       expect(bed.unpublishedTouches).toEqual([]);
     });
@@ -1335,8 +2155,11 @@ describe('catalogQueryHandler', () => {
     });
 
     it('matches the method case-insensitively', async () => {
+      // ONE method is sent, not the row's whole comma list: `listFindNoCase('GET,POST','GET,POST')`
+      // answers 0, so a request whose method literally WERE the declaration would be unmatched. Taking
+      // the first declared method reads the table the way the router reads it.
       const response = await bed.invoke({
-        method: CATALOG_ROUTE.methods.toLowerCase(),
+        method: firstDeclaredCatalogMethod().toLowerCase(),
         query: queryFor('findProducts', { keyword: 'jorden' }),
       });
 
@@ -1376,8 +2199,14 @@ describe('catalogQueryHandler', () => {
     });
 
     it('refuses a method the owned route does not declare', async () => {
+      // ★★ THE EXAMPLE USED TO BE `POST`, AND `POST` IS NOW DECLARED. `DELETE` is chosen instead
+      // because the row declares `GET,POST` and nothing else, and because the deletion this capability
+      // DOES publish travels as a POST operation rather than as an HTTP verb - see the transport policy
+      // on the subject. Asserting the row does not carry it keeps that policy checkable.
+      expect(listToArray(CATALOG_ROUTE.methods)).not.toContain('DELETE');
+
       const response = await bed.invoke({
-        method: 'POST',
+        method: 'DELETE',
         query: queryFor('findProducts', { keyword: 'jorden' }),
       });
 
@@ -1615,22 +2444,24 @@ describe('catalogQueryHandler', () => {
 
     it('refuses a non-administrative caller on EVERY published operation, not just the search', async () => {
       // The finding names the two option operations as "admin-only" explicitly, so the gate is
-      // asserted on all three rather than on the one that happens to be listed first.
-      for (const query of [
-        queryFor('findProducts', { keyword: 'jorden' }),
-        queryFor('getUnusedProductOptions', {
-          productID: FIRST_PRODUCT_ID,
-          existingOptionGroupIDList: '',
-        }),
-        queryFor('getUnusedProductOptionGroups', { existingOptionGroupIDList: '' }),
-      ]) {
+      // asserted on all of them rather than on the one that happens to be listed first.
+      //
+      // ★★★ THIS LOOP NAMED THREE QUERIES AND NOW COVERS ALL FOURTEEN OPERATIONS, INCLUDING THE NINE
+      // MUTATIONS. It is the case that matters most about the widened surface: publishing nine writes
+      // behind a gate that had only ever been asserted on three reads would leave the gate's coverage
+      // trailing the surface it guards. Each operation is driven on its own method with its own payload,
+      // and every one of the fourteen must answer 403 - no mutation, no service call and no statement.
+      for (const operation of PUBLISHED_OPERATIONS) {
         const fresh = makeTestBed();
-        const response = await fresh.invoke({
+        const response = await invokeOperation(fresh, operation, {
           authorizer: { accountID: CALLER_ACCOUNT_ID },
-          query,
         });
 
         expect(response.statusCode).toBe(403);
+        expect(fresh.counters.scopesOpened).toBe(0);
+        expect(fresh.executor.executed).toEqual([]);
+        expect(fresh.world.productLoads).toEqual([]);
+        expect(fresh.unpublishedTouches).toEqual([]);
       }
     });
 
@@ -1673,7 +2504,7 @@ describe('catalogQueryHandler', () => {
   // =========================================================================
 
   describe('concern 1, request parsing: the operation selector', () => {
-    it('requires the selector, and names the three published operations when it is absent', async () => {
+    it('requires the selector, and names all FOURTEEN published operations when it is absent', async () => {
       const response = await bed.invoke({ query: {} });
       const failure = readFailureBody(response).error;
       const issue = atIndex(readFieldIssues(response), 0);
@@ -1740,10 +2571,13 @@ describe('catalogQueryHandler', () => {
       expect(bed.findProductsCalls).toEqual([]);
     });
 
+    // ★★★ THIS LOOP USED TO RUN THREE TIMES AND NOW RUNS FOURTEEN, THROUGH ONE ENTRY POINT.
+    // {@link invokeOperation} drives each operation on the method it is served on and puts its criteria
+    // where that operation carries them - the query string for the five reads, a JSON body for the nine
+    // mutations - so the loop stays a loop rather than becoming a branch that could get the branch wrong
+    // and still pass.
     it.each(PUBLISHED_OPERATIONS)('recognizes the published operation %s', async (operation) => {
-      const response = await bed.invoke({
-        query: queryFor(operation, VALID_PARAMETERS[operation]),
-      });
+      const response = await invokeOperation(bed, operation);
 
       expect(response.statusCode).toBe(200);
       expect(readServedBody(response).result.operation).toBe(operation);
@@ -2392,12 +3226,825 @@ describe('catalogQueryHandler', () => {
   });
 
   // =========================================================================
+  // CONCERN 2 - DELEGATION: the eleven operations a code review restored
+  //
+  // ★★★ THIS WHOLE BLOCK IS THE POSITIVE SIDE OF THE CRITICAL FINDING. It replaces an `it.each` over a
+  // list named `entityArgumentOperations`, which asserted that eleven AAP-0.4.2-mapped actions were
+  // UNREACHABLE and gave the ground as "the composition root publishes no entity and no loader". That
+  // ground was false when it was written - `RequestScope.entityLoaders` publishes read-only loads by
+  // identifier - and the consequence the review recorded was that "catalog persistence and all
+  // `BrandService` functionality" had no transport at all.
+  //
+  // Eleven operations therefore need positive coverage, and each needs it on five counts: it is
+  // recognized, it is served on exactly one method, it is admitted only for an administrator, its
+  // identifier is hydrated into the entity the service is handed, and its result is projected onto a
+  // named payload. The cases below are grouped by that reasoning rather than by operation, so a property
+  // is asserted once across every operation that has it instead of fourteen times in fourteen shapes.
+  // =========================================================================
+
+  describe('concern 2, delegation: the eleven operations a code review restored', () => {
+    it('publishes exactly fourteen operations, of which nine are mutations', () => {
+      // The three lists are assembled rather than restated - see `PUBLISHED_OPERATIONS` - so this case
+      // pins the SHAPE of the surface and nothing else. A fifteenth operation added to the subject
+      // without being added here fails the recognition loop, not this assertion.
+      expect(READ_OPERATIONS).toHaveLength(5);
+      expect(MUTATION_OPERATIONS).toHaveLength(9);
+      expect(PUBLISHED_OPERATIONS).toHaveLength(14);
+      expect(new Set(PUBLISHED_OPERATIONS).size).toBe(14);
+    });
+
+    it.each(MUTATION_OPERATIONS)(
+      'refuses %s on the read method, before any body is read',
+      async (operation) => {
+        // ★★ THE OPERATION IS NOT PART OF THE PATH, SO ONLY THE SUBJECT KNOWS WHICH VERB SERVES IT. The
+        // router matched `GET` against the row's comma list and could not have done otherwise; the pairing
+        // is checked one layer in. A body is sent as well as the wrong method, and the refusal must name
+        // the SELECTOR rather than the body - which is what proves the check runs before the body is read.
+        const body = VALID_BODIES[operation];
+        const response = await bed.invoke({
+          method: firstDeclaredCatalogMethod(),
+          query: queryFor(operation, VALID_PARAMETERS[operation]),
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+        const issue = atIndex(readFieldIssues(response), 0);
+
+        expect(response.statusCode).toBe(400);
+        expect(readFailureBody(response).error.category).toBe('invalidRequest');
+        expect(issue.path).toBe('operation');
+        expect(issue.message).toContain('does not serve on the request method');
+        expect(bed.counters.scopesOpened).toBe(0);
+      },
+    );
+
+    it.each(READ_OPERATIONS)('refuses %s on the mutation method', async (operation) => {
+      const response = await bed.invoke({
+        method: methodForOperation('saveProduct'),
+        query: queryFor(operation, VALID_PARAMETERS[operation]),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(atIndex(readFieldIssues(response), 0).path).toBe('operation');
+      expect(bed.counters.scopesOpened).toBe(0);
+    });
+
+    it('names neither the method sent nor the method that would have worked', async () => {
+      // Both are withheld for the reasons the subject states: `httpMethod` is caller-controlled text
+      // and may not be echoed, and disclosing the correct verb would let a caller map the surface by
+      // probing it. The refusal says an operation is served on one method and nothing more.
+      const response = await bed.invoke({
+        method: firstDeclaredCatalogMethod(),
+        query: queryFor('saveBrand'),
+        body: JSON.stringify(VALID_BODIES.saveBrand),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.body).not.toContain('saveBrand');
+      expect(response.body).not.toContain('POST');
+      expect(response.body).not.toContain('GET');
+    });
+
+    it('admits a lower-case rendering of the mutation method, as the router does', async () => {
+      // Checked with `listFindNoCase` over a single-member list, which is the same primitive and the
+      // same case-folding the router applies [Application.cfc:L133] - so the two tiers cannot disagree
+      // about what a method name means.
+      const response = await invokeOperation(bed, 'saveProduct', {
+        method: methodForOperation('saveProduct').toLowerCase(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(bed.saveProductCalls).toHaveLength(1);
+    });
+
+    it.each(MUTATION_OPERATIONS)(
+      'publishes NO query parameter on %s beyond the selector',
+      async (operation) => {
+        // The nine mutations map to the empty parameter set, so the body is provably the only payload
+        // location. Sending a parameter a READ publishes is the sharper probe: it would be a legitimate
+        // member somewhere else on this surface, and it is still refused here.
+        const body = VALID_BODIES[operation];
+        const response = await bed.invoke({
+          method: methodForOperation(operation),
+          query: { operation, keyword: 'jorden' },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+        const issue = atIndex(readFieldIssues(response), 0);
+
+        expect(response.statusCode).toBe(400);
+        expect(issue.path).toBe('queryStringParameters');
+        expect(response.body).not.toContain('jorden');
+        expect(bed.counters.scopesOpened).toBe(0);
+      },
+    );
+
+    // ---------------------------------------------------------------------
+    // Hydration: the entity the service is handed IS the one the loader answered
+    // ---------------------------------------------------------------------
+
+    it('hands processProduct_addOptionGroup the loaded product and the payload verbatim', async () => {
+      const response = await invokeOperation(bed, 'processProduct_addOptionGroup');
+      const call = atIndex(bed.addOptionGroupCalls, 0);
+
+      expect(response.statusCode).toBe(200);
+      // ★★★ IDENTITY, NOT EQUALITY. This is the whole of what "hydrate identifiers through request-scope
+      // loaders" means: the instance the service received is the very object the loader answered for the
+      // identifier the request named, not a reconstruction of it and not a fresh entity.
+      expect(call.product).toBe(bed.world.product);
+      expect(bed.world.productLoads).toEqual([FIRST_PRODUCT_ID]);
+      expect(call.input).toEqual({ optionGroup: SENTINEL_OPTION_GROUP_ID });
+    });
+
+    it('hands processProduct_addOption the loaded product and the payload verbatim', async () => {
+      const response = await invokeOperation(bed, 'processProduct_addOption');
+      const call = atIndex(bed.addOptionCalls, 0);
+
+      expect(response.statusCode).toBe(200);
+      expect(call.product).toBe(bed.world.product);
+      expect(call.input).toEqual({ option: FIRST_OPTION_ID });
+    });
+
+    it('forwards the updateSkus payload unaltered, and restates none of its conditional rules', async () => {
+      // ★★ THE CONDITIONAL GATE IS THE SERVICE'S. [model/validation/Product_UpdateSkus.json] makes
+      // `price` required when `updatePriceFlag eq 1`, and that rule is a module-private schema inside
+      // `src/services/productService.ts`. What this tier owes is FORWARDING: the two flags and the two
+      // amounts arrive exactly as sent, so there is no second copy of the rule here to drift from the
+      // one that owns it. `price` stays a DECIMAL STRING - no `Money` is minted in the transport tier.
+      const response = await invokeOperation(bed, 'processProduct_updateSkus');
+      const call = atIndex(bed.updateSkusCalls, 0);
+
+      expect(response.statusCode).toBe(200);
+      expect(call.product).toBe(bed.world.product);
+      expect(call.input).toEqual({ updatePriceFlag: 1, price: SENTINEL_UNIT_PRICE });
+      expect(typeof call.input.price).toBe('string');
+    });
+
+    it('forwards an OMITTED updateSkus member as absence rather than as a substituted value', async () => {
+      const response = await invokeOperation(bed, 'processProduct_updateSkus', {
+        body: JSON.stringify({ productID: FIRST_PRODUCT_ID }),
+      });
+      const call = atIndex(bed.updateSkusCalls, 0);
+
+      expect(response.statusCode).toBe(200);
+      // `exactOptionalPropertyTypes` is on, so absence is forwarded AS absence: the key is not present
+      // at all rather than present carrying `undefined`, and no `0`, `''` or `false` is invented.
+      expect(Object.keys(call.input)).toEqual([]);
+    });
+
+    it('forwards the optional deleteDefaultImage member only when it was supplied', async () => {
+      // The asymmetry against the sibling process objects is the SOURCE'S: the legacy body gates every
+      // use of `imageFile` behind `structKeyExists(arguments.data, "imageFile")`
+      // [model/service/ProductService.cfc:L199], so the member is optional here and its absence is a
+      // distinct input from an empty one.
+      const withoutMember = await invokeOperation(bed, 'processProduct_deleteDefaultImage');
+      expect(withoutMember.statusCode).toBe(200);
+      expect(Object.keys(atIndex(bed.deleteDefaultImageCalls, 0).input)).toEqual([]);
+
+      const withMember = await invokeOperation(bed, 'processProduct_deleteDefaultImage', {
+        body: JSON.stringify({ productID: FIRST_PRODUCT_ID, imageFile: 'red-large.jpg' }),
+      });
+      expect(withMember.statusCode).toBe(200);
+      expect(atIndex(bed.deleteDefaultImageCalls, 1).input).toEqual({ imageFile: 'red-large.jpg' });
+    });
+
+    it('hands processProduct_updateDefaultImageFileNames the product and nothing else', async () => {
+      // [model/service/ProductService.cfc:L208] takes the product alone, so the ported signature is
+      // unary and the body carries only the identifier that names it.
+      const response = await invokeOperation(bed, 'processProduct_updateDefaultImageFileNames');
+
+      expect(response.statusCode).toBe(200);
+      expect(atIndex(bed.updateDefaultImageFileNamesCalls, 0)).toBe(bed.world.product);
+    });
+
+    it('hands saveProduct the loaded product and the eight-member scalar payload', async () => {
+      const response = await invokeOperation(bed, 'saveProduct', {
+        body: JSON.stringify({
+          productID: FIRST_PRODUCT_ID,
+          productName: 'Renamed Product',
+          productCode: 'TESTPRODUCTXXX',
+          activeFlag: false,
+          sortOrder: 7,
+        }),
+      });
+      const call = atIndex(bed.saveProductCalls, 0);
+
+      expect(response.statusCode).toBe(200);
+      expect(call.entity).toBe(bed.world.product);
+      expect(call.data).toEqual({
+        productName: 'Renamed Product',
+        productCode: 'TESTPRODUCTXXX',
+        activeFlag: false,
+        sortOrder: 7,
+      });
+    });
+
+    it.each([['options'], ['price'], ['listPrice']])(
+      'refuses the SKU-collaboration member %s on saveProduct',
+      async (member) => {
+        // ★★★ THE THREE OMITTED MEMBERS ARE OMITTED ON PRINCIPLE, AND THE REFUSAL IS WHAT MAKES THAT
+        // CHECKABLE. Two of `ProductSaveInput`'s eleven members are typed `Money`, and this tier mints
+        // no `Money` at all; the third drives SKU creation through a method whose name says it saves a
+        // product. `z.strictObject` refuses each as an unrecognized member, and the response names the
+        // container rather than echoing the member - see `mapZodErrorFields`.
+        const response = await invokeOperation(bed, 'saveProduct', {
+          body: JSON.stringify({ productID: FIRST_PRODUCT_ID, [member]: '19.99' }),
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.body).not.toContain(member);
+        expect(bed.saveProductCalls).toEqual([]);
+      },
+    );
+
+    it('hands saveProductType the loaded product type, resolved off the product fixture', async () => {
+      const response = await invokeOperation(bed, 'saveProductType');
+      const call = atIndex(bed.saveProductTypeCalls, 0);
+
+      expect(response.statusCode).toBe(200);
+      expect(call.entity).toBe(bed.world.productType);
+      expect(bed.world.productTypeLoads).toEqual([SENTINEL_PRODUCT_TYPE_ID]);
+      expect(call.data).toEqual({ productTypeName: 'Merchandise' });
+    });
+
+    it('hands saveBrand a brand HYDRATED FROM THE STATEMENT, since no brand repository exists', async () => {
+      // ★★ THE ONLY LOAD IN THIS CAPABILITY WITH NO REPOSITORY BEHIND IT. `BrandService` declares one
+      // method [model/service/BrandService.cfc:L67] and everything else it had arrived by framework
+      // inheritance, so there is no brand repository port to programme: the composition root hosts the
+      // statement itself. Answering it is therefore the only way to reach `saveBrand` at all, which
+      // means `hydrateBrand` and the projection of `BRAND_COLUMNS` are exercised here rather than
+      // assumed.
+      const response = await invokeOperation(bed, 'saveBrand');
+      const call = atIndex(bed.saveBrandCalls, 0);
+
+      expect(response.statusCode).toBe(200);
+      expect(call.entity.getBrandID()).toBe(SENTINEL_BRAND_ID);
+      expect(call.entity.getBrandName()).toBe(SENTINEL_BRAND_NAME);
+      expect(call.data).toEqual({ brandName: 'Renamed Brand' });
+      expect(bed.executor.executed.some((sql) => sql.includes('FROM SwBrand'))).toBe(true);
+    });
+
+    it('admits the CFML flag union on saveBrand, and the resolved boolean on saveProductType', async () => {
+      // Neither schema is harmonised with the other: each admits exactly what its SERVICE declares.
+      // `BrandSaveInput` takes the CFML input union because the legacy `populate` passed `trim(value)` -
+      // a string - and left coercion to the engine [org/Hibachi/HibachiTransient.cfc:L194], while
+      // `ProductTypeSaveInput` declares resolved booleans.
+      const brandResponse = await invokeOperation(bed, 'saveBrand', {
+        body: JSON.stringify({ brandID: SENTINEL_BRAND_ID, activeFlag: '1' }),
+      });
+      expect(brandResponse.statusCode).toBe(200);
+      expect(atIndex(bed.saveBrandCalls, 0).data).toEqual({ activeFlag: '1' });
+
+      const typeResponse = await invokeOperation(bed, 'saveProductType', {
+        body: JSON.stringify({ productTypeID: SENTINEL_PRODUCT_TYPE_ID, activeFlag: '1' }),
+      });
+      expect(typeResponse.statusCode).toBe(400);
+      expect(bed.saveProductTypeCalls).toEqual([]);
+    });
+
+    it('hands deleteProduct the loaded product and publishes the boolean it answered', async () => {
+      const response = await invokeOperation(bed, 'deleteProduct');
+
+      expect(response.statusCode).toBe(200);
+      expect(atIndex(bed.deleteProductCalls, 0)).toBe(bed.world.product);
+      expect(readServedPayload(response)).toEqual({ deleted: true });
+    });
+
+    it('★★★ publishes a REFUSED delete as a 200 carrying false, not as an error', async () => {
+      // [model/service/ProductService.cfc:L317-L339] returns `false` when the delete-context rule
+      // refuses - a transaction exists against one of the product's SKUs - and it does NOT raise. The
+      // ported service reproduces that, so the honest transport of it is a served answer to the question
+      // that was asked. Mapping it to a 4xx would invent a failure the source does not have, and mapping
+      // it to a 500 would report an internal fault for a business rule working correctly.
+      bed.outcomes.productDeleted = false;
+
+      const response = await invokeOperation(bed, 'deleteProduct');
+
+      expect(response.statusCode).toBe(200);
+      expect(readServedPayload(response)).toEqual({ deleted: false });
+      expect(
+        atIndex(
+          decodedLines(bed).filter((line) => line.level === 'info'),
+          0,
+        ).context['resultCount'],
+      ).toBe(1);
+    });
+
+    // ---------------------------------------------------------------------
+    // The two synchronous reads the false rationale had ruled out
+    // ---------------------------------------------------------------------
+
+    it('serves getFormattedOptionGroups from the loaded product, without awaiting it', async () => {
+      // SYNCHRONOUS in the services tier: the ported body traverses the product's already-materialized
+      // option groups and reaches nothing [model/service/ProductService.cfc:L70]. The double is declared
+      // synchronous for that reason, so a subject that awaited it would still pass - what this case pins
+      // is that the PRODUCT it traverses is the loaded one.
+      bed.outcomes.formattedOptionGroups = [
+        {
+          optionGroupName: 'Colour',
+          options: [{ name: 'Red', value: FIRST_OPTION_ID }],
+        },
+      ];
+
+      const response = await invokeOperation(bed, 'getFormattedOptionGroups');
+
+      expect(response.statusCode).toBe(200);
+      expect(atIndex(bed.formattedOptionGroupsCalls, 0)).toBe(bed.world.product);
+      expect(readFormattedOptionGroups(response)).toEqual(bed.outcomes.formattedOptionGroups);
+    });
+
+    it('serves getOptionsForSelect from options loaded IN THE CALLER\u2019S OWN ORDER', async () => {
+      // ★★★ THE ORDER IS THE CALLER'S, AND THAT IS A DECISION RATHER THAN AN ACCIDENT. The load answers
+      // an unordered map keyed by case-folded identifier, so the subject walks the caller's LIST instead
+      // of the map. `getOptionsForSelect`'s "in repository order" promise therefore means the caller's
+      // order here, because it is the caller that supplies the sequence and not a query.
+      const response = await invokeOperation(bed, 'getOptionsForSelect', {
+        body: null,
+        query: queryFor('getOptionsForSelect', {
+          optionIDs: `${SECOND_OPTION_ID},${FIRST_OPTION_ID}`,
+        }),
+      });
+      const handed = atIndex(bed.optionsForSelectCalls, 0);
+
+      expect(response.statusCode).toBe(200);
+      expect(handed.map((option) => option.getOptionID())).toEqual([
+        SECOND_OPTION_ID,
+        FIRST_OPTION_ID,
+      ]);
+      expect(readSelectRows(response).map((row) => row.value)).toEqual([
+        SECOND_OPTION_ID,
+        FIRST_OPTION_ID,
+      ]);
+    });
+
+    it('parses the option list with CFML list semantics, dropping empty elements only', async () => {
+      // The SAME parse the option adapters apply, so an untidy list is read here exactly as it would be
+      // read there: empty elements are dropped and nothing is trimmed, sorted, deduplicated or
+      // case-folded. A duplicated identifier is therefore loaded once and PUBLISHED TWICE, because the
+      // caller named it twice.
+      const response = await invokeOperation(bed, 'getOptionsForSelect', {
+        query: queryFor('getOptionsForSelect', {
+          optionIDs: `${FIRST_OPTION_ID},,${FIRST_OPTION_ID}`,
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(atIndex(bed.optionsForSelectCalls, 0)).toHaveLength(2);
+    });
+
+    // ---------------------------------------------------------------------
+    // An identifier that names no row: a served `unresolved`, never a 404
+    // ---------------------------------------------------------------------
+
+    it.each([
+      [
+        'processProduct_addOptionGroup',
+        { productID: ABSENT_PRODUCT_ID, optionGroup: SENTINEL_OPTION_GROUP_ID },
+      ],
+      ['processProduct_addOption', { productID: ABSENT_PRODUCT_ID, option: FIRST_OPTION_ID }],
+      ['processProduct_updateSkus', { productID: ABSENT_PRODUCT_ID }],
+      ['processProduct_deleteDefaultImage', { productID: ABSENT_PRODUCT_ID }],
+      ['processProduct_updateDefaultImageFileNames', { productID: ABSENT_PRODUCT_ID }],
+      ['saveProduct', { productID: ABSENT_PRODUCT_ID }],
+      ['deleteProduct', { productID: ABSENT_PRODUCT_ID }],
+    ] as const)(
+      'answers %s naming an absent product with a served productNotFound',
+      async (operation, body) => {
+        const response = await bed.invoke({
+          method: methodForOperation(operation),
+          query: queryFor(operation),
+          body: JSON.stringify(body),
+        });
+
+        // ★★★ A 200, AND THE GROUND IS STRUCTURAL RATHER THAN AESTHETIC. `./errorMapper.js` reaches 404
+        // on exactly one category - `routeNotFound` - and the router already answers 404 for a path no
+        // row declares. Reusing it for "this identifier names no row" would collapse two different
+        // facts onto one status, and the caller asked a question the service answered.
+        expect(response.statusCode).toBe(200);
+        expect(readUnresolvedReason(response)).toBe('productNotFound');
+        expect(bed.world.productLoads).toEqual([ABSENT_PRODUCT_ID]);
+      },
+    );
+
+    it('answers saveProductType naming an absent product type with productTypeNotFound', async () => {
+      const response = await bed.invoke({
+        method: methodForOperation('saveProductType'),
+        query: queryFor('saveProductType'),
+        body: JSON.stringify({ productTypeID: ABSENT_PRODUCT_TYPE_ID }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(readUnresolvedReason(response)).toBe('productTypeNotFound');
+      expect(bed.saveProductTypeCalls).toEqual([]);
+    });
+
+    it('answers saveBrand naming an absent brand with brandNotFound', async () => {
+      const response = await bed.invoke({
+        method: methodForOperation('saveBrand'),
+        query: queryFor('saveBrand'),
+        body: JSON.stringify({ brandID: ABSENT_BRAND_ID }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(readUnresolvedReason(response)).toBe('brandNotFound');
+      expect(bed.saveBrandCalls).toEqual([]);
+    });
+
+    it('answers getFormattedOptionGroups naming an absent product with productNotFound', async () => {
+      const response = await bed.invoke({
+        query: queryFor('getFormattedOptionGroups', { productID: ABSENT_PRODUCT_ID }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(readUnresolvedReason(response)).toBe('productNotFound');
+      expect(bed.formattedOptionGroupsCalls).toEqual([]);
+    });
+
+    it('★★ refuses the WHOLE getOptionsForSelect request when ONE named option is absent', async () => {
+      // A single miss is one outcome for the request rather than a silently shorter array, because a
+      // shorter array cannot be aligned with the list that was asked for - the caller would have no way
+      // to tell which of its identifiers went missing.
+      bed.executor.knownOptionIDs.add(FIRST_OPTION_ID);
+
+      const response = await bed.invoke({
+        query: queryFor('getOptionsForSelect', {
+          optionIDs: `${FIRST_OPTION_ID},${ABSENT_OPTION_ID}`,
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(readUnresolvedReason(response)).toBe('optionNotFound');
+      expect(bed.optionsForSelectCalls).toEqual([]);
+    });
+
+    it('reports an unresolved outcome as ZERO records on the served log line', async () => {
+      const response = await bed.invoke({
+        method: methodForOperation('deleteProduct'),
+        query: queryFor('deleteProduct'),
+        body: JSON.stringify({ productID: ABSENT_PRODUCT_ID }),
+      });
+      const served = atIndex(
+        decodedLines(bed).filter((line) => line.level === 'info'),
+        0,
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(served.message).toContain('deleteProduct');
+      expect(served.context['resultCount']).toBe(0);
+    });
+
+    it('publishes no identifier back to the caller in an unresolved outcome', async () => {
+      // The reason is one of a closed set of four literals of this subtree, so the document names WHAT
+      // was not found without echoing the value that was submitted.
+      const response = await bed.invoke({
+        method: methodForOperation('saveBrand'),
+        query: queryFor('saveBrand'),
+        body: JSON.stringify({ brandID: ABSENT_BRAND_ID, brandName: 'Submitted Name' }),
+      });
+
+      expect(response.body).not.toContain(ABSENT_BRAND_ID);
+      expect(response.body).not.toContain('Submitted Name');
+    });
+
+    // ---------------------------------------------------------------------
+    // A ported save rule that failed: a 400 built from the entity's own register
+    // ---------------------------------------------------------------------
+
+    it('★★★ answers 400 when a ported saveProduct rule fails, reading the entity error register', async () => {
+      // The three saves do NOT throw for a failed save-context rule: the legacy `HibachiService.save`
+      // [org/Hibachi/HibachiService.cfc:L151-L167] returns the SAME entity whether it validated or not,
+      // and `src/services/productService.ts` records that its two throwing classes were removed for
+      // exactly that reason. Deciding a status from a returned value is transport work, so the adapter
+      // reads `hasErrors()`/`getErrors()` afterwards.
+      bed.outcomes.saveProductRuleFailures = [['productName', 'is required']];
+
+      const response = await invokeOperation(bed, 'saveProduct');
+      const issue = atIndex(readFieldIssues(response), 0);
+
+      expect(response.statusCode).toBe(400);
+      expect(readFailureBody(response).error.category).toBe('invalidRequest');
+      // ★★ EVERYTHING PUBLISHED IS SERVER-AUTHORED. The path is a PROPERTY IDENTIFIER declared in
+      // `model/validation/*.json` and ported into the services, and the message is the RULE that failed
+      // - never the value that failed it.
+      expect(issue.path).toBe('productName');
+      expect(issue.message).toBe('is required');
+      expect(bed.saveProductCalls).toHaveLength(1);
+    });
+
+    it('joins several rule messages for one property into one issue', async () => {
+      bed.outcomes.saveProductTypeRuleFailures = [
+        ['urlTitle', 'is required'],
+        ['urlTitle', 'must be unique'],
+      ];
+
+      const response = await invokeOperation(bed, 'saveProductType');
+      const issues = readFieldIssues(response);
+
+      expect(response.statusCode).toBe(400);
+      expect(issues).toHaveLength(1);
+      expect(atIndex(issues, 0).path).toBe('urlTitle');
+      expect(atIndex(issues, 0).message).toBe('is required; must be unique');
+    });
+
+    it('answers 400 when a ported saveBrand rule fails, on the same terms', async () => {
+      bed.outcomes.saveBrandRuleFailures = [['brandName', 'is required']];
+
+      const response = await invokeOperation(bed, 'saveBrand');
+
+      expect(response.statusCode).toBe(400);
+      expect(atIndex(readFieldIssues(response), 0).path).toBe('brandName');
+    });
+
+    it('publishes no submitted value alongside a failed save rule', async () => {
+      bed.outcomes.saveProductRuleFailures = [['productCode', 'must be unique']];
+
+      const response = await invokeOperation(bed, 'saveProduct', {
+        body: JSON.stringify({ productID: FIRST_PRODUCT_ID, productCode: 'SUBMITTEDCODE' }),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.body).not.toContain('SUBMITTEDCODE');
+      expect(response.body).not.toContain(FIRST_PRODUCT_ID);
+    });
+
+    // ---------------------------------------------------------------------
+    // The request body: five refusal shapes, each with its own stated reason
+    // ---------------------------------------------------------------------
+
+    it.each(MUTATION_OPERATIONS)('requires a body on %s', async (operation) => {
+      const response = await bed.invoke({
+        method: methodForOperation(operation),
+        query: queryFor(operation),
+        body: null,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(readFailureBody(response).error.message).toBe(
+        'A request body is required and was not supplied.',
+      );
+      expect(bed.counters.scopesOpened).toBe(0);
+    });
+
+    it('treats a whitespace-only body as no body at all', async () => {
+      const response = await invokeOperation(bed, 'deleteProduct', { body: '   \n  ' });
+
+      expect(response.statusCode).toBe(400);
+      expect(readFailureBody(response).error.message).toBe(
+        'A request body is required and was not supplied.',
+      );
+    });
+
+    it('refuses an unparsable body with the JSON reason, not a generic failure', async () => {
+      // Stated as a REASON rather than inferred from a caught `SyntaxError`, because this service's own
+      // code can produce that shape too - so the classification is chosen by the handler that knows.
+      const response = await invokeOperation(bed, 'deleteProduct', { body: '{"productID":' });
+
+      expect(response.statusCode).toBe(400);
+      expect(readFailureBody(response).error.message).toBe('The request body is not valid JSON.');
+      expect(bed.counters.scopesOpened).toBe(0);
+    });
+
+    it.each([['[]'], ['"a string"'], ['42'], ['null']])(
+      'refuses the well-formed but non-document body %s',
+      async (body) => {
+        // Each is valid JSON and none is a request document. The schemas would reject them, but naming
+        // the SHAPE here produces the more precise reason.
+        const response = await invokeOperation(bed, 'deleteProduct', { body });
+
+        expect(response.statusCode).toBe(400);
+        expect(readFailureBody(response).error.message).toBe(
+          'The request body is not the expected shape.',
+        );
+      },
+    );
+
+    it('refuses a body above the byte ceiling, without echoing any of it', async () => {
+      // A target-chosen SAFETY bound on how much text one invocation will parse, stated as one. The
+      // largest legitimate payload is `saveProduct`'s eight scalar columns, one of which is a
+      // 4000-character `wysiwyg` description [model/entity/Product.cfc:L57].
+      const oversized = JSON.stringify({
+        productID: FIRST_PRODUCT_ID,
+        productDescription: 'x'.repeat(9 * 1024),
+      });
+
+      const response = await invokeOperation(bed, 'saveProduct', { body: oversized });
+
+      expect(response.statusCode).toBe(400);
+      expect(readFailureBody(response).error.message).toBe('The request input is not valid.');
+      expect(response.body).not.toContain('xxxx');
+      expect(bed.saveProductCalls).toEqual([]);
+    });
+
+    it('decodes a base64 body, because a binary media type is not a different request', async () => {
+      const response = await invokeOperation(bed, 'deleteProduct', {
+        body: Buffer.from(JSON.stringify({ productID: FIRST_PRODUCT_ID }), 'utf8').toString(
+          'base64',
+        ),
+        isBase64Encoded: true,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(atIndex(bed.deleteProductCalls, 0)).toBe(bed.world.product);
+    });
+
+    it('refuses a base64 body too long to decode within the ceiling', async () => {
+      const response = await invokeOperation(bed, 'saveProduct', {
+        body: 'A'.repeat(20 * 1024),
+        isBase64Encoded: true,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(readFailureBody(response).error.message).toBe('The request input is not valid.');
+    });
+
+    it('★★★ refuses a body carrying __proto__, which the pinned validator would silently drop', async () => {
+      // The ONE unrecognized key `z.strictObject` does not refuse: the pinned validator ACCEPTS it and
+      // drops it at every nesting level. The guard closes that inconsistency, and the refusal publishes
+      // a FROZEN constant naming the key itself - the only name involved the caller did not choose -
+      // because a security review found (CWE-209/CWE-532) that reporting the key's ancestor path let a
+      // caller choose what reached a 400 body and the log stream.
+      const before = Object.getPrototypeOf({}) as object;
+
+      const response = await invokeOperation(bed, 'saveProduct', {
+        body: '{"productID":"' + FIRST_PRODUCT_ID + '","nested":{"__proto__":{"polluted":true}}}',
+      });
+      const issue = atIndex(readFieldIssues(response), 0);
+
+      expect(response.statusCode).toBe(400);
+      expect(issue.path).toBe('__proto__');
+      expect(issue.message).toBe('is not a member this request accepts');
+      expect(response.body).not.toContain('nested');
+      expect(response.body).not.toContain('polluted');
+      expect(Object.getPrototypeOf({})).toBe(before);
+      expect('polluted' in ({} as Record<string, unknown>)).toBe(false);
+      expect(bed.saveProductCalls).toEqual([]);
+    });
+
+    it.each(MUTATION_OPERATIONS)(
+      'refuses an unrecognized member in the %s body',
+      async (operation) => {
+        const body = { ...(VALID_BODIES[operation] ?? {}), unrecognizedMember: 'sentinel' };
+        const response = await invokeOperation(bed, operation, { body: JSON.stringify(body) });
+
+        expect(response.statusCode).toBe(400);
+        // `mapZodErrorFields` recognizes an unrecognized-key issue BY ISSUE CODE, keeps only the
+        // schema-authored container path and substitutes a fixed sentence - so neither the member name nor
+        // its value is echoed.
+        expect(response.body).not.toContain('unrecognizedMember');
+        expect(response.body).not.toContain('sentinel');
+      },
+    );
+
+    it.each(MUTATION_OPERATIONS)(
+      'refuses a %s body that tries to name the operation itself',
+      async (operation) => {
+        // ★★ THE SELECTOR HAS EXACTLY ONE LOCATION, AND THE SCHEMAS ENFORCE IT. Discriminating the body on
+        // an `operation` member was rejected because the query-string selector is already bounded at one
+        // per invocation: a second location would give a caller two places to name an operation and this
+        // file a disagreement to resolve. The mutation schemas therefore declare no such member.
+        const body = { ...(VALID_BODIES[operation] ?? {}), operation };
+        const response = await invokeOperation(bed, operation, { body: JSON.stringify(body) });
+
+        expect(response.statusCode).toBe(400);
+        // AND THE REFUSAL COSTS NOTHING. The schema runs at step 4 and the scope is opened at step 6, so a
+        // body that fails validation never reaches a connection, a statement or a service.
+        expect(bed.counters.scopesOpened).toBe(0);
+        expect(bed.executor.executed).toEqual([]);
+      },
+    );
+
+    it.each(MUTATION_OPERATIONS)('requires the row identifier on %s', async (operation) => {
+      const supplied = VALID_BODIES[operation] ?? {};
+      const identifierName = atIndex(Object.keys(supplied), 0);
+      const withoutIdentifier = Object.fromEntries(
+        Object.entries(supplied).filter(([name]) => name !== identifierName),
+      );
+
+      const response = await invokeOperation(bed, operation, {
+        body: JSON.stringify(withoutIdentifier),
+      });
+      const issue = atIndex(readFieldIssues(response), 0);
+
+      expect(response.statusCode).toBe(400);
+      expect(issue.path).toBe(identifierName);
+      expect(issue.message).toContain('must name an existing row');
+    });
+
+    it.each(MUTATION_OPERATIONS)('refuses an EMPTY row identifier on %s', async (operation) => {
+      // An empty identifier is not an absent one, and neither is admissible: the transport policy is
+      // that every mutation names an EXISTING row, so row creation is not published at all.
+      const supplied = VALID_BODIES[operation] ?? {};
+      const identifierName = atIndex(Object.keys(supplied), 0);
+
+      const response = await invokeOperation(bed, operation, {
+        body: JSON.stringify({ ...supplied, [identifierName]: '' }),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(atIndex(readFieldIssues(response), 0).path).toBe(identifierName);
+    });
+
+    it('IGNORES a body sent with a read rather than refusing it', async () => {
+      // No read schema could describe a body, and refusing one would invent a rule the source has no
+      // counterpart for. The body is not read at all on a read arm, which is what this asserts.
+      const response = await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+        body: '{"this":"is not read"}',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(bed.findProductsCalls).toHaveLength(1);
+    });
+
+    it('does not let an unparsable body break a read', async () => {
+      const response = await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+        body: '{{{',
+      });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    // ---------------------------------------------------------------------
+    // Mutation safety: what a mutation does NOT reach
+    // ---------------------------------------------------------------------
+
+    it.each(MUTATION_OPERATIONS)('executes no statement of its own for %s', async (operation) => {
+      // ★★ EVERY PUBLISHED MUTATION GOES THROUGH THE SERVICE THAT OWNS ITS INVARIANTS. The executor
+      // raises on `executeMutation` and on `transaction`, so a write arriving there would fail loudly:
+      // it would mean this adapter had bypassed the service, which is exactly the arrangement
+      // `RequestScope` withdrew the six raw repositories to prevent. The only statements admissible are
+      // the two entity LOADS.
+      const response = await invokeOperation(bed, operation);
+
+      expect(response.statusCode).toBe(200);
+      expect(bed.unpublishedTouches).toEqual([]);
+      for (const sql of bed.executor.executed) {
+        expect(sql.toLowerCase()).toContain('select');
+      }
+    });
+
+    it.each(MUTATION_OPERATIONS)('opens exactly one request scope for %s', async (operation) => {
+      const response = await invokeOperation(bed, operation);
+
+      expect(response.statusCode).toBe(200);
+      expect(bed.counters.scopesOpened).toBe(1);
+      expect(atIndex(bed.scopeInputs, 0)).toEqual({ accountID: CALLER_ACCOUNT_ID });
+    });
+
+    it('maps the SKU batch bound the service raises rather than swallowing it', async () => {
+      // The bound is the SERVICE'S - a transactional-integrity limit on one unit of work, supplied by
+      // the composition root and defaulting to 1000 - and no second bound is applied at this tier. What
+      // the adapter owes is that the refusal funnels through the shared mapper like any other throw.
+      bed.outcomes.updateSkusRejectsWith = new Error('the SKU update batch exceeds its bound');
+
+      const response = await invokeOperation(bed, 'processProduct_updateSkus');
+
+      expect(response.statusCode).toBe(500);
+      expect(readFailureBody(response).error.message).toBe('The request could not be completed.');
+      expect(response.body).not.toContain('bound');
+    });
+
+    it('publishes the transport policy for every operation, resendable or not', () => {
+      // ★★★ RETRY SEMANTICS ARE STATED PER OPERATION AS DATA, NOT AS A MECHANISM. AAP 0.6.5 asks for
+      // batch limits, retry semantics and a compensation story on a bulk mutation path; the limits are
+      // the services' own, compensation is the repository's transaction, and this is the retry half.
+      // Telling a caller which mutations converge is more useful than a per-container response ledger
+      // claiming to make the rest safe - and a ledger keyed on a raw caller header is precisely what a
+      // security review removed from this module.
+      expect(CATALOG_OPERATION_TRANSPORT.processProduct_updateSkus.resendable).toBe(true);
+      expect(
+        CATALOG_OPERATION_TRANSPORT.processProduct_updateDefaultImageFileNames.resendable,
+      ).toBe(true);
+
+      const nonResendable = MUTATION_OPERATIONS.filter(
+        (operation) => !CATALOG_OPERATION_TRANSPORT[operation].resendable,
+      );
+      expect(nonResendable).toHaveLength(7);
+
+      for (const operation of READ_OPERATIONS) {
+        expect(CATALOG_OPERATION_TRANSPORT[operation].resendable).toBe(true);
+        expect(CATALOG_OPERATION_TRANSPORT[operation].method).toBe(firstDeclaredCatalogMethod());
+      }
+    });
+  });
+
+  // =========================================================================
   // CONCERN 2 - DELEGATION: what is NOT routable, and the tripwires proving it
   //
   // Every operation named below is refused at the selector, and the tripwire on the corresponding
   // service member is asserted untouched. The two halves matter together: a refusal alone would not
   // prove that some other path reached the member, and a silent tripwire alone would not prove the
   // caller was told.
+  //
+  // ★★★ ONE OF THE THREE LISTS THAT USED TO LIVE HERE IS GONE, AND ITS REMOVAL IS THE CRITICAL FIX.
+  // A third list named `entityArgumentOperations` sat between the two below and held eleven names -
+  // `getFormattedOptionGroups`, the six in-scope `processProduct_*` and `save*` Product actions,
+  // `saveProductType`, `deleteProduct`, `getOptionsForSelect` and `saveBrand`. Its documentation read
+  // "Unreachable at this tier because the composition root publishes no entity and no loader", and a
+  // code review found that premise FALSE: `RequestScope.entityLoaders` publishes read-only loads by
+  // identifier, so an entity-first method has a perfectly admissible argument here. All eleven are
+  // published now and every one of them is exercised positively, in the block titled "the eleven
+  // operations a code review restored" further down. The two lists that remain are the ones whose
+  // grounds survived review - AAP 0.9.5 exclusions, and members another capability or another
+  // subsystem owns.
   // =========================================================================
 
   describe('concern 2, delegation: the deliberate non-exposures', () => {
@@ -2407,21 +4054,6 @@ describe('catalogQueryHandler', () => {
       'processProduct_addSubscriptionTerm',
       'processProduct_uploadDefaultImage',
       'loadDataFromFile',
-    ];
-
-    /** Unreachable at this tier because the composition root publishes no entity and no loader. */
-    const entityArgumentOperations: readonly string[] = [
-      'getFormattedOptionGroups',
-      'processProduct_addOptionGroup',
-      'processProduct_addOption',
-      'processProduct_updateSkus',
-      'processProduct_deleteDefaultImage',
-      'processProduct_updateDefaultImageFileNames',
-      'saveProduct',
-      'saveProductType',
-      'deleteProduct',
-      'getOptionsForSelect',
-      'saveBrand',
     ];
 
     /** Owned by a different capability, or by a subsystem this migration excludes outright. */
@@ -2452,14 +4084,6 @@ describe('catalogQueryHandler', () => {
       expect(bed.counters.scopesOpened).toBe(0);
     });
 
-    it.each(entityArgumentOperations)('publishes no route reaching %s', async (operation) => {
-      const response = await bed.invoke({ query: { operation } });
-
-      expect(response.statusCode).toBe(400);
-      expect(bed.unpublishedTouches).toEqual([]);
-      expect(bed.counters.scopesOpened).toBe(0);
-    });
-
     it.each(otherOwnersOperations)('publishes no route reaching %s', async (operation) => {
       const response = await bed.invoke({ query: { operation } });
 
@@ -2482,24 +4106,31 @@ describe('catalogQueryHandler', () => {
       expect(Object.keys(ROUTE_TABLE)).not.toContain('bulkImport');
     });
 
-    it('publishes no route to the subscription or content-access SKU-creation branches', async () => {
+    it('publishes no route to createSkus, whose subscription branches are internal to it', async () => {
       // A nuance worth stating exactly: those branches are NOT separate methods. The next function
       // declared after `createSkus` [model/service/SkuService.cfc:L58] is `processImageUpload` at
       // [L210], so [L139-L202] is an INTERNAL BRANCH of `createSkus` reached on the product type. They
-      // therefore cannot be "not ported" - only not EXPOSED, which is what is asserted here. The
-      // creation path is reachable in the service tier through `processProduct_addOptionGroup` and
-      // `processProduct_addOption`, and neither of those is published either.
-      for (const operation of [
-        'createSkus',
-        'processProduct_addOptionGroup',
-        'processProduct_addOption',
-      ]) {
-        const response = await bed.invoke({ query: { operation } });
-        expect(response.statusCode).toBe(400);
-      }
+      // therefore cannot be "not ported" - only not EXPOSED, which is what is asserted here.
+      //
+      // ★★★ QUOTE-THEN-REVISE, AND THE REVISION NARROWS THIS CASE RATHER THAN WIDENING IT. It used to
+      // loop over three names and close with "The creation path is reachable in the service tier
+      // through `processProduct_addOptionGroup` and `processProduct_addOption`, and neither of those is
+      // published either." The first clause was and is exactly right - both of those DO reach SKU
+      // creation, because each calls `createSkus` after attaching its association
+      // [model/service/ProductService.cfc:L113-L126, L128-L141]. The second clause is what a code
+      // review overturned: both ARE published now. So the honest remaining assertion is narrower and
+      // truer - `createSkus` has no route of its OWN, and the two operations that reach it do so
+      // through the ported service method rather than by exposing the SKU-creation surface directly.
+      const response = await bed.invoke({ query: { operation: 'createSkus' } });
 
+      expect(response.statusCode).toBe(400);
       expect(bed.unpublishedTouches).toEqual([]);
       expect(bed.counters.scopesOpened).toBe(0);
+
+      // And the two that DO reach it are published, on POST, which is the fact that replaced the
+      // sentence quoted above. Naming both here keeps the correction adjacent to the claim it corrects.
+      expect(PUBLISHED_OPERATIONS).toContain('processProduct_addOptionGroup');
+      expect(PUBLISHED_OPERATIONS).toContain('processProduct_addOption');
     });
 
     it('answers for its own capability only, across every other row of the table', async () => {
@@ -2775,9 +4406,7 @@ describe('catalogQueryHandler', () => {
 
     it('emits a body that is valid JSON on every published operation', async () => {
       for (const operation of PUBLISHED_OPERATIONS) {
-        const response = await bed.invoke({
-          query: queryFor(operation, VALID_PARAMETERS[operation]),
-        });
+        const response = await invokeOperation(bed, operation);
 
         expect(response.statusCode).toBe(200);
         // A block body rather than a concise one, so the parsed value is discarded rather than
@@ -2845,10 +4474,17 @@ describe('catalogQueryHandler', () => {
       // The router matches the method with `listFindNoCase`, so a lower-case `get` is admitted. The
       // logged label must still be the table's own declaration: it is one of a closed set of five, so
       // an operator can group by it, and a caller cannot steer what appears on the line.
+      //
+      // ★★★ AND THE DECLARATION IS A COMMA LIST NOW, WHICH THE LOG-LABEL SANITIZER HAD TO BE TAUGHT.
+      // `sanitizeRouteDiagnostic` cut at the first character outside `[A-Za-z0-9/_. -]`, so widening
+      // this row to `GET,POST` made every catalog line read `GET[trailing content dropped]` - a
+      // reduction that never happened, reported in place of the route that was served. The comma is
+      // admitted now; the four cut markers `?`, `#`, `&` and `=` are not. Asserting the WHOLE
+      // declaration survives is what pins that fix from this side of the boundary.
       bed.outcomes.findProductsRejectsWith = new ProductPagingCriteriaError('pageRecordsStart', 3);
 
       const response = await bed.invoke({
-        method: CATALOG_ROUTE.methods.toLowerCase(),
+        method: firstDeclaredCatalogMethod().toLowerCase(),
         query: queryFor('findProducts', { keyword: 'jorden' }),
       });
       const line = atIndex(
@@ -2858,7 +4494,8 @@ describe('catalogQueryHandler', () => {
 
       expect(response.statusCode).toBe(500);
       expect(line.context['route']).toBe(`${CATALOG_ROUTE.methods} ${CATALOG_ROUTE.path}`);
-      expect(line.context['route']).not.toContain(CATALOG_ROUTE.methods.toLowerCase());
+      expect(line.context['route']).not.toContain('[trailing content dropped]');
+      expect(line.context['route']).not.toContain(firstDeclaredCatalogMethod().toLowerCase());
     });
 
     it('reports the requested route rather than a canonical row for a pre-resolution miss', async () => {
@@ -3146,7 +4783,7 @@ describe('catalogQueryHandler', () => {
       expect(bed.findProductsCalls).toHaveLength(1);
     });
 
-    it('★★★ HONOURS NO IDEMPOTENCY KEY, because this read-only route no longer carries a ledger', async () => {
+    it('★★★ HONOURS NO IDEMPOTENCY KEY, because the route no longer carries a ledger', async () => {
       // ★★★ SECURITY / API FINDING F5 (CWE-400, cache confusion). THIRTEEN CASES USED TO SIT HERE,
       // pinning a per-container ledger: replay under one key, in-flight sharing, key trimming,
       // case-insensitive header matching, oldest-first eviction at 256 entries, and a 256-character
@@ -3159,13 +4796,22 @@ describe('catalogQueryHandler', () => {
       // correlation identifier. The 256-entry bound was a COUNT bound that retained 256 COMPLETE
       // response bodies.
       //
-      // WHY REMOVAL RATHER THAN REPAIR. The route is `GET /catalog/products` and all three published
-      // operations are READS, so re-running one cannot double-write anything: the endpoint is
-      // idempotent by construction and re-executing a retry is strictly more correct than replaying a
-      // stale body. AAP 0.6.5's idempotency obligation is stated for BULK MUTATION paths and this
-      // capability publishes none. The alternative review offered - a durable record keyed by caller
-      // plus canonical request digest - means new infrastructure this migration excludes outright
-      // (AAP 0.2.2), for a read path that gains nothing from it.
+      // WHY REMOVAL RATHER THAN REPAIR. Quoted as it stood, because the conclusion is unchanged and half
+      // of the reasoning is not: "The route is `GET /catalog/products` and all three published operations
+      // are READS, so re-running one cannot double-write anything [...] AAP 0.6.5's idempotency
+      // obligation is stated for BULK MUTATION paths and this capability publishes none."
+      //
+      // ★★★ THAT SECOND CLAUSE EXPIRED, AND THE SUBJECT SAYS SO AT THE SITE. A later code review found
+      // eleven AAP-0.4.2-mapped actions unreachable from Lambda; nine are writes and two of those rebuild
+      // a product's SKUs, so the capability DOES publish bulk mutation paths now and the 0.6.5 obligation
+      // genuinely applies. It is met without restoring this mechanism: the batch limits are the SERVICES'
+      // own - `maximumSkuUpdateBatchSize` and `maximumSkuCreationBatchSize`, both defaulting to 1000 -
+      // compensation is the repository's transaction, and retry semantics are stated PER OPERATION as
+      // data on `CATALOG_OPERATION_TRANSPORT`, which the transport-policy case above pins. The
+      // alternative review offered - a durable record keyed by caller plus canonical request digest -
+      // still means new infrastructure this migration excludes outright (AAP 0.2.2), and publishing nine
+      // mutations changes which operations are non-idempotent rather than what infrastructure is
+      // permitted.
       //
       // The two cases below are what replaces thirteen: the key is inert, and a retry re-executes.
       const first = await bed.invoke(keyedRequest('idem-0001'));

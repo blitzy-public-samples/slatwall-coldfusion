@@ -252,13 +252,30 @@ const PATH_DELIMITER = '/';
  * invocation it serves.
  */
 export const ROUTE_TABLE: Readonly<Record<RoutedCapability, RouteDescriptor>> = Object.freeze({
-  // Catalog query. The read surface of the ported product, brand and option services - the typed
-  // replacements for the framework smart lists, which the plan renames deliberately rather than
-  // cloning.
+  // Catalog. The ported product, brand and option surface: the typed replacements for the framework
+  // smart lists, which the plan renames deliberately rather than cloning, together with the option,
+  // image, SKU-repricing, save and delete actions AAP 0.4.2 maps for those three services.
+  //
+  // ★★★ TWO METHODS, AND THE SECOND ONE IS A REVIEW FINDING. This row declared `'GET'` alone while
+  // the capability published three reads, and a code review recorded (CRITICAL) that eleven mapped
+  // Product/Brand/Option actions - nine of them WRITES - had no transport at all, leaving catalog
+  // persistence and the whole of `BrandService` unreachable from Lambda. A write cannot honestly be
+  // served on `GET`: the method is defined as safe, and an intermediary is entitled to retry or cache
+  // it. So the row admits `POST` as well, and the handler serves each operation on exactly one of the
+  // two - the five reads on `GET`, the nine mutations on `POST` - refusing the wrong pairing itself.
+  //
+  // THE LIST FORM IS WHY THIS COSTS NO MECHANISM. `methods` has always been a CFML comma list matched
+  // by `listFindNoCase`, precisely so a row could name more than one method without the matcher
+  // changing; this is the first row to use that. Nothing in `resolveRoute` below is touched.
+  //
+  // ★ AND IT DOES NOT WIDEN THE URL SURFACE. The table still has exactly five rows and this
+  // capability still has exactly one path: enumerating a sub-surface per operation would invent a URL
+  // vocabulary this migration was never asked to design, which is the same reason the operation
+  // travels as a selector rather than as a path segment.
   catalogQuery: Object.freeze({
     capability: 'catalogQuery',
     action: 'queryCatalog',
-    methods: 'GET',
+    methods: 'GET,POST',
     path: '/catalog/products',
   }),
 
@@ -285,8 +302,31 @@ export const ROUTE_TABLE: Readonly<Record<RoutedCapability, RouteDescriptor>> = 
     path: '/promotions/application',
   }),
 
-  // Price resolution. The price-group and currency resolution surface, likewise taking a read-only
-  // order-shaped document and returning intents.
+  // Price resolution. The price-group and currency resolution surface AAP 0.4.1 assigns this
+  // entrypoint: twelve READ operations, each naming one entity by identifier and answering one
+  // resolved value.
+  //
+  // ★★★ QUOTE-THEN-REVISE. This comment read "likewise taking a read-only order-shaped document and
+  // returning intents", which described the row ABOVE it rather than this one. A code review found the
+  // contract described here to be the promotion pass's, and the two are not alike in either half:
+  //
+  //   * THE REQUEST is not an order view. It is a discriminated document naming ONE operation from a
+  //     closed twelve-member set - the three `getRateFor*BasedOnPriceGroup` reads, the four
+  //     `calculateSkuPriceBasedOn*` reads, `getBestPriceGroupDetailsBasedOnSkuAndAccount`, the three
+  //     currency accessors and `convertCurrency` - together with the identifiers that operation needs,
+  //     each hydrated through `RequestScope.entityLoaders`. No order, no order item and no fulfillment
+  //     appears anywhere in it.
+  //   * THE RESPONSE is not intents. Every operation answers one resolved value - a rate projection, a
+  //     formatted amount, best-price-group details, or a closed `unresolved` reason in a 200 when an
+  //     identifier names no row. Nothing is applied, nothing is written and there is no aggregate for
+  //     an intent to be applied TO: the four price-group WRITES are withheld from this surface
+  //     entirely rather than gated.
+  //
+  // `updateOrderAmountsWithPriceGroups` - the pass that DOES take an order view and DOES return
+  // intents - is deliberately not reachable through any route: it is sequenced with the promotion pass
+  // behind `RequestScope.updateOrderAmountsWithPriceGroupsThenPromotions`, so no caller can run either
+  // alone. That is why the order-shaped contract belongs to `promotionApplication` above and to
+  // nothing here. POST because the operation document travels in the request body.
   priceResolution: Object.freeze({
     capability: 'priceResolution',
     action: 'resolvePrices',

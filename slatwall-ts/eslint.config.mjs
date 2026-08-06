@@ -197,7 +197,7 @@ const OUTWARD_PACKAGE_PATTERNS = [
  *
  * WHAT IT DOES NOT ENFORCE, AND WHY THAT IS NOT A GAP. The plan's phrasing pairs
  * "no barrels" with "one exported unit per file", and only the first half is
- * mechanised here. The second half is not the tree's actual shape: 60 of the 91
+ * mechanised here. The second half is not the tree's actual shape: 60 of the 89
  * modules under `src/` declare more than one top-level export, and that is
  * correct rather than a violation - a module owning a behaviour also publishes
  * the types of its inputs and results, the frozen constants it is the authority
@@ -568,9 +568,12 @@ const NO_UNUSED_VARS_TS = [
 //     the subtree, which makes the no-barrel half of the standard mechanical
 //     from the import side. The "one exported unit per file" half is NOT
 //     mechanised, and no `max-exports`-style rule is enabled, because 60 of the
-//     91 modules under `src/` legitimately publish a behaviour together with the
+//     89 modules under `src/` legitimately publish a behaviour together with the
 //     types, constants and errors that belong beside it - see the
-//     `BARREL_PATTERNS` docblock for the full reasoning.
+//     `BARREL_PATTERNS` docblock for the full reasoning. (Both figures read 91
+//     until a code review measured the tree; `A20` in
+//     `tests/traceability/legacyTestMap.ts` asserts the module count against disk
+//     on every run, so that gate is the authority and these two are commentary.)
 //
 //  9. `no-fallthrough`. `tsconfig.json` deliberately omits
 //     `noFallthroughCasesInSwitch` because legacy defects are reproduced rather

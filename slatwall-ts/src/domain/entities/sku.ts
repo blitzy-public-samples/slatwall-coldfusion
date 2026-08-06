@@ -386,11 +386,16 @@ export type SkuImageResizeOptions = {
  * PER MEMBER RATHER THAN BLANKET. `baseImageURL` is not a settings key at all: it
  * resolves `getHibachiScope().getBaseImageURL()`
  * [model/transient/HibachiScope.cfc:L186-L188] over `globalAssetsImageFolderPath`
- * [model/service/SettingService.cfc:L164], which the seven-key `SettingsProvider`
+ * [model/service/SettingService.cfc:L164], which the four-key `SettingsProvider`
  * union deliberately excludes. `productImageOptionCodeDelimiter` [:L192] and
- * `productImageDefaultExtension` [:L191] ARE on that union - they are its third
- * and fourth literals - but THE LEGACY RESOLVES BOTH ON THE PRODUCT, NOT ON THE
- * SKU: `getProduct().setting('productImageOptionCodeDelimiter')`
+ * `productImageDefaultExtension` [:L191] are not on that union either: they are
+ * PRODUCT-PRESENTATION settings, resolved once in `src/handlers/bootstrap.ts` and
+ * handed inward as plain strings - see the record at the foot of
+ * `src/domain/ports/settingsProvider.ts` for why a second resolver contract for
+ * them was withdrawn. This paragraph called the union SEVEN-KEY and called those
+ * two "its third and fourth literals" until a code review measured four; the
+ * per-member reasoning below was always the load-bearing half, and it is
+ * unaffected, because THE LEGACY RESOLVES BOTH ON THE PRODUCT, NOT ON THE SKU: `getProduct().setting('productImageOptionCodeDelimiter')`
  * [model/entity/Sku.cfc:L135] and
  * `getProduct().setting('productImageDefaultExtension')` [L138]. So the SKU
  * receives all three ALREADY RESOLVED, arriving together as one materialized
@@ -1970,6 +1975,16 @@ export class Sku {
    * `calculateSkuPriceBasedOnPromotion` implementation exists on the promotion service. Carried
    * over as a flagged TODO rather than silently completed.
    *
+   * ★★ THE PROVENANCE OF THAT MARKER IS THE PLAN'S, NOT THE SOURCE LINE'S, and it is stated because a
+   * code review found three markers elsewhere in this subtree that implied a legacy comment they had
+   * no right to imply. [model/entity/Sku.cfc:L258] is a bare `return getService("promotionService")
+   * .calculateSkuPriceBasedOnPromotion(...)` with NO comment on it or near it - the in-scope slice
+   * carries exactly five legacy TODOs and this is not one of them. The keyword is here because AAP
+   * 0.4.2 DIRECTS it for this specific method in terms: "Reproduced as a throwing stub with the TODO,
+   * not invented." An explicit plan instruction for a named site outranks the general discipline that
+   * a target TODO mirrors a source TODO, so the marker stays and the bracketed locator is to be read
+   * as "the defect is at L258", not as "L258 says TODO".
+   *
    * THE MISSING METHOD IS NOT INVENTED. No port is injected for [L258] - the ONE locator site of
    * the nineteen that is REMOVED rather than replaced - and nothing is returned or delegated.
    * `never` remains assignable wherever the legacy `numeric` was.
@@ -2800,6 +2815,14 @@ export class Sku {
    * TODO [model/entity/Sku.cfc:L569]: this method cannot work until a stocks-deletable query exists
    * on the SKU repository port. Flagged rather than completed.
    *
+   * ★★ SAME PROVENANCE NOTE AS `getPriceByPromotion`, AND FOR THE SAME REASON. [L569] carries no
+   * comment either; the marker is here because this method follows the defect-16 precedent step for
+   * step - a call to a method that cannot resolve, reproduced as a throwing stub - and AAP 0.4.2
+   * directs the marker for that precedent. The bracketed locator names where the DEFECT is, not a
+   * source comment. Three sibling markers that had no such instruction behind them were re-labelled
+   * after a code review: the empty `g:google_product_category` note, the excluded bulk-import
+   * declaration, and defect 9's over-use strip.
+   *
    * NO MEMBER IS ADDED TO THE PORT AND NO IMPLEMENTATION IS INVENTED. A hardcoded `true` would
    * authorise deleting stock records that may be referenced; a hardcoded `false` would silently
    * block a legitimate delete. Both are worse than an explicit refusal, so this follows the DEFECT
@@ -3513,11 +3536,16 @@ export class Sku {
 //   QUIETLY APPLIED. `generateImageFileName()` [L131-L139] and `getImagePath()`
 //   [L145-L147] were previously listed here as omitted-or-refused on the grounds
 //   that the settings they read are not among the `SettingsProvider` keys.
-//   THAT PREMISE IS FALSE AS WELL AS INSUFFICIENT, and the count it rested on was
-//   wrong: the union holds SEVEN keys, and two of the three values these members
-//   compose with - `setting('productImageOptionCodeDelimiter')` [L135] and
-//   `setting('productImageDefaultExtension')` [L138] - ARE on it
-//   [model/service/SettingService.cfc:L192, :L191], while the third,
+//   THAT PREMISE IS INSUFFICIENT, which is the half that matters, and the count it
+//   rested on has since been measured: the `SettingKey` union holds FOUR keys, and
+//   two of the three values these members compose with -
+//   `setting('productImageOptionCodeDelimiter')` [L135] and
+//   `setting('productImageDefaultExtension')` [L138] - are NOT on it either
+//   [model/service/SettingService.cfc:L192, :L191]; they are product-presentation
+//   settings resolved once by the composition root. This note read "the union holds
+//   SEVEN keys [...] ARE on it" until a code review measured four, and the
+//   correction STRENGTHENS the point rather than weakening it: the premise never
+//   established what it was used for. The third value,
 //   `getHibachiScope().getBaseImageURL()` [L146], is a framework scope accessor and
 //   never was a settings key at all. Even where a value genuinely does sit off the
 //   union, the premise establishes only that this entity may not RESOLVE that value,
@@ -3535,9 +3563,10 @@ export class Sku {
 //   any port; the PORT member serves the service, which holds no
 //   `SkuImageSettingValues` and must not - `productImageOptionCodeDelimiter`
 //   [model/service/SettingService.cfc:L192] and `productImageDefaultExtension`
-//   [L191] are resolved once by the composition root through the seven-key
-//   `SettingsProvider` union and then travel with the image subsystem, which is
-//   where their CONSUMPTION belongs even though their RESOLUTION is the port's. The
+//   [L191] are resolved once by the composition root - off the four-key
+//   `SettingsProvider` union, as product-presentation values - and then travel with
+//   the image subsystem, which is where their CONSUMPTION belongs even though their
+//   RESOLUTION is the composition root's. The
 //   service therefore supplies the halves only IT can supply - the option
 //   traversal via `getOptions()`, filtered on
 //   `option.getOptionGroup().getImageGroupFlag()` [model/entity/Sku.cfc:L133], and

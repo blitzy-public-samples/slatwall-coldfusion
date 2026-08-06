@@ -359,6 +359,11 @@ export function buildSortedProductSkusStatement(
    *   198:      </cfif>
    */
 
+  // TODO [model/dao/SkuDAO.cfc:L177] carried forward CHARACTER FOR CHARACTER, and deliberately not
+  // discharged: the engines it names are the ones this port does not implement, so completing it would
+  // mean building and testing an arm the migration excludes. `../dialect.js`, `../mysqlSkuRepository.ts`
+  // and `../../../handlers/skuResolutionHandler.ts` carry the same marker for the same statement.
+  //
   // TODO: test to see if this query works with DB's other than MSSQL and MySQL
   const sql = `SELECT
     SwSku.skuID

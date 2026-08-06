@@ -251,10 +251,19 @@ export type ProductFeedHandler = (
  * JUDGMENT CALL: `x-forwarded-host` is deliberately NOT consulted, and neither is the gateway's own
  * `requestContext.domainName`. Preferring either would publish an origin the legacy never
  * published; a deployment behind a proxy that rewrites the authority configures the value it serves
- * on through the deployment-owned allow-list instead. THE HOST IS NEVER TRUSTED FOR PROVENANCE:
- * `./bootstrap.js` admits it only if it is a member of an immutable list resolved once from process
- * configuration, and an unconfigured deployment therefore serves no feed at all whatever a caller
- * sends. That refusal is the composition root's - this function only observes.
+ * on through the deployment-owned authorized-host list instead. THE HOST IS NEVER TRUSTED FOR
+ * PROVENANCE: `./bootstrap.js` admits it only if it is a member of an immutable list resolved once
+ * from process configuration, and an unconfigured deployment therefore serves no feed at all
+ * whatever a caller sends. That refusal is the composition root's - this function only observes.
+ *
+ * ★★★ AND THAT LAST SENTENCE IS NOW TRUE, WHICH IT BRIEFLY WAS NOT. It was written as a contract and
+ * then contradicted by the configuration layer: `FEED_ALLOWED_HOSTS` unset resolved to "no policy",
+ * which the composition root read as ADMIT ANY WELL-FORMED HOST - so the documented default
+ * deployment forwarded exactly the caller-authored authority this comment claims it refuses, into the
+ * five URL sites of a merchant feed. Code review recorded the divergence between the published claim
+ * and the behaviour (CWE-346). The configuration layer was corrected to the claim rather than the
+ * claim weakened: unset and empty both authorize NO host, membership is unconditional, and the
+ * refusal below names the configuration to set - in the LOG only, never in the response body.
  *
  * MATCHED CASE-INSENSITIVELY, which is parity rather than leniency. HTTP header names are
  * case-insensitive, a version 1.0 proxy event carries whatever casing the client sent, and the CFML

@@ -1296,10 +1296,10 @@ function buildSkuOptionInsertSql(optionCount: number): string {
  * `getHibachiScope().getBaseImageURL()` [model/entity/Sku.cfc:L146],
  * `setting('productImageOptionCodeDelimiter')` [L136] and `setting('productImageDefaultExtension')`
  * [L138]. The base image URL resolves `globalAssetsImageFolderPath`
- * [model/service/SettingService.cfc:L164], which the closed seven-key
- * `src/domain/ports/settingsProvider.ts` union excludes; the other two ARE port keys [:L191, :L192],
- * resolved once by the composition root, because the legacy resolves each on the PRODUCT rather than
- * on the SKU. Either way the ENTITY may not resolve them - which is not to say it may not compose a
+ * [model/service/SettingService.cfc:L164], which the closed four-key
+ * `src/domain/ports/settingsProvider.ts` union excludes; the other two are not port keys either
+ * [:L191, :L192] - they are product-presentation settings, resolved once by the composition root -
+ * and the legacy resolves each on the PRODUCT rather than on the SKU in any case. Either way the ENTITY may not resolve them - which is not to say it may not compose a
  * string out of them once resolved, so they arrive here as values and are forwarded verbatim. Absent them,
  * `Sku.generateImageFileName()` and `Sku.getImagePath()` raise rather than composing a well-formed
  * wrong path. The same forwarding exists in `mysqlProductRepository.ts`, for the same reason and with

@@ -134,12 +134,7 @@ import type {
   ProductSearchWindow,
 } from '../../src/domain/ports/productRepository.js';
 import type { OptionRepository, SelectOption } from '../../src/domain/ports/optionRepository.js';
-import type {
-  ProductPresentationSettingKey,
-  ProductPresentationSettingsProvider,
-  SettingKey,
-  SettingsProvider,
-} from '../../src/domain/ports/settingsProvider.js';
+import type { SettingKey, SettingsProvider } from '../../src/domain/ports/settingsProvider.js';
 import type { SkuRepository } from '../../src/domain/ports/skuRepository.js';
 import type { CfBooleanInput } from '../../src/lib/cfml/truthiness.js';
 
@@ -529,7 +524,7 @@ interface ProductFixtureOverrides {
   readonly selectedOptionsCandidateSkus?: readonly Sku[] | undefined;
 
   /**
-   * Resolves the seven published settings keys.
+   * Resolves the FOUR published settings keys.
    *
    * Default: the hand-written double from `makeFixtureSettingsProvider`. It MUST
    * be supplied by default, because `getProductURL()` and
@@ -540,23 +535,19 @@ interface ProductFixtureOverrides {
   readonly settingsProvider?: SettingsProvider | undefined;
 
   /**
-   * Resolves the three product-presentation keys - of which this entity reads exactly one,
-   * `productTitleString` at [model/entity/Product.cfc:L542].
+   * The ALREADY-RESOLVED `productTitleString` template `getTitle()` renders at
+   * [model/entity/Product.cfc:L542].
    *
-   * Default: THE SAME double `settingsProvider` gets, because the composition root implements both
-   * contracts on one object and a fixture must resolve a setting the way production does. It MUST be
-   * supplied by default, because `getTitle()` refuses outright without it - and `saveProduct` calls
-   * `getTitle()` on every save [model/service/ProductService.cfc:L269]. Pass `undefined` explicitly to
-   * exercise that refusal.
-   */
-  readonly productPresentationSettingsProvider?: ProductPresentationSettingsProvider | undefined;
-
-  /**
-   * The template the presentation double answers for `productTitleString`.
+   * ★★ A STRING, NOT A SECOND SETTINGS DOUBLE. This override used to be
+   * `productPresentationSettingsProvider`, typed to a second resolver contract, because the entity
+   * held one. Code review recorded that contract as a widening of the frozen settings architecture,
+   * so the entity now takes the resolved value and this fixture supplies one - which is also what the
+   * composition root does.
    *
    * Default `'${brand.brandName} ${productName}'`, the verified legacy default at
-   * [model/service/SettingService.cfc:L193]. Ignored when a whole
-   * `productPresentationSettingsProvider` is supplied.
+   * [model/service/SettingService.cfc:L193]. It MUST be supplied by default, because `getTitle()`
+   * refuses outright without it - and `saveProduct` calls `getTitle()` on every save
+   * [model/service/ProductService.cfc:L269]. Pass `undefined` explicitly to exercise that refusal.
    */
   readonly productTitleString?: string | undefined;
 
@@ -661,23 +652,25 @@ const GLOBAL_URL_KEY_PRODUCT = 'sp';
 const GLOBAL_URL_KEY_PRODUCT_TYPE = 'spt';
 
 /**
- * The three product-subsystem settings this `Product` never reads, present only
- * so the double satisfies the port's TOTAL contract.
+ * The default template a fixture product renders its title from.
  *
- * Verified legacy defaults, in declaration order:
- * `productImageDefaultExtension = {fieldType="text",defaultValue="jpg"}`
- * [model/service/SettingService.cfc:L191],
- * `productImageOptionCodeDelimiter = {fieldType="select", defaultValue="-"}`
- * [L192], and `productTitleString` [L193], whose default is a TEMPLATE rather
- * than a title. The `${...}` markers below are legacy template syntax consumed by
- * `hibachiUtilityService.replaceStringTemplate` [model/entity/Product.cfc:L542];
- * the value is a plain single-quoted string here and nothing in this subtree
- * evaluates it. `Product.getTitle()` is not ported - that renderer lives under
- * `org/Hibachi/`, which this migration never ports - so no assertion in this tier
- * consumes the value.
+ * ★★ QUOTE-THEN-REVISE. Three constants stood here, documented as "the three product-subsystem
+ * settings this `Product` never reads, present only so the double satisfies the port's TOTAL
+ * contract", and closing with "`Product.getTitle()` is not ported ... so no assertion in this tier
+ * consumes the value". Both halves are now false: the settings double answers exactly the FOUR keys
+ * the port publishes, so the two image constants had no table to fill and are gone with it; and
+ * `getTitle()` IS ported, so this value is consumed rather than inert.
+ *
+ * `productTitleString` [model/service/SettingService.cfc:L193] is the verified legacy default, and it
+ * is a TEMPLATE rather than a title. The `${...}` markers are legacy template syntax reproduced from
+ * `hibachiUtilityService.replaceStringTemplate` [model/entity/Product.cfc:L542]; the value is a plain
+ * single-quoted string here and nothing in this subtree evaluates it.
+ *
+ * The two image-naming defaults it used to sit beside - `productImageDefaultExtension`
+ * [model/service/SettingService.cfc:L191] and `productImageOptionCodeDelimiter` [:L192] - belong to
+ * the SKU's image-naming values and are declared in `./skuFixtures.ts`, beside the entity that reads
+ * them.
  */
-const PRODUCT_IMAGE_DEFAULT_EXTENSION = 'jpg';
-const PRODUCT_IMAGE_OPTION_CODE_DELIMITER = '-';
 const PRODUCT_TITLE_STRING = '${brand.brandName} ${productName}';
 
 /**
@@ -860,15 +853,19 @@ function makeAuditTrail(idPrefix: string): AuditTrail {
  * every product that must answer a URL needs one supplied - the accessors refuse
  * outright rather than degrading when it is absent.
  *
- * All SEVEN published keys are answered, not just the one this entity reads, so
+ * All FOUR published keys are answered, not just the one this entity reads, so
  * the double satisfies the port's total contract: `setting` is declared to return
  * `string` and never `undefined`, and a partial table would make that a lie. The
  * lookup is therefore exhaustive over the key union and the compiler checks it -
  * `Readonly<Record<SettingKey, string>>` is what turns a forgotten key into a
  * compile error rather than a runtime `undefined`.
  *
+ * ★ IT USED TO ANSWER SEVEN, spanning a second `ProductPresentationSettingsProvider` contract the
+ * entity no longer takes. The three product-presentation keys are resolved values now, so the double
+ * answers exactly the union the port publishes and nothing more.
+ *
  * NO MOCKING LIBRARY, and none may be added: the dependency set is fixed at its
- * exact pins, and a double answering a table of seven values is the entire
+ * exact pins, and a double answering a table of four values is the entire
  * requirement. The legacy suite managed without one too.
  *
  * JUDGMENT CALL: the double records nothing. A recorded call list would not be
@@ -876,26 +873,20 @@ function makeAuditTrail(idPrefix: string): AuditTrail {
  * observe delegation supplies its own port through `overrides.settingsProvider`
  * - which is strictly more expressive than a recorder baked in here.
  */
-function makeFixtureSettingsProvider(
-  globalURLKeyProduct: string,
-  productTitleString: string,
-): SettingsProvider & ProductPresentationSettingsProvider {
-  // ★ THE TABLE SPANS BOTH SETTINGS CONTRACTS. `SettingsProvider` is frozen at FOUR keys and the
-  // three product-presentation keys travel on `ProductPresentationSettingsProvider`; the double
-  // implements both, exactly as the composition root does, so a fixture resolves a setting the same
-  // way production does.
-  const table: Readonly<Record<SettingKey | ProductPresentationSettingKey, string>> = {
+function makeFixtureSettingsProvider(globalURLKeyProduct: string): SettingsProvider {
+  // ★ THE TABLE IS THE PUBLISHED UNION, EXACTLY. `SettingsProvider` is frozen at FOUR keys, and the
+  // three product-presentation values the composition root also resolves are handed to entities as
+  // data rather than published here - so the double answers the port and nothing wider, which is what
+  // makes it resolve a setting the same way production does.
+  const table: Readonly<Record<SettingKey, string>> = {
     globalURLKeyProduct,
     globalURLKeyProductType: GLOBAL_URL_KEY_PRODUCT_TYPE,
-    productImageDefaultExtension: PRODUCT_IMAGE_DEFAULT_EXTENSION,
-    productImageOptionCodeDelimiter: PRODUCT_IMAGE_OPTION_CODE_DELIMITER,
-    productTitleString,
     skuCurrency: SKU_CURRENCY,
     skuEligibleCurrencies: SKU_ELIGIBLE_CURRENCIES,
   };
 
   return {
-    setting(settingName: SettingKey | ProductPresentationSettingKey): string {
+    setting(settingName: SettingKey): string {
       return table[settingName];
     },
   };
@@ -1582,7 +1573,6 @@ export function makeProductFixture(overrides?: ProductFixtureOverrides): Product
 
   const brandName: string | undefined = resolveOverride(overrides, 'brandName', BRAND_NAME);
   const globalURLKeyProduct: string = overrides?.globalURLKeyProduct ?? GLOBAL_URL_KEY_PRODUCT;
-  const productTitleString: string = overrides?.productTitleString ?? PRODUCT_TITLE_STRING;
   const selectedOptionsCandidateSkus: readonly Sku[] =
     overrides?.selectedOptionsCandidateSkus ?? [];
 
@@ -1605,15 +1595,14 @@ export function makeProductFixture(overrides?: ProductFixtureOverrides): Product
 
   const settingsProvider: SettingsProvider | undefined = hasOverride(overrides, 'settingsProvider')
     ? overrides?.settingsProvider
-    : makeFixtureSettingsProvider(globalURLKeyProduct, productTitleString);
+    : makeFixtureSettingsProvider(globalURLKeyProduct);
 
-  // ONE DOUBLE, BOTH CONTRACTS, exactly as `src/handlers/bootstrap.ts` binds one sealed
-  // `BootstrapSettingsProvider` to both graph members. Built separately only so a suite can override
-  // either contract on its own.
-  const productPresentationSettingsProvider: ProductPresentationSettingsProvider | undefined =
-    hasOverride(overrides, 'productPresentationSettingsProvider')
-      ? overrides?.productPresentationSettingsProvider
-      : makeFixtureSettingsProvider(globalURLKeyProduct, productTitleString);
+  // THE RESOLVED TEMPLATE, exactly as `src/handlers/bootstrap.ts` reads it once out of the settings
+  // table and hands the string to the product it hydrates. `hasOverride` is what lets a suite pass
+  // `undefined` explicitly to exercise `getTitle()`'s refusal.
+  const productTitleTemplate: string | undefined = hasOverride(overrides, 'productTitleString')
+    ? overrides?.productTitleString
+    : PRODUCT_TITLE_STRING;
 
   const skuRepository: SkuRepository | undefined = hasOverride(overrides, 'skuRepository')
     ? overrides?.skuRepository
@@ -1748,9 +1737,7 @@ export function makeProductFixture(overrides?: ProductFixtureOverrides): Product
     // The five wired ports. The sixth, `subscriptionTermProvider`, is deliberately
     // never supplied - see the judgment call above.
     ...(settingsProvider === undefined ? {} : { settingsProvider }),
-    ...(productPresentationSettingsProvider === undefined
-      ? {}
-      : { productPresentationSettingsProvider }),
+    ...(productTitleTemplate === undefined ? {} : { productTitleTemplate }),
     ...(skuRepository === undefined ? {} : { skuRepository }),
     ...(optionRepository === undefined ? {} : { optionRepository }),
     ...(productRepository === undefined ? {} : { productRepository }),

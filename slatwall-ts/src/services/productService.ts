@@ -3397,11 +3397,12 @@ export class ProductService {
    * `productImageDefaultExtension` [model/service/SettingService.cfc:L191-L192] - arrive
    * as RESOLVED VALUES at hydration through `SkuImageSettingValues`, which is the same
    * arrangement `Option.assetsImageBaseUrl` and the Google feed adapter's resolved-setting
-   * bag already use. Both keys ARE on the settings port - they are the third and fourth of
-   * its seven literals - and the composition root resolves them THROUGH it before handing
-   * the pair inward; what the entity may not do is RESOLVE them itself, since the legacy
-   * resolves each on the PRODUCT [model/entity/Sku.cfc:L135, L138]. That never established
-   * that it may not COMPOSE with values resolved by a tier that legitimately can.
+   * bag already use. Neither key is on the settings port - the `SettingKey` union is closed at
+   * FOUR and these two are PRODUCT-PRESENTATION settings - and the composition root resolves
+   * them from the same `SwSetting` read before handing the pair inward; what the entity may not
+   * do is RESOLVE them itself, since the legacy resolves each on the PRODUCT
+   * [model/entity/Sku.cfc:L135, L138]. That never established that it may not COMPOSE with
+   * values resolved by a tier that legitimately can.
    *
    * ★ THIS BODY WAS ONCE A DOCUMENTED NO-OP, AND THE REASONING IS QUOTED RATHER THAN
    * DELETED. It read: "The specification asserts that `generateImageFileName()` is a live
@@ -3413,18 +3414,28 @@ export class ProductService {
    * no member to any of them, so there is nothing here to call and nothing to assign." It
    * closed with: "Recording the gap is the only honest option left."
    *
-   * ONE CORRECTION INSIDE THAT QUOTE, MADE HERE RATHER THAN BY REWRITING IT, AND IT WITHDRAWS
-   * AN EARLIER CORRECTION OF MY OWN. The quoted "seven-key" count is the right one: the
-   * `SettingKey` union holds SEVEN keys, in the order `model/service/SettingService.cfc`
-   * declares them - `globalURLKeyProduct` [:L178], `globalURLKeyProductType` [:L179],
-   * `productImageDefaultExtension` [:L191], `productImageOptionCodeDelimiter` [:L192],
-   * `productTitleString` [:L193], `skuCurrency` [:L221] and `skuEligibleCurrencies` [:L222].
-   * A previous revision of this paragraph asserted four and claimed the two image keys had
-   * been removed as scope violations; that is withdrawn - both keys are ON the port, and they
-   * are its third and fourth literals. What the quote got wrong is therefore its PREMISE, not
-   * its count: the settings are resolvable, once, by the composition root. Its conclusion is
-   * superseded on the stronger ground below - the composition belongs to the image seam
-   * because that is where image-file naming is CONSUMED, not because a value was unreachable.
+   * ONE CORRECTION INSIDE THAT QUOTE, MADE HERE RATHER THAN BY REWRITING IT - AND THIS
+   * PARAGRAPH HAS ITSELF BEEN WRONG ONCE, SO ALL THREE POSITIONS ARE ON THE RECORD.
+   *   (1) It first read that the two image keys had been removed from the port as scope
+   *       violations, making the union FOUR.
+   *   (2) It was then rewritten to withdraw that: "The quoted \"seven-key\" count is the right
+   *       one: the `SettingKey` union holds SEVEN keys [...] both keys are ON the port, and they
+   *       are its third and fourth literals."
+   *   (3) A code review measured the shipped union and position (1) was right about the count.
+   *       `SettingKey` holds FOUR keys - `globalURLKeyProduct` [:L178],
+   *       `globalURLKeyProductType` [:L179], `skuCurrency` [:L221] and `skuEligibleCurrencies`
+   *       [:L222] - and `productImageDefaultExtension` [:L191],
+   *       `productImageOptionCodeDelimiter` [:L192] and `productTitleString` [:L193] are
+   *       resolved once in `src/handlers/bootstrap.ts` and handed inward as plain strings. The
+   *       foot of `src/domain/ports/settingsProvider.ts` carries the authoritative record of
+   *       that narrowing and of the second resolver contract that was withdrawn with it.
+   *
+   * NONE OF THAT MOVES THE CONCLUSION, which is why the turns are worth recording rather than
+   * hiding. What the quote got wrong was its PREMISE, not its count: the settings are
+   * resolvable, once, by the composition root, whether they sit on the port or beside it. The
+   * quote's conclusion is superseded on the stronger ground below - the composition belongs to
+   * the image seam because that is where image-file naming is CONSUMED, not because a value was
+   * unreachable.
    *
    * Every observation in that was accurate. The conclusion was not the only option left, and
    * it had a cost the note did not weigh: a method named

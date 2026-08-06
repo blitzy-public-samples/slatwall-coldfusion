@@ -1856,6 +1856,28 @@ describe('containsPrototypeMemberKey', () => {
 
     expect(containsPrototypeMemberKey(ordinary)).toBe(false);
     expect('__proto__' in ordinary).toBe(true);
+    expect(Object.hasOwn(ordinary, '__proto__')).toBe(false);
+  });
+
+  it('★★ MUTATES NOTHING - neither the document it walks nor `Object.prototype`', () => {
+    // A guard against prototype pollution that polluted anything would be self-defeating, and one that
+    // DELETED the offending key would be making a decision the caller should be told about instead.
+    // This pins the reporting-only contract, and with it the central observation of the original
+    // finding: `JSON.parse` never reaches the prototype setter, so the key is an ordinary own data
+    // property both before and after the walk. Asserted here rather than taken on trust.
+    const document = parseDocument('{"a":1,"__proto__":{"polluted":"yes"}}');
+    const before = JSON.stringify(document);
+
+    expect(containsPrototypeMemberKey(document)).toBe(true);
+    expect(JSON.stringify(document)).toBe(before);
+    expect(Object.hasOwn(document, '__proto__')).toBe(true);
+
+    expect(Object.prototype).not.toHaveProperty('polluted');
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+
+    // And it is a pure function of its argument: a second call on the same document answers the same
+    // way, which it could not if the first had consumed or altered anything.
+    expect(containsPrototypeMemberKey(document)).toBe(true);
   });
 
   it('answers false for the OTHER prototype-adjacent names, which a strict schema already refuses', () => {
