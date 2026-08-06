@@ -867,6 +867,21 @@ export interface PriceResolutionScope {
   readonly entityLoaders: RequestScope['entityLoaders'];
 
   /**
+   * The price-group authorization decision for this request's account (SEC-A).
+   *
+   * ★★★ THE MEMBER THE LOADERS ABOVE DELIBERATELY DO NOT CARRY. `RequestEntityLoaders`' contract says
+   * that binding answers "which row did the caller name", never "which row should apply" - and that is
+   * right, but it meant the five group-named operations named a caller-chosen row with NO party
+   * deciding whether the caller was entitled to it. This is that party, taken as a separate member so
+   * the load stays a load.
+   *
+   * It is consumed in exactly two places - {@link resolveNamedPriceGroup} and
+   * {@link resolveNamedPriceGroupRate} - which is what puts the decision on all five operations
+   * without any dispatch arm having to remember it.
+   */
+  readonly priceGroupEntitlements: RequestScope['priceGroupEntitlements'];
+
+  /**
    * The eight price-group members this entrypoint exposes, and no others.
    *
    * `PriceResolutionCapability` is already `PriceGroupService` MINUS its order pass; this `Pick`
@@ -956,20 +971,67 @@ async function loadSku(
   return scope.entityLoaders.getSkuBySkuIdentity(identity);
 }
 
-/** The price group a request named, or nothing. */
+/**
+ * The price group a request named AND is entitled to, or nothing.
+ *
+ * ★★★ THE ENTITLEMENT TEST LIVES HERE, WHICH IS WHY ALL FIVE GROUP-NAMED OPERATIONS GET IT AT ONCE
+ * (SEC-A, CWE-639/CWE-862). Every operation that takes a price group binds it through this function or
+ * through {@link resolveCascadeInputs}, which is itself built on this one, so there is exactly one
+ * place the decision has to be made and no arm can be added later that forgets to make it. The
+ * previous revision was `return scope.entityLoaders.getPriceGroup(priceGroupID);` - a load with no
+ * authorization anywhere behind it - so any identified account could name any `priceGroupID` and read
+ * that group's rates or price against a tier it does not hold.
+ *
+ * ★★★ AN UNENTITLED GROUP IS INDISTINGUISHABLE FROM A MISSING ONE, AND THAT IS STRUCTURAL RATHER THAN
+ * ASSERTED. Both answer `undefined`, so every caller of this function reports the SAME
+ * `priceGroupNotFound` reason it already reported for a group that does not exist. Nothing downstream
+ * had to be taught about authorization, and no separate refusal token exists that could tell a caller
+ * "this group is real, but not yours" - which is the oracle a probing caller would use to enumerate
+ * the price groups of a store one identifier at a time.
+ *
+ * ★ THE ORDER IS LOAD-THEN-DECIDE, AND THE COST OF THAT IS STATED. Deciding first would save the load
+ * for an unentitled caller, but the entitlement read itself costs two statements and would then be
+ * paid by every request naming a group that does not exist. Loading first keeps a miss at one
+ * statement and keeps the two outcomes identical from the outside, which is worth more than the
+ * saving. Neither order leaks anything: the answer is the same either way.
+ */
 async function resolveNamedPriceGroup(
   scope: PriceResolutionScope,
   priceGroupID: string,
 ): Promise<ResolvedPriceGroup | undefined> {
-  return scope.entityLoaders.getPriceGroup(priceGroupID);
+  const priceGroup = await scope.entityLoaders.getPriceGroup(priceGroupID);
+
+  if (priceGroup === undefined) {
+    return undefined;
+  }
+
+  // Tested against the identifier the LOADED ROW carries rather than the caller's argument, so the
+  // decision is keyed on what the database resolved - the same reason the SKU load folds the stored
+  // identifier rather than the submitted one.
+  return (await scope.priceGroupEntitlements.isEntitledToPriceGroup(priceGroup.getPriceGroupID()))
+    ? priceGroup
+    : undefined;
 }
 
-/** The price-group rate a request named, or nothing. */
+/**
+ * The price-group rate a request named AND is entitled to, or nothing.
+ *
+ * Entitlement is decided by the rate's OWNING price group, which the rate already carries
+ * [model/entity/PriceGroupRate.cfc:L67] - see {@link PriceGroupEntitlements.isEntitledToPriceGroupRate}.
+ * A caller therefore cannot reach another account's rate by pairing it with a group of its own, and an
+ * unentitled rate produces the same `priceGroupRateNotFound` a missing one produces.
+ */
 async function resolveNamedPriceGroupRate(
   scope: PriceResolutionScope,
   priceGroupRateID: string,
 ): Promise<ResolvedPriceGroupRate | undefined> {
-  return scope.entityLoaders.getPriceGroupRate(priceGroupRateID);
+  const rate = await scope.entityLoaders.getPriceGroupRate(priceGroupRateID);
+
+  if (rate === undefined) {
+    return undefined;
+  }
+
+  return (await scope.priceGroupEntitlements.isEntitledToPriceGroupRate(rate)) ? rate : undefined;
 }
 
 /** The product type a request named, or nothing. */
@@ -1104,15 +1166,33 @@ function admitNamedAccount(scope: PriceResolutionScope, claimed: string): Admitt
  *     from the payload was considered and rejected: a caller able to move the pricing clock could
  *     move a promotion window or a sale-price expiry, and letting the checked party choose the input
  *     is the same hazard `./bootstrap.js` closes for the product-feed host allow-list.
- *   * `adminAccountFlag` - OMITTED, because this entrypoint performs NO durable write (section 6.12),
- *     so there is no audit stamp to attribute. Absent means false, which is the non-admin arm of the
- *     legacy gate `!account.isNew() && account.getAdminAccountFlag()`; nothing here defaults it true.
  *   * `feedHost` - OMITTED, because the product feed is another capability's entrypoint. Omitting it
  *     leaves `RequestScope.productFeedPort` undefined, which is the safe outcome rather than a
  *     degraded one.
+ *
+ * ★★★ `adminAccountFlag` IS NOW SUPPLIED, AND THE REASON IT USED TO BE OMITTED IS WHY THE OMISSION HAD
+ * TO BE REVISITED (SEC-A). The superseded note read: "`adminAccountFlag` - OMITTED, because this
+ * entrypoint performs NO durable write (section 6.12), so there is no audit stamp to attribute. Absent
+ * means false, which is the non-admin arm of the legacy gate
+ * `!account.isNew() && account.getAdminAccountFlag()`; nothing here defaults it true." Every clause of
+ * that is still TRUE - this route writes nothing, section 6.12 still withholds all three write members,
+ * and the flag still stamps nothing here. What was wrong was the unstated assumption that audit
+ * stamping is the flag's ONLY consumer. It now has a second, and the second one matters on a read-only
+ * route: `RequestScope.priceGroupEntitlements` uses it as the administrative bypass over the
+ * price-group entitlement test, so an omitted flag no longer means "nothing to attribute" - it means
+ * "no administrative caller can reach an operational price group".
+ *
+ * THE DIRECTION IS UNCHANGED, WHICH IS THE PART THAT MATTERS: absent still means `false`, and `false`
+ * is still the closed arm. The value comes from the request's authorizer through
+ * `resolveRequestPrincipal` and NEVER from a body, a header or the query string, and it is passed as
+ * the RESOLVED boolean rather than re-derived here, so this function decides nothing about permission
+ * and merely forwards what the principal already established.
  */
-function buildRequestScopeInput(accountID: string | undefined): RequestScopeInput {
-  return { accountID };
+function buildRequestScopeInput(
+  accountID: string | undefined,
+  adminAccountFlag: boolean,
+): RequestScopeInput {
+  return { accountID, adminAccountFlag };
 }
 
 // ===========================================================================
@@ -1889,8 +1969,9 @@ export function createPriceResolutionHandler(
       }
 
       // ★★★ AN ANONYMOUS REQUEST OPENS ITS SCOPE WITH NO ACCOUNT, AND THAT IS THE POINT.
-      // `buildRequestScopeInput(undefined)` produces `{accountID: undefined}`, which the composition
-      // root publishes as an EMPTY `CurrentAccountContext` - the key OMITTED, not present-and-undefined
+      // `buildRequestScopeInput(undefined, false)` produces `{accountID: undefined}` alongside the
+      // closed administrative flag, and the composition root publishes the account half as an EMPTY
+      // `CurrentAccountContext` - the key OMITTED, not present-and-undefined
       // - so `calculateSkuPriceBasedOnCurrentAccount` receives the falsy `getLoggedInFlag()` state the
       // legacy `else` arm is written for and answers `sku.getPrice()`. Nothing is substituted for the
       // absent account: no default account, no guest identifier and no empty string, any of which
@@ -1899,8 +1980,17 @@ export function createPriceResolutionHandler(
         ? principalResolution.principal.accountID
         : undefined;
 
+      // ★ THE ADMINISTRATIVE CLAIM TRAVELS WITH THE ACCOUNT, FROM THE SAME RESOLUTION (SEC-A). An
+      // unidentified caller has no principal to carry a claim, so it resolves to `false` - the closed
+      // arm - which is also why the one anonymously-permitted operation cannot acquire the bypass.
+      const adminAccountFlag = principalResolution.identified
+        ? principalResolution.principal.adminAccountFlag
+        : false;
+
       const compositionRoot = await openCompositionRoot();
-      const scope = await compositionRoot.createRequestScope(buildRequestScopeInput(accountID));
+      const scope = await compositionRoot.createRequestScope(
+        buildRequestScopeInput(accountID, adminAccountFlag),
+      );
 
       const result = await dispatchPriceResolution(scope, request);
 

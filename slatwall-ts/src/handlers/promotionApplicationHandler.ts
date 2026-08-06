@@ -240,6 +240,7 @@ import { z } from 'zod';
 import { bootstrapCompositionRoot, OrderViewDocumentDataError } from './bootstrap.js';
 import {
   containsPrototypeMemberKey,
+  forbiddenResponse,
   invalidRequestResponse,
   jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
@@ -280,7 +281,7 @@ import type {
 } from '../domain/views/orderFulfillmentView.js';
 import type { OrderItemView } from '../domain/views/orderItemView.js';
 import type { OrderView } from '../domain/views/orderView.js';
-import type { Money } from '../domain/valueObjects/money.js';
+import { Money } from '../domain/valueObjects/money.js';
 import type { Logger } from '../lib/logger.js';
 
 // `../domain/ports/addressZoneEvaluator.js` is DELIBERATELY NOT IMPORTED, and saying so is worth more
@@ -753,10 +754,48 @@ export const ORDER_DOCUMENT_LIMITS: Readonly<{
   readonly maximumOrderItems: number;
   readonly maximumOrderFulfillments: number;
   readonly maximumIdentifierLength: number;
+  readonly maximumCountMagnitude: number;
+  readonly maximumPromotionCodes: number;
 }> = Object.freeze({
   maximumOrderItems: 500,
   maximumOrderFulfillments: 100,
   maximumIdentifierLength: 32,
+
+  // ★★★ THE MAGNITUDE EVERY WHOLE COUNT ON THE WIRE IS HELD TO (SEC-K, CWE-20), AND IT IS
+  // SCHEMA-DERIVED RATHER THAN CHOSEN. `OrderItem.quantity` is declared
+  // `property name="quantity" ormtype="integer"` [model/entity/OrderItem.cfc:L56], which is a MySQL
+  // `INT` - signed, so 2_147_483_647 is the largest value the column the legacy engine counted against
+  // can hold. A count past it cannot describe a persisted order line, so refusing it takes nothing
+  // away.
+  //
+  // WHY A BOUND WAS NEEDED AT ALL, given the schema was already the real limit. `z.number().int()`
+  // admits any integral double, including `9007199254740992` - and every quantity reaches
+  // `fromInteger` [src/lib/cfml/precision.ts:L387], which accepts ONLY `Number.isSafeInteger` and
+  // throws `PrecisionError` otherwise. That throw is not a validation failure, so it escaped the
+  // request-contract mapper and surfaced as a generic 500: a caller-controlled internal error, and a
+  // caller-controlled way to make every one of these requests fail without ever being told which field
+  // was at fault. The bound moves the refusal to admission, where it becomes a 400 naming the member.
+  //
+  // ★ AND IT IS STRICTER THAN THE SAFE-INTEGER TEST IT REPLACES RATHER THAN A SUBSTITUTE FOR IT. Both
+  // are applied: see {@link WIRE_COUNT}. The safe-integer test states the arithmetic precondition, the
+  // magnitude states the business one, and neither implies the other - a value can be a safe integer
+  // and still be a nonsense quantity.
+  maximumCountMagnitude: 2_147_483_647,
+
+  // ★★★ HOW MANY PROMOTION CODES ONE ORDER MAY CARRY (SEC-J, CWE-20/CWE-400). Every submitted code is
+  // emitted into TWO `EXISTS` arms of `getActivePromotionRewards`
+  // [src/repositories/mysql/mysqlPromotionRepository.ts], so N codes cost 2N placeholders plus the
+  // statement's own date and flag binds. The prepared-statement ceiling is 65_535
+  // [src/repositories/mysql/connection.ts], so roughly 32_766 codes was enough to exceed it - and the
+  // refusal arrived from the DRIVER, as a 500, after the whole array had been allocated.
+  //
+  // 100 is a deliberate, defensible operational bound rather than a derived one, and it is stated as
+  // such: the legacy admin applies promotion codes to a cart one at a time through
+  // `OrderService.processOrder_addPromotionCode`, and no source anywhere in the in-scope slice states a
+  // ceiling. Nothing about the number is inferred from the schema, because the schema states nothing
+  // about it. The REPOSITORY still validates the complete bind budget independently - see SEC-J there -
+  // so this bound is the caller-facing 400 and not the safety mechanism.
+  maximumPromotionCodes: 100,
 });
 
 /**
@@ -886,8 +925,48 @@ const WIRE_DECIMAL_NUMERAL = z.string().refine(
   { message: 'must be a plain decimal numeral, as a string' },
 );
 
-/** A signed whole count. Negative quantities remain valid for return items. */
-const WIRE_COUNT = z.number().int({ message: 'must be a whole number' });
+/**
+ * A signed whole count. Negative quantities remain valid for return items.
+ *
+ * ★★★ THREE CONSTRAINTS, NOT ONE (SEC-K, CWE-20). This was `z.number().int({...})` alone, and the
+ * gap that left is the finding: `int()` admits any integral double - `9007199254740992` passes it -
+ * while every count on this document eventually reaches `fromInteger`
+ * [src/lib/cfml/precision.ts:L387], which accepts ONLY a safe integer and throws `PrecisionError`
+ * otherwise. A `PrecisionError` is not a validation failure, so it bypassed the request-contract
+ * mapper entirely and surfaced as a generic 500 naming nothing. A caller could therefore choose to
+ * receive an internal error, and could do it without ever learning which member was at fault.
+ *
+ *   1. `int()` - integral, as before, and the message is unchanged.
+ *   2. `refine(Number.isSafeInteger)` - the ARITHMETIC precondition, stated at the boundary that can
+ *      report it as a field. This is the exact predicate `fromInteger` applies, so admission and
+ *      arithmetic now agree instead of one being looser than the other.
+ *   3. A magnitude bound - the BUSINESS precondition. See
+ *      {@link ORDER_DOCUMENT_LIMITS.maximumCountMagnitude}, which is derived from
+ *      `ormtype="integer"` on `OrderItem.quantity` [model/entity/OrderItem.cfc:L56].
+ *
+ * BOTH 2 AND 3 ARE KEPT EVEN THOUGH 3 IS STRICTLY NARROWER, deliberately. The magnitude bound is a
+ * product decision about orders and could be widened by one; the safe-integer test is a fact about
+ * the arithmetic this module performs and must not be. Collapsing them would let a future widening of
+ * the business bound silently re-open the 500.
+ *
+ * ★ NOTHING HERE IS SYMMETRIC-ONLY: the bound is applied to the ABSOLUTE value, so a negative return
+ * quantity is held to the same magnitude as a positive sale quantity - `-2147483648` is refused for
+ * the same reason `2147483648` is, rather than slipping through on a sign.
+ */
+const WIRE_COUNT = z
+  .number()
+  .int({ message: 'must be a whole number' })
+  .refine((value: number): boolean => Number.isSafeInteger(value), {
+    message: 'must be a whole number small enough to be represented exactly',
+  })
+  .refine(
+    (value: number): boolean => Math.abs(value) <= ORDER_DOCUMENT_LIMITS.maximumCountMagnitude,
+    {
+      message: `must be a whole number whose magnitude is at most ${String(
+        ORDER_DOCUMENT_LIMITS.maximumCountMagnitude,
+      )}`,
+    },
+  );
 
 /** A finite measurement, used for shipping weight rather than an item count. */
 const WIRE_WEIGHT = z.number().finite({ message: 'must be a finite number' });
@@ -988,7 +1067,38 @@ const ORDER_VIEW_DOCUMENT_SCHEMA = z.strictObject({
   // A STRING, because the legacy binds it with `cfqueryparam ... list="true"`
   // [model/dao/PromotionDAO.cfc], so the comma-delimited list form is load-bearing. An EMPTY string
   // is a valid value - it is an order carrying no codes - so no `.min(1)` is applied.
-  promotionCodeList: z.string(),
+  //
+  // ★★★ BOUNDED IN BOTH DIMENSIONS SINCE SEC-J (CWE-20/CWE-400). This was a bare `z.string()`, and
+  // that is the finding: every code in the list is emitted into TWO separate `EXISTS` arms of
+  // `getActivePromotionRewards`, so a list of N codes costs 2N bound placeholders. The
+  // prepared-statement ceiling is 65_535, so a caller supplying roughly 32_766 codes - a string well
+  // under any request-size limit this route applies - drove the statement past it and received a
+  // generic 500 from the driver, AFTER the whole placeholder array had been built. A caller could
+  // therefore choose to make the request fail, repeatedly and cheaply.
+  //
+  // TWO BOUNDS, BECAUSE ONE WOULD NOT HAVE CLOSED IT. The element count is what the placeholder budget
+  // is a function of, and the total length is what stops the same budget being reached with pathological
+  // members - the count and the byte size are independent ways to ask for the same work.
+  //
+  // ★ THE LIST IS NOT REWRITTEN, DE-DUPLICATED, TRIMMED OR RE-ORDERED HERE. It reaches the service
+  // verbatim, which a previous code review established is required: the comma-delimited form is what
+  // the legacy bound, and normalising it here would change which codes the statement matches. This is a
+  // BOUND ONLY - it refuses a list, or admits it unchanged.
+  promotionCodeList: z
+    .string()
+    .max(
+      ORDER_DOCUMENT_LIMITS.maximumPromotionCodes *
+        (ORDER_DOCUMENT_LIMITS.maximumIdentifierLength + 1),
+      { message: 'must not be longer than the published bound' },
+    )
+    .refine(
+      (value: string): boolean =>
+        // An empty list carries no codes at all, which is the common case and must not be counted as
+        // one member. `split` on an empty string yields `['']`, so the empty case is answered first.
+        value.length === 0 ||
+        value.split(',').length <= ORDER_DOCUMENT_LIMITS.maximumPromotionCodes,
+      { message: 'must not name more promotion codes than the published bound' },
+    ),
   totalSaleQuantity: WIRE_COUNT,
   subtotal: WIRE_DECIMAL_NUMERAL,
   subtotalAfterItemDiscounts: WIRE_DECIMAL_NUMERAL,
@@ -1648,7 +1758,162 @@ async function admitOrderDocument(
   // the hydration.
   const document: OrderViewDocument = parsed.data;
 
+  // ★★★ CROSS-MEMBER CONSISTENCY, AFTER THE SHAPE AND BEFORE THE HYDRATION (SEC-I). The schema above
+  // validates each member on its own; these are the constraints that hold BETWEEN members, and a
+  // document can satisfy every one of the former while contradicting itself on all of the latter.
+  // Refused before `materializeOrderView`, so an inconsistent document costs no entity load.
+  const inconsistencies = collectDocumentInconsistencies(document);
+
+  if (inconsistencies.length > 0) {
+    throw new OrderViewAdmissionError('unusableRequestInput', inconsistencies);
+  }
+
   return await materializer.materializeOrderView(document);
+}
+
+/**
+ * The constraints that hold BETWEEN members of one order document, checked against the source itself.
+ *
+ * ★★★ WHY THIS EXISTS (SEC-I, CWE-20/CWE-345). Every economic member of this document is
+ * caller-authored, and the anti-corruption inversion means that is unavoidable: the order aggregate is
+ * out of scope [AAP 0.2.2], so nothing here can load the real order and compare. What CAN be done -
+ * and was not being done - is to refuse a document that contradicts the LEGACY'S OWN DEFINITIONS of
+ * its members. A caller that states an extended price unrelated to its price and quantity is not
+ * describing an order the legacy aggregate could ever have produced, and every discount computed from
+ * it is computed from a fiction.
+ *
+ * ★★★ EVERY CHECK BELOW IS AN IDENTITY THE LEGACY ENTITY ITSELF DECLARES, TRANSCRIBED - NOT A RULE
+ * INVENTED HERE. That distinction is the whole safety argument for adding validation to a
+ * must-preserve path: a check that merely restates what the aggregate computes cannot refuse a
+ * document the aggregate would have produced.
+ *
+ *   1. `extendedPrice == price * quantity` - `getExtendedPrice()` is exactly
+ *      `precisionEvaluate('getPrice() * val(getQuantity())')` [model/entity/OrderItem.cfc:L200-L202].
+ *      `val()` coerces a non-numeric quantity to zero, which cannot arise here because the schema has
+ *      already proved the member is a number, so the coercion is the identity and is not reproduced.
+ *   2. `extendedSkuPrice == skuPrice * quantity` - `getExtendedSkuPrice()` is exactly
+ *      `precisionEvaluate('getSkuPrice() * getQuantity()')` [model/entity/OrderItem.cfc:L204-L206].
+ *      Note the legacy asymmetry: this one carries NO `val()`. It is preserved by not reproducing
+ *      either.
+ *      Both matter because [model/service/PromotionService.cfc:L241-L252] chooses its discount base
+ *      from these four members and subtracts `getExtendedSkuPrice() - getExtendedPrice()` as a
+ *      correction term - so a caller controlling the pair controls the correction directly.
+ *   3. Every item's `orderFulfillmentID` names a fulfillment IN THIS DOCUMENT. The legacy member is a
+ *      many-to-one association [model/entity/OrderItem.cfc], so an item always belonged to a
+ *      fulfillment of its own order; a document whose item points at a fulfillment it did not send
+ *      describes an impossible graph, and the shipping-level qualification
+ *      [model/service/PromotionService.cfc:L752-L781] walks exactly that link.
+ *   4. No `promotionAppliedID` appears twice ACROSS the whole document - order level, item level and
+ *      fulfillment level together. Each one becomes a REMOVE intent
+ *      [model/service/PromotionService.cfc:L64-L80], and a row is attached to exactly one owner, so
+ *      the same identifier claimed under two owners would emit two intents for one row and let a
+ *      caller manufacture a detach it could not otherwise express.
+ *
+ * ★★★ AND ONE CHECK IS DELIBERATELY ABSENT: `totalSaleQuantity` IS NOT COMPARED WITH THE ITEMS.
+ * `getTotalSaleQuantity()` [model/entity/Order.cfc:L624-L632] tests
+ * `getOrderItems()[1].getOrderItemType().getSystemCode() eq "oitSale"` inside a loop that then adds
+ * `getOrderItems()[i].getQuantity()` - the FIRST item's type decides whether EVERY item's quantity is
+ * counted. That is a registered legacy defect, so the value a real aggregate produces routinely
+ * disagrees with any correct recomputation, and a consistency check here would refuse documents the
+ * legacy engine genuinely emits. Preserving the defect [AAP 0.6.7] means declining to validate against
+ * it.
+ *
+ * ★ NO VALUE IS ECHOED. Each issue names a member PATH and states the constraint in server-authored
+ * words; no price, quantity, identifier or computed product appears in a message, so the refusal
+ * cannot be used to read back what was sent or to learn what the engine computed.
+ */
+function collectDocumentInconsistencies(document: OrderViewDocument): readonly MappedFieldIssue[] {
+  const issues: MappedFieldIssue[] = [];
+
+  const fulfillmentIDs = new Set(
+    document.orderFulfillments.map((fulfillment): string =>
+      // Folded, because every identifier comparison in this subtree is and because the hydration
+      // itself folds these same identifiers - a differently-cased but valid reference must not be
+      // refused here and then resolved there.
+      fulfillment.orderFulfillmentID.toLowerCase(),
+    ),
+  );
+
+  // One pass over every applied-promotion collection in the document, at all three levels.
+  const seenAppliedIDs = new Set<string>();
+  const noteAppliedPromotions = (
+    appliedPromotions: readonly { readonly promotionAppliedID: string }[],
+    path: string,
+  ): void => {
+    for (const [index, applied] of appliedPromotions.entries()) {
+      const folded = applied.promotionAppliedID.toLowerCase();
+
+      if (seenAppliedIDs.has(folded)) {
+        recordIssue(
+          issues,
+          `${path}.${String(index)}.promotionAppliedID`,
+          'must not name an applied promotion already named elsewhere in this order',
+        );
+        continue;
+      }
+
+      seenAppliedIDs.add(folded);
+    }
+  };
+
+  noteAppliedPromotions(document.appliedPromotions, 'order.appliedPromotions');
+
+  for (const [index, item] of document.orderItems.entries()) {
+    // ★ DOT-SEPARATED, MATCHING THE OTHER TWO REFUSAL SOURCES ON THIS ARM. `mapZodErrorFields` joins a
+    // zod issue path with dots, and `./bootstrap.js`'s document-data refusals publish
+    // `order.orderItems.0.productID` in the same shape, so a caller reading a 400 from the WIRE path
+    // sees one path language whatever refused it. The bracketed form belongs to the in-process
+    // structural admission, which is a different arm with a different reader.
+    const path = `order.orderItems.${String(index)}`;
+    const quantity = item.quantity;
+
+    // `Money` is the ONLY arithmetic surface in this subtree [AAP 0.8.3], so the comparison is made
+    // through it rather than with `Number` - which is also what makes it exact: these are decimal
+    // strings, and a float multiplication would disagree with the legacy `precisionEvaluate` on values
+    // the aggregate really does produce.
+    if (
+      !Money.fromDecimalString(item.extendedPrice).equals(
+        Money.fromDecimalString(item.price).times(quantity),
+      )
+    ) {
+      recordIssue(
+        issues,
+        `${path}.extendedPrice`,
+        'must equal the item price multiplied by the item quantity',
+      );
+    }
+
+    if (
+      !Money.fromDecimalString(item.extendedSkuPrice).equals(
+        Money.fromDecimalString(item.skuPrice).times(quantity),
+      )
+    ) {
+      recordIssue(
+        issues,
+        `${path}.extendedSkuPrice`,
+        'must equal the item SKU price multiplied by the item quantity',
+      );
+    }
+
+    if (!fulfillmentIDs.has(item.orderFulfillmentID.toLowerCase())) {
+      recordIssue(
+        issues,
+        `${path}.orderFulfillmentID`,
+        'must name an order fulfillment carried by this order',
+      );
+    }
+
+    noteAppliedPromotions(item.appliedPromotions, `${path}.appliedPromotions`);
+  }
+
+  for (const [index, fulfillment] of document.orderFulfillments.entries()) {
+    noteAppliedPromotions(
+      fulfillment.appliedPromotions,
+      `order.orderFulfillments.${String(index)}.appliedPromotions`,
+    );
+  }
+
+  return issues;
 }
 
 // ===========================================================================
@@ -1846,7 +2111,32 @@ function renderSalePriceDetails(
 
 /** The outcome of decoding, before schema validation is attempted. */
 type EnvelopeDecoding =
-  | { readonly ok: true; readonly request: PromotionApplicationRequest }
+  | {
+      readonly ok: true;
+      readonly request: PromotionApplicationRequest;
+
+      /**
+       * The account this request PRICES FOR, which is not necessarily the account that SENT it.
+       *
+       * ★★★ THE SUBJECT, AND THE REASON IT IS A SEPARATE CONCEPT SINCE SEC-I. The envelope's
+       * `accountID` used to be compared with the caller's own principal and refused on disagreement -
+       * a rule that only makes sense while the caller and the subject are the same party. This route is
+       * now restricted to a TRUSTED SERVICE PRINCIPAL, and a trusted service exists precisely to act ON
+       * BEHALF OF an account: it is the strangler-fig stand-in for the in-process `OrderService` caller
+       * [model/service/OrderService.cfc:L60-L61], which priced whatever order it held.
+       *
+       * So the envelope member is promoted from "a claim to be checked" to "the subject the trusted
+       * caller names", and the agreement rule moves DOWN one level: the ORDER DOCUMENT must agree with
+       * the SUBJECT rather than with the caller. Nothing is weakened by that move, because the caller
+       * now has to clear a permission gate no ordinary account can clear - see the route's admission.
+       *
+       * ★ IT IS NEVER `undefined` FOR A REQUEST THAT REACHED HERE, and that is what preserves the
+       * earlier CRITICAL adoption fix: an envelope naming no subject falls back to the trusted caller's
+       * own account, so every per-account use-limit read still counts a REAL account's uses rather than
+       * nobody's.
+       */
+      readonly subjectAccountID: string;
+    }
   | {
       readonly ok: false;
       readonly reason: InvalidRequestReason;
@@ -1889,8 +2179,36 @@ type EnvelopeDecoding =
 // ADOPTS the proved account when it names none; see {@link reconcileOrderAccount}, and
 // `materializeOrderView` in `./bootstrap.js` for the same rule applied inside the wire hydration.
 //
+// ★★★ AND THE WHOLE BOUNDARY MOVED OUT ONE LEVEL WITH SEC-I, WHICH IS THE LARGEST CHANGE THIS SECTION
+// HAS TAKEN. Everything above concerns WHICH ACCOUNT an order is priced for, and all of it still holds.
+// What it never established is whether the caller may submit THIS DOCUMENT AT ALL - and on this route
+// that question dominates, because every economically decisive member is caller-authored: the item
+// prices, the extended prices, the subtotals, the applied-price-group handle, the promotion-code list,
+// and the `promotionAppliedID` of every already-applied promotion, each of which the engine turns into a
+// REMOVE intent [model/service/PromotionService.cfc:L64-L80]. While the route admitted ANY identified
+// account, a customer could price a fictional order and could name applied-promotion rows belonging to
+// orders it does not own.
+//
+// TWO THINGS NOW STAND BETWEEN A CALLER AND THE ENGINE, and neither is the account rule above:
+//
+//   1. THE CALLER MUST BE A TRUSTED SERVICE PRINCIPAL. Established from the authorizer's administrative
+//      claim - the only permission bit this tier can observe, since `getAdminAccountFlag()` belongs to
+//      the out-of-scope `Account` entity. This is the strangler-fig stand-in for the in-process
+//      `OrderService` caller [model/service/OrderService.cfc:L60-L61] that the legacy engine had, and
+//      which was trusted by construction because it could not be reached from outside the process.
+//   2. THE DOCUMENT MUST NOT CONTRADICT THE LEGACY'S OWN DEFINITIONS OF ITS MEMBERS. See
+//      `collectDocumentInconsistencies`. Nothing there is a rule invented for this port: each check
+//      restates an identity the legacy entity computes, so it cannot refuse a document the legacy
+//      aggregate could have produced.
+//
+// ★ AND THE ACCOUNT RULE ABOVE IS RESHAPED BY (1) RATHER THAN REPLACED. A trusted service acts ON BEHALF
+// OF an account, so the envelope's `accountID` becomes the SUBJECT rather than a claim measured against
+// the sender, and the agreement test moves down onto the ORDER DOCUMENT, which must agree with that
+// subject. See {@link EnvelopeDecoding.subjectAccountID} and {@link reconcileOrderAccount}.
+//
 // WHETHER the deployment's authorizer authenticates correctly is an authorizer concern outside this
-// AAP, and no API key, token, signature or session lookup is invented here.
+// AAP, and no API key, token, signature or session lookup is invented here - including for the trusted
+// claim, which is read and never issued.
 // ===========================================================================
 
 /**
@@ -1954,10 +2272,20 @@ function accountAgrees(supplied: string | undefined, authenticated: string | und
  * needed, because an injected admission never reaches the hydration and a hydrated document never
  * reaches an injected admission.
  *
+ * ★★★ THE PARTY IT RECONCILES AGAINST IS THE SUBJECT, NOT THE SENDER (SEC-I). The parameter used to
+ * receive the caller's own principal, because the route admitted ordinary accounts and caller and
+ * subject were necessarily the same party. The route is now restricted to a TRUSTED SERVICE PRINCIPAL
+ * that acts on behalf of an account, so the handler resolves a SUBJECT - the envelope's stated account,
+ * or the trusted caller's own when the envelope states none - and passes that. Every clause below is
+ * unchanged in force: an order naming nothing ADOPTS the subject, and an order naming a DIFFERENT
+ * account is still refused. This is where the agreement test the envelope decode gave up now lives, so
+ * a trusted service cannot submit an envelope for one account carrying an order that names another.
+ *
  * @param order the admitted view, exactly as the admission produced it.
- * @param authenticatedAccountID the account `resolveRequestPrincipal` established for this request.
- * @returns the same view when it already names the authenticated account (or when there is no
- *   authenticated account to bind), and a view bound to that account when it named none.
+ * @param authenticatedAccountID the SUBJECT account this request prices for, resolved by the handler
+ *   from the envelope and the trusted caller's principal. Never a value read from the order document.
+ * @returns the same view when it already names the subject account (or when there is no subject
+ *   account to bind), and a view bound to that account when it named none.
  * @throws {@link OrderViewAdmissionError} naming `order.accountID` when the order names a different
  *   account. Neither identifier is echoed: reporting the authenticated one would disclose the
  *   session's account to whoever sent the body.
@@ -2065,14 +2393,14 @@ function readRequestBodyText(
  * `Object.hasOwn` test distinguishes "no order was sent" from "an order was sent and is unusable" and
  * reports the two differently.
  *
- * @param authenticatedAccountID the account this request is entitled to price for, from
- *   `resolveRequestPrincipal`. It is the ONLY account the decoded request carries; see the
- *   trust-boundary note above.
+ * @param callerAccountID the TRUSTED SERVICE's own account, from `resolveRequestPrincipal`. It is the
+ *   fallback subject for an envelope that names none - never an override for one that does. See
+ *   {@link EnvelopeDecoding.subjectAccountID} and the trust-boundary note above.
  */
 function decodeRequestEnvelope(
   event: APIGatewayProxyEvent,
   requestId: string,
-  authenticatedAccountID: string | undefined,
+  callerAccountID: string,
 ): EnvelopeDecoding {
   const text = readRequestBodyText(event);
   if (text === undefined) {
@@ -2127,28 +2455,36 @@ function decodeRequestEnvelope(
 
   const envelope = REQUEST_ENVELOPE_SCHEMA.parse(document);
 
-  if (!accountAgrees(envelope.accountID, authenticatedAccountID)) {
-    // ★ REFUSED, NOT OVERRIDDEN, and the choice is deliberate. Silently substituting the
-    // authenticated account for the one the caller named would price an order the caller did not ask
-    // for and report success, which is a worse outcome than a 400: a caller that believes it is
-    // pricing for account B must not be handed account A's discounts. The
-    // path is named so the mistake is fixable; neither value is echoed, because reporting the
-    // authenticated identifier back would disclose the session's account to whoever sent the body.
-    return {
-      ok: false,
-      reason: 'unusableRequestInput',
-      fields: [
-        {
-          path: 'accountID',
-          message: 'must name the authenticated account, or be omitted',
-        },
-      ],
-    };
-  }
+  // ★★★ THE ENVELOPE ACCOUNT IS THE SUBJECT NOW, NOT A CLAIM TO BE CHECKED (SEC-I). This is where a
+  // comparison used to live - `accountAgrees(envelope.accountID, authenticatedAccountID)` - refusing
+  // any envelope naming an account other than the caller's own, with the argument that "silently
+  // substituting the authenticated account for the one the caller named would price an order the caller
+  // did not ask for and report success". That argument was right for the caller population the route
+  // then admitted: ANY authenticated account. It is the wrong shape for the population it admits now.
+  //
+  // The route is restricted to a TRUSTED SERVICE PRINCIPAL, and acting on behalf of an account is that
+  // principal's entire purpose - it stands in for the in-process `OrderService`
+  // [model/service/OrderService.cfc:L60-L61], which priced whichever order it held without any notion
+  // of "its own" account. Keeping the old comparison would have made the route unusable for exactly the
+  // caller it exists to serve, while protecting nobody: an ordinary account can no longer reach this
+  // line at all.
+  //
+  // WHAT THE OLD RULE PROTECTED IS STILL PROTECTED, one level down. The agreement test is not deleted -
+  // it MOVES to the order document, which must agree with the SUBJECT rather than with the caller. See
+  // {@link reconcileOrderAccount}. So a trusted service still cannot hand in an envelope for account A
+  // carrying an order that names account B.
+  //
+  // ★ AND THE FALLBACK IS THE CALLER'S OWN ACCOUNT, NEVER `undefined`. That is what carries the earlier
+  // CRITICAL adoption fix forward: a request that names no subject anywhere still prices for a REAL
+  // account, so `getPromotionCodeAccountUseCount` and `getPromotionPeriodAccountUseCount`
+  // [model/service/PromotionService.cfc:L1098], [model/dao/PromotionDAO.cfc:L187, L274] count somebody's
+  // uses rather than nobody's - the exact defect that review found made a per-account cap uncapped.
+  const subjectAccountID = envelope.accountID ?? callerAccountID;
 
   if (envelope.operation === 'getSalePriceDetailsForProductSkus') {
     return {
       ok: true,
+      subjectAccountID,
       request: {
         operation: 'getSalePriceDetailsForProductSkus',
         requestId,
@@ -2159,6 +2495,7 @@ function decodeRequestEnvelope(
 
   return {
     ok: true,
+    subjectAccountID,
     request: {
       operation: 'applyPromotions',
       requestId,
@@ -2225,9 +2562,9 @@ async function runSelectedOperation(
   // pass or a setting on its way to a view.
   const admitted = await admitOrderView(request, scope);
 
-  // ★★★ THE ORDER IS PRICED FOR THE ACCOUNT THE REQUEST PROVED, AND FOR NO OTHER.
-  // See {@link reconcileOrderAccount}: an order that names none ADOPTS the authenticated
-  // principal, and one that names a DIFFERENT account is refused.
+  // ★★★ THE ORDER IS PRICED FOR THE SUBJECT ACCOUNT, AND FOR NO OTHER.
+  // See {@link reconcileOrderAccount}: an order that names none ADOPTS the subject the trusted caller
+  // named, and one that names a DIFFERENT account is refused.
   const order = reconcileOrderAccount(admitted, accountID);
 
   // =========================================================================
@@ -2331,10 +2668,23 @@ const IMPLEMENTED_ROUTE_ACTION: RouteAction = 'applyPromotions';
  *     every date-dependent read of the request, which is why this file calls no `new Date()` at all. The
  *     instant is never taken from the payload: a caller able to move the pricing clock could walk an
  *     expired promotion period back inside its window.
- *   * `adminAccountFlag` - OMITTED, because this entrypoint performs NO durable write (section 2,
- *     obligation 3), so there is no audit stamp to attribute. Absent means false, which is the non-admin
- *     arm of the legacy gate `!account.isNew() && account.getAdminAccountFlag()`; nothing here defaults
- *     it true.
+ *   * `adminAccountFlag` - STILL OMITTED, AND SINCE SEC-I THAT IS A LEAST-PRIVILEGE DECISION RATHER
+ *     THAN AN INCIDENTAL ONE. The original reason holds unchanged: this entrypoint performs NO durable
+ *     write (section 2, obligation 3), so there is no audit stamp to attribute, and absent means false -
+ *     the non-admin arm of the legacy gate `!account.isNew() && account.getAdminAccountFlag()`.
+ *
+ *     What changed around it is that the route now REQUIRES this very claim to admit the caller at all,
+ *     so a reader could reasonably expect it to travel. It deliberately does not, for two reasons.
+ *     First, nothing on THIS path consumes it: the flag's second consumer is
+ *     `RequestScope.priceGroupEntitlements`, which is reached only by the price-resolution entrypoint's
+ *     two binding helpers, and this handler names no price group - the price-group pass resolves them
+ *     from the order's ACCOUNT. Second, the caller here is trusted to submit an order, which is not the
+ *     same authority as being entitled to every price group in the store; passing the flag would grant
+ *     that second authority silently and for no use.
+ *
+ *     If a future member of this path ever does consult the entitlement surface, this omission becomes a
+ *     fail-closed refusal rather than a bypass - which is the direction an omission should fail in, and
+ *     is why it is safe to leave the flag behind.
  *   * `feedHost` - OMITTED, because the product feed is another capability's entrypoint. Omitting it
  *     leaves `RequestScope.productFeedPort` undefined, which is the safe outcome rather than a degraded
  *     one.
@@ -2420,18 +2770,61 @@ export function createPromotionApplicationHandler(
         return routeNotFoundResponse(mappingContext);
       }
 
-      // Fail closed before decoding or opening the graph. The compatibility `accountID` body member
-      // remains non-authoritative: decoding accepts it only when it agrees with this principal.
+      // Fail closed before decoding or opening the graph.
       const principalResolution = resolveRequestPrincipal(event);
       if (!principalResolution.identified) {
         return unauthenticatedResponse(mappingContext);
       }
 
-      const accountID = principalResolution.principal.accountID;
-      const decoding = decodeRequestEnvelope(event, requestId, accountID);
+      // ★★★ THE ROUTE IS RESTRICTED TO A TRUSTED SERVICE PRINCIPAL (SEC-I, CWE-20/CWE-345/CWE-639).
+      //
+      // THE FINDING. Every economically decisive member of this request is CALLER-AUTHORED: the item
+      // prices, the extended prices, the subtotals, the applied-price-group handle, the promotion-code
+      // list and - most sharply - the `promotionAppliedID` of every already-applied promotion, for each
+      // of which the engine emits a REMOVE intent [model/service/PromotionService.cfc:L64-L80]. The
+      // route previously admitted ANY identified account, so any customer could submit a document
+      // describing prices its cart does not have and receive discount intents computed from them, and
+      // could name applied-promotion rows belonging to orders it does not own and receive intents to
+      // detach them. The blanket clear itself is AAP-MANDATED and stays: the legacy pass begins by
+      // removing every applied promotion before recomputing, and reproducing that is required. What was
+      // missing is any reason to believe the document describes an order the caller may act on.
+      //
+      // WHY A PERMISSION GATE RATHER THAN PER-FIELD OWNERSHIP PROOF. The finding offered two remedies.
+      // The other - "accept only an account-owned order id and canonicalize the whole order
+      // server-side" - would require this tier to LOAD the order aggregate, and `OrderService` and every
+      // order entity are explicitly out of scope [AAP 0.2.2]: there is no in-scope read that can fetch
+      // an order, and authoring one would port the excluded aggregate. The anti-corruption inversion
+      // that makes this slice independently deployable [AAP 0.1.1] is precisely the decision that the
+      // order arrives as an INPUT. So the trust has to be placed in the CALLER, which is what the
+      // legacy did implicitly by only ever being called in-process.
+      //
+      // WHY THE ADMINISTRATIVE CLAIM IS THE MECHANISM. It is the only permission bit this tier can
+      // observe: `getAdminAccountFlag()` belongs to the out-of-scope `Account` entity, the authorizer
+      // resolves it, and `resolveRequestPrincipal` publishes it. No new claim vocabulary, token format,
+      // signature scheme or API-key store is invented here - inventing one would be a security
+      // mechanism this AAP does not describe.
+      //
+      // ★ 403 AND NOT 404, AND A FIXED SENTENCE. An identity WAS established and is insufficient, which
+      // is what 403 means; pretending the route does not exist would also hide it from the trusted
+      // caller misconfigured to omit its claim. `forbiddenResponse` publishes a sentence naming no
+      // claim, no principal and no operation, and carries no `fields`, so nothing about the gate's
+      // shape is disclosed. Refused BEFORE the body is parsed, so an unauthorized caller costs no
+      // decode, no composition root, no scope and no statement.
+      if (!principalResolution.principal.adminAccountFlag) {
+        return forbiddenResponse(mappingContext);
+      }
+
+      const callerAccountID = principalResolution.principal.accountID;
+      const decoding = decodeRequestEnvelope(event, requestId, callerAccountID);
       if (!decoding.ok) {
         return invalidRequestResponse(decoding.reason, mappingContext, decoding.fields);
       }
+
+      // ★★★ EVERYTHING DOWNSTREAM PRICES FOR THE SUBJECT, NOT FOR THE SENDER (SEC-I). The scope's
+      // account, the hydration's `establishedAccountID` and the order-document agreement test all take
+      // this one value, so there is no path on which two of the three could disagree about whose order
+      // is being priced. See {@link EnvelopeDecoding.subjectAccountID}.
+      const subjectAccountID = decoding.subjectAccountID;
 
       // ONE await of the idempotent, memoized initializer, INSIDE the handler and never at module
       // top level - which is also what keeps this module free of a top-level `await`, a construct the
@@ -2443,13 +2836,13 @@ export function createPromotionApplicationHandler(
       // therefore one customer's price - into another's. Request state is read from the event and from
       // this scope; it is NEVER read from `../lib/config.js`, which is static process configuration
       // and is not a request scope.
-      const scope = await root.createRequestScope(buildRequestScopeInput(accountID, clock));
+      const scope = await root.createRequestScope(buildRequestScopeInput(subjectAccountID, clock));
 
       const document = await runSelectedOperation(
         decoding.request,
         scope,
         admitOrderView,
-        accountID,
+        subjectAccountID,
         route,
         resolution.route.action,
         sink,

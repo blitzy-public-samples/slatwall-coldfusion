@@ -172,6 +172,8 @@ import type {
 import {
   createSkuResolutionHandler,
   handler,
+  MAXIMUM_SELECTED_OPTION_ELEMENTS,
+  MAXIMUM_SELECTED_OPTIONS_BYTES,
   NON_EXPOSED_SURFACE_NOTES,
 } from '../../../src/handlers/skuResolutionHandler.js';
 // The branded decimal-string type and the by-VALUE comparison helper. Imported rather
@@ -277,6 +279,49 @@ const REQUEST_INSTANT_EPOCH = new Date(REQUEST_INSTANT).getTime();
 const PRODUCT_ID = 'catalog-product-0001';
 const OPTION_ID_SMALL = 'option-size-small';
 const OPTION_ID_RED = 'option-colour-red';
+
+/**
+ * An identifier of the width the source column declares: `optionID` is
+ * `ormtype="string" length="32"` [model/entity/Option.cfc:L52].
+ *
+ * Used to build lists at the byte bound out of WELL-FORMED elements rather than out of filler, so a
+ * case can state what the bound costs a real caller: 32 characters plus one delimiter is 33 bytes.
+ */
+const WELL_FORMED_OPTION_ID = 'abcdef0123456789abcdef0123456789';
+
+/**
+ * Build a `selectedOptions` list of EXACTLY `byteCount` UTF-8 bytes.
+ *
+ * Well-formed 32-character identifiers joined by single commas, with the final element truncated so
+ * the result lands precisely on the requested count. Every character is ASCII, so one character is
+ * one byte and the arithmetic is exact - the cases below assert that rather than assume it.
+ *
+ * @param byteCount - the exact byte length wanted.
+ * @returns the list.
+ */
+function selectedOptionsOfBytes(byteCount: number): string {
+  let list = '';
+
+  while (list.length < byteCount) {
+    list += list.length === 0 ? WELL_FORMED_OPTION_ID : `,${WELL_FORMED_OPTION_ID}`;
+  }
+
+  return list.slice(0, byteCount);
+}
+
+/**
+ * Build the DENSEST list a byte bound can admit: single-character elements, single commas.
+ *
+ * `listToArray` ignores empty elements [`splitOnDelimiters` in `../../../src/lib/cfml/list.js`], so
+ * `n` elements cannot occupy fewer than `2n - 1` characters. This is the shape that makes the derived
+ * element figure REACHABLE rather than merely arithmetic.
+ *
+ * @param elementCount - how many elements.
+ * @returns the list.
+ */
+function densestSelectedOptions(elementCount: number): string {
+  return Array.from({ length: elementCount }, (): string => 'x').join(',');
+}
 
 /**
  * A SKU code used wherever a case needs a request the module WILL serve but is not about
@@ -835,6 +880,13 @@ function createScopeDouble(script: ServiceScript, calls: RecordedCall[]): Reques
         'RequestScope.entityLoaders was read. Every operation on this route binds its service ' +
           'arguments from the query string directly - `selectedOptions` and `productID` are ' +
           'strings and `skuCode` is a string - so no identifier here has to become an entity.',
+      );
+    },
+
+    get priceGroupEntitlements(): RequestScope['priceGroupEntitlements'] {
+      throw new Error(
+        'RequestScope.priceGroupEntitlements was read. This route resolves SKUs, not prices, so it ' +
+          'names no price group and has no entitlement to decide.',
       );
     },
 
@@ -1419,6 +1471,279 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(populated.calls[0]?.args).toEqual(['', PRODUCT_ID]);
     });
 
+    // =======================================================================
+    // \u2605\u2605\u2605 THE SELECTED-OPTION ADMISSION BOUND (SEC-B, CWE-400)
+    //
+    // A security review found that this route let ONE request ask for one `exists` subquery
+    // per comma-delimited element, with the only ceiling being the database protocol's
+    // 65535-placeholder limit - tens of thousands of correlated subqueries, chosen entirely
+    // by the caller. The remedy is a BYTE bound on the parameter, declared as
+    // `MAXIMUM_SELECTED_OPTIONS_BYTES` and argued in full on the schema.
+    //
+    // \u2605\u2605 THESE CASES EXIST TO PIN THAT IT IS NOT THE 64-ELEMENT CAP A PREVIOUS CODE REVIEW
+    // STRUCK DOWN, and the difference is asserted rather than only argued: the bound admits
+    // 124 well-formed identifiers and 2048 elements, both far past 64, and
+    // `tests/integration/repositories/skusBySelectedOptions.test.ts` continues to pin the
+    // PORTED statement accepting 65535 elements. No element policy is restored, the
+    // must-preserve service and repository tiers are untouched, and an admitted list is
+    // forwarded byte-for-byte.
+    // =======================================================================
+    describe('the selectedOptions admission bound (SEC-B)', () => {
+      it('admits a list of EXACTLY the published byte bound and forwards it byte-for-byte', async () => {
+        const atBound = selectedOptionsOfBytes(MAXIMUM_SELECTED_OPTIONS_BYTES);
+        const populated = createHarness({ productSkusBySelectedOptions: [] });
+
+        // The fixture is asserted before the subject is, so a builder that drifted could not
+        // make this case pass by testing a shorter list than it claims.
+        expect(Buffer.byteLength(atBound, 'utf8')).toBe(MAXIMUM_SELECTED_OPTIONS_BYTES);
+
+        const response = await populated.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: atBound,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(response.statusCode).toBe(200);
+
+        // \u2605\u2605 THE BOUND REFUSES OR ADMITS; IT NEVER REWRITES. An admitted list reaches the
+        // ported service exactly as the caller wrote it - no trim, no fold, no sort, no
+        // de-duplication and no truncation - which is what the AND-of-EXISTS matching
+        // semantics depend on [model/dao/SkuDAO.cfc:L113-L121].
+        expect(populated.calls).toHaveLength(1);
+        expect(populated.calls[0]?.args).toEqual([atBound, PRODUCT_ID]);
+      });
+
+      it('admits 248 well-formed option identifiers, which is what the bound costs a real caller', async () => {
+        // The figure the schema publishes as its justification, asserted rather than asserted
+        // in prose: `optionID` is 32 characters [model/entity/Option.cfc:L52], so an element
+        // plus its delimiter is 33 bytes and 248 of them fit inside the bound. A product
+        // carrying 248 option groups is far outside anything the in-scope source suggests.
+        const identifiers = Array.from({ length: 248 }, (): string => WELL_FORMED_OPTION_ID).join(
+          ',',
+        );
+        const populated = createHarness({ productSkusBySelectedOptions: [] });
+
+        expect(Buffer.byteLength(identifiers, 'utf8')).toBeLessThanOrEqual(
+          MAXIMUM_SELECTED_OPTIONS_BYTES,
+        );
+
+        const response = await populated.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: identifiers,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(response.statusCode).toBe(200);
+        expect(populated.calls[0]?.args).toEqual([identifiers, PRODUCT_ID]);
+      });
+
+      it('refuses ONE byte past the bound and names the field the caller can correct', async () => {
+        const overBound = selectedOptionsOfBytes(MAXIMUM_SELECTED_OPTIONS_BYTES + 1);
+        const populated = createHarness({ productSkusBySelectedOptions: [] });
+
+        expect(Buffer.byteLength(overBound, 'utf8')).toBe(MAXIMUM_SELECTED_OPTIONS_BYTES + 1);
+
+        const response = await populated.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: overBound,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(response.statusCode).toBe(400);
+        expect(errorBodyOf(response).category).toBe('invalidRequest');
+        expect(fieldPathsOf(response)).toContain('selectedOptions');
+
+        // A refusal, not a truncation: the service is never reached with a shortened list,
+        // which would answer a DIFFERENT question from the one the caller asked.
+        expect(populated.calls).toHaveLength(0);
+      });
+
+      it('withholds the submitted list from the refusal body and from the log line alike', async () => {
+        const overBound = selectedOptionsOfBytes(MAXIMUM_SELECTED_OPTIONS_BYTES + 1);
+        const marker = overBound.slice(0, WELL_FORMED_OPTION_ID.length);
+        const populated = createHarness();
+
+        const response = await populated.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: overBound,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        // The mapper publishes field paths and constraint descriptions and never the
+        // submitted values, and a bound whose refusal echoed a 4-kibibyte list back would
+        // hand a caller an amplifier instead of taking one away.
+        expect(response.statusCode).toBe(400);
+        expect(response.body).not.toContain(marker);
+
+        for (const emission of populated.emissions) {
+          expect(emission.serialized).not.toContain(marker);
+        }
+      });
+
+      it('counts UTF-8 BYTES rather than code units', async () => {
+        // \u2605\u2605 THE ASSERTION THAT DISTINGUISHES THE IMPLEMENTATION FROM `z.string().max()`.
+        // This value's CHARACTER count is comfortably inside the bound while its byte count
+        // is not, so a code-unit constraint would admit it and the resource fact the bound
+        // exists to state - how much text this adapter reads - would not hold.
+        const multiByte = '\u00e9'.repeat(MAXIMUM_SELECTED_OPTION_ELEMENTS + 1);
+        const populated = createHarness();
+
+        expect(multiByte.length).toBeLessThan(MAXIMUM_SELECTED_OPTIONS_BYTES);
+        expect(Buffer.byteLength(multiByte, 'utf8')).toBeGreaterThan(
+          MAXIMUM_SELECTED_OPTIONS_BYTES,
+        );
+
+        const response = await populated.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: multiByte,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(response.statusCode).toBe(400);
+        expect(fieldPathsOf(response)).toContain('selectedOptions');
+      });
+
+      // Synchronous on purpose: this case asserts the relationship between two published
+      // constants and invokes nothing, so there is nothing to await.
+      it('publishes an element figure DERIVED from the byte bound, not declared beside it', () => {
+        // One number is defended - the byte bound - and the element figure is computed from
+        // it. Asserted as arithmetic so a future change to either cannot leave the two
+        // disagreeing while every other case still passes.
+        expect(MAXIMUM_SELECTED_OPTIONS_BYTES).toBe(8 * 1024);
+        expect(MAXIMUM_SELECTED_OPTION_ELEMENTS).toBe(
+          Math.floor((MAXIMUM_SELECTED_OPTIONS_BYTES + 1) / 2),
+        );
+        expect(MAXIMUM_SELECTED_OPTION_ELEMENTS).toBe(4096);
+
+        // And it is a real ceiling on the statement rather than a comment: the worst case one
+        // invocation can demand falls to a sixteenth of the 65535 placeholders the wire
+        // protocol permits, which is the reduction in caller-chosen work the finding asked
+        // for.
+        expect(MAXIMUM_SELECTED_OPTION_ELEMENTS * 16).toBe(65_536);
+      });
+
+      it('\u2605\u2605\u2605 counts BYTES and not ELEMENTS, which is why no count policy was reinstated', async () => {
+        // \u2605\u2605\u2605 THE CASE THAT ANSWERS THE OBVIOUS SUSPICION. A previous code review struck
+        // down a 64-element ceiling on this parameter, so a bound arriving here at all invites
+        // the question of whether the ceiling came back under another name. IT DID NOT, and the
+        // proof is that the SAME ELEMENT COUNT is admitted or refused purely by how many bytes
+        // the caller spends on it:
+        //
+        //   * 1000 single-character elements  -> 1999 bytes -> SERVED
+        //   * 1000 thirty-two-character IDs   -> 32999 bytes -> REFUSED
+        //
+        // A count policy cannot produce those two outcomes. A byte bound cannot produce any
+        // other pair.
+        const thousandCheap = densestSelectedOptions(1_000);
+        const thousandWellFormed = Array.from(
+          { length: 1_000 },
+          (): string => WELL_FORMED_OPTION_ID,
+        ).join(',');
+
+        const served = createHarness({ productSkusBySelectedOptions: [] });
+        const servedResponse = await served.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: thousandCheap,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(servedResponse.statusCode).toBe(200);
+        expect(served.calls[0]?.args).toEqual([thousandCheap, PRODUCT_ID]);
+
+        const refused = createHarness({ productSkusBySelectedOptions: [] });
+        const refusedResponse = await refused.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: thousandWellFormed,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(refusedResponse.statusCode).toBe(400);
+        expect(fieldPathsOf(refusedResponse)).toContain('selectedOptions');
+
+        // And the refusal says nothing about a number of options, because there is no such
+        // sentence to say - the same assertion the struck-down ceiling's reversal left behind.
+        expect(refusedResponse.body).not.toContain('must not name more than');
+        expect(refusedResponse.body).not.toContain('option');
+      });
+
+      it('admits the densest list the bound allows and refuses one element more', async () => {
+        // \u2605 THE DERIVED FIGURE IS TIGHT IN BOTH DIRECTIONS, which is the only way to show it
+        // was derived correctly. `n` single-character elements plus `n - 1` commas is the
+        // smallest a list of `n` elements can be, so the maximum admissible element count is
+        // exactly `MAXIMUM_SELECTED_OPTION_ELEMENTS` - reachable, and not exceedable.
+        const densest = densestSelectedOptions(MAXIMUM_SELECTED_OPTION_ELEMENTS);
+        const oneMore = densestSelectedOptions(MAXIMUM_SELECTED_OPTION_ELEMENTS + 1);
+
+        expect(Buffer.byteLength(densest, 'utf8')).toBeLessThanOrEqual(
+          MAXIMUM_SELECTED_OPTIONS_BYTES,
+        );
+        expect(Buffer.byteLength(oneMore, 'utf8')).toBeGreaterThan(MAXIMUM_SELECTED_OPTIONS_BYTES);
+
+        const admitted = createHarness({ productSkusBySelectedOptions: [] });
+        const admittedResponse = await admitted.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: densest,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(admittedResponse.statusCode).toBe(200);
+        expect(admitted.calls[0]?.args).toEqual([densest, PRODUCT_ID]);
+
+        const refused = createHarness({ productSkusBySelectedOptions: [] });
+        const refusedResponse = await refused.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: oneMore,
+            productID: PRODUCT_ID,
+          }),
+        );
+
+        expect(refusedResponse.statusCode).toBe(400);
+        expect(refused.calls).toHaveLength(0);
+      });
+
+      it('bounds ONLY the parameter that multiplies statement work, and leaves the rest alone', async () => {
+        // \u2605\u2605 THE SCOPE OF THE FIX, ASSERTED FROM THE OTHER DIRECTION. `selectedOptions` is
+        // the one parameter on this route whose length decides how many subqueries and how
+        // many bound parameters the statement carries. `skuCode` and `productID` are bound
+        // ONCE each however long they are [model/dao/SkuDAO.cfc:L102, L123], so a length
+        // constraint on either would be input hygiene this adapter has no authority to
+        // invent - and the identifier width they are compared against belongs to the column,
+        // which the database enforces on its own.
+        const longCode = `${SERVABLE_SKU_CODE}-${'C'.repeat(MAXIMUM_SELECTED_OPTIONS_BYTES)}`;
+        const populated = createHarness();
+
+        const response = await populated.invoke(
+          requestFor('getSkuBySkuCode', { skuCode: longCode }),
+        );
+
+        expect(response.statusCode).toBe(200);
+        expect(populated.calls[0]?.args).toEqual([longCode]);
+
+        // The same for `productID`, on the operation that DOES carry the bounded parameter:
+        // a long product identifier is forwarded, because it costs the statement nothing.
+        const longProductID = 'P'.repeat(MAXIMUM_SELECTED_OPTIONS_BYTES);
+        const productCase = createHarness({ productSkusBySelectedOptions: [] });
+
+        const productResponse = await productCase.invoke(
+          requestFor('getProductSkusBySelectedOptions', {
+            selectedOptions: OPTION_ID_SMALL,
+            productID: longProductID,
+          }),
+        );
+
+        expect(productResponse.statusCode).toBe(200);
+        expect(productCase.calls[0]?.args).toEqual([OPTION_ID_SMALL, longProductID]);
+      });
+    });
+
     it('\u2605\u2605\u2605 FORWARDS an absent skuCode as absence, because the mapped surface declares it optional', async () => {
       // \u2605\u2605\u2605 THIS ASSERTION HAS BEEN RESTORED, AND THE FULL ROUND TRIP IS RECORDED HERE SO
       // NOBODY REPEATS IT. Its original form asserted exactly what it asserts again now, under the
@@ -1563,6 +1888,14 @@ describe('the SKU resolution Lambda entry point', () => {
         apiGatewayEvent({ query: { operation: '' } }),
         apiGatewayEvent({ query: { operation: 'getSkuStocksDeletableFlag' } }),
         requestFor('getProductSkusBySelectedOptions', { selectedOptions: OPTION_ID_RED }),
+        // An over-bound selected-option list (SEC-B) belongs in this list rather than only in
+        // its own describe: the WHOLE POINT of bounding at admission is that the refusal costs
+        // nothing, so the request that could have demanded tens of thousands of subqueries must
+        // open no scope, build no composition root and issue no statement.
+        requestFor('getProductSkusBySelectedOptions', {
+          selectedOptions: selectedOptionsOfBytes(MAXIMUM_SELECTED_OPTIONS_BYTES + 1),
+          productID: PRODUCT_ID,
+        }),
         // The three withdrawn actions (findings F10 and F18) are refused as unrecognized
         // operations, and they open nothing either.
         apiGatewayEvent({ query: { operation: 'searchSkusByProductType', term: 'TESTSKU' } }),
@@ -2865,9 +3198,28 @@ describe('the selectedOptions list is total at this boundary (NET-NEW)', () => {
   });
 
   it('★★★ admits the hundreds-of-elements magnitudes the review measured', async () => {
+    // ★★★ THIS CASE LOOPED [500, 1000] AND NOW LOOPS [500, 700], AND THE ONE MAGNITUDE THAT
+    // MOVED IS THE WHOLE RECONCILIATION BETWEEN TWO REVIEWS. A security review (SEC-B,
+    // CWE-400) found this route admitting one `exists` subquery per element with the only
+    // ceiling being the database protocol's 65535-placeholder limit, and a byte bound now sits
+    // at admission - `MAXIMUM_SELECTED_OPTIONS_BYTES`, argued in full on the schema.
+    //
+    // ★★ THE PRIOR RULING IS INTACT, AND DELIBERATELY SO. What that review struck down was an
+    // ELEMENT-COUNT POLICY - a claim about how many options a product may have, defended with
+    // AAP 0.6.5's bulk-MUTATION batch limits and contradicting a must-preserve read. No count
+    // policy is restored: the byte bound was set at the largest figure that is still a bound
+    // worth the name PRECISELY so that the hundreds-of-elements magnitudes this case exists to
+    // defend stay served, and 500 elements below is served unchanged.
+    //
+    // The thousand-element magnitude now exceeds the byte bound at these element widths, and it
+    // is asserted as a refusal in `the selectedOptions admission bound (SEC-B)`, alongside the
+    // case that pins 1000 elements STILL BEING SERVED when they are spelled compactly - which
+    // is the demonstration that the constraint counts bytes rather than options. 700 replaces
+    // it here so this case keeps testing what it was written to test: that a magnitude an order
+    // of magnitude past the struck-down 64 is served, byte for byte.
     const populated = createHarness({ productSkusBySelectedOptions: [] });
 
-    for (const count of [500, 1000]) {
+    for (const count of [500, 700]) {
       const submitted = optionList(count);
       const response = await populated.invoke(
         requestFor('getProductSkusBySelectedOptions', {

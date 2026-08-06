@@ -2182,13 +2182,29 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
   // explicitly rather than treating an unresolved host as safe.
   const tls = resolveDatabaseTls(source, environment, host, problems);
 
-  // Optional. UNSET means no host policy, which serves the feed on the request's own
-  // authority exactly as the source did; a PRESENT value is a policy, empty or not (F40).
-  // The resolver answers a WRAPPER so those two states stay distinguishable from the
+  // Optional IN THE ENVIRONMENT, FAIL-CLOSED IN EFFECT. Unset and empty both resolve to an
+  // EMPTY allow-list, which authorizes NO host: `assertAllowedFeedHost` then refuses every
+  // candidate, `productFeedPort` and `feedCriteria` are never published, and the feed route
+  // answers a refusal naming the variable to set. A present value naming hosts is the only
+  // state that serves a feed, and only for those authorities.
+  //
+  // ★★★ QUOTE-THEN-REVISE, AND THIS ONE IS A SECURITY FINDING (SEC-H, INFO, CWE-1059). This
+  // comment used to read: "Optional. UNSET means no host policy, which serves the feed on the
+  // request's own authority exactly as the source did; a PRESENT value is a policy, empty or
+  // not (F40)." That described the behaviour BEFORE finding F40's own remedy landed, and by
+  // the time it was read the implementation had been the opposite for a revision: the resolver
+  // below returns `EMPTY_FEED_ALLOWED_HOSTS` for an unset variable and {@link FeedConfig} states
+  // there is NO allow-all state at all. No bypass ever followed from the prose - a comment
+  // authorizes nothing - but a reader trusting it could "restore" the request-authority default
+  // it described and reopen CWE-346, so the sentence is corrected rather than left as a trap.
+  // The IMPLEMENTATION IS UNCHANGED by this correction, deliberately: it is already the
+  // fail-closed one the finding asks the comment to describe.
+  //
+  // The resolver answers a WRAPPER so the "unset" state stays distinguishable from the
   // `undefined` that every resolver in this file uses to mean "problem recorded": the
-  // wrapper is absent on failure and present with an `undefined` member when the variable
-  // is simply not set. See {@link FeedConfig} for why the list lives here at all rather
-  // than arriving on the request that is being checked against it.
+  // wrapper is absent on failure and present with an EMPTY list when the variable is simply
+  // not set. See {@link FeedConfig} for why the list lives here at all rather than arriving on
+  // the request that is being checked against it.
   const feedAllowedHosts = resolveFeedAllowedHosts(source, problems);
 
   // Optional, and empty when unset. See {@link CurrencyConfig} for why a rate table

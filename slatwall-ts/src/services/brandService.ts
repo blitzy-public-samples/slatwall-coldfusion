@@ -673,18 +673,78 @@ function populateBrandFromSaveInput(brand: Brand, data: BrandSaveInput): Brand {
 }
 
 /**
+ * The six protocols CFML's `isValid("url", ...)` accepts, spelled as the WHATWG parser
+ * reports them.
+ *
+ * This is a TRANSCRIPTION, not a policy choice. The CFML reference defines the `URL`
+ * validation type as "an http, https, ftp, file, mailto, or news URL" - a CLOSED set of
+ * six - and that is the validator `model/validation/Brand.json`'s
+ * `{"dataType":"url"}` rule reaches, by way of `validate_dataType`'s
+ * `isValid(arguments.constraintValue, propertyValue)`
+ * [org/Hibachi/HibachiValidationService.cfc:L256-L259].
+ *
+ * Stored with the `:` the `URL#protocol` getter includes, so membership is a plain
+ * lookup against the parser's own output. No case folding is applied because the WHATWG
+ * parser lower-cases the scheme itself, which is also why an upper-cased `HTTPS://host`
+ * is accepted exactly as CFML's case-insensitive validator accepted it.
+ */
+const CFML_URL_PROTOCOLS: ReadonlySet<string> = new Set([
+  'http:',
+  'https:',
+  'ftp:',
+  'file:',
+  'mailto:',
+  'news:',
+]);
+
+/**
  * `isValid("url", value)`, for the one `dataType` constraint Brand declares.
  *
  * WHAT IT ACCEPTS AND WHY. CFML's `isValid("url", ...)` requires an ABSOLUTE URL - a
  * scheme is mandatory and a bare host or relative path fails - which is precisely the
- * distinction the `URL` constructor draws, so the constructor is the test rather than a
+ * distinction the `URL` parser draws, so the parser is the test rather than a
  * hand-rolled expression. Deliberately NOT restricted to http and https: the legacy
  * validator restricted neither, and a merchant's `ftp://` link would have saved. No
  * request is made, no host is resolved, and nothing about the target is checked -
  * only the shape of the string.
+ *
+ * ★★★ THE PARSE IS NO LONGER THE WHOLE TEST - THE SCHEME MUST ALSO BE ONE CFML NAMED (SEC-L,
+ * CWE-20, POTENTIAL CWE-79). This function used to be `return URL.canParse(value);` on the
+ * reasoning quoted above, and the quoted reasoning is preserved because its POINT still holds:
+ * narrowing to http and https would be a fabricated restriction the source never imposed, and
+ * `ftp:`, `file:`, `mailto:` and `news:` are all still accepted here for exactly that reason.
+ * What was wrong was treating "parseable" as equivalent to "one of the protocols CFML lists".
+ * `URL.canParse` accepts EVERY scheme - `javascript:alert(1)`, `data:text/html,<script>...`,
+ * and any invented `myapp:` - so a stored `brandWebsite` could carry a script URL into whatever
+ * consumer renders it as an `href`.
+ *
+ * THE SINK IS A REAL ONE IN THIS PRODUCT, WHICH IS WHY THE CHECK BELONGS AT THE WRITE. `Brand.cfc`
+ * declares `hb_formatType="url"` on the property [model/entity/Brand.cfc:L57], and that format type
+ * resolves to `formatValue_url`, whose whole body interpolates the stored value into an anchor with
+ * NO encoding of any kind: `'<a href="#arguments.value#" target="_blank">' & value & '</a>'`
+ * [org/Hibachi/HibachiUtilityService.cfc:L66-L68]. Both admin surfaces that show a brand go through
+ * it [admin/views/entity/detailbrand.cfm:L60, admin/views/entity/listbrand.cfm:L59]. That renderer is
+ * FRAMEWORK AND ADMIN CODE, so it is out of scope and is left exactly as it is [AAP 0.2.2] - which is
+ * precisely the argument for refusing the value on the way IN, at the only point in the write path
+ * this migration owns.
+ *
+ * THIS IS A NARROWING TOWARD THE SOURCE, NOT A DIVERGENCE FROM IT, so it adds no fourth entry to
+ * the three-divergence budget [AAP 0.6.7]. The legacy validator's documented accept-set is these
+ * six protocols; `URL.canParse` was strictly WIDER than the thing it was standing in for, so every
+ * value this change newly refuses is a value `isValid("url", ...)` would also have refused. The
+ * ported behaviour moves closer to parity, and the security property comes along with it.
+ *
+ * WHAT IS NOT DECIDED HERE. Whether the property is present at all - `validate_dataType` PASSES ON
+ * NULL [org/Hibachi/HibachiValidationService.cfc:L259] - is the caller's test, and it stays there.
+ * A blank string is not special-cased either: it fails to parse, which is the same verdict the
+ * legacy validator reached for it.
  */
 function isValidUrl(value: string): boolean {
-  return URL.canParse(value);
+  if (!URL.canParse(value)) {
+    return false;
+  }
+
+  return CFML_URL_PROTOCOLS.has(new URL(value).protocol);
 }
 
 /**

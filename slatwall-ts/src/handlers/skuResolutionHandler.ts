@@ -522,8 +522,74 @@ const operationEnvelopeSchema = z.object({
 });
 
 /**
+ * The most `selectedOptions` text one ROUTED invocation will read, in bytes (SEC-B, CWE-400).
+ *
+ * ★ THE ONE NUMBER THIS ROUTE DEFENDS. Every other figure below is computed from it, and the full
+ * argument for admitting a byte bound here while the reversed 64-element cap stays reversed lives on
+ * {@link getProductSkusBySelectedOptionsSchema}. The short form: this asserts NOTHING about how many
+ * options a product may carry - it states how much query text this ADAPTER reads before it refuses,
+ * which is the same kind of bound the sibling net-new route already applies to its body
+ * (`MAXIMUM_REQUEST_DOCUMENT_BYTES` in `./promotionApplicationHandler.js`, which refuses an oversized
+ * document rather than truncating one).
+ *
+ * WHY EIGHT KIBIBYTES, argued from a figure the source states rather than from a platform quota this
+ * subtree cannot verify:
+ *
+ *   * A WELL-FORMED ELEMENT IS A GENERATED OPTION IDENTIFIER, and that column is 32 characters wide
+ *     [model/entity/Option.cfc:L52], so an element plus its delimiter is 33 bytes and this bound admits
+ *     248 of them. A product carrying 248 option groups is far outside anything the in-scope source
+ *     suggests, so the bound cannot refuse a selection the catalog could actually answer. It is
+ *     deliberately NOT written as "at most 248 options": that would restate the domain claim a code
+ *     review struck down, and the reasoning for keeping that reversal is on the schema.
+ *   * IT IS THE LARGEST FIGURE THAT IS STILL A BOUND WORTH THE NAME, which is how the tension between
+ *     the two reviews is settled rather than split. The struck-down cap's own reversal was demonstrated
+ *     with lists of several hundred elements, and this bound admits those unchanged - see
+ *     `tests/unit/handlers/skuResolutionHandler.test.ts`, where a 500-element list is still served -
+ *     while still cutting the worst case an invocation can demand by more than an order of magnitude.
+ *
+ * ★★ AND IT IS A BOUND ON EVENT CONTENT, NOT ON AN HTTP REQUEST LINE, which is what makes it load
+ * bearing rather than decorative. A reader may object that a query string this long would be refused by
+ * an HTTP front door first - plausibly true for one deployment's gateway or reverse proxy, and NOT this
+ * module's fact to assert or to rely on [AAP 0.8.1]. This is a Lambda handler: its input is an event
+ * object, so a direct invocation carries `queryStringParameters` as JSON with no request-line budget
+ * anywhere in the path. On that path this schema is the ONLY thing between a caller and one subquery
+ * per element, which is precisely why the application tier holds its own bound instead of inheriting
+ * one it cannot see.
+ *
+ * NOT AN INVENTED NON-FUNCTIONAL REQUIREMENT [AAP 0.8.1]: no latency, throughput or availability
+ * target is claimed or implied, and no legacy service level is being reproduced. This is an admission
+ * bound on one parameter of one net-new entrypoint. The statement's own protocol ceiling still applies
+ * underneath it, for every caller, and remains the only bound the ported tiers know about.
+ */
+export const MAXIMUM_SELECTED_OPTIONS_BYTES = 8 * 1024;
+
+/**
+ * How many elements {@link MAXIMUM_SELECTED_OPTIONS_BYTES} can admit. DERIVED, AND NEVER ENFORCED.
+ *
+ * ★ A CONSEQUENCE, NOT A SECOND RULE - and computed rather than written down, so the two figures
+ * cannot drift apart. `listToArray` ignores empty elements [`splitOnDelimiters` in
+ * `../lib/cfml/list.js`: `'a,,b'` has two elements], so the densest admissible list is
+ * single-character elements separated by single commas: n elements occupy at least 2n-1 characters,
+ * and a UTF-8 byte count is never smaller than a character count, so n <= (bytes + 1) / 2.
+ *
+ * NOTHING VALIDATES AGAINST THIS VALUE. The schema tests bytes and only bytes, so a list of ANY element
+ * count inside the byte bound is admitted - 1000 single-character elements are served while 1000
+ * thirty-two-character identifiers are not, and that asymmetry is asserted, because it is the proof
+ * that no count policy was reinstated. It is published so that the cost of the byte bound is legible -
+ * the worst-case statement width falls from the 65535 placeholders the wire protocol permits to 4096 -
+ * and so a test can assert that consequence instead of recomputing the arithmetic and drifting from it.
+ */
+export const MAXIMUM_SELECTED_OPTION_ELEMENTS = Math.floor(
+  (MAXIMUM_SELECTED_OPTIONS_BYTES + 1) / 2,
+);
+
+/**
  * ★ MUST-PRESERVE ARGUMENTS. Both `required string` in the legacy, so both keys must be present -
- * and neither carries a length, a pattern, a trim, a case fold or a de-duplication step.
+ * and neither carries a pattern, a trim, a case fold or a de-duplication step. Exactly ONE constraint
+ * beyond presence exists anywhere here: the byte bound on `selectedOptions` that
+ * {@link MAXIMUM_SELECTED_OPTIONS_BYTES} declares and that the ★★★ paragraph below argues in full. The
+ * sentences between here and there record the reasoning it revises, verbatim, because that reasoning
+ * struck down an EARLIER bound and none of it is withdrawn.
  *
  * `selectedOptions` STAYS A COMMA-DELIMITED STRING all the way to the SQL. It is not split here, not
  * widened to `string[]`, not sorted and not de-duplicated. The AND-of-EXISTS statement builds one
@@ -556,12 +622,61 @@ const operationEnvelopeSchema = z.object({
  * protocol rather than a policy this adapter invented, it is 65535 rather than 64, and it applies to
  * every caller - routed or in-process - which is exactly why it is not duplicated here.
  *
- * So this schema carries no count, no length, no pattern, no trim, no case fold and no
- * de-duplication, and the comma-list the caller sent is the comma-list the service receives.
+ * So this schema carries no count, no pattern, no trim, no case fold and no de-duplication, and the
+ * comma-list the caller sent is the comma-list the service receives.
+ *
+ * ★★★ IT DOES NOW CARRY ONE BOUND - A BYTE LENGTH - AND THE DISTINCTION FROM THE REVERSED 64-ELEMENT
+ * CAP IS THE WHOLE JUSTIFICATION (SEC-B, CWE-400). A security review found that this route lets a
+ * caller ask for one `exists` subquery per element with the only ceiling being the 65_535-placeholder
+ * protocol limit, so a single request can demand tens of thousands of correlated subqueries. That is a
+ * real gap and it is closed here. What it must not do is quietly reinstate the cap a previous code
+ * review struck down, so the two are separated deliberately:
+ *
+ *   * THE STRUCK-DOWN BOUND WAS A CLAIM ABOUT OPTIONS. "At most 64 selected options" asserts something
+ *     about how many option groups a product may have - a domain fact the source states nowhere - and
+ *     it was defended by citing AAP 0.6.5, whose batch limits govern unbounded bulk MUTATION. The
+ *     review rejected both the claim and the citation, and that rejection stands: NO element policy is
+ *     restored, and this schema still asserts nothing about option counts.
+ *   * THIS BOUND IS A CLAIM ABOUT BYTES THIS ADAPTER WILL READ. It is the same kind of bound the
+ *     sibling net-new route already applies to its body - see `MAXIMUM_REQUEST_DOCUMENT_BYTES` in
+ *     `./promotionApplicationHandler.js`, which refuses an oversized document rather than truncating
+ *     it - and it is applied for the same reason: the size of one invocation's work is the caller's to
+ *     choose only up to a stated limit.
+ *
+ * ★★ AND IT CHANGES NOTHING ABOUT THE PORTED SURFACE, WHICH IS WHY IT CANNOT BREAK PARITY. AAP 0.4.1
+ * lists this handler as CREATE with NO source file - a net-new entrypoint - so there is no legacy HTTP
+ * route whose admission behaviour this could contradict. `ProductService.getProductSkusBySelectedOptions`
+ * [model/service/ProductService.cfc:L104], `MysqlSkuRepository` and the AND-of-EXISTS statement are all
+ * untouched and all still answer a list of ANY length up to the protocol ceiling: the in-process caller
+ * AAP 0.1.1 describes - a strangler-fig proxy holding its own admission - reaches them without passing
+ * through this schema at all, and
+ * `tests/integration/repositories/skusBySelectedOptions.test.ts` continues to pin acceptance at
+ * exactly 65_535 elements. The must-preserve behaviour is the SERVICE'S, and it is intact.
+ *
+ * ★ THE ELEMENT COUNT IS A CONSEQUENCE RATHER THAN A SECOND RULE. An element occupies at least one
+ * character plus its delimiter, so this byte bound admits at most
+ * {@link MAXIMUM_SELECTED_OPTION_ELEMENTS} elements - stated and asserted, but derived from the bound
+ * above rather than declared independently, so there is exactly one number to defend.
+ *
+ * ★★ AND DE-DUPLICATION IS STILL DECLINED, THOUGH IT WOULD CUT THE SAME WORST CASE. Collapsing
+ * repeated elements would not change the ANSWER - `and exists (...)` is idempotent, so
+ * `'a,a,a'` intersects to the same SKUs as `'a'` - which is exactly why it is tempting as a cheaper
+ * remedy than a bound. It is refused on the same ground the count cap was: it would change the
+ * STATEMENT the repository builds and the parameter list it binds, and the legacy emits one clause per
+ * element with no collapse of any kind [model/dao/SkuDAO.cfc:L112-L121]. Normalising the caller's list
+ * is the must-preserve surface's shape to decide, not this adapter's. So this bound REFUSES; it never
+ * rewrites, re-orders, trims, folds or thins what it admits, and an admitted list reaches
+ * `ProductService` byte-for-byte as the caller wrote it.
  */
 const getProductSkusBySelectedOptionsSchema = z.object({
   operation: z.literal('getProductSkusBySelectedOptions'),
-  selectedOptions: z.string(),
+  selectedOptions: z
+    .string()
+    .refine(
+      (value: string): boolean =>
+        Buffer.byteLength(value, 'utf8') <= MAXIMUM_SELECTED_OPTIONS_BYTES,
+      { message: 'must not be longer than the published bound' },
+    ),
   productID: z.string(),
 });
 

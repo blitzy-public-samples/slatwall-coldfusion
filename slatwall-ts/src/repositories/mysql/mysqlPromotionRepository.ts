@@ -143,7 +143,11 @@ import { cfEquals } from '../../lib/cfml/struct.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { PreparedStatementExecutor, SqlRow } from './connection.js';
-import { sqlPlaceholderList } from './connection.js';
+import {
+  MAX_PLACEHOLDER_COUNT,
+  isPreparablePlaceholderCount,
+  sqlPlaceholderList,
+} from './connection.js';
 import type { DatabaseDialect } from './dialect.js';
 import { assertMySqlDialect } from './dialect.js';
 import type { UseCountStatement } from './sql/promotionUseCounts.sql.js';
@@ -278,6 +282,49 @@ class PromotionAssociationError extends Error {
       `${methodName} requires ${entityName}.${associationName} to be materialized, and it is absent`,
     );
     this.name = 'PromotionAssociationError';
+  }
+}
+
+/**
+ * Raised when `getActivePromotionRewards` would build a statement wider than MySQL can prepare.
+ *
+ * ★★★ WHY A WHOLE-STATEMENT BOUND EXISTS WHEN EVERY LIST IS ALREADY BOUNDED INDIVIDUALLY (SEC-J,
+ * CWE-20/CWE-400). `sqlPlaceholderList` refuses a single count above 65_535, and
+ * `isPreparablePlaceholderCount` exists so a builder can apply that ceiling BEFORE allocating - a
+ * previous security finding (F17) established both. Neither closed this method, because its width is
+ * not any one list: the promotion-code list is emitted into TWO separate `EXISTS` arms - the
+ * qualification arm [model/dao/PromotionDAO.cfc:L89] and the unconditional arm [:L102-L114] - and the
+ * reward-type list, the derived no-qualification-required list and five date/flag binds are added on
+ * top. So N codes cost 2N placeholders, and each individual `sqlPlaceholderList(N)` call could pass its
+ * own check while their SUM exceeded the protocol ceiling.
+ *
+ * The observable consequence was a caller-controlled internal error: roughly 32_766 codes - a comma
+ * list well inside any request-size bound - drove the total past 65_535, and the refusal then arrived
+ * from the DRIVER after this method had already tokenized every list, built every fragment and
+ * assembled the whole parameter array.
+ *
+ * THE BOUND IS THE PROTOCOL'S, NOT A POLICY, and this class exists so the refusal is a NAMED domain
+ * fault rather than a driver error: `COM_STMT_PREPARE_OK` reports a placeholder count in a two-byte
+ * field, so a statement above the ceiling has exactly one possible outcome at the server. Refusing it
+ * here rejects nothing [model/dao/PromotionDAO.cfc:L51-L132] could have answered.
+ *
+ * ★ NO LIST IS TRIMMED, DEDUPLICATED OR REORDERED TO FIT. The check is a feasibility test on a COUNT;
+ * every accepted element reaches the statement unchanged, because each of those transformations would
+ * change which rows match.
+ */
+class PromotionRewardPlaceholderBudgetError extends Error {
+  /** The rejected total, kept for programmatic inspection. */
+  public readonly placeholderCount: number;
+
+  public constructor(placeholderCount: number) {
+    super(
+      `getActivePromotionRewards would bind ${String(placeholderCount)} placeholders, and a prepared ` +
+        `statement carries at most ${String(MAX_PLACEHOLDER_COUNT)}. Every promotion code is bound ` +
+        'TWICE - once in the qualification arm and once in the unconditional arm - so the supplied ' +
+        'promotion-code list is the term to reduce.',
+    );
+    this.name = 'PromotionRewardPlaceholderBudgetError';
+    this.placeholderCount = placeholderCount;
   }
 }
 
@@ -2479,6 +2526,38 @@ export class MysqlPromotionRepository implements PromotionRepository {
       return [];
     }
 
+    // --- The COMPLETE statement bind budget, before a single fragment is built (SEC-J) -----
+    //
+    // ★★★ THE TOTAL IS CHECKED HERE, WHICH IS THE ONLY PLACE IT CAN BE CHECKED IN TIME. Every
+    // individual `sqlPlaceholderList` call below applies the protocol ceiling to ITS OWN count, and
+    // that was not enough: this statement's width is a SUM, and the promotion-code list contributes to
+    // it TWICE - once in the qualification arm [model/dao/PromotionDAO.cfc:L89] and once in the
+    // unconditional arm [:L102-L114]. Each part could pass its own check while the sum exceeded 65_535,
+    // and the refusal then came from the driver as an internal error after every list had been
+    // tokenized, every fragment built and the whole parameter array assembled.
+    //
+    // THE ARITHMETIC MIRRORS THE EMISSION BELOW TERM FOR TERM, and the emission conditions are
+    // reproduced rather than approximated - `cfLen(...) > 0 && ....length > 0` for the code arms and
+    // the same nesting inside `qualificationIsRequired` - so this predicts the exact width rather than
+    // an upper bound that could refuse a statement the server would have accepted:
+    //
+    //   * the reward types, plus the two period bounds and the active flag  -> types + 3
+    //   * inside the qualification group only: the codes, plus two instants -> codes + 2
+    //   * inside the qualification group only: the no-qualification types    -> noQual
+    //   * unconditionally: the codes again, plus two instants                -> codes + 2
+    const codeArmIsEmitted = cfLen(promotionCodeList) > 0 && promotionCodes.length > 0;
+    const noQualArmIsEmitted = cfLen(noQualRequiredList) > 0 && noQualRequiredTypes.length > 0;
+    const placeholderCount =
+      rewardTypes.length +
+      3 +
+      (qualificationIsRequired && codeArmIsEmitted ? promotionCodes.length + 2 : 0) +
+      (qualificationIsRequired && noQualArmIsEmitted ? noQualRequiredTypes.length : 0) +
+      (codeArmIsEmitted ? promotionCodes.length + 2 : 0);
+
+    if (!isPreparablePlaceholderCount(placeholderCount)) {
+      throw new PromotionRewardPlaceholderBudgetError(placeholderCount);
+    }
+
     // CFML parity [model/dao/PromotionDAO.cfc:L117]: THE SINGLE CAPTURED INSTANT. Read once, here,
     // and bound everywhere a date is compared. It comes from the INJECTED request clock, so it is
     // the same instant the sale-price statement and the price-group adapter bind - the legacy's
@@ -2517,7 +2596,9 @@ export class MysqlPromotionRepository implements PromotionRepository {
       // An EMPTY promotion-code list REMOVES this clause rather than emptying it, exactly what the
       // legacy `<cfif len(...)>` does: an emptied `IN ()` would be unparseable, and a clause that
       // matched every code would let coded promotions through unconditionally.
-      if (cfLen(promotionCodeList) > 0 && promotionCodes.length > 0) {
+      // The SAME predicate the budget above measured, reached through the shared constant rather than
+      // restated - so the width this method predicted and the width it emits cannot drift apart.
+      if (codeArmIsEmitted) {
         clauses.push(promotionCodeExistsClause(sqlPlaceholderList(promotionCodes.length)));
         params.push(...promotionCodes, capturedInstant, capturedInstant);
       }
@@ -2526,7 +2607,7 @@ export class MysqlPromotionRepository implements PromotionRepository {
       // written differently - `len(noQualRequiredList)` guards the clause, and its conjunction with
       // `arguments.qualificationRequired` guards the bind - and they agree because the clause only
       // exists inside that block, which is what nesting this test preserves.
-      if (cfLen(noQualRequiredList) > 0 && noQualRequiredTypes.length > 0) {
+      if (noQualArmIsEmitted) {
         clauses.push(noQualificationRequiredClause(sqlPlaceholderList(noQualRequiredTypes.length)));
         params.push(...noQualRequiredTypes);
       }
@@ -2539,7 +2620,7 @@ export class MysqlPromotionRepository implements PromotionRepository {
     // caller supplied and which is currently valid.
     clauses.push(NO_PROMOTION_CODE_CLAUSE);
 
-    if (cfLen(promotionCodeList) > 0 && promotionCodes.length > 0) {
+    if (codeArmIsEmitted) {
       clauses.push(promotionCodeExistsClause(sqlPlaceholderList(promotionCodes.length)));
       params.push(...promotionCodes, capturedInstant, capturedInstant);
     }

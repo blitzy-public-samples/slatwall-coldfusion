@@ -311,13 +311,29 @@ const subtreeFileExists = (relativePath: string): boolean =>
 //
 // ★ THE CENSUS IS OVER TRACKED FILES, AND THE GENERATED NAMES ARE DECLARED HERE.
 // A developer's local `.env`, an `.eslintcache` or a stray `*.tsbuildinfo` is not a scope
-// addition and must not be reported as one. The subtree used to carry its own `.gitignore`
-// and these rules were read from it; a code review removed that file, because AAP 0.3.1
-// enumerates the root as exactly TWELVE artifacts and a thirteenth cannot be admitted by
-// being useful. So the names are declared here instead - in the one file whose job is to
-// state the census - and the publish workflow keeps them out of `git status` through a local,
-// never-committed exclude. Only the three forms the removed file actually used are honoured:
-// an exact name, a trailing-directory name, and a `*.suffix` glob.
+// addition and must not be reported as one. Only the three forms `.gitignore` itself uses are
+// honoured: an exact name, a trailing-directory name, and a `*.suffix` glob.
+//
+// ★★★ QUOTE-THEN-REVISE, BECAUSE THE SUBTREE'S `.gitignore` HAS BEEN BOTH REMOVED AND RESTORED
+// AND THIS LIST OUTLIVED BOTH TURNS. This note used to read: "The subtree used to carry its own
+// `.gitignore` and these rules were read from it; a code review removed that file, because AAP
+// 0.3.1 enumerates the root as exactly TWELVE artifacts and a thirteenth cannot be admitted by
+// being useful. So the names are declared here instead - in the one file whose job is to state the
+// census - and the publish workflow keeps them out of `git status` through a local,
+// never-committed exclude."
+//
+// The plan reading was accurate and the CONCLUSION did not survive the next review: a per-clone
+// `.git/info/exclude` never travels, so a FRESH CLONE had no protection at all and a real `.env`
+// carrying `DB_PASSWORD` was one `git add` away from the index. That was raised as SEC-G
+// (CWE-200/CWE-540) and the file is committed again - reconciled through
+// `recordedScopeAdditions` below, which is the mechanism this file publishes for precisely the
+// case of a sanctioned path that the enumeration does not name.
+//
+// THIS LIST STAYS ALL THE SAME, AND ITS JOB HAS NOT CHANGED. The census must know which root
+// names are GENERATED whether or not a `.gitignore` is present, and deriving them by parsing that
+// file would make the census depend on a file whose own presence the census is asserting. The two
+// are held in agreement by `A18` instead: every name here appears in `.gitignore`, and the
+// declaration is the one a reader of the census can check without leaving this file.
 const UNTRACKED_ROOT_NAMES: readonly string[] = [
   'node_modules/',
   'dist/',
@@ -1237,6 +1253,29 @@ export const LEGACY_TEST_MAP: {
     //
     // The conversion behaviour did NOT stop being covered. It is exercised where it now lives, in
     // `tests/unit/handlers/bootstrap.test.ts`, which is itself recorded addition below.
+    //
+    // ★★★ AND THE FIRST `rootArtifact` ROW IN THIS REGISTER IS BELOW, WHICH IS WHY THE KIND EXISTS.
+    // Every other row is a suite. `.gitignore` is a root artifact the plan's enumeration does not
+    // name, it was deleted once on exactly that ground, and a security review then required it back
+    // (SEC-G); recording it here is what keeps "a thirteenth root file" a LOUD, itemised, reviewable
+    // fact instead of the silent drift the enumeration argument was rightly worried about.
+    {
+      path: '.gitignore',
+      kind: 'rootArtifact',
+      sanctioningPattern: 'slatwall-ts/<root artifact>',
+      reason:
+        'SEC-G (CWE-200/CWE-540): the committed ignore mechanism. AAP 0.8.3 commits this port ' +
+        'to "environment-driven configuration with no hardcoded credentials, accompanied by a ' +
+        'committed `.env.example`", and AAP 0.9.5 gates on "no credential is hardcoded" and on ' +
+        '`git status` showing only additions under `slatwall-ts/`. Neither survives in a FRESH ' +
+        'CLONE without a tracked ignore file: this file was removed once, its rules were kept ' +
+        'in a per-clone `.git/info/exclude` that never travels, and a developer following ' +
+        'README.md could then create a real `.env` holding DB_PASSWORD and stage it, or stage ' +
+        "dist/'s bundles and source maps. The root `.gitignore` is a CFML-era file this port " +
+        'may not modify (AAP 0.4.1), and it ignores none of the four artefact classes a Node ' +
+        'build produces, so the rules have to live here. `!.env.example` keeps the committed ' +
+        'contract tracked while `.env` and `.env.*` stay out of the index.',
+    },
     {
       path: 'tests/integration/repositories/skusBySelectedOptions.test.ts',
       kind: 'integrationSuite',
@@ -6146,6 +6185,95 @@ describe('A17 package shape: one archive per capability, recoverable annotations
     // inside the quotation that records the correction.
     expect(readme).not.toContain('the containment is real and it is **conditional**');
   });
+
+  it('★★★ keeps the public-feed availability escalation, clause by clause, in both records', () => {
+    // ★★★ A SECOND ESCALATION ON THIS ROUTE, AND IT NEEDS THE SAME GATE FOR THE SAME REASON. The
+    // project-wide final security assessment raised SEC-C (MEDIUM, CWE-400): the feed is recomputed in
+    // full per allowed-Host request with no cache, validator, rate limit or concurrency guard. The
+    // mechanism is accurate and is not disputed - what is disputed is that this subtree may fix it.
+    //
+    // FOUR OF ITS FIVE REMEDY CLAUSES ARE BLOCKED BY THE PLAN AND THE FIFTH WAS ALREADY SATISFIED, so
+    // the deliverable is a record rather than a patch: an application cache is module-scope state on a
+    // warm container, which AAP 0.6.5 requires to be request-scoped; the validator family was
+    // explicitly WITHDRAWN from this route by an earlier review under AAP 0.8.1; rate and concurrency
+    // limits are assigned to the edge by the finding itself and AAP 0.2.2 excludes that tier; duration
+    // and memory are already measured by the platform; and the no-truncation clause is the reason an
+    // earlier review REMOVED a row ceiling from the feed repository.
+    //
+    // THIS CASE EXISTS BECAUSE A DISPOSITION THAT LIVES IN ONE FILE ROTS. The same hazard the
+    // feed-scheme gate above was built for applies here: an in-code record and an operator-facing
+    // record can drift, and a reader who finds only one of them cannot tell whether the other was
+    // withdrawn or forgotten. Both are read off disk, and the clause-by-clause reasoning is pinned by
+    // the AAP sections it rests on - so a future revision cannot keep the headline while quietly
+    // dropping the authority under it.
+    const handlerModule = readSubtreeFile('src/handlers/productFeedHandler.ts');
+    const readme = readSubtreeFile('README.md');
+
+    // The in-code record: the finding, its class, and the escalation label the other two escalations
+    // use, so all three read the same way.
+    expect(handlerModule).toContain('SEC-C, CWE-400');
+    expect(handlerModule).toContain('ESCALATED ON AAP');
+    expect(handlerModule).toContain('Escalate, do not patch unilaterally.');
+
+    // It concedes the mechanism rather than arguing with it, which is what makes the rest credible.
+    expect(handlerModule).toContain('THE MECHANISM IS ACCURATE');
+
+    // And every clause names the authority that blocks it. These four sections are the whole argument:
+    // request-scoped state, the excluded infrastructure tier, the invented-requirement ban and the
+    // exhausted behaviour-change budget.
+    for (const authority of ['AAP 0.6.5', 'AAP 0.2.2', 'AAP 0.8.1', 'AAP 0.6.7']) {
+      expect(
+        handlerModule,
+        `the SEC-C record must name ${authority}, or a clause is asserted without an authority`,
+      ).toContain(authority);
+    }
+
+    // The two clauses that are DISCHARGED rather than blocked are stated as such, because a record
+    // that blocked all five would be refusing a finding rather than answering it.
+    expect(handlerModule).toContain('DURATION AND MEMORY ARE ALREADY MEASURED');
+    expect(handlerModule).toContain('ALREADY SATISFIED');
+
+    // ★★ AND THE RECORD MAY NOT MISSTATE THE INVARIANT IT LEANS ON. That is not hypothetical: this
+    // block's first draft called the connection pool "the ONE sanctioned exception in the whole
+    // subtree", while `README.md` states "**five** module-scope mutable bindings, not one" - a claim
+    // already pinned by the README-accuracy block below. The argument never needed a headcount and is
+    // stronger without one: all five are expensive to build, request-INDEPENDENT and free of request
+    // data, and a cached catalog document breaks that property rather than a count.
+    expect(handlerModule).toContain('THE TEST IS NOT A HEADCOUNT');
+    expect(handlerModule).not.toContain('ONE sanctioned exception');
+    expect(readme).toContain('The test is not a headcount');
+    expect(readme).not.toContain('the one sanctioned exception in this subtree');
+
+    // The operator-facing record, under the finding's own label and grade.
+    expect(readme).toContain('a third escalated plan decision');
+    expect(readme).toContain('SEC-C');
+    expect(readme).toContain('CWE-400');
+    expect(readme).toContain('escalate, do not patch unilaterally');
+    expect(readme).toContain('AAP amendment');
+
+    // ★★ AND THE OBLIGATION IS NAMED AS THE DEPLOYMENT'S, WHICH IS THE ONE THING THIS SUBTREE CAN
+    // ACTUALLY DELIVER FOR THIS FINDING. An unstated obligation is the residual risk: rate limiting
+    // and a cache in front of the route are real requirements, and writing them down is what turns an
+    // assumption into something a reviewer can check a deployment against.
+    expect(readme).toContain('owned by the deployment');
+    expect(readme).toContain('GET /feeds/google/products');
+
+    // The route is still whole-catalog and still unbounded, which is what the no-truncation clause
+    // requires: the removed ceiling must not have crept back into the repository.
+    const feedRepository = readSubtreeFile('src/integrations/google/googleFeedRepository.ts');
+
+    expect(feedRepository).toContain('MAX_FEED_SELECTION_ROWS');
+    expect(feedRepository).toContain('WHY IT IS GONE');
+    expect(feedRepository).not.toMatch(/const MAX_FEED_SELECTION_ROWS = /);
+
+    // And no validator or throttle vocabulary reached the served response while this record stood.
+    for (const invention of ['etag:', 'last-modified:', 'cache-control:', 'retry-after:']) {
+      expect(
+        handlerModule.toLowerCase().includes(`'${invention}`),
+        `${invention} must not be emitted by the feed route while SEC-C stands escalated`,
+      ).toBe(false);
+    }
+  });
 });
 
 // --- A20: the source census, and the one-unit-per-file rule as AAP 0.3.1 actually states it ---
@@ -7134,13 +7262,15 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
     // assertion below still holds - which is the outcome the plan describes, and it must be
     // reached by REMOVING paths rather than by emptying this list.
     //
-    // EIGHT, DOWN FROM TWELVE, AND REACHED THE SANCTIONED WAY. Four rows left this register because
-    // the paths they named left the tree, not because the list was trimmed to make a count agree:
-    // the two European-Central-Bank rows documented above the register - the converter module and its
-    // suite, both re-homed into the composition root - and, at the prior boundary, the request-principal
-    // module and its suite, folded into `src/handlers/errorMapper.ts`. Every remaining row still names
-    // a path that `subtreeFileExists` confirms, which the case above asserts before this figure is read.
-    expect(ADDITIONS.length).toBe(8);
+    // NINE. IT WAS TWELVE, FELL TO EIGHT, AND ROSE BY ONE - AND EVERY MOVE WAS REACHED THE
+    // SANCTIONED WAY, BY A PATH ENTERING OR LEAVING THE TREE, never by trimming the list to make a
+    // count agree. Four rows left because the paths they named left: the two
+    // European-Central-Bank rows documented above the register - the converter module and its suite,
+    // both re-homed into the composition root - and, at the prior boundary, the request-principal
+    // module and its suite, folded into `src/handlers/errorMapper.ts`. One row arrived because a path
+    // returned: `.gitignore`, restored under SEC-G. Every row still names a path that
+    // `subtreeFileExists` confirms, which the case above asserts before this figure is read.
+    expect(ADDITIONS.length).toBe(9);
   });
 
   it('holds the frozen root-artifact set exactly, once the recorded addition is removed', () => {
@@ -7155,6 +7285,46 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
     expect(ROOT_FILES_ON_DISK.length - recordedRootAdditions.length).toBe(
       FROZEN.rootArtifacts.length,
     );
+  });
+
+  it('★★★ commits the ignore mechanism SEC-G requires, and keeps it agreeing with this census', () => {
+    // ★★★ SEC-G, CWE-200/CWE-540. The finding is that the tracked ignore file was deleted and its
+    // rules survived only in this checkout's `.git/info/exclude` - which is per-clone and never
+    // travels, so a FRESH CLONE had no protection and a real `.env` carrying `DB_PASSWORD` was one
+    // `git add` away from the index. A comment claiming the file is back proves nothing; this case is
+    // what makes the restoration a fact, and what stops a later "root is exactly twelve artifacts"
+    // tidy-up from removing it silently a second time.
+    const ignoreRules = readSubtreeFile('.gitignore');
+
+    // (1) EVERY GENERATED NAME THIS CENSUS DECLARES IS ACTUALLY IGNORED. `UNTRACKED_ROOT_NAMES` is
+    // what stops a build product being reported as scope drift; if the two ever disagree, one of them
+    // is wrong about what "generated" means and `git status` and this file stop describing the same
+    // tree. Compared by exact rule line, so a partial match cannot satisfy it.
+    const ruleLines = ignoreRules
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('#'));
+
+    expect(missingFrom(UNTRACKED_ROOT_NAMES, ruleLines).sort()).toEqual([]);
+
+    // (2) AND THE COMMITTED CONTRACT STAYS TRACKED. `.env` is ignored, `.env.*` with it, and
+    // `.env.example` is RE-INCLUDED - the one negation in the file. Losing that negation would
+    // untrack the environment contract AAP 0.8.3 requires to be committed, which is the opposite
+    // failure and just as quiet.
+    expect(ruleLines).toContain('.env');
+    expect(ruleLines).toContain('.env.*');
+    expect(ruleLines).toContain('!.env.example');
+    expect(subtreeFileExists('.env.example')).toBe(true);
+
+    // (3) NOTHING OUTSIDE THIS SUBTREE IS AFFECTED. A rule is relative to its own directory, so a
+    // leading `/` or a `..` segment would be the only way to reach past it - and neither appears.
+    expect(ruleLines.filter((line) => line.includes('..'))).toEqual([]);
+    expect(ruleLines.filter((line) => line.startsWith('/'))).toEqual([]);
+
+    // (4) THE RESTORATION IS RECORDED AS A SANCTIONED ADDITION, not as an unexplained thirteenth
+    // file. The register case above already proves the row exists with a reason and a plan pattern;
+    // this pins the row to THIS path, so the census and the file cannot part company.
+    expect(ADDED_PATHS).toContain('.gitignore');
   });
 
   it('holds every frozen source directory at its planned size, addition by addition', () => {
@@ -7207,7 +7377,7 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
     expect([...SUPPORT_FILES_ON_DISK].sort()).toEqual([...FROZEN.supportFiles].sort());
   });
 
-  it('reconciles the whole tree: 165 frozen plus 8 recorded equals what is on disk', () => {
+  it('reconciles the whole tree: 165 frozen plus 9 recorded equals what is on disk', () => {
     const onDisk =
       ROOT_FILES_ON_DISK.length +
       SOURCE_MODULES_ON_DISK.length +
@@ -7215,8 +7385,13 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
       FIXTURES_ON_DISK.length +
       SUPPORT_FILES_ON_DISK.length;
 
+    // THE DERIVED IDENTITY FIRST, THE LITERAL SECOND, AND BOTH ON PURPOSE. The identity is the
+    // contract - frozen plus itemised equals committed - and the literal is what stops the identity
+    // being satisfied by editing the register and the tree in step without anybody noticing the
+    // total moved. It reads 174 rather than 173 because `.gitignore` returned under SEC-G; the
+    // register above records the row and this figure records its effect on the census.
     expect(onDisk).toBe(FROZEN.totalFiles + ADDITIONS.length);
-    expect(onDisk).toBe(173);
+    expect(onDisk).toBe(174);
   });
 
   it('reconciles the register: 57 mapped and 32 exempt, moved only by recorded rows', () => {

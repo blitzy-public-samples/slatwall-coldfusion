@@ -701,6 +701,123 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the preserved abs
   });
 });
 
+describe('MysqlPromotionRepository.getActivePromotionRewards - the COMPLETE bind budget (SEC-J)', () => {
+  // ★★★ WHAT THIS BLOCK EXISTS FOR (SEC-J, CWE-20/CWE-400). `sqlPlaceholderList` refuses a single count
+  // above 65_535, and `isPreparablePlaceholderCount` exists so a builder can apply that ceiling before
+  // allocating - a previous security finding established both. Neither closed this method, because its
+  // width is a SUM: the promotion-code list is emitted into TWO separate `EXISTS` arms - the
+  // qualification arm [model/dao/PromotionDAO.cfc:L89] and the unconditional arm [:L102-L114] - so N
+  // codes cost 2N placeholders, and each part could pass its own check while the total exceeded the
+  // ceiling. The refusal then came from the DRIVER, as an internal error, after every list had been
+  // tokenized and the whole parameter array assembled.
+
+  /** A comma list of `count` distinct codes. */
+  function codeList(count: number): string {
+    return Array.from({ length: count }, (_unused, index) => `c${String(index)}`).join(',');
+  }
+
+  it('★★★ REFUSES a total above the protocol ceiling, and issues NO statement', async () => {
+    // 33_000 codes is under any individual ceiling and over the total: the qualification arm and the
+    // unconditional arm each bind all of them, so the statement would carry more than 66_000
+    // placeholders.
+    const { executor, repository } = makeSubject();
+
+    await expect(
+      repository.getActivePromotionRewards('merchandise', codeList(33_000), true),
+    ).rejects.toThrow(/at most 65535/u);
+
+    // ★★ NOTHING WAS EXECUTED. This is the assertion that makes the fix a bound rather than a nicer
+    // error message: the allocation and the round trip the budget exists to prevent did not happen.
+    expect(executor.calls).toHaveLength(0);
+  });
+
+  it('★★ names the promotion-code list as the term to reduce, without echoing a code', async () => {
+    const { repository } = makeSubject();
+
+    await expect(
+      repository.getActivePromotionRewards('merchandise', codeList(33_000), true),
+    ).rejects.toThrow(/promotion-code list is the term to reduce/u);
+
+    // The message explains the doubling rather than leaving a caller to discover it, and names no
+    // individual code.
+    await expect(
+      repository.getActivePromotionRewards('merchandise', codeList(33_000), true),
+    ).rejects.toThrow(/TWICE/u);
+  });
+
+  it('★★ counts the code list TWICE when qualification is required, and once when it is not', async () => {
+    // The doubling is the whole finding, so it is asserted directly: a list that fits when it is bound
+    // once must be refused when it is bound twice. 40_000 codes is 40_004 placeholders on the
+    // unconditional-only path and 80_006 on the qualification path.
+    const codes = codeList(40_000);
+
+    const single = makeSubject();
+    await expect(
+      single.repository.getActivePromotionRewards('merchandise', codes, false),
+    ).resolves.toStrictEqual([]);
+    expect(single.executor.calls).toHaveLength(1);
+
+    const doubled = makeSubject();
+    await expect(
+      doubled.repository.getActivePromotionRewards('merchandise', codes, true),
+    ).rejects.toThrow(/at most 65535/u);
+    expect(doubled.executor.calls).toHaveLength(0);
+  });
+
+  it('★★ predicts the width EXACTLY, so it refuses nothing the server would have accepted', async () => {
+    // An upper-bound approximation would refuse statements MySQL can prepare. The arithmetic mirrors
+    // the emission term for term, so a list right at the edge is served - and the statement it produces
+    // carries the predicted number of parameters.
+    const codes = codeList(32_000);
+    const { executor, repository } = makeSubject();
+
+    await expect(
+      repository.getActivePromotionRewards('merchandise', codes, true),
+    ).resolves.toStrictEqual([]);
+
+    // 1 reward type + 3 (the two period bounds and the active flag) + (32_000 codes + 2 instants)
+    // TWICE. `merchandise` derives NO no-qualification-required types - that list gains a member only
+    // for `fulfillment` or `order` [model/dao/PromotionDAO.cfc:L57-L63] - so that term is zero here and
+    // is exercised by the case below instead.
+    const { params } = requireOnlyCall(executor);
+
+    expect(params.length).toBeLessThanOrEqual(65_535);
+    expect(params.length).toBe(1 + 3 + (32_000 + 2) * 2);
+  });
+
+  it('★★ includes the DERIVED no-qualification-required list in the budget it predicts', async () => {
+    // The one term the case above cannot reach. `fulfillment` and `order` each add a member to the
+    // derived list [model/dao/PromotionDAO.cfc:L57-L63], and that list is bound too - so a budget that
+    // omitted it would under-predict by exactly its length.
+    const { executor, repository } = makeSubject();
+
+    await repository.getActivePromotionRewards(
+      'merchandise,order,fulfillment',
+      'CODE-A,CODE-B',
+      true,
+    );
+
+    const { params } = requireOnlyCall(executor);
+
+    // 3 reward types + 3 + (2 codes + 2 instants) twice + 2 derived types (`fulfillment`, `order`).
+    expect(params).toHaveLength(3 + 3 + (2 + 2) * 2 + 2);
+  });
+
+  it('★ leaves the ordinary case entirely alone', async () => {
+    // The budget is a comparison and nothing else: a normal call still issues exactly one statement
+    // with exactly the parameters it always bound.
+    const { executor, repository } = makeSubject();
+
+    await repository.getActivePromotionRewards('merchandise', 'CODE-A,CODE-B', true);
+
+    const { params } = requireOnlyCall(executor);
+
+    // 1 reward type + 3 (the two period bounds and the active flag) + (2 codes + 2 instants) TWICE.
+    // No derived no-qualification-required types, because `merchandise` derives none.
+    expect(params).toHaveLength(1 + 3 + (2 + 2) * 2);
+  });
+});
+
 describe('MysqlPromotionRepository.getActivePromotionRewards - the captured instant', () => {
   // CFML parity [model/dao/PromotionDAO.cfc:L117]: `now = now()` is captured ONCE into the parameter
   // struct and referenced by NAME at L73, L75 and twice inside each conditional OR EXISTS fragment

@@ -66,11 +66,18 @@ What that means in practice:
   `.json` under `model/validation/` — an immediate and severe scope violation, and one that a
   reviewer sees as a hundred-file diff. `npm run format` and `npm run lint:fix` are safe **only**
   because your working directory is this subtree.
-- **This subtree ships no `.gitignore`, and that is deliberate.** AAP 0.2.1 and 0.3.1 enumerate every
-  artifact this port creates and an ignore file is not among them, so none is committed here. Keeping
-  `node_modules/`, `dist/`, `build/`, `coverage/` and a local `.env` out of the index is therefore a
-  **local** concern: put the patterns in `.git/info/exclude`, which is per-clone and is itself never
-  committed. Do not add a `slatwall-ts/.gitignore` or a `.prettierignore` to solve it.
+- **This subtree ships a committed `slatwall-ts/.gitignore`, and that is deliberate — it was
+  deliberately absent for one revision, and the reversal is recorded in the file itself.** It keeps
+  `node_modules/`, `dist/`, `build/`, `coverage/`, the tooling caches and a local `.env` out of the
+  index, while re-including `.env.example` so the committed environment contract stays tracked. It is
+  the thirteenth root file, which the plan's enumeration does not name, so it is itemised as a
+  sanctioned addition in `tests/traceability/legacyTestMap.ts` (`recordedScopeAdditions`) and asserted
+  there — a later "the root is exactly twelve artifacts" tidy-up now fails a test instead of quietly
+  deleting your protection. The earlier position was that the enumeration forbade a thirteenth file
+  and that `.git/info/exclude` would do the job; a security review (SEC-G) rejected it, because that
+  exclude is per-clone and never travels: a fresh clone had no rules at all, so a real `.env` holding
+  `DB_PASSWORD` was one `git add` away from the index. Do not add a `.prettierignore` — the format
+  scripts pass explicit globs and need none.
 - **Verify before you stage**, every time: `git status --porcelain` must show paths under
   `slatwall-ts/` and nothing else. This is the control, not the ignore rules — every ignore mechanism
   is advisory, because `git add -f` and an explicit `git add <path>` both defeat it. The porcelain
@@ -144,8 +151,15 @@ asserts the `5.` prefix so the drift fails a test run instead of passing unnotic
 
 > **This is a plan-level decision that has been escalated, not a defect this subtree claims to have
 > fixed.** The pinned Node 20 / Lambda `nodejs20.x` line was raised as **S-17**, re-raised as
-> **V-10**, and raised a third time as **F46** (CWE-1104, _Use of Unmaintained Third-Party
-> Components_).
+> **V-10**, raised a third time as **F46** (CWE-1104, _Use of Unmaintained Third-Party
+> Components_), and raised a fourth time as **SEC-E** by the project-wide final security assessment,
+> which files it as HIGH and states its own required resolution as obtaining "a product/AAP
+> exception" _before_ migrating the coupled artifacts. That precondition is the whole reason this
+> record exists rather than a code change: the exception is the plan owner's to grant, an agent may
+> not grant it to itself, and the AAP may not be edited to manufacture one. SEC-E also proposes a
+> successor line — Node 24, for support runway — which is recorded here as the reviewer's
+> recommendation and **not** adopted, because selecting the successor is the same plan-owner
+> decision.
 >
 > AAP 0.1.1, 0.5.1 and 0.9.1 freeze this runtime line and its exact toolchain. Six artifacts state
 > the pin and therefore move together — `.nvmrc`, `engines.node`, `package-lock.json`, `@types/node`,
@@ -269,10 +283,12 @@ consumers — `build/` holds `.js` + `.d.ts` + maps for a type consumer, `dist/`
 `.cjs` Lambda artifacts, their `.cjs.map` maps and the `.zip` archives. Neither destroys the other.
 
 **Why the two format scripts name globs instead of `.`, and why the globs are quoted.** Prettier 3
-defaults `--ignore-path` to `[.gitignore, .prettierignore]`, and this subtree ships neither — see the
-isolation invariant above for why. A bare `prettier --check .` would therefore walk `dist/`, `build/`
-and `coverage/` and fail on generated output. The scripts name their inputs explicitly instead, which
-is an allow-list rather than a deny-list and cannot be widened by a directory appearing later.
+defaults `--ignore-path` to `[.gitignore, .prettierignore]`. This subtree now ships the first of those
+(SEC-G — see the isolation invariant above) and deliberately no `.prettierignore`, and the scripts do
+**not** lean on either: a bare `prettier --check .` would walk `dist/`, `build/` and `coverage/` and
+fail on generated output the moment an ignore rule were narrowed or a directory appeared that no rule
+named. The scripts name their inputs explicitly instead, which is an allow-list rather than a
+deny-list, and it means the formatting gate does not change behaviour with the ignore file.
 
 The quoting is load-bearing and must not be "tidied away": an unquoted `src/**/*.ts` is expanded by
 the **shell**, and a shell without `globstar` matches one directory level — a small fraction of the
@@ -663,12 +679,22 @@ anywhere under `src/**`.
 Four classes of local artifact must never reach a commit — the installed dependency tree
 (`node_modules/`), the build and bundle output (`dist/`, `build/`, `*.tsbuildinfo`), the coverage
 report (`coverage/`) and tooling caches (`.eslintcache`, `.vitest/`), and your real `.env`. This
-subtree deliberately carries **no committed `.gitignore`**: AAP 0.3.1 enumerates its root layout
-exhaustively — twelve artifacts, from `package.json` through `NOTICE-GPL.md` — and an ignore file is
-not among them, so adding one would be an unplanned thirteenth root artifact. The guarantee is
-carried by verification instead of by an ignore rule, which is the stronger arrangement in any case:
-an ignore rule silences a warning, whereas the checks below actually prove nothing generated has
-been committed.
+subtree carries a **committed `slatwall-ts/.gitignore`** covering all four, with `!.env.example` so
+the environment contract itself stays tracked. It is a thirteenth root artifact that AAP 0.3.1's
+enumeration does not name, which is why it is itemised and asserted as a sanctioned addition in
+`tests/traceability/legacyTestMap.ts` rather than left to be discovered as drift.
+
+**It was absent for one revision, and the reasoning on both sides is worth keeping.** The earlier
+position was that the enumeration forbade a thirteenth root file, that the rules could live in this
+checkout's `.git/info/exclude`, and that "the guarantee is carried by verification instead of by an
+ignore rule, which is the stronger arrangement in any case: an ignore rule silences a warning,
+whereas the checks below actually prove nothing generated has been committed." The last clause is
+still true and the conclusion did not follow. `.git/info/exclude` is **per-clone and never
+committed**, so a fresh clone inherited nothing: a developer following this file's own instructions
+creates a real `.env` holding `DB_PASSWORD`, and `git add -A` stages it. A security review raised
+that as SEC-G (CWE-200/CWE-540) and required a committed mechanism. Both controls are in force now —
+the ignore rules stop the accident, and the porcelain check below still proves the outcome, because
+an ignore rule remains advisory in the face of `git add -f`.
 
 #### Three startup refusals that make the transport posture real
 
@@ -702,15 +728,18 @@ itself as stronger than it is has no value at all.
 Four classes of local artifact: the installed dependency tree, the build and bundle output, the
 coverage report, and your real `.env`.
 
-**This subtree ships no `.gitignore`** — see [the isolation invariant](#the-isolation-invariant) for
-why — so nothing inside it stops you. Handle it one of two ways, in order of preference:
+**This subtree ships a committed `slatwall-ts/.gitignore`** covering all four — see
+[the isolation invariant](#the-isolation-invariant) for why it is a sanctioned thirteenth root
+artifact — so a fresh clone is protected from the ordinary accident. Two habits still matter, in
+order of preference:
 
-1. **Do not create a `.env` at all.** Inject the values from your shell or a managed secret store,
-   which is how the deployed runtime supplies them anyway, so your local setup matches production
-   instead of diverging from it. The entire suite passes with a **completely empty environment**, so
-   nothing in this repository needs the file to exist.
-2. If you do create one, exclude it **locally** in `.git/info/exclude` — per-clone, and itself never
-   committed — along with the other three classes.
+1. **Prefer not to create a `.env` at all.** Inject the values from your shell or a managed secret
+   store, which is how the deployed runtime supplies them anyway, so your local setup matches
+   production instead of diverging from it. The entire suite passes with a **completely empty
+   environment**, so nothing in this repository needs the file to exist.
+2. If you do create one, the committed rules already keep `.env` and every `.env.*` except
+   `.env.example` out of the index. Do not defeat them with `git add -f`, and do not rename the file
+   to something no rule names.
 
 Two things hold either way:
 
@@ -721,18 +750,20 @@ Two things hold either way:
 - **Check before staging, do not assume.** Run `git status --porcelain` and confirm only intended
   files under `slatwall-ts/` appear. Nothing generated is ever staged by name here; `git add`
   targets specific paths, never `.` or `-A` from the subtree root.
-- **Keep generated paths quiet locally, without committing anything.** Add them to
-  `.git/info/exclude` (per-clone, never committed) or to your personal global ignore file
-  (`git config --global core.excludesFile`). Either mechanism gives you the convenience an ignore
-  file would, and leaves the tracked tree exactly as the plan enumerates it.
+- **Generated paths are quiet because the committed rules name them**, and the same eight names are
+  declared as `UNTRACKED_ROOT_NAMES` in `tests/traceability/legacyTestMap.ts` so the census does not
+  report a build product as scope drift. A traceability case asserts the two agree; a personal global
+  ignore file (`git config --global core.excludesFile`) remains available for anything outside them.
 - The repository-root `.gitignore` is a CFML-era file this port does not modify, and it covers none of
-  the four. Never edit it to compensate.
+  the four — which is exactly why the rules had to live in the subtree. Never edit the root file to
+  compensate.
 - **Check, do not assume.** Run `git status --porcelain` before staging and confirm that only intended
   files under `slatwall-ts/` appear. Every ignore mechanism is advisory — `git add -f` and an explicit
   `git add <path>` both defeat one — so the status check is the gate and the ignore rules are a
   convenience.
-- `.env.example` is the committed contract and holds no secret. A real `.env` holds `DB_PASSWORD`;
-  keep it out of the index with the local exclude above and never stage it by name.
+- `.env.example` is the committed contract and holds no secret, and the one negation in
+  `slatwall-ts/.gitignore` (`!.env.example`) is what keeps it tracked while `.env` and `.env.*` are
+  not. A real `.env` holds `DB_PASSWORD`: never stage it by name and never force it in.
 
 ---
 
@@ -745,7 +776,18 @@ Two things hold either way:
 > MINOR, called it the project's one residual vulnerability, judged the escalation itself **correctly
 > documented**, and required "a product owner [to] authorize an explicit divergence/AAP amendment"
 > before HTTPS is emitted. An earlier review had resolved it identically, in its own words:
-> "escalate, do not patch unilaterally". Three independent reviews, one conclusion.
+> "escalate, do not patch unilaterally". A further review re-raised it as **F49**, and the
+> project-wide final security assessment re-raised it a fifth time as **SEC-F**, grading it LOW and
+> conditioning its own required resolution on the same precondition: "**with explicit product
+> approval**, use a deployment-owned canonical HTTPS origin" and never infer the scheme from an
+> untrusted forwarding header. Five independent reviews, one conclusion.
+>
+> **The half of SEC-F that is actionable without an amendment is already satisfied, and the half that
+> is not is the emitted literal.** No forwarding header — `X-Forwarded-Proto`, `Forwarded`,
+> `CloudFront-Forwarded-Proto` or any other — is read by the renderer, the feed handler or the
+> composition root, so the scheme cannot be steered by a request; and the authority beside it comes
+> from the deployment-owned allow-list below rather than from the `Host` the caller wrote. What
+> remains is the five `http://` prefixes themselves, which are the frozen legacy document.
 >
 > The legacy template writes `http://#CGI.HTTP_HOST#` at the channel link, the channel description,
 > the item link, the item image link and each additional image link
@@ -779,6 +821,47 @@ Two things hold either way:
 >
 > The feed is machine-read by Google Merchant Center and carries the product names, images and prices
 > the store publishes anyway, which is why both reviews graded the remaining cleartext-scheme gap MINOR.
+
+---
+
+## Product-feed availability — a third escalated plan decision, and one deployment obligation
+
+> **This is a plan-level decision that has been escalated, plus a requirement this subtree cannot
+> satisfy in code — not a defect it claims to have fixed.** The project-wide final security assessment
+> raised **SEC-C** (MEDIUM, CWE-400, _public resource exhaustion_): the product feed is recomputed in
+> full on every allowed-Host request — whole-catalog selection, the batched follow-up hydration and a
+> complete in-memory render — with no application cache, conditional validator, rate limit or
+> concurrency guard, and any network caller can repeat allowed-Host requests in parallel. **The
+> mechanism is accurate and is not disputed here.** Its required resolution was to "pre-generate/cache
+> the feed artifact, provide ETag/Last-Modified handling, enforce edge/WAF rate and concurrency limits,
+> and monitor duration/memory", and never to silently truncate the Merchant feed.
+>
+> **Four of those five clauses are blocked by the plan, and the fifth was already satisfied.**
+> `src/handlers/productFeedHandler.ts` carries the clause-by-clause record beside the capacity block;
+> in short:
+>
+> | Clause                                     | Why it is not implemented here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+> | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+> | Application cache / pre-generated artifact | A cached document is module-scope state on a warm container. AAP 0.6.5 requires every legacy component-level cache to become **request-scoped** because module state persists between unrelated requests and reproducing it "would be actively unsafe". The test is not a headcount — [Module-scope state, enumerated](#module-scope-state-enumerated) lists **five** bindings, and what they share is being expensive to build, request-**independent** and free of request data. A rendered catalog document would be the first holding business data derived from one caller’s request. It is also built from the request's **own** origin authority and pinned to the request's single instant, so retaining one would answer a caller on another caller’s authority and timestamp. That section’s own rule for a sixth binding — "a design decision to raise, not a local optimisation" — is what this section is. Pre-generation is a deployment activity, and AAP 0.2.2 excludes infrastructure as code. |
+> | ETag / Last-Modified / Cache-Control / 304 | This route's header ruling already names those three headers and conditional requests as HTTP semantics the source lacked, whose addition would invent a requirement (AAP 0.8.1) — and it has been applied: a code review **withdrew** `x-content-type-options` from this response under it, a hardening header with no behavioural consequence. Re-adding a validator family that changes what a consumer re-fetches reverses a settled decision. It would also buy nothing alone: a strong validator is computed from the document, so without the cache above a conditional request still pays for the whole selection and the whole render before it can answer 304.                                                                                                                                                                                                                                                                                                                                        |
+> | Rate and concurrency limits                | Assigned to the **edge/WAF** by the finding itself, and that tier is out of scope by AAP 0.2.2. A per-container counter is again module-scope state; a concurrency ceiling is a throughput figure, which AAP 0.8.1 forbids inventing — the clause under which the legacy runtime's own 60-, 45- and 30-second lock timeouts are noted and deliberately not implemented.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+> | Monitor duration and memory                | Already measured by the platform, per invocation. The served-feed line deliberately records no size, count or elapsed figure, and a suite asserts that it records none.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+> | Do not silently truncate                   | **Already satisfied.** A `MAX_FEED_SELECTION_ROWS` ceiling was removed from `src/integrations/google/googleFeedRepository.ts` by an earlier review for exactly this reason: a security goal does not license replacing a working feed with an error on correct data.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+>
+> **What already bounds the residual.** The route answers only for a `Host` in the deployment-owned
+> allow-list and fails closed — absent or empty `FEED_ALLOWED_HOSTS` trusts no host and the route
+> answers no document, so an unconfigured deployment has no exposure here. Per invocation the work is
+> one selection statement plus four **batched** follow-up statements — one round trip per feed, never
+> one per row — one pure render, one request scope, no duplicate buffer and nothing retained between
+> invocations. Capacity is characterized against the platform's own payload ceilings, and a catalog
+> past them fails visibly rather than shrinking.
+>
+> **The deployment obligation, stated so it is not assumed.** Request rate limiting, request
+> concurrency limiting, a cache or CDN in front of `GET /feeds/google/products`, and duration and
+> memory alarms are **owned by the deployment**; this subtree ships no infrastructure by AAP mandate.
+> Closing the two blocked clauses inside this subtree needs an **AAP amendment** authorizing both a
+> second module-scope state exception and the HTTP validator family. Until then: escalate, do not patch
+> unilaterally.
 
 ---
 
@@ -1700,10 +1783,10 @@ Run from inside `slatwall-ts/`:
 4. Load one artifact and confirm its `handler` export is a function.
 5. `git status --porcelain` — and confirm **only** additions under `slatwall-ts/`.
 
-Step 5 is not optional, and it is the one that catches the mistake that matters most. It is also the
-**only** thing standing between a local `.env` and the index: this subtree ships no `.gitignore` by
-design, so nothing in the working tree will stop you, and every ignore mechanism that could stop you
-is advisory anyway — `git add -f` and an explicit `git add <path>` both defeat one.
+Step 5 is not optional, and it is the one that catches the mistake that matters most. The committed
+`slatwall-ts/.gitignore` now stands between a local `.env` and the index as well, but it does not
+replace this step: every ignore mechanism is advisory — `git add -f` and an explicit `git add <path>`
+both defeat one — so the porcelain check remains the gate and the ignore rules are the safety net.
 
 ---
 

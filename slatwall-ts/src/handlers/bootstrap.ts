@@ -506,6 +506,79 @@ export interface LoadedSku {
 }
 
 /**
+ * Whether this request's established account may be told about a price group at all.
+ *
+ * ★★★ WHY THIS EXISTS, AND WHY IT IS A THIRD SURFACE RATHER THAN A WIDENING (SEC-A, CWE-639/CWE-862).
+ * The five `...BasedOnPriceGroup` and `...BasedOnPriceGroupRate` operations take the price group as a
+ * DECLARED ARGUMENT, which is correct - it is what makes an operation answer the question its name
+ * asks. What was missing is the other half: nothing tested whether the caller was entitled to the
+ * group it named, so any identified account could name any `priceGroupID` and read that group's rates
+ * or compute a price against a tier it does not hold. Wholesale pricing is exactly the kind of
+ * commercially sensitive data a per-account price group exists to separate.
+ *
+ * THE THREE-SURFACE SPLIT IS DELIBERATE AND FOLLOWS THE PRECEDENT ALREADY SET HERE. `CurrentAccountContext`
+ * answers "whose prices", carries one opaque identifier and its contract explicitly REFUSES permission
+ * members; `AuditActorContext` carries the permission the stamping gate needs and nothing else. Widening
+ * either to carry an entitlement decision would breach a contract that names its own refusal, so
+ * authorization gets its own named surface - the same argument, applied a third time.
+ *
+ * IT PUBLISHES A DECISION, NOT A SET. No member answers "which groups does this account hold", because
+ * that would let a caller enumerate entitlements one probe at a time and would put a list on the
+ * published surface that nothing needs. Both members answer a closed yes/no about a group the caller
+ * has ALREADY named.
+ *
+ * WHAT MAKES AN ACCOUNT ENTITLED - and both halves are the legacy's own, not invented here:
+ *
+ *   1. DIRECT ASSIGNMENT. `account.getPriceGroups()`, the `SwAccountPriceGroup` link rows
+ *      [model/entity/PriceGroup.cfc:L67], read through {@link SELECT_ACCOUNT_PRICE_GROUP_IDS_SQL}.
+ *   2. SUBSCRIPTION-DERIVED ASSIGNMENT. `PriceGroupDAO.getAccountSubscriptionPriceGroups`
+ *      [model/dao/PriceGroupDAO.cfc:L52-L100], reached through the port.
+ *
+ * Those are precisely the two sources `calculateSkuPriceBasedOnAccount` unions
+ * [model/service/PriceGroupService.cfc:L276-L284] when it prices for an account. Taking a narrower set
+ * would refuse an account a price the legacy would have given it, which is why the subscription half is
+ * not omitted for being harder to reach.
+ *
+ * ★★ AN ADMINISTRATIVE CALLER BYPASSES BOTH. `getAdminAccountFlag()` belongs to the out-of-scope
+ * `Account` entity, so - exactly as `RequestScopeInput.adminAccountFlag` records - this tier cannot
+ * evaluate it and does not pretend to: the flag arrives already decided from the request's authorizer
+ * and NEVER from a request body. Absent means false, so the bypass fails closed.
+ *
+ * ★★ AND IT IS NOT A ROUTE POLICY INVENTED OVER PORTED BEHAVIOUR. The price-resolution entrypoint is a
+ * NET-NEW adapter [AAP 0.4.1] with no legacy antecedent - the legacy reached these service methods
+ * in-process from `OrderService` and the admin, never over HTTP - so admitting a caller to a route that
+ * never existed cannot break parity with it. The ported cascade, its five levels, its two documented
+ * asymmetries and every arithmetic path are untouched: this decides only whether the cascade runs for
+ * this caller on this group, never what it computes.
+ */
+export interface PriceGroupEntitlements {
+  /**
+   * Whether the request's account may name this price group.
+   *
+   * The identifier is compared CASE-FOLDED, because every other identifier comparison in this module
+   * is - `foldIdentifier` is applied to the SKU load, to the order-view hydration and to the
+   * price-group hydration alike - and an entitlement that a differently-cased but valid identifier
+   * could slip past would be the same defect in the opposite direction.
+   */
+  isEntitledToPriceGroup(priceGroupID: string): Promise<boolean>;
+
+  /**
+   * Whether the request's account may name this price-group RATE.
+   *
+   * ★ DECIDED BY THE RATE'S OWNING GROUP, WHICH THE RATE ALREADY CARRIES. `PriceGroupRate.priceGroup`
+   * is a many-to-one on `priceGroupID` [model/entity/PriceGroupRate.cfc:L67] and
+   * `PriceGroupRepository.getPriceGroupRate` already materializes it, so the owner is read off the
+   * loaded row rather than taken from a second caller-supplied identifier - a caller cannot pair
+   * someone else's rate with its own group to get past this.
+   *
+   * A rate whose owning group is absent - a null foreign key, or a group the read could not resolve -
+   * is NOT entitled to a non-administrative caller. There is no owner to test, and guessing in the
+   * permissive direction is how an orphan row becomes a bypass.
+   */
+  isEntitledToPriceGroupRate(rate: PriceGroupRate): Promise<boolean>;
+}
+
+/**
  * The READ-ONLY entity loads published to the request tier.
  *
  * ★ EVERY METHOD IS A LOAD, AND EVERY NAME IS THE NAME OF THE READ IT DELEGATES TO. Four
@@ -1082,6 +1155,21 @@ export interface RequestScope extends SalePriceResolver {
    * and there is no fourteenth port.
    */
   readonly entityLoaders: RequestEntityLoaders;
+
+  /**
+   * The price-group authorization decision for this request's account.
+   *
+   * ★★★ THE COMPANION TO `entityLoaders`, AND THE DIVISION BETWEEN THEM IS THE POINT (SEC-A). A loader
+   * answers "which row did the caller name" and its contract says in as many words that it decides
+   * nothing; that is right, but it left the five `...BasedOnPriceGroup` operations with NO party
+   * deciding whether the caller was entitled to the row it named. This member is that party, and it is
+   * separate so neither contract has to be bent: the load stays a load, and the decision is
+   * server-established from the request's principal.
+   *
+   * See {@link PriceGroupEntitlements} for what makes an account entitled, why an administrative caller
+   * bypasses it, and why authorizing a NET-NEW route breaks no parity with the ported cascade.
+   */
+  readonly priceGroupEntitlements: PriceGroupEntitlements;
 
   readonly roundingRuleService: RoundingRuleService;
   readonly brandService: BrandService;
@@ -6077,6 +6165,117 @@ class SqlPriceGroupFrameworkReads {
 }
 
 /**
+ * {@link PriceGroupEntitlements} over this request's account, executor and price-group port.
+ *
+ * ★★ ONE INSTANCE PER REQUEST, AND THE ENTITLEMENT SET IS RESOLVED AT MOST ONCE WITHIN IT. The set is
+ * held as the PROMISE of a set rather than as a set, which makes the resolution single-flight: two
+ * concurrent members awaiting the same request's entitlements share one pair of statements instead of
+ * racing to issue two. `SqlPriceGroupFrameworkReads` above documents the same hazard and accepts the
+ * race because its callers are sequential; here the promise costs nothing to hold and removes the
+ * question, so it is held.
+ *
+ * ★★ AND IT IS LAZY, WHICH IS WHY THE OTHER OPERATIONS PAY NOTHING. Four of the nine price-resolution
+ * operations name no price group at all. Resolving the set in the constructor would issue two
+ * statements for every one of them; resolving it on first use issues none until an entitlement is
+ * actually decided, and the administrative bypass short-circuits before even that.
+ *
+ * WHY IT READS IDENTIFIERS RATHER THAN GOING THROUGH `SqlPriceGroupFrameworkReads.getAccountPriceGroups`.
+ * That read hydrates every price group whole - rates, parent, children - because the SERVICE needs the
+ * entities. An entitlement test needs nothing but identifiers, and it must not touch that read's
+ * memoized array, which is a documented FIDELITY mechanism the service appends into
+ * [model/service/PriceGroupService.cfc:L276-L284]. So this reuses the existing statement
+ * {@link SELECT_ACCOUNT_PRICE_GROUP_IDS_SQL} - no new SQL is authored and no new statement label is
+ * minted - and reads the one column it needs.
+ *
+ * The subscription half has no identifier-only equivalent published, so it goes through the port's
+ * `getAccountSubscriptionPriceGroups` and takes the identifiers off the entities it answers. That is
+ * one hydrating read on a path that only an entitled-account probe reaches, and authoring a second SQL
+ * statement to avoid it would duplicate a query whose subscription-table reach-through is documented
+ * once, at the port, on purpose.
+ */
+class SqlPriceGroupEntitlements implements PriceGroupEntitlements {
+  /**
+   * The folded identifiers of every price group this request's account holds, or the in-flight promise
+   * of them. `undefined` means "not yet asked".
+   *
+   * INSTANCE STATE, NEVER MODULE STATE - the same rule, and the same reason, as the memo on
+   * `SqlPriceGroupFrameworkReads`: a module-scoped entitlement set on a warm container would authorize
+   * one customer against another customer's price groups.
+   */
+  private entitledFoldedPriceGroupIDs: Promise<ReadonlySet<string>> | undefined;
+
+  public constructor(
+    private readonly accountID: string | undefined,
+    private readonly adminAccountFlag: boolean,
+    private readonly executor: PreparedStatementExecutor,
+    private readonly priceGroupRepository: PriceGroupRepository,
+  ) {}
+
+  public async isEntitledToPriceGroup(priceGroupID: string): Promise<boolean> {
+    if (this.adminAccountFlag) {
+      return true;
+    }
+
+    // No established account cannot hold an assignment. This is reachable only for an operation the
+    // route admits anonymously, none of which names a price group, so it is a fail-closed floor
+    // rather than a live path - and it is written rather than assumed, because the floor is what
+    // keeps a future anonymous operation from inheriting an entitlement it was never granted.
+    if (this.accountID === undefined) {
+      return false;
+    }
+
+    const entitled = await this.resolveEntitledFoldedPriceGroupIDs(this.accountID);
+
+    return entitled.has(foldIdentifier(priceGroupID));
+  }
+
+  public async isEntitledToPriceGroupRate(rate: PriceGroupRate): Promise<boolean> {
+    if (this.adminAccountFlag) {
+      return true;
+    }
+
+    const owningPriceGroupID = rate.getPriceGroup()?.getPriceGroupID();
+
+    // An orphan rate has no owner to test. Refused - see
+    // {@link PriceGroupEntitlements.isEntitledToPriceGroupRate}.
+    if (owningPriceGroupID === undefined || owningPriceGroupID === '') {
+      return false;
+    }
+
+    return this.isEntitledToPriceGroup(owningPriceGroupID);
+  }
+
+  private resolveEntitledFoldedPriceGroupIDs(accountID: string): Promise<ReadonlySet<string>> {
+    // Assigned BEFORE the first await inside the builder, so a second caller entering while the first
+    // is still in flight receives the same promise rather than starting a second pair of reads.
+    this.entitledFoldedPriceGroupIDs ??= this.readEntitledFoldedPriceGroupIDs(accountID);
+
+    return this.entitledFoldedPriceGroupIDs;
+  }
+
+  private async readEntitledFoldedPriceGroupIDs(accountID: string): Promise<ReadonlySet<string>> {
+    const [directRows, subscriptionPriceGroups] = await Promise.all([
+      this.executor.execute(SELECT_ACCOUNT_PRICE_GROUP_IDS_SQL, [accountID]),
+      this.priceGroupRepository.getAccountSubscriptionPriceGroups(accountID),
+    ]);
+
+    const entitled = new Set<string>();
+
+    for (const row of directRows) {
+      entitled.add(
+        foldIdentifier(readIdentifier(row, 'priceGroupID', SELECT_ACCOUNT_PRICE_GROUP_IDS)),
+      );
+    }
+
+    for (const priceGroup of subscriptionPriceGroups) {
+      entitled.add(foldIdentifier(priceGroup.getPriceGroupID()));
+    }
+
+    return entitled;
+  }
+}
+
+/**
  * A freshly minted 32-character identifier, in the shape `fieldtype="id" generator="uuid" length="32"`
  * expects [model/entity/RoundingRule.cfc:L52, model/entity/Brand.cfc:L52].
  *
@@ -7169,6 +7368,14 @@ interface RequestGraph {
    */
   readonly entityLoaders: RequestEntityLoaders;
 
+  /**
+   * The price-group entitlement decision, projected onto
+   * {@link RequestScope.priceGroupEntitlements} unchanged. Held here because it closes over this
+   * request's established account, its administrative claim, its statement executor and its
+   * price-group port - none of which exists outside a request.
+   */
+  readonly priceGroupEntitlements: PriceGroupEntitlements;
+
   readonly roundingRuleService: RoundingRuleService;
   readonly brandService: BrandService;
   readonly optionService: OptionService;
@@ -7853,6 +8060,23 @@ function createRequestGraph(
 
   priceGroupServiceBinding = priceGroupService;
 
+  // --- The price-group entitlement decision, per request (SEC-A) -----------
+  // Built here, beside the service whose five group-named members it guards, and from the SAME
+  // request-scoped pair - this request's executor and this request's price-group port - so an
+  // entitlement can never be decided against a different request's connection or account.
+  //
+  // ★ IT TAKES THE ADMINISTRATIVE CLAIM FROM `input`, NOT FROM `auditActor`. The two hold the same
+  // resolved flag, and reading the audit actor would have saved a term - but the audit actor's
+  // contract is "who is recorded as authoring a row", and borrowing it to decide who may READ a price
+  // group would tie an authorization outcome to a stamping concern that is free to change
+  // independently. Absent means `false`, which is the closed direction.
+  const priceGroupEntitlements: PriceGroupEntitlements = new SqlPriceGroupEntitlements(
+    input.accountID,
+    input.adminAccountFlag ?? false,
+    graph.executor,
+    priceGroupRepository,
+  );
+
   // Its ONLY collaborator [model/service/BrandService.cfc:L51] `dataService`,
   // which is BrandService's entire dependency surface.
   //
@@ -8194,6 +8418,7 @@ function createRequestGraph(
     promotionRepository,
     priceGroupRepository,
     entityLoaders,
+    priceGroupEntitlements,
     roundingRuleService,
     brandService,
     optionService,
@@ -8399,6 +8624,10 @@ function projectRequestScope(requestGraph: RequestGraph, input: RequestScopeInpu
     // Forwarded UNCHANGED - already frozen where it was built, and already narrowed to five
     // loads, so the projection has nothing to add and nothing to withhold.
     entityLoaders: requestGraph.entityLoaders,
+    // Forwarded UNCHANGED for the same reason as the loaders above: it was built per request, closes
+    // over that request's account and executor, and publishes two closed yes/no members, so there is
+    // nothing for the projection to narrow and nothing it may widen.
+    priceGroupEntitlements: requestGraph.priceGroupEntitlements,
     roundingRuleService: requestGraph.roundingRuleService,
     brandService: requestGraph.brandService,
     optionService: requestGraph.optionService,

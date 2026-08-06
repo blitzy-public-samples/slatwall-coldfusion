@@ -399,6 +399,11 @@ function makeRequestScopeDouble(
     get entityLoaders(): RequestScope['entityLoaders'] {
       return refuse('RequestScope.entityLoaders');
     },
+    // The promotion pass names no price group of its own - the price-group pass that precedes it
+    // resolves them from the order - so an entitlement decision has nothing to decide here.
+    get priceGroupEntitlements(): RequestScope['priceGroupEntitlements'] {
+      return refuse('RequestScope.priceGroupEntitlements');
+    },
     get roundingRuleService(): RequestScope['roundingRuleService'] {
       return refuse('RequestScope.roundingRuleService');
     },
@@ -605,8 +610,33 @@ function makeProxyEvent(overrides: {
   };
 }
 
-/** An authorizer context establishing one account, under the claim name the handler reads. */
+/**
+ * An authorizer context establishing one TRUSTED SERVICE caller, under the claim names the handler
+ * reads.
+ *
+ * ★★★ IT CARRIES THE ADMINISTRATIVE CLAIM NOW, AND THAT IS SEC-I. This used to return `{ accountID }`
+ * alone, which is exactly the caller the finding is about: the route admitted ANY identified account,
+ * so a customer could submit a wholly caller-authored economic document - its own prices, its own
+ * extended prices, its own subtotals, and the `promotionAppliedID` of any applied-promotion row it
+ * cared to name, each of which becomes a REMOVE intent. The route is now restricted to a trusted
+ * service principal, the strangler-fig stand-in for the in-process `OrderService` caller
+ * [model/service/OrderService.cfc:L60-L61].
+ *
+ * Every case in this suite that is about something OTHER than the gate therefore needs a caller the
+ * route serves, and gets one here. The gate itself is asserted explicitly by the cases that use
+ * {@link untrustedAuthorizerFor}, and by the admission block that walks the whole claim vocabulary.
+ */
 function authorizerFor(accountID: string): Readonly<Record<string, unknown>> {
+  return { accountID, adminAccountFlag: true };
+}
+
+/**
+ * An authorizer context establishing an ORDINARY account: identified, and not trusted.
+ *
+ * This is the caller the route used to serve and now refuses. Kept as its own named helper so a case
+ * asserting the refusal reads as a deliberate choice of caller rather than as an omitted member.
+ */
+function untrustedAuthorizerFor(accountID: string): Readonly<Record<string, unknown>> {
   return { accountID };
 }
 
@@ -1705,7 +1735,20 @@ describe('the account trust boundary (NET-NEW)', () => {
     expect(harness.recorder.scopeInputs[0]?.accountID).toBe(AUTHENTICATED_ACCOUNT_ID);
   });
 
-  it('REFUSES a body accountID that disagrees with the authenticated account', async () => {
+  it('★★★ REFUSES an envelope and an order that name DIFFERENT accounts (SEC-I)', async () => {
+    // ★★★ THIS CASE USED TO ASSERT THE OPPOSITE RULE, AND THE CHANGE IS SEC-I'S TRUST BOUNDARY MOVING.
+    // It was titled "REFUSES a body accountID that disagrees with the authenticated account" and
+    // expected the refusal at path `accountID`, on the ground that "a caller that believes it is
+    // pricing for another account must not be handed this account's discounts". That ground was right
+    // for the caller population the route then admitted - ANY identified account - and is the wrong
+    // shape for the one it admits now: a TRUSTED SERVICE PRINCIPAL exists precisely to price on behalf
+    // of an account other than its own, standing in for the in-process `OrderService` caller
+    // [model/service/OrderService.cfc:L60-L61].
+    //
+    // So the envelope member is no longer a claim measured against the sender - it NAMES THE SUBJECT -
+    // and the agreement test moved one level down, onto the document. What is asserted here is that the
+    // test still exists and still refuses: an envelope naming one account carrying an order naming
+    // another is refused, now at `order.accountID`.
     const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
     const harness = makeHarness({ admit: order });
 
@@ -1717,16 +1760,53 @@ describe('the account trust boundary (NET-NEW)', () => {
       ),
     );
 
-    // REFUSED rather than silently overridden: a caller that believes it is pricing for another
-    // account must not be handed this account's discounts under its own idempotency key.
     expect(result.statusCode).toBe(400);
-    expect(fieldPathsOf(result)).toEqual(['accountID']);
-    // Neither identifier is echoed: reporting the authenticated one would disclose the session's
-    // account to whoever sent the body.
+    expect(fieldPathsOf(result)).toEqual(['order.accountID']);
+    // Neither identifier is echoed - unchanged, and it was never the part that was wrong.
     expect(result.body).not.toContain(OTHER_ACCOUNT_ID);
     expect(result.body).not.toContain(AUTHENTICATED_ACCOUNT_ID);
-    // Nothing was opened, admitted or priced.
-    expect(harness.recorder.log).toEqual([]);
+    // Refused BEFORE the composed operation could price anything.
+    expect(harness.recorder.composedInputs).toHaveLength(0);
+  });
+
+  it('★★★ PRICES ON BEHALF OF the subject the trusted caller names, not the caller itself (SEC-I)', async () => {
+    // The capability the moved boundary buys, and the reason the old rule could not simply be kept: a
+    // trusted service submits an order belonging to a DIFFERENT account and the whole request - the
+    // scope's account and the order it prices - is that subject's.
+    const { order } = makeGoldenOrder({ accountID: OTHER_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      postApplyPromotions(
+        order,
+        { accountID: OTHER_ACCOUNT_ID },
+        authorizerFor(AUTHENTICATED_ACCOUNT_ID),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    // ★★ AND THE SCOPE WAS OPENED FOR THE SUBJECT. This is the assertion that matters: every
+    // per-account read behind this request - the account price groups, and both account use-count
+    // queries - keys on the scope's account, so a scope opened for the SENDER would price one account's
+    // order against another account's limits.
+    expect(harness.recorder.scopeInputs).toHaveLength(1);
+    expect(harness.recorder.scopeInputs[0]?.accountID).toBe(OTHER_ACCOUNT_ID);
+    expect(harness.recorder.composedInputs).toHaveLength(1);
+  });
+
+  it('★★ falls back to the TRUSTED CALLER\u2019s own account when the envelope names no subject', async () => {
+    // The clause that carries the earlier CRITICAL adoption fix forward. A request naming no subject
+    // anywhere must still price for a REAL account, or every per-account use-limit read counts the uses
+    // of nobody - which is what made a per-account cap uncapped.
+    const { order } = makeGoldenOrder({});
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      postApplyPromotions(order, {}, authorizerFor(AUTHENTICATED_ACCOUNT_ID)),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.scopeInputs[0]?.accountID).toBe(AUTHENTICATED_ACCOUNT_ID);
   });
 
   it('REFUSES an order document naming a DIFFERENT account from the authenticated one', async () => {
@@ -1866,8 +1946,21 @@ describe('the account trust boundary (NET-NEW)', () => {
     // An authorizer emitting `accountId` names the same claim as one emitting `accountID`. A
     // case-sensitive index would let a deployment's key casing silently decide whether a request is
     // treated as signed in - which would refuse this order rather than price it.
+    //
+    // ★★ BOTH CLAIMS ARE SPELLED UNCONVENTIONALLY HERE, AND THE SECOND IS SEC-I's. The trusted-service
+    // claim is read through the same case-folding struct read, so a deployment emitting
+    // `ADMINACCOUNTFLAG` names the same permission as one emitting `adminAccountFlag`. Getting that
+    // wrong in the other direction would be worse than a refusal: it would silently deny the one caller
+    // population this route serves, and the symptom would be a 403 nobody could explain.
     const result = await harness.invoke(
-      postApplyPromotions(order, {}, { accountId: AUTHENTICATED_ACCOUNT_ID }),
+      postApplyPromotions(
+        order,
+        {},
+        {
+          accountId: AUTHENTICATED_ACCOUNT_ID,
+          ADMINACCOUNTFLAG: true,
+        },
+      ),
     );
 
     expect(result.statusCode).toBe(200);
@@ -1936,10 +2029,500 @@ describe('the account trust boundary (NET-NEW)', () => {
       ),
     );
 
-    // The same refusal on the same grounds: the operation differs, the authority does not.
+    // ★★★ SERVED NOW, AND THE REVERSAL IS SEC-I'S. This case used to assert `400` at path `accountID`
+    // with the note "the same refusal on the same grounds: the operation differs, the authority does
+    // not". The authority genuinely does not differ between the two operations - that clause was right
+    // and still is - but the RULE it applied has moved: the envelope's account is the SUBJECT a trusted
+    // service names, not a claim measured against the sender. So a trusted caller naming another
+    // account's subject is served here exactly as it is on the apply-promotions arm.
+    //
+    // Nothing about this operation reads the account: `getSalePriceDetailsForProductSkus` takes a
+    // productID and the sale-price statement is account-independent [model/dao/PromotionDAO.cfc:L298].
+    // The subject still travels to the scope, because the scope is opened before the operation is
+    // dispatched and one request has one account.
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.salePriceRequests).toEqual([PRODUCT_ID]);
+    expect(harness.recorder.scopeInputs[0]?.accountID).toBe(OTHER_ACCOUNT_ID);
+  });
+});
+
+// ===========================================================================
+// THE TRUSTED-SERVICE TRUST BOUNDARY, AND DOCUMENT SELF-CONSISTENCY (SEC-I, CWE-20/CWE-345/CWE-639)
+//
+// ★★★ WHAT THE FINDING WAS. Every economically decisive member of this request is caller-authored -
+// item prices, extended prices, subtotals, the applied-price-group handle, the promotion-code list -
+// and the route admitted ANY identified account. Two consequences, both live: a customer could price
+// an order describing prices its cart does not have, and it could name the `promotionAppliedID` of
+// applied-promotion rows belonging to orders it does not own, each of which the engine turns into a
+// REMOVE intent [model/service/PromotionService.cfc:L64-L80].
+//
+// ★★★ WHY THE BLANKET CLEAR IS NOT WHAT CHANGED. That clear is AAP-MANDATED: the legacy pass begins by
+// removing every applied promotion before recomputing, and reproducing it is required [AAP 0.6.1]. The
+// intents stay. What was missing is any reason to believe the document describes an order the caller
+// may act on, and there are exactly two places that can be established - the CALLER (a permission) and
+// the DOCUMENT (its own internal consistency). Both are asserted here.
+//
+// ★★ WHY NOT SERVER-SIDE CANONICALIZATION, which the finding also offered. It requires loading the
+// order aggregate, and `OrderService` and every order entity are explicitly out of scope [AAP 0.2.2].
+// The anti-corruption inversion that makes this slice independently deployable is the decision that
+// the order arrives as an INPUT [AAP 0.1.1], so there is no in-scope read that could fetch one to
+// compare against.
+// ===========================================================================
+
+describe('the trusted-service trust boundary (SEC-I)', () => {
+  it('★★★ REFUSES an identified but UNTRUSTED account with 403, before parsing the body', async () => {
+    const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      postApplyPromotions(order, {}, untrustedAuthorizerFor(AUTHENTICATED_ACCOUNT_ID)),
+    );
+
+    // 403 and not 401: an identity WAS established and is insufficient. Not 404 either - pretending
+    // the route is absent would also hide it from a trusted caller misconfigured to omit its claim.
+    expect(result.statusCode).toBe(403);
+    expect(errorBodyOf(result).category).toBe('forbidden');
+    // A FIXED sentence with no `fields`: nothing about the gate's shape, the claim it reads or the
+    // principal that failed it is disclosed.
+    expect(errorBodyOf(result)).not.toHaveProperty('fields');
+    expect(result.body).not.toContain('adminAccountFlag');
+    expect(result.body).not.toContain(AUTHENTICATED_ACCOUNT_ID);
+
+    // ★★ NOTHING WAS OPENED, ADMITTED OR PRICED. The refusal precedes the decode, so an unauthorized
+    // caller costs no parse, no composition root, no scope and no statement.
+    expect(harness.recorder.log).toEqual([]);
+  });
+
+  it('★★★ refuses an untrusted caller even when the body is MALFORMED, so the gate wins', async () => {
+    // Ordering assertion: a caller that is not permitted here must learn that, rather than learning
+    // about its JSON - which would confirm the route's schema to a caller it does not serve.
+    const harness = makeHarness({});
+
+    const result = await harness.invoke(
+      makeProxyEvent({
+        body: '{ this is not json',
+        authorizer: untrustedAuthorizerFor(AUTHENTICATED_ACCOUNT_ID),
+      }),
+    );
+
+    expect(result.statusCode).toBe(403);
+    expect(harness.recorder.log).toEqual([]);
+  });
+
+  it('★★ refuses every non-admitted rendering of the trusted claim, and admits the closed set', async () => {
+    // The vocabulary is `errorMapper`'s and is not widened for this route: a real `boolean true`, or one
+    // of the two truthy STRINGS an authorizer can carry. A NUMBER is refused - including `1`, admitted
+    // as the string `'1'` and refused as the numeral - because a permission arriving untyped is not one
+    // this route will guess at.
+    for (const refused of [false, 'false', '0', 0, 1, '', ' ', 'no', 'yes', null, {}, []]) {
+      const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
+      const harness = makeHarness({ admit: order });
+
+      const result = await harness.invoke(
+        postApplyPromotions(
+          order,
+          {},
+          {
+            accountID: AUTHENTICATED_ACCOUNT_ID,
+            adminAccountFlag: refused,
+          },
+        ),
+      );
+
+      expect(result.statusCode).toBe(403);
+      expect(harness.recorder.log).toEqual([]);
+    }
+
+    for (const admitted of [true, 'true', '1', ' TRUE ', 'True']) {
+      const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
+      const harness = makeHarness({ admit: order });
+
+      const result = await harness.invoke(
+        postApplyPromotions(
+          order,
+          {},
+          {
+            accountID: AUTHENTICATED_ACCOUNT_ID,
+            adminAccountFlag: admitted,
+          },
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+    }
+  });
+
+  it('★★★ cannot be granted the claim by the REQUEST - only the authorizer establishes it', async () => {
+    // The BODY asserts the permission while the authorizer withholds it. The body is the only
+    // caller-authored surface this suite's event builder models - and it is the one that matters, since
+    // the envelope is the sole caller-authored structure this route reads at all. If it were consulted,
+    // this would be served.
+    const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      makeProxyEvent({
+        body: JSON.stringify({
+          ...applyPromotionsDocument(wireOrderDocument(order)),
+          adminAccountFlag: true,
+        }),
+        authorizer: untrustedAuthorizerFor(AUTHENTICATED_ACCOUNT_ID),
+      }),
+    );
+
+    expect(result.statusCode).toBe(403);
+    expect(harness.recorder.log).toEqual([]);
+  });
+});
+
+describe('order-document self-consistency (SEC-I)', () => {
+  /** The golden document, with one member of its FIRST order item replaced. */
+  function documentWithFirstItemMember(
+    order: OrderView,
+    member: string,
+    value: unknown,
+  ): Readonly<Record<string, unknown>> {
+    const document = wireOrderDocument(order);
+    const items = document['orderItems'];
+
+    if (!isJsonObjectArray(items)) {
+      throw new TypeError('the wire projection did not produce an order-item array');
+    }
+
+    const [firstItem, ...rest] = items;
+
+    if (firstItem === undefined) {
+      throw new TypeError('the wire projection produced no order items');
+    }
+
+    return documentWith(document, 'orderItems', [{ ...firstItem, [member]: value }, ...rest]);
+  }
+
+  it('★★★ REFUSES an extendedPrice that is not price x quantity', async () => {
+    // The identity is the legacy entity's own: `getExtendedPrice()` is exactly
+    // `precisionEvaluate('getPrice() * val(getQuantity())')` [model/entity/OrderItem.cfc:L200-L202].
+    // The promotion pass subtracts `getExtendedSkuPrice() - getExtendedPrice()` as a correction term
+    // [model/service/PromotionService.cfc:L249, L252], so a caller controlling the pair controls the
+    // discount directly.
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(documentWithFirstItemMember(order, 'extendedPrice', '0.01')),
+      ),
+    );
+
     expect(result.statusCode).toBe(400);
-    expect(fieldPathsOf(result)).toEqual(['accountID']);
-    expect(harness.recorder.salePriceRequests).toEqual([]);
+    expect(fieldPathsOf(result)).toEqual(['order.orderItems.0.extendedPrice']);
+    // ★★ REFUSED BEFORE THE HYDRATION, so an inconsistent document costs no entity load, and CERTAINLY
+    // before the passes: no intent of any kind is emitted for it.
+    expect(harness.recorder.materializedDocuments).toEqual([]);
+    expect(harness.recorder.composedInputs).toEqual([]);
+    // Nothing submitted is echoed - not the value, not the product it was computed from.
+    expect(result.body).not.toContain('0.01');
+  });
+
+  it('★★★ REFUSES an extendedSkuPrice that is not skuPrice x quantity', async () => {
+    // `getExtendedSkuPrice()` is `precisionEvaluate('getSkuPrice() * getQuantity()')`
+    // [model/entity/OrderItem.cfc:L204-L206] - note it carries NO `val()`, unlike its sibling, and the
+    // asymmetry is preserved by reproducing neither coercion.
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(documentWithFirstItemMember(order, 'extendedSkuPrice', '999.99')),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toEqual(['order.orderItems.0.extendedSkuPrice']);
+    expect(harness.recorder.materializedDocuments).toEqual([]);
+  });
+
+  it('★★ ADMITS the identity computed at full decimal precision, not at two places', async () => {
+    // The comparison goes through `Money`, so a price with more than two decimal places multiplies
+    // exactly. A check that had rounded to cents would refuse this document - which the legacy
+    // `precisionEvaluate` would have produced happily.
+    const { order } = makeGoldenOrder();
+    const document = documentWithFirstItemMember(order, 'price', '1.005');
+    const items = document['orderItems'];
+
+    if (!isJsonObjectArray(items)) {
+      throw new TypeError('the wire projection did not produce an order-item array');
+    }
+
+    const [firstItem, ...rest] = items;
+
+    if (firstItem === undefined) {
+      throw new TypeError('the wire projection produced no order items');
+    }
+
+    const quantity = firstItem['quantity'];
+
+    if (typeof quantity !== 'number') {
+      throw new TypeError('the wire projection did not produce a numeric quantity');
+    }
+
+    const consistent = documentWith(document, 'orderItems', [
+      { ...firstItem, extendedPrice: (1.005 * quantity).toFixed(3) },
+      ...rest,
+    ]);
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(postDocument(applyPromotionsDocument(consistent)));
+
+    expect(result.statusCode).toBe(200);
+  });
+
+  it('★★★ REFUSES an item naming a fulfillment the document does not carry', async () => {
+    // `OrderItem.orderFulfillment` is a many-to-one, so an item always belonged to a fulfillment of its
+    // own order. A document whose item points elsewhere describes an impossible graph - and the
+    // shipping-level qualification walks exactly that link
+    // [model/service/PromotionService.cfc:L752-L781].
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(
+          documentWithFirstItemMember(order, 'orderFulfillmentID', 'fulfillment-not-in-this-order'),
+        ),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toEqual(['order.orderItems.0.orderFulfillmentID']);
+    expect(result.body).not.toContain('fulfillment-not-in-this-order');
+    expect(harness.recorder.materializedDocuments).toEqual([]);
+  });
+
+  it('★ folds identifier case on the fulfillment reference, so a valid reference is not refused', async () => {
+    const { order } = makeGoldenOrder();
+    const fulfillmentID = itemAt(order, 0).orderFulfillmentID;
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(
+          documentWithFirstItemMember(order, 'orderFulfillmentID', fulfillmentID.toUpperCase()),
+        ),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+  });
+
+  it('★★★ REFUSES the same promotionAppliedID claimed under two owners', async () => {
+    // Each already-applied promotion becomes a REMOVE intent
+    // [model/service/PromotionService.cfc:L64-L80], and a row is attached to exactly ONE owner. The
+    // same identifier claimed at the order level and again on an item would emit two intents for one
+    // row, which is a detach a caller could not otherwise express.
+    const { order } = makeGoldenOrder();
+    const document = wireOrderDocument(order);
+    const items = document['orderItems'];
+
+    if (!isJsonObjectArray(items)) {
+      throw new TypeError('the wire projection did not produce an order-item array');
+    }
+
+    const [firstItem, ...rest] = items;
+
+    if (firstItem === undefined) {
+      throw new TypeError('the wire projection produced no order items');
+    }
+
+    const duplicated = {
+      promotionAppliedID: 'applied-claimed-twice',
+      discountAmount: null,
+      promotion: null,
+    };
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(
+          documentWith(documentWith(document, 'appliedPromotions', [duplicated]), 'orderItems', [
+            { ...firstItem, appliedPromotions: [duplicated] },
+            ...rest,
+          ]),
+        ),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    // Reported at the SECOND claim, which is the one that cannot be honoured; the first is a legitimate
+    // statement until the second contradicts it.
+    expect(fieldPathsOf(result)).toEqual([
+      'order.orderItems.0.appliedPromotions.0.promotionAppliedID',
+    ]);
+    expect(result.body).not.toContain('applied-claimed-twice');
+    expect(harness.recorder.materializedDocuments).toEqual([]);
+  });
+
+  it('★★★ DOES NOT validate totalSaleQuantity against the items, because the legacy cannot', async () => {
+    // ★★★ THE CHECK THAT IS DELIBERATELY ABSENT, AND THE MOST IMPORTANT CASE IN THIS BLOCK.
+    // `getTotalSaleQuantity()` [model/entity/Order.cfc:L624-L632] tests
+    // `getOrderItems()[1].getOrderItemType().getSystemCode()` inside a loop that then adds
+    // `getOrderItems()[i].getQuantity()` - the FIRST item's type decides whether EVERY item's quantity
+    // is counted. That is a registered legacy defect [AAP 0.6.7], so a real aggregate routinely emits a
+    // total that disagrees with any correct recomputation. A consistency check here would refuse
+    // documents the legacy engine genuinely produces, which is why adding one would be a fidelity
+    // defect dressed up as hardening.
+    const { order } = makeGoldenOrder();
+    const document = documentWith(wireOrderDocument(order), 'totalSaleQuantity', 4242);
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(postDocument(applyPromotionsDocument(document)));
+
+    expect(result.statusCode).toBe(200);
+  });
+});
+
+describe('caller-controlled statement and arithmetic bounds (SEC-J, SEC-K)', () => {
+  /** The golden document with one member of its first order item replaced. */
+  function withFirstItemQuantity(
+    order: OrderView,
+    quantity: unknown,
+  ): Readonly<Record<string, unknown>> {
+    const document = wireOrderDocument(order);
+    const items = document['orderItems'];
+
+    if (!isJsonObjectArray(items)) {
+      throw new TypeError('the wire projection did not produce an order-item array');
+    }
+
+    const [firstItem, ...rest] = items;
+
+    if (firstItem === undefined) {
+      throw new TypeError('the wire projection produced no order items');
+    }
+
+    return documentWith(document, 'orderItems', [{ ...firstItem, quantity }, ...rest]);
+  }
+
+  it.each([
+    ['just past the safe-integer boundary', 9_007_199_254_740_992],
+    ['far past it', 1e300],
+    ['negative and past it', -9_007_199_254_740_992],
+  ])(
+    '★★★ REFUSES a quantity %s with a 400 naming the member, never a 500 (SEC-K)',
+    async (_label, quantity) => {
+      // ★★★ THE DEFECT THIS CLOSES. `z.number().int()` admitted every one of these, and each then
+      // reached `fromInteger` [src/lib/cfml/precision.ts:L387], which accepts ONLY
+      // `Number.isSafeInteger` and throws `PrecisionError`. A `PrecisionError` is not a validation
+      // failure, so it bypassed the request-contract mapper and surfaced as a GENERIC 500 naming
+      // nothing - a caller-controlled internal error, and a caller-controlled way to make the request
+      // fail without ever being told which field was at fault.
+      const { order } = makeGoldenOrder();
+      const harness = makeHarness({ materialize: order });
+
+      const result = await harness.invoke(
+        postDocument(applyPromotionsDocument(withFirstItemQuantity(order, quantity))),
+      );
+
+      expect(result.statusCode).toBe(400);
+      expect(fieldPathsOf(result)).toContain('order.orderItems.0.quantity');
+      // Nothing was hydrated and nothing was priced: the refusal is at admission.
+      expect(harness.recorder.materializedDocuments).toEqual([]);
+    },
+  );
+
+  it('★★ REFUSES a quantity beyond the persisted INT range, which is the business bound (SEC-K)', async () => {
+    // `OrderItem.quantity` is `ormtype="integer"` [model/entity/OrderItem.cfc:L56] - a MySQL signed
+    // INT - so 2_147_483_648 cannot describe a persisted order line even though it IS a safe integer.
+    // The two constraints are independent, which is why both are applied.
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(applyPromotionsDocument(withFirstItemQuantity(order, 2_147_483_648))),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toContain('order.orderItems.0.quantity');
+  });
+
+  it('★★ REFUSES a promotionCodeList naming more codes than the published bound (SEC-J)', async () => {
+    // ★★★ THE DEFECT THIS CLOSES. Every code is emitted into TWO `EXISTS` arms of
+    // `getActivePromotionRewards`, so N codes cost 2N placeholders against a 65_535 protocol ceiling.
+    // Roughly 32_766 codes - a string well inside this route's own size bound - drove the statement past
+    // it, and the refusal then arrived from the DRIVER as a 500, after the whole array had been built.
+    const { order } = makeGoldenOrder();
+    const codes = Array.from(
+      { length: ORDER_DOCUMENT_LIMITS.maximumPromotionCodes + 1 },
+      (_unused, index) => `code${String(index)}`,
+    ).join(',');
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(documentWith(wireOrderDocument(order), 'promotionCodeList', codes)),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toContain('order.promotionCodeList');
+    expect(harness.recorder.materializedDocuments).toEqual([]);
+  });
+
+  it('★★ REFUSES an over-long promotionCodeList even when it names few codes (SEC-J)', async () => {
+    // The two bounds are independent: the element count is what the placeholder budget is a function
+    // of, and the total length is what stops the same budget being asked for with pathological members.
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(
+          documentWith(wireOrderDocument(order), 'promotionCodeList', 'x'.repeat(20_000)),
+        ),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toContain('order.promotionCodeList');
+  });
+
+  it('★★ SERVES a promotionCodeList AT the bound, and forwards it VERBATIM (SEC-J)', async () => {
+    // At the bound is accepted, and - the part that matters for fidelity - the list is not rewritten to
+    // fit: no trimming, no de-duplication, no re-ordering and no case folding, each of which would
+    // change which rows the statement matches. A previous code review established that the
+    // comma-delimited form reaches the service exactly as the caller wrote it.
+    const { order } = makeGoldenOrder();
+    const codes = Array.from(
+      { length: ORDER_DOCUMENT_LIMITS.maximumPromotionCodes },
+      // Deliberately including a repeat and a mixed casing, so a de-duplicating or folding
+      // implementation would be caught by the verbatim assertion below.
+      (_unused, index) => (index === 0 ? 'DUP' : index === 1 ? 'dup' : `code${String(index)}`),
+    ).join(',');
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(documentWith(wireOrderDocument(order), 'promotionCodeList', codes)),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.materializedDocuments[0]?.promotionCodeList).toBe(codes);
+  });
+
+  it('★ SERVES an EMPTY promotionCodeList, which is an order carrying no codes', async () => {
+    // `split(',')` on an empty string yields one element, so a naive count would report 1 for a list
+    // that names none. The empty case is answered before the count.
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(documentWith(wireOrderDocument(order), 'promotionCodeList', '')),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.materializedDocuments[0]?.promotionCodeList).toBe('');
   });
 });
 
@@ -2579,8 +3162,15 @@ const MISSING_BODY_SENTENCE = 'A request body is required and was not supplied.'
 const UNPARSABLE_BODY_SENTENCE = 'The request body is not valid JSON.';
 const UNSUPPORTED_SHAPE_SENTENCE = 'The request body is not the expected shape.';
 
-/** Every status this handler is permitted to return, and nothing else. */
-const PERMITTED_STATUSES: readonly number[] = [200, 400, 401, 404, 500];
+/**
+ * Every status this handler is permitted to return, and nothing else.
+ *
+ * ★★ 403 JOINED THE SET WITH SEC-I. The route is restricted to a TRUSTED SERVICE PRINCIPAL, and an
+ * identified caller without that permission is refused with 403 rather than 401 - an identity WAS
+ * established and is insufficient - and rather than 404, which would also hide the route from a trusted
+ * caller misconfigured to omit its claim.
+ */
+const PERMITTED_STATUSES: readonly number[] = [200, 400, 401, 403, 404, 500];
 
 /** Header names that would invent a semantic the source never had. */
 const FORBIDDEN_HEADER_NAMES: readonly string[] = [
@@ -2703,7 +3293,7 @@ describe('response shaping and safe error mapping (NET-NEW)', () => {
         requestId: 'req-promotion-application-first',
         ...(first.order.accountID === undefined
           ? {}
-          : { authorizer: { accountID: first.order.accountID } }),
+          : { authorizer: authorizerFor(first.order.accountID) }),
       }),
     );
 
@@ -2719,7 +3309,7 @@ describe('response shaping and safe error mapping (NET-NEW)', () => {
         requestId: 'req-promotion-application-replay',
         ...(replay.order.accountID === undefined
           ? {}
-          : { authorizer: { accountID: replay.order.accountID } }),
+          : { authorizer: authorizerFor(replay.order.accountID) }),
       }),
     );
 
@@ -2904,7 +3494,7 @@ describe('response shaping and safe error mapping (NET-NEW)', () => {
       makeProxyEvent({
         body: Buffer.from(JSON.stringify(document), 'utf8').toString('base64'),
         isBase64Encoded: true,
-        ...(order.accountID === undefined ? {} : { authorizer: { accountID: order.accountID } }),
+        ...(order.accountID === undefined ? {} : { authorizer: authorizerFor(order.accountID) }),
       }),
     );
 
@@ -3382,7 +3972,7 @@ describe('the four findings with no other home (NET-NEW)', () => {
       makeProxyEvent({
         body: JSON.stringify(applyPromotionsDocument(wireOrderDocument(order))),
         requestId: '',
-        ...(order.accountID === undefined ? {} : { authorizer: { accountID: order.accountID } }),
+        ...(order.accountID === undefined ? {} : { authorizer: authorizerFor(order.accountID) }),
       }),
     );
 

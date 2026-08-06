@@ -288,6 +288,13 @@ class FeedRequestScopeDouble implements RequestScope {
     return unreachableMember('RequestScope', 'entityLoaders');
   }
 
+  // The feed decides no price at all, so it has no price group to be entitled to. Reaching the
+  // entitlement surface from here would mean the public feed had grown an account-scoped pricing
+  // path - which is precisely what makes it publishable without a principal.
+  public get priceGroupEntitlements() {
+    return unreachableMember('RequestScope', 'priceGroupEntitlements');
+  }
+
   public get roundingRuleService() {
     return unreachableMember('RequestScope', 'roundingRuleService');
   }
@@ -1376,6 +1383,76 @@ describe('the reshaped port contract', () => {
     expect(port.argumentCounts).toStrictEqual([1, 1]);
     expect(first.body).toBe(RENDERED_DOCUMENT);
     expect(second.body).toBe(RENDERED_DOCUMENT);
+  });
+
+  it('★★★ serves OVERLAPPING allowed-Host requests independently, sharing nothing (SEC-C)', async () => {
+    // ★★★ THE EXACT ACCESS PATTERN A SECURITY REVIEW NAMED, MADE EXECUTABLE. SEC-C (MEDIUM, CWE-400)
+    // observed that "any network caller can repeat allowed-Host requests in parallel", and the
+    // escalation record beside the capacity block in the module explains why the cache, the validator
+    // family and the concurrency guard it asked for are blocked by AAP 0.6.5, 0.8.1 and 0.2.2. THIS
+    // CASE DOES NOT CLAIM THE ROUTE IS CHEAP. It pins the property the escalation actually rests on:
+    // overlapping invocations share NOTHING, so a parallel burst cannot corrupt a document, collapse
+    // two callers onto one artifact, or leak one request's origin authority into another's feed.
+    //
+    // ★★ AND IT IS THE REQUEST-SCOPED-STATE MANDATE ASSERTED UNDER CONCURRENCY RATHER THAN IN
+    // SEQUENCE. The case above proves nothing is memoized BETWEEN invocations; a warm container also
+    // runs them AT THE SAME TIME, and module-scope state would show up here and only here. Every
+    // generation is held open until all three have arrived, so the three genuinely overlap rather
+    // than merely following one another - if a future revision added the per-container single-flight
+    // lock this route deliberately does not have, the three could no longer be in flight together and
+    // this case would stop passing.
+    const concurrentHosts = ['shop.example.test', 'store.example.test', 'market.example.test'];
+    const arrivedHosts: string[] = [];
+    let admitAll: () => void = (): void => {};
+    const allArrived = new Promise<void>((resolve) => {
+      admitAll = resolve;
+    });
+
+    // A document that NAMES ITS OWN CRITERIA, which is what makes contamination visible: a shared
+    // artifact would answer some caller with a host it never sent.
+    const overlappingPort: ProductFeedPort = {
+      generateProductFeed: async (criteria: FeedCriteria): Promise<string> => {
+        arrivedHosts.push(criteria.feedHost);
+
+        if (arrivedHosts.length === concurrentHosts.length) {
+          admitAll();
+        }
+
+        await allArrived;
+
+        return `<rss><channel><link>http://${criteria.feedHost}/</link></channel></rss>`;
+      },
+    };
+
+    const { invoke, root } = harnessWithPort(overlappingPort);
+
+    // Started together, awaited together: `map` dispatches all three before the first is awaited.
+    const responses = await Promise.all(
+      concurrentHosts.map((host) =>
+        invoke(feedRequestEvent({ headers: { host } }), lambdaContext()),
+      ),
+    );
+
+    // Three generations, not one shared one - the absence of a cache, asserted as the AAP-mandated
+    // property it is rather than as the gap the finding reads it as.
+    expect(arrivedHosts.sort()).toStrictEqual([...concurrentHosts].sort());
+    expect(root.scopeInputs).toHaveLength(3);
+    expect(root.scopeInputs.map((input) => input.feedHost).sort()).toStrictEqual(
+      [...concurrentHosts].sort(),
+    );
+
+    // ★★ EACH CALLER RECEIVES ITS OWN ORIGIN AND NOBODY ELSE'S. Asserted in both directions, because
+    // an assertion that only checked for the right host would pass on a body that carried all three.
+    responses.forEach((response, index) => {
+      const ownHost = concurrentHosts[index] ?? '';
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain(`http://${ownHost}/`);
+
+      for (const otherHost of concurrentHosts.filter((host) => host !== ownHost)) {
+        expect(response.body).not.toContain(otherHost);
+      }
+    });
   });
 });
 

@@ -280,6 +280,34 @@ const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for ';
  *
  * A deployment that must publish `https` URLs terminates TLS in front of this service; the
  * feed's own transport is not this renderer's decision to make.
+ *
+ * ★★★ SECURITY REVIEW DISPOSITION - RAISED AGAIN AS SEC-F (LOW, CWE-319), ESCALATED RATHER THAN
+ * CLOSED IN CODE. The project-wide final security assessment records the same five URL sites and
+ * required, in its own words, that "with explicit product approval" the feed use a
+ * deployment-owned canonical HTTPS origin, and that the scheme never be inferred from an untrusted
+ * forwarding header. Three facts decide what may be done here without that approval:
+ *
+ *   1. The precondition is not satisfiable from inside this subtree. The AAP is the product
+ *      decision of record, and it freezes this contract twice over (0.1.1, 0.8.1) with its
+ *      divergence budget already fully spent (0.6.7). No agent may grant itself the exception the
+ *      finding asks for, and editing the plan to create one is forbidden outright.
+ *   2. The remedy has already been tried and reversed ON THESE GROUNDS. The `FEED_URL_SCHEME`
+ *      variable, its `https` default and its resolver were removed by an earlier code review; the
+ *      reversal record lives on `FeedConfig` in `src/lib/config.ts`. Re-adding a scheme knob -
+ *      even one defaulting to `http` - would re-open a settled AAP question and put a
+ *      product-owned decision back into a deployment variable.
+ *   3. Nothing about the risk is hidden. What the finding describes is a property of the LEGACY
+ *      document, reproduced deliberately and recorded at the site that emits it, and the second
+ *      half of its resolution is already satisfied: NO forwarding header is read anywhere in this
+ *      module or the handler that calls it, and the authority itself comes from the
+ *      deployment-owned allow-list rather than from the request.
+ *
+ * SO THE RESIDUAL IS STATED RATHER THAN SILENTLY ACCEPTED: a Merchant Center consumer following
+ * these links over an untrusted network has no transport integrity for the FOLLOW-UP fetches, and
+ * closing that requires a product decision to change the emitted document, taken in the plan and
+ * applied to both implementations. The transport of the feed RESPONSE itself is unaffected by this
+ * literal - it is whatever the gateway terminates - and the deployment posture that mitigates the
+ * links today is publishing an allow-listed authority that answers HTTPS.
  */
 const FEED_ORIGIN_SCHEME_PREFIX = 'http://';
 

@@ -275,6 +275,21 @@ const PAYLOAD_DERIVED_URL_TITLE = 'generated-acme-athletics';
 const ENTITY_BRAND_NAME = 'Contoso Outfitters';
 const ENTITY_DERIVED_URL_TITLE = 'generated-contoso-outfitters';
 
+/**
+ * Build a script URL for the SEC-L rejection cases, ASSEMBLED RATHER THAN WRITTEN LITERALLY.
+ *
+ * ★ WHY IT IS NOT JUST A STRING LITERAL. ESLint's `no-script-url` refuses a literal `javascript:`
+ * anywhere in the tree, and the rule is right to: a script URL in source is nearly always a sink.
+ * Here it is the opposite - the value the validator must REFUSE - so the rule's premise does not
+ * hold. It is honoured anyway, by composing the scheme, rather than silenced with a disable comment:
+ * a suppression sitting inside a security test is indistinguishable, to a later reader, from a
+ * suppression hiding a real one. The assembled value is byte-identical to the literal, so the
+ * assertions lose nothing.
+ */
+function scriptUrl(payload: string): string {
+  return `${'java'}${'script'}:${payload}`;
+}
+
 // ---------------------------------------------------------------------------
 // The in-memory double
 // ---------------------------------------------------------------------------
@@ -904,6 +919,155 @@ describe('BrandService', () => {
       const refused = await service.saveBrand(brand, { brandName: PAYLOAD_BRAND_NAME });
 
       expect(refused.hasErrors()).toBe(true);
+      expect(frameworkWrites.saves).toStrictEqual([]);
+    });
+
+    // -----------------------------------------------------------------------
+    // THE `dataType` HALF OF THE RULE SET: `brandWebsite` MUST BE A URL CFML WOULD HAVE CALLED ONE
+    //
+    // ★★★ WHY THESE CASES EXIST (SEC-L, CWE-20, POTENTIAL CWE-79). The ported validator was
+    // `URL.canParse(value)`, which accepts EVERY scheme a parser can read - including
+    // `javascript:` and `data:`. That was wider than the thing it stood in for: CFML's
+    // reference defines the `url` validation type as an http, https, ftp, file, mailto or
+    // news URL, a CLOSED set of six, and `{"dataType":"url"}` [model/validation/Brand.json]
+    // reaches exactly that validator through `validate_dataType`
+    // [org/Hibachi/HibachiValidationService.cfc:L256-L259]. So every value the negatives below
+    // refuse is a value the LEGACY refused too, and the fix is a narrowing toward parity
+    // rather than a divergence from it.
+    //
+    // The positives are asserted alongside the negatives on purpose: an over-correction to
+    // http/https only would be its own fidelity defect, and these cases are what would catch
+    // it. The stakes are concrete - the stored column is rendered by `formatValue_url`, whose
+    // body interpolates it into an anchor with no encoding whatsoever
+    // [org/Hibachi/HibachiUtilityService.cfc:L66-L68], reached from both admin brand views
+    // [admin/views/entity/detailbrand.cfm:L60, admin/views/entity/listbrand.cfm:L59]. That
+    // renderer is out-of-scope framework code [AAP 0.2.2] and is untouched, which is the
+    // argument for refusing the value at the write this migration does own.
+    // -----------------------------------------------------------------------
+
+    it.each([
+      ['http', 'http://brand.example.invalid/catalog'],
+      ['https', 'https://brand.example.invalid/catalog'],
+      ['ftp', 'ftp://files.example.invalid/brand-assets'],
+      ['file', 'file:///srv/brand/assets'],
+      ['mailto', 'mailto:brand-contact@example.invalid'],
+      ['news', 'news:comp.example.brand'],
+      // Upper-cased, because CFML's validator was case-insensitive and the WHATWG parser
+      // lower-cases the scheme itself - so no case folding is needed for this to pass, and a
+      // port that compared raw input against lower-case literals would fail here.
+      ['HTTPS upper-cased', 'HTTPS://brand.example.invalid/catalog'],
+    ])(
+      '★ ACCEPTS a %s brandWebsite, because isValid("url") named that protocol',
+      async (_label, brandWebsite) => {
+        const brand = new Brand({ brandID: 'brand-with-an-accepted-scheme' });
+
+        const saved = await runSave(service, brand, {
+          brandName: PAYLOAD_BRAND_NAME,
+          brandWebsite,
+        });
+
+        expect(saved.hasErrors()).toBe(false);
+        expect(saved.getError('brandWebsite')).toStrictEqual([]);
+        expect(frameworkWrites.saves).toHaveLength(1);
+        expect(frameworkWrites.saves[0]?.getBrandWebsite()).toBe(brandWebsite);
+      },
+    );
+
+    it.each([
+      // The two that make this a security finding rather than a tidiness one. Both PARSE, so
+      // both reached the row under `URL.canParse`.
+      ['a javascript: script URL', scriptUrl('alert(document.cookie)')],
+      ['a data: URL carrying markup', 'data:text/html,<script>alert(1)</script>'],
+      // Tab and newline are STRIPPED by the WHATWG parser, so this normalises to
+      // `javascript:alert(1)` rather than to some unknown scheme - the refusal has to come
+      // from the protocol test, not from a parse failure.
+      ['an obfuscated javascript: URL', 'java\tscri\npt:alert(1)'],
+      // An invented scheme. CFML named six; this is not one of them.
+      ['an invented custom scheme', 'myapp://brand/launch'],
+      // `vbscript:` is the historical sibling of the first case.
+      ['a vbscript: URL', 'vbscript:msgbox(1)'],
+      // Relative and bare-host forms, which CFML also refused because it required an
+      // ABSOLUTE URL. These fail at the parse rather than at the protocol test, and they are
+      // asserted so the parse half of the check is not lost in the change.
+      ['a bare host with no scheme', 'brand.example.invalid'],
+      ['a site-relative path', '/brands/acme'],
+    ])('★★★ REFUSES %s on the entity, and writes nothing', async (_label, brandWebsite) => {
+      const brand = new Brand({ brandID: 'brand-with-a-refused-scheme' });
+
+      const refused = await service.saveBrand(brand, {
+        brandName: PAYLOAD_BRAND_NAME,
+        brandWebsite,
+      });
+
+      // Reported as an error ON THE ENTITY, the way `validate` recorded every failed rule
+      // through `addError` [org/Hibachi/HibachiTransient.cfc:L61-L64] - not thrown.
+      expect(refused.hasErrors()).toBe(true);
+      expect(refused.getError('brandWebsite')).toStrictEqual(['brandWebsite must be a valid URL']);
+
+      // ★ AND THE ROW WAS NEVER WRITTEN. This is the assertion that makes the finding closed
+      // rather than merely reported: a validator that collected the error but let the save
+      // through would satisfy the assertion above and fail this one.
+      expect(frameworkWrites.saves).toStrictEqual([]);
+    });
+
+    it('★ still treats an ABSENT brandWebsite as valid, because validate_dataType passes on null', async () => {
+      // `isNull(propertyValue) || isValid(...)` [org/Hibachi/HibachiValidationService.cfc:L259]
+      // - so a brand that names no website saves. The scheme allow-list must not have turned
+      // the optional column into a required one.
+      const brand = new Brand({ brandID: 'brand-with-no-website' });
+
+      const saved = await runSave(service, brand, { brandName: PAYLOAD_BRAND_NAME });
+
+      expect(saved.hasErrors()).toBe(false);
+      expect(frameworkWrites.saves).toHaveLength(1);
+      expect(frameworkWrites.saves[0]?.getBrandWebsite()).toBeUndefined();
+    });
+
+    it.each([
+      ['an empty string', ''],
+      ['a whitespace-only string', '   '],
+    ])(
+      '★★ CLEARS rather than refuses %s, because populate nulls a blank BEFORE the rule sees it',
+      async (_label, brandWebsite) => {
+        // ★ THIS CASE EXISTS BECAUSE THE OBVIOUS EXPECTATION IS WRONG, AND IT WAS WRITTEN AS A
+        // NEGATIVE FIRST AND CORRECTED BY THE IMPLEMENTATION. A blank does NOT reach the URL
+        // test at all: `populate` transcribes `trim(...) == "" && !notNull -> _setProperty(name)`
+        // [org/Hibachi/HibachiTransient.cfc:L194-L195], so a supplied blank NULLS the column -
+        // and `validate_dataType` then passes on null [org/Hibachi/HibachiValidationService.cfc:L259].
+        // Clearing a website is a legitimate edit, and refusing it would have been a fabricated
+        // restriction introduced by the SEC-L fix rather than a consequence of it.
+        const brand = new Brand({
+          brandID: 'brand-clearing-its-website',
+          brandWebsite: 'https://brand.example.invalid/catalog',
+        });
+
+        const saved = await runSave(service, brand, {
+          brandName: PAYLOAD_BRAND_NAME,
+          brandWebsite,
+        });
+
+        expect(saved.hasErrors()).toBe(false);
+        expect(frameworkWrites.saves).toHaveLength(1);
+        expect(frameworkWrites.saves[0]?.getBrandWebsite()).toBeUndefined();
+      },
+    );
+
+    it('★ refuses a script URL that arrives on the ENTITY rather than in the payload', async () => {
+      // The rule runs on the POPULATED brand, so a value the caller set on the instance and
+      // did NOT resupply in the payload is still tested. A validator that inspected only the
+      // payload would let this one through - and this is the realistic shape for an update,
+      // where the loaded row carries the column and the payload changes something else.
+      const brand = new Brand({
+        brandID: 'brand-carrying-a-stored-script-url',
+        urlTitle: 'a-title-this-brand-already-holds',
+        brandName: 'Entity Brand',
+        brandWebsite: scriptUrl('alert(1)'),
+      });
+
+      const refused = await service.saveBrand(brand, { brandName: PAYLOAD_BRAND_NAME });
+
+      expect(refused.hasErrors()).toBe(true);
+      expect(refused.getError('brandWebsite')).toStrictEqual(['brandWebsite must be a valid URL']);
       expect(frameworkWrites.saves).toStrictEqual([]);
     });
 

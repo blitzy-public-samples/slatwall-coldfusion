@@ -2860,8 +2860,37 @@ export function createCatalogQueryHandler(
         // container carrying one request's state into another's.
         //
         // The authenticated account is carried into the scope even though no operation this capability
-        // publishes consults it, so the scope cannot represent a logged-out caller after this route
-        // admitted one.
+        // publishes consults it for PRICING, so the scope cannot represent a logged-out caller after
+        // this route admitted one.
+        //
+        // ★★★ AND THE ADMINISTRATIVE CLAIM TRAVELS WITH IT (SEC-D, CWE-223/CWE-778). This call used
+        // to pass `accountID` ALONE, and the omission silently defeated a control that was otherwise
+        // complete end to end. `RequestScopeInput.adminAccountFlag` documents itself as "the second
+        // half of the audit-stamping gate, and the ONLY thing this member is used for", and
+        // `./bootstrap.js` builds the per-request `AuditActorContext` as
+        // `adminAccountFlag: input.adminAccountFlag ?? false` - so an omitted flag is FALSE, false
+        // stamps nothing, and the NINE admitted mutations this capability publishes wrote
+        // `createdByAccountID` / `modifiedByAccountID` as `NULL`, or left an earlier author's
+        // identifier in place on an update. A perfectly ordinary administrator request reproduced it.
+        //
+        // THE VALUE IS THE AUTHORIZER'S, WHICH IS THE ENTIRE POINT. It comes from
+        // `principalResolution.principal`, which `./errorMapper.js` derives from
+        // `event.requestContext.authorizer` and from nothing else: not from the body, not from a
+        // header, not from a query parameter. The gate at step 1 above has ALREADY refused every
+        // caller whose principal lacks the claim, so the value reaching the scope here is `true` for
+        // every request that gets this far - it is passed as the resolved boolean rather than as a
+        // literal `true` precisely so that the scope records what the authorizer said rather than
+        // what this line assumes, and so a future relaxation of the gate cannot silently promote a
+        // non-administrator into an audit stamp.
+        //
+        // WHY THE LEGACY GATE IS THE ONE BEING REPRODUCED. `HibachiEntity` stamped both account
+        // columns behind `!getHibachiScope().getAccount().isNew() &&
+        // getHibachiScope().getAccount().getAdminAccountFlag()`
+        // [org/Hibachi/HibachiEntity.cfc:L628, L633], where the account came from an authenticated
+        // SESSION [org/Hibachi/HibachiScope.cfc:L134-L135] and never from request payload. Both
+        // halves now travel this one call: `accountID` is the persisted-account half, and this flag
+        // is the permission half.
+        //
         // The remaining omissions are deliberate:
         //   * `now` - omitted, so the scope reads the wall clock ONCE at construction and every date
         //     comparison in the request sees the same instant. Supplying one would substitute this
@@ -2872,6 +2901,7 @@ export function createCatalogQueryHandler(
         const root = await resolveCompositionRoot();
         const scope = await root.createRequestScope({
           accountID: principalResolution.principal.accountID,
+          adminAccountFlag: principalResolution.principal.adminAccountFlag,
         });
 
         const served = await invokeCatalogOperation(scope, invocation);

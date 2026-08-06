@@ -64,6 +64,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PriceGroup } from '../../../src/domain/entities/priceGroup.js';
+import type { PriceGroupRate } from '../../../src/domain/entities/priceGroupRate.js';
 import { PromotionQualifier } from '../../../src/domain/entities/promotionQualifier.js';
 import type { PromotionAppliedIntent } from '../../../src/domain/promotionEngine/qualifiedDiscountTypes.js';
 import { Money } from '../../../src/domain/valueObjects/money.js';
@@ -1521,7 +1522,7 @@ describe('createRequestScope', () => {
   // prefix. This suite needs a value it controls, not one it inherits.
   const ACCOUNT_ID = 'account-bootstrap-scope-1';
 
-  it('★★ publishes exactly the SEVENTEEN documented members, and NOT ONE RAW REPOSITORY', async () => {
+  it('★★ publishes exactly the EIGHTEEN documented members, and NOT ONE RAW REPOSITORY', async () => {
     const root = await bootWith(makeExecutor());
 
     const scope = await root.createRequestScope();
@@ -1567,6 +1568,19 @@ describe('createRequestScope', () => {
     // condition that leaves `productFeedPort` undefined, so the pair travels together. It replaces
     // the per-request port FACTORY the previous design forced onto the module-private graph, so the
     // composition root publishes strictly less machinery than before.
+    //
+    // ★★★ SEVENTEEN BECAME EIGHTEEN WITH `priceGroupEntitlements` (SEC-A). A security review found that
+    // the five `...BasedOnPriceGroup` and `...BasedOnPriceGroupRate` operations loaded a CALLER-NAMED
+    // `priceGroupID` with no membership or administrative test anywhere behind them, so any identified
+    // account could read any price group's rates or price a SKU against a wholesale tier it does not
+    // hold. `entityLoaders` above could not close that: its contract says in as many words that binding
+    // decides nothing, and that is the right contract. So the decision arrives as its own member - the
+    // same three-way split `CurrentAccountContext` and `AuditActorContext` already make, applied a third
+    // time rather than widening either.
+    //
+    // IT PUBLISHES TWO CLOSED YES/NO MEMBERS AND NO SET, so nothing here can be used to ENUMERATE an
+    // account's price groups, and it reaches no mutation - the case below proves the walk still finds no
+    // adapter class.
     expect(Object.keys(scope).sort()).toEqual([
       'brandService',
       'currencyConverter',
@@ -1578,6 +1592,7 @@ describe('createRequestScope', () => {
       'now',
       'optionService',
       'prepareAddressZoneEvaluation',
+      'priceGroupEntitlements',
       'priceGroupService',
       'productFeedPort',
       'productService',
@@ -6045,6 +6060,34 @@ describe('the framework write collaborators (F13, F14)', () => {
       expect(refused.getError('brandWebsite')).toStrictEqual(['brandWebsite must be a valid URL']);
       expect(executor.mutations).toStrictEqual([]);
     });
+
+    it('★★★ refuses a javascript: brandWebsite through the REAL wiring, not just in isolation (SEC-L)', async () => {
+      // The sibling case above refuses a value that does not PARSE. This one refuses a value that
+      // parses perfectly and whose scheme is simply not one of the six CFML's `isValid("url", ...)
+      // names - the case `URL.canParse` alone admitted, and the reason SEC-L was raised. It is
+      // asserted HERE as well as in the service's own suite because only this path proves the
+      // narrowed validator is the one the composition root actually wires: a scope built from the
+      // real graph, a real statement executor, and no double standing in for the rule.
+      const { scope, executor } = await openWritingScope(1);
+
+      // The scheme is COMPOSED rather than written as a literal so that ESLint's `no-script-url`
+      // is satisfied without a suppression: the rule is correct in general, this is a rejection
+      // fixture rather than a sink, and a disable comment inside a security test is impossible for
+      // a later reader to tell apart from one hiding a real problem.
+      const refused = await scope.brandService.saveBrand(
+        new Brand({ brandID: 'b-script-website' }),
+        {
+          brandName: 'Acme Athletics',
+          brandWebsite: `${'java'}${'script'}:alert(document.cookie)`,
+        },
+      );
+
+      expect(refused.getError('brandWebsite')).toStrictEqual(['brandWebsite must be a valid URL']);
+
+      // Nothing was written, so the stored column can never reach `formatValue_url`, which
+      // interpolates it into an anchor unencoded [org/Hibachi/HibachiUtilityService.cfc:L66-L68].
+      expect(executor.mutations).toStrictEqual([]);
+    });
   });
 
   it('★★ builds both writers PER REQUEST, so one request cannot stamp another request\u2019s row', async () => {
@@ -6183,6 +6226,291 @@ describe('the price-group page ceiling (S-08)', () => {
     expect(page).toBe('SELECT priceGroupID FROM SwPriceGroup LIMIT 10');
     expect(page?.toUpperCase()).not.toContain('ORDER BY');
     expect(page).not.toContain(String(1_000));
+  });
+});
+
+describe('RequestScope.priceGroupEntitlements (SEC-A)', () => {
+  /**
+   * The direct-assignment statement, verbatim, so no sibling price-group read is mistaken for it.
+   *
+   * It is the statement the composition root ALREADY emitted for
+   * `PriceGroupFrameworkReads.getAccountPriceGroups`; the entitlement read reuses it rather than
+   * authoring a second one, which is why this literal is shared rather than new.
+   */
+  const DIRECT_ASSIGNMENT_STATEMENT =
+    'SELECT priceGroupID FROM SwAccountPriceGroup WHERE accountID = ?';
+
+  const ENTITLED_GROUP_ID = 'pg-held-by-this-account';
+  const ANOTHER_GROUP_ID = 'pg-held-by-someone-else';
+  const REQUEST_ACCOUNT = 'acct-entitlement-subject';
+
+  /** An executor answering the direct-assignment statement with `priceGroupIDs`, and nothing else. */
+  function accountHolding(priceGroupIDs: readonly string[]): StubExecutor {
+    return new StubExecutor((sql) =>
+      sql === DIRECT_ASSIGNMENT_STATEMENT
+        ? priceGroupIDs.map((priceGroupID) => ({ priceGroupID }))
+        : [],
+    );
+  }
+
+  /** The statements one call issued, past everything composition had already read. */
+  function statementsSince(executor: StubExecutor, mark: number): readonly string[] {
+    return executor.statements.slice(mark);
+  }
+
+  it('★★★ ADMITS a group the account holds and REFUSES one it does not, from the same read', async () => {
+    // Both halves in one case, off ONE executor, because the interesting property is that the two
+    // answers come from the same entitlement set rather than from two differently-configured worlds.
+    const executor = accountHolding([ENTITLED_GROUP_ID]);
+    const scope = await (
+      await makeRoot({ executor })
+    ).createRequestScope({ accountID: REQUEST_ACCOUNT });
+
+    await expect(
+      scope.priceGroupEntitlements.isEntitledToPriceGroup(ENTITLED_GROUP_ID),
+    ).resolves.toBe(true);
+    await expect(
+      scope.priceGroupEntitlements.isEntitledToPriceGroup(ANOTHER_GROUP_ID),
+    ).resolves.toBe(false);
+  });
+
+  it('★★ reads the direct assignment with the REQUEST account bound, never a caller-supplied one', async () => {
+    const executor = accountHolding([ENTITLED_GROUP_ID]);
+    const scope = await (
+      await makeRoot({ executor })
+    ).createRequestScope({ accountID: REQUEST_ACCOUNT });
+    const mark = executor.statements.length;
+
+    await scope.priceGroupEntitlements.isEntitledToPriceGroup(ENTITLED_GROUP_ID);
+
+    // The link-table read is the statement declared for it, and the ONLY account it can name is the
+    // one the scope was opened with - nothing about the entitlement query takes an argument.
+    const direct = executor.reads.find((read) => read.sql === DIRECT_ASSIGNMENT_STATEMENT);
+
+    expect(direct).toBeDefined();
+    expect(direct?.params).toStrictEqual([REQUEST_ACCOUNT]);
+    expect(statementsSince(executor, mark)).toContain(DIRECT_ASSIGNMENT_STATEMENT);
+  });
+
+  it('★★ unions the SUBSCRIPTION-derived groups, so an account keeps the tier its subscription grants', async () => {
+    // `calculateSkuPriceBasedOnAccount` unions exactly these two sources when it PRICES for an
+    // account [model/service/PriceGroupService.cfc:L276-L284], so an entitlement set built from the
+    // link table alone would refuse a caller the price the legacy would have given it. The direct
+    // read answers nothing here and the subscription read supplies the whole set, which is the
+    // arrangement that fails if the union is dropped.
+    const subscriptionGroupID = 'pg-granted-by-subscription';
+    // The subscription half goes through `PriceGroupRepository.getAccountSubscriptionPriceGroups`, which
+    // hydrates a CASCADE-READY group - rates, ancestry and direct children. That is heavier than a
+    // boolean needs, and it is deliberate: the alternative is a second copy of the statement's
+    // subscription-window and dialect assembly living in the composition root, which would be free to
+    // drift from the one the port owns. So the row this stub answers with carries the full documented
+    // column set rather than the one column the decision reads.
+    const subscriptionPriceGroupRow = {
+      priceGroupID: subscriptionGroupID,
+      priceGroupIDPath: subscriptionGroupID,
+      activeFlag: 1,
+      priceGroupName: 'Subscriber',
+      priceGroupCode: 'subscriber',
+      parentPriceGroupID: null,
+      createdDateTime: null,
+      createdByAccountID: null,
+      modifiedDateTime: null,
+      modifiedByAccountID: null,
+    };
+    const executor = new StubExecutor((sql) => {
+      if (sql === DIRECT_ASSIGNMENT_STATEMENT) {
+        return [];
+      }
+
+      // The subscription statement names the benefit-account link table; the group read names
+      // `SwPriceGroup` itself. Every other read of the hydration - rates, children, rounding rules -
+      // answers EMPTY, so this case stays about the union and not about a rate graph.
+      const namesSubscriptionBenefit = sql.includes('SwSubsUsageBenefitAccount');
+      const namesPriceGroupTable =
+        sql.includes('FROM SwPriceGroup ') &&
+        !sql.includes('SwPriceGroupRate') &&
+        // The child read selects BY PARENT, and answering it with this row would hand the hydration a
+        // child whose `parentPriceGroupID` is null - which it correctly refuses. The group has no
+        // children in this case, so it answers empty.
+        !sql.includes('parentPriceGroupID IN') &&
+        !sql.includes('parentPriceGroupID =');
+
+      return namesSubscriptionBenefit || namesPriceGroupTable ? [subscriptionPriceGroupRow] : [];
+    });
+    const scope = await (
+      await makeRoot({ executor })
+    ).createRequestScope({ accountID: REQUEST_ACCOUNT });
+
+    await expect(
+      scope.priceGroupEntitlements.isEntitledToPriceGroup(subscriptionGroupID),
+    ).resolves.toBe(true);
+  });
+
+  it('★★★ ISSUES NO STATEMENT AT ALL for an administrative caller', async () => {
+    // The bypass short-circuits before the read, which is what keeps an admin request from paying two
+    // statements for a decision that was already made by the authorizer.
+    const executor = accountHolding([]);
+    const scope = await (
+      await makeRoot({ executor })
+    ).createRequestScope({ accountID: REQUEST_ACCOUNT, adminAccountFlag: true });
+    const mark = executor.statements.length;
+
+    await expect(
+      scope.priceGroupEntitlements.isEntitledToPriceGroup(ANOTHER_GROUP_ID),
+    ).resolves.toBe(true);
+    expect(statementsSince(executor, mark)).toStrictEqual([]);
+  });
+
+  it('★★ IS LAZY: opening a scope reads no entitlement until one is asked for', async () => {
+    // Four of the nine price-resolution operations name no price group. Resolving the set in the
+    // constructor would charge every one of them two statements for a decision they never make.
+    const executor = accountHolding([ENTITLED_GROUP_ID]);
+    const root = await makeRoot({ executor });
+    const mark = executor.statements.length;
+
+    const scope = await root.createRequestScope({ accountID: REQUEST_ACCOUNT });
+
+    expect(statementsSince(executor, mark)).not.toContain(DIRECT_ASSIGNMENT_STATEMENT);
+
+    await scope.priceGroupEntitlements.isEntitledToPriceGroup(ENTITLED_GROUP_ID);
+
+    expect(statementsSince(executor, mark)).toContain(DIRECT_ASSIGNMENT_STATEMENT);
+  });
+
+  it('★★ resolves the set ONCE PER REQUEST, even for concurrent questions', async () => {
+    // Single-flight: the set is held as the PROMISE of a set, so two questions arriving before the
+    // first read settles share it. Three sequential and two concurrent questions, one read.
+    const executor = accountHolding([ENTITLED_GROUP_ID]);
+    const scope = await (
+      await makeRoot({ executor })
+    ).createRequestScope({ accountID: REQUEST_ACCOUNT });
+    const mark = executor.statements.length;
+
+    await Promise.all([
+      scope.priceGroupEntitlements.isEntitledToPriceGroup(ENTITLED_GROUP_ID),
+      scope.priceGroupEntitlements.isEntitledToPriceGroup(ANOTHER_GROUP_ID),
+    ]);
+    await scope.priceGroupEntitlements.isEntitledToPriceGroup(ENTITLED_GROUP_ID);
+
+    expect(
+      statementsSince(executor, mark).filter((sql) => sql === DIRECT_ASSIGNMENT_STATEMENT),
+    ).toHaveLength(1);
+  });
+
+  it('★★★ gives two scopes off ONE root independent entitlement sets', async () => {
+    // The hazard this closes is the same one the audit actor and the four legacy memo families close:
+    // module-scoped entitlement state on a warm container would authorize one customer against another
+    // customer's price groups. Two accounts, two scopes, one root.
+    const executor = new StubExecutor((sql, params) =>
+      sql === DIRECT_ASSIGNMENT_STATEMENT && params[0] === 'acct-first'
+        ? [{ priceGroupID: ENTITLED_GROUP_ID }]
+        : [],
+    );
+    const root = await makeRoot({ executor });
+
+    const first = await root.createRequestScope({ accountID: 'acct-first' });
+    const second = await root.createRequestScope({ accountID: 'acct-second' });
+
+    await expect(
+      first.priceGroupEntitlements.isEntitledToPriceGroup(ENTITLED_GROUP_ID),
+    ).resolves.toBe(true);
+    await expect(
+      second.priceGroupEntitlements.isEntitledToPriceGroup(ENTITLED_GROUP_ID),
+    ).resolves.toBe(false);
+  });
+
+  it('★★ REFUSES every group for a request carrying no account', async () => {
+    // The fail-closed floor. No established account cannot hold an assignment, and the refusal is
+    // written rather than assumed so a future anonymously-permitted operation cannot inherit an
+    // entitlement it was never granted.
+    const executor = accountHolding([ENTITLED_GROUP_ID]);
+    const scope = await (await makeRoot({ executor })).createRequestScope();
+    const mark = executor.statements.length;
+
+    await expect(
+      scope.priceGroupEntitlements.isEntitledToPriceGroup(ENTITLED_GROUP_ID),
+    ).resolves.toBe(false);
+    // And it costs nothing: there is no account to bind, so no statement is issued.
+    expect(statementsSince(executor, mark)).toStrictEqual([]);
+  });
+
+  it('★ folds identifier case, matching every other identifier comparison in this module', async () => {
+    const executor = accountHolding([ENTITLED_GROUP_ID.toUpperCase()]);
+    const scope = await (
+      await makeRoot({ executor })
+    ).createRequestScope({ accountID: REQUEST_ACCOUNT });
+
+    await expect(
+      scope.priceGroupEntitlements.isEntitledToPriceGroup(ENTITLED_GROUP_ID),
+    ).resolves.toBe(true);
+  });
+
+  describe('the rate arm, decided by the owning group', () => {
+    /** A rate owned by `owner`, or by nothing at all. */
+    function rateOwnedBy(owner: PriceGroup | undefined): PriceGroupRate {
+      const graph = makePriceGroupFixtures();
+      const rate = graph.rootGlobalRate;
+
+      if (owner === undefined) {
+        rate.removePriceGroup(requirePresent(rate.getPriceGroup(), 'the fixture rate owner'));
+      } else {
+        owner.addPriceGroupRate(rate);
+      }
+
+      return rate;
+    }
+
+    it('★★★ admits a rate whose OWNING group the account holds', async () => {
+      const graph = makePriceGroupFixtures();
+      const owner = graph.childPriceGroup;
+      const executor = accountHolding([owner.getPriceGroupID()]);
+      const scope = await (
+        await makeRoot({ executor })
+      ).createRequestScope({ accountID: REQUEST_ACCOUNT });
+
+      await expect(
+        scope.priceGroupEntitlements.isEntitledToPriceGroupRate(rateOwnedBy(owner)),
+      ).resolves.toBe(true);
+    });
+
+    it('★★★ refuses a rate whose owning group the account does NOT hold, even holding another', async () => {
+      // The arm a naive gate gets wrong: `calculateSkuPriceBasedOnPriceGroupRate` names a RATE and no
+      // group, so a gate testing "some group this caller holds" would admit every rate in the store.
+      const graph = makePriceGroupFixtures();
+      const executor = accountHolding([graph.siblingPriceGroup.getPriceGroupID()]);
+      const scope = await (
+        await makeRoot({ executor })
+      ).createRequestScope({ accountID: REQUEST_ACCOUNT });
+
+      await expect(
+        scope.priceGroupEntitlements.isEntitledToPriceGroupRate(rateOwnedBy(graph.childPriceGroup)),
+      ).resolves.toBe(false);
+    });
+
+    it('★★★ refuses an ORPHAN rate, because there is no owner to test', async () => {
+      // Guessing permissively here is how a null foreign key becomes a bypass.
+      const executor = accountHolding([ENTITLED_GROUP_ID]);
+      const scope = await (
+        await makeRoot({ executor })
+      ).createRequestScope({ accountID: REQUEST_ACCOUNT });
+      const orphan = rateOwnedBy(undefined);
+
+      expect(orphan.getPriceGroup()).toBeUndefined();
+      await expect(scope.priceGroupEntitlements.isEntitledToPriceGroupRate(orphan)).resolves.toBe(
+        false,
+      );
+    });
+
+    it('★★ admits an orphan rate for an ADMINISTRATIVE caller, which is the bypass and not an accident', async () => {
+      const executor = accountHolding([]);
+      const scope = await (
+        await makeRoot({ executor })
+      ).createRequestScope({ accountID: REQUEST_ACCOUNT, adminAccountFlag: true });
+
+      await expect(
+        scope.priceGroupEntitlements.isEntitledToPriceGroupRate(rateOwnedBy(undefined)),
+      ).resolves.toBe(true);
+    });
   });
 });
 

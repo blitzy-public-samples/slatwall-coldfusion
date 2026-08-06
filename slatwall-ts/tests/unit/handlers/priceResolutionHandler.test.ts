@@ -959,6 +959,97 @@ function makeEntityLoadersDouble(world: LoadableWorld = {}): EntityLoadersDouble
   };
 }
 
+/** One question put to the entitlement surface, in the order it was asked. */
+interface RecordedEntitlementDecision {
+  readonly member: 'isEntitledToPriceGroup' | 'isEntitledToPriceGroupRate';
+
+  /** The price-group identifier the decision turned on - for a rate, its OWNING group. */
+  readonly priceGroupID: string | undefined;
+
+  readonly entitled: boolean;
+}
+
+/** The entitlement double, plus the log a case asserts against. */
+interface EntitlementsDouble {
+  readonly entitlements: PriceResolutionScope['priceGroupEntitlements'];
+  readonly decisions: RecordedEntitlementDecision[];
+}
+
+/** How a case configures the account's price-group entitlement. */
+interface EntitlementOverrides {
+  /** The administrative bypass. Defaults to `true` - see {@link makeEntitlementsDouble}. */
+  readonly admin?: boolean | undefined;
+
+  /** The exact price groups this account holds, when `admin` is false. Defaults to none. */
+  readonly entitledPriceGroupIDs?: readonly string[] | undefined;
+}
+
+/**
+ * The price-group entitlement decision, as a RECORDING double (SEC-A).
+ *
+ * ★★★ THE DEFAULT IS THE ADMINISTRATIVE BYPASS, AND THAT CHOICE IS DELIBERATE RATHER THAN CONVENIENT.
+ * Roughly sixty existing cases in this file are about the CASCADE - its five levels, its two
+ * documented asymmetries, its rounding, its serialisation - and none of them is about authorization. A
+ * default of "entitled to nothing" would have turned every one of them into an `unresolved` outcome and
+ * buried the behaviour they exist to pin. An administrative caller is the honest way to say "this case
+ * is not about the gate", and it matches how those operations are really reached.
+ *
+ * ★★ WHICH LEAVES ONE HAZARD, AND IT IS CLOSED BY THE LOG RATHER THAN BY THE DEFAULT. A
+ * permissive default means a dispatch arm that FORGOT to consult the entitlement surface would still
+ * pass every cascade case. So every decision is recorded, and a dedicated case below asserts that each
+ * of the five group-named operations actually asked - which a silent omission cannot satisfy.
+ *
+ * The double mirrors the shipped implementation's two rules exactly: an administrative caller is
+ * entitled to everything, and a rate is decided by its OWNING price group rather than by any
+ * identifier a caller supplied.
+ */
+function makeEntitlementsDouble(overrides?: EntitlementOverrides): EntitlementsDouble {
+  const admin = overrides?.admin ?? true;
+  const entitledFolded = new Set(
+    (overrides?.entitledPriceGroupIDs ?? []).map((identifier) => identifier.toLowerCase()),
+  );
+  const decisions: RecordedEntitlementDecision[] = [];
+
+  const decide = (priceGroupID: string | undefined): boolean => {
+    if (admin) {
+      return true;
+    }
+
+    return priceGroupID !== undefined && entitledFolded.has(priceGroupID.toLowerCase());
+  };
+
+  return {
+    decisions,
+    entitlements: {
+      isEntitledToPriceGroup: (priceGroupID: string): Promise<boolean> => {
+        const entitled = decide(priceGroupID);
+
+        decisions.push({ member: 'isEntitledToPriceGroup', priceGroupID, entitled });
+
+        return Promise.resolve(entitled);
+      },
+
+      isEntitledToPriceGroupRate: (rate: ResolvedPriceGroupRate): Promise<boolean> => {
+        // The owner comes off the RATE, never from an argument - the property that stops a caller
+        // pairing another account's rate with a price group of its own.
+        const owningPriceGroupID = rate.getPriceGroup()?.getPriceGroupID();
+        const entitled =
+          owningPriceGroupID === undefined || owningPriceGroupID === ''
+            ? admin
+            : decide(owningPriceGroupID);
+
+        decisions.push({
+          member: 'isEntitledToPriceGroupRate',
+          priceGroupID: owningPriceGroupID,
+          entitled,
+        });
+
+        return Promise.resolve(entitled);
+      },
+    },
+  };
+}
+
 /** Everything one scope needs, with the doubles a case usually wants to reach afterwards. */
 interface ScopeParts {
   readonly entityLoaders: EntityLoadersDouble;
@@ -966,6 +1057,9 @@ interface ScopeParts {
   readonly currencyConverter?: PriceResolutionScope['currencyConverter'] | undefined;
   readonly accountID?: string | undefined;
   readonly now?: string | undefined;
+
+  /** The entitlement double. Omitted means the administrative default - see {@link makeEntitlementsDouble}. */
+  readonly entitlements?: EntitlementsDouble | undefined;
 }
 
 /**
@@ -988,6 +1082,10 @@ function makeScope(parts: ScopeParts): PriceResolutionScope {
     now: new Date(parts.now ?? RESOLVED_AT),
     currentAccountContext,
     entityLoaders: parts.entityLoaders.loaders,
+    // ★ THE ENTITLEMENT SURFACE IS A SEPARATE MEMBER FROM THE ACCOUNT CONTEXT, exactly as the shipped
+    // scope publishes it: `CurrentAccountContext` above answers "whose prices" and its contract refuses
+    // permission members, so the authorization decision cannot be smuggled onto it here either.
+    priceGroupEntitlements: (parts.entitlements ?? makeEntitlementsDouble()).entitlements,
     priceGroupService: parts.priceGroupService,
     currencyConverter: parts.currencyConverter ?? makeCurrencyConverterDouble().converter,
   };
@@ -2574,6 +2672,390 @@ function requestFor(
       return { operation, sku: bindings.sku, accountID: bindings.accountID };
   }
 }
+
+// ===========================================================================
+// PRICE-GROUP ENTITLEMENT (SEC-A, CWE-639 / CWE-862)
+//
+// ★★★ WHAT THESE CASES ARE FOR. Five operations take a price group or a rate as a DECLARED ARGUMENT,
+// which finding F3 established is correct - it is what makes an operation answer the question its name
+// asks. What was missing until SEC-A is the other half: nothing tested whether the caller was ENTITLED
+// to the row it named, so any identified account could name any `priceGroupID` and read that group's
+// rates or price a SKU against a wholesale tier it does not hold. The five arms and the two binding
+// helpers behind them are the whole attack surface, and every one of them is covered below.
+//
+// ★★ THE GATE IS ASSERTED THROUGH THE PUBLISHED SURFACE, NOT THROUGH THE HELPER. Every case here goes
+// through `dispatchPriceResolution`, because `resolveNamedPriceGroup` and `resolveNamedPriceGroupRate`
+// are module-private and a test that reached them directly would prove the helper refuses without
+// proving any operation consults it.
+//
+// ★★ AND THE ENTITLEMENT RULE ITSELF IS NOT RESTATED HERE. What makes an account entitled - direct
+// `SwAccountPriceGroup` assignment [model/entity/PriceGroup.cfc:L67] unioned with the
+// subscription-derived groups [model/dao/PriceGroupDAO.cfc:L52-L100], the two sources
+// `calculateSkuPriceBasedOnAccount` itself unions [model/service/PriceGroupService.cfc:L276-L284] - is
+// the composition root's, and is asserted in `tests/unit/handlers/bootstrap.test.ts` against real
+// statements. This suite owns the question these operations own: given a decision, is it enforced.
+// ===========================================================================
+
+describe('price-group entitlement, and the outcomes it is indistinguishable from (SEC-A)', () => {
+  /** A price group the account does NOT hold, so every non-admin decision below is a refusal. */
+  const UNENTITLED_ACCOUNT_GROUP_ID = 'pricegroup-held-by-another-account';
+
+  it.each([
+    ['getRateForProductTypeBasedOnPriceGroup', 'priceGroupNotFound'],
+    ['getRateForProductBasedOnPriceGroup', 'priceGroupNotFound'],
+    ['getRateForSkuBasedOnPriceGroup', 'priceGroupNotFound'],
+    ['calculateSkuPriceBasedOnPriceGroup', 'priceGroupNotFound'],
+    ['calculateSkuPriceBasedOnPriceGroupRate', 'priceGroupRateNotFound'],
+  ])(
+    '★★★ REFUSES %s for an account that does not hold the named group, with %s',
+    async (operation, expectedReason) => {
+      // The row EXISTS and the loader holds it - this is not a missing-identifier case. What the
+      // account lacks is the entitlement, and the operation must answer as though the row were not
+      // there at all.
+      const { world, graph, priceGroups, priceGroup, priceGroupRate, entityLoaders } =
+        makeDoubledCascade();
+      const entitlements = makeEntitlementsDouble({
+        admin: false,
+        entitledPriceGroupIDs: [UNENTITLED_ACCOUNT_GROUP_ID],
+      });
+      const scope = makeScope({
+        entityLoaders,
+        priceGroupService: priceGroups.service,
+        accountID: ACCOUNT_ID,
+        entitlements,
+      });
+
+      const request =
+        operation === 'getRateForProductTypeBasedOnPriceGroup'
+          ? {
+              operation,
+              productTypeID: world.productType.getProductTypeID(),
+              priceGroupID: priceGroup.getPriceGroupID(),
+            }
+          : operation === 'getRateForProductBasedOnPriceGroup'
+            ? {
+                operation,
+                productID: world.product.getProductID(),
+                priceGroupID: priceGroup.getPriceGroupID(),
+              }
+            : operation === 'calculateSkuPriceBasedOnPriceGroupRate'
+              ? {
+                  operation,
+                  sku: world.identity,
+                  priceGroupRateID: priceGroupRate.getPriceGroupRateID(),
+                }
+              : { operation, sku: world.identity, priceGroupID: priceGroup.getPriceGroupID() };
+
+      const result = await dispatchPriceResolution(
+        scope,
+        request as Parameters<typeof dispatchPriceResolution>[1],
+      );
+
+      expect(result).toStrictEqual({ outcome: 'unresolved', reason: expectedReason });
+
+      // ★★ AND THE SERVICE WAS NEVER CALLED. The refusal happens at binding, so no cascade ran, no
+      // rate was selected and no price was computed for a caller that may not have them. A gate that
+      // computed the answer and then withheld it would satisfy the assertion above and fail this one.
+      expect(priceGroups.calls).toStrictEqual([]);
+
+      // The decision was actually taken, and it turned on the group the caller named - or, for the
+      // rate arm, on the rate's OWNING group rather than on any identifier the caller supplied.
+      expect(entitlements.decisions).toHaveLength(1);
+      expect(entitlements.decisions[0]?.entitled).toBe(false);
+      expect(entitlements.decisions[0]?.priceGroupID).toBe(
+        operation === 'calculateSkuPriceBasedOnPriceGroupRate'
+          ? graph.rootPriceGroup.getPriceGroupID()
+          : priceGroup.getPriceGroupID(),
+      );
+    },
+  );
+
+  it('★★★ answers an UNENTITLED group EXACTLY as it answers a missing one, so nothing can be probed', async () => {
+    // ★★★ THE INDISTINGUISHABILITY ASSERTION, AND IT IS THE ONE THAT MATTERS MOST FOR THIS FINDING. If
+    // "real but not yours" were reported differently from "no such group", a caller could enumerate a
+    // store's price groups one identifier at a time WITHOUT ever being entitled to any of them - the
+    // outcome would be the oracle. Both cases are run here and the results compared as values.
+    const missing = makeDoubledCascade();
+    const unentitled = makeDoubledCascade();
+    const entitlements = makeEntitlementsDouble({
+      admin: false,
+      entitledPriceGroupIDs: [UNENTITLED_ACCOUNT_GROUP_ID],
+    });
+
+    // (a) An identifier no row carries. The loader answers nothing.
+    const missingResult = await dispatchPriceResolution(
+      makeScope({
+        entityLoaders: missing.entityLoaders,
+        priceGroupService: missing.priceGroups.service,
+        accountID: ACCOUNT_ID,
+        entitlements: makeEntitlementsDouble({
+          admin: false,
+          entitledPriceGroupIDs: [UNENTITLED_ACCOUNT_GROUP_ID],
+        }),
+      }),
+      {
+        operation: 'calculateSkuPriceBasedOnPriceGroup',
+        sku: missing.world.identity,
+        priceGroupID: SENTINEL_PRICE_GROUP_ID,
+      },
+    );
+
+    // (b) A real row the account is not entitled to. The loader answers the entity; the gate refuses.
+    const unentitledResult = await dispatchPriceResolution(
+      makeScope({
+        entityLoaders: unentitled.entityLoaders,
+        priceGroupService: unentitled.priceGroups.service,
+        accountID: ACCOUNT_ID,
+        entitlements,
+      }),
+      {
+        operation: 'calculateSkuPriceBasedOnPriceGroup',
+        sku: unentitled.world.identity,
+        priceGroupID: unentitled.priceGroup.getPriceGroupID(),
+      },
+    );
+
+    expect(unentitledResult).toStrictEqual(missingResult);
+    expect(unentitledResult).toStrictEqual({ outcome: 'unresolved', reason: 'priceGroupNotFound' });
+
+    // Neither produced a service call, so the two are indistinguishable by timing-of-work as well as
+    // by value: the same amount of work was done for each.
+    expect(missing.priceGroups.calls).toStrictEqual([]);
+    expect(unentitled.priceGroups.calls).toStrictEqual([]);
+  });
+
+  it('★★ SERVES the operation when the account DOES hold the named group', async () => {
+    // The gate must not be a blanket refusal. A non-administrative account entitled to exactly the
+    // group it names is served in full, which is what makes the negatives above meaningful.
+    const { world, priceGroups, priceGroup, entityLoaders } = makeDoubledCascade();
+    const entitlements = makeEntitlementsDouble({
+      admin: false,
+      entitledPriceGroupIDs: [priceGroup.getPriceGroupID()],
+    });
+
+    const result = await dispatchPriceResolution(
+      makeScope({
+        entityLoaders,
+        priceGroupService: priceGroups.service,
+        accountID: ACCOUNT_ID,
+        entitlements,
+      }),
+      {
+        operation: 'getRateForSkuBasedOnPriceGroup',
+        sku: world.identity,
+        priceGroupID: priceGroup.getPriceGroupID(),
+      },
+    );
+
+    expect(result.outcome).toBe('priceGroupRate');
+    expect(priceGroups.calls.map((call) => call.member)).toStrictEqual([
+      'getRateForSkuBasedOnPriceGroup',
+    ]);
+    // The named entity reached the service unchanged - the gate decides admission, never substitution.
+    expect(priceGroups.calls[0]?.args[1]).toBe(priceGroup);
+    expect(entitlements.decisions[0]?.entitled).toBe(true);
+  });
+
+  it('★★ ADMITS an administrative caller to a group it does not hold, and asks nothing else', async () => {
+    // The bypass. `getAdminAccountFlag()` belongs to the out-of-scope `Account` entity, so the claim
+    // arrives already decided from the authorizer; what this asserts is that a caller carrying it is
+    // not held to the membership set.
+    const { world, priceGroups, priceGroup, entityLoaders } = makeDoubledCascade();
+    const entitlements = makeEntitlementsDouble({ admin: true, entitledPriceGroupIDs: [] });
+
+    const result = await dispatchPriceResolution(
+      makeScope({
+        entityLoaders,
+        priceGroupService: priceGroups.service,
+        accountID: ACCOUNT_ID,
+        entitlements,
+      }),
+      {
+        operation: 'calculateSkuPriceBasedOnPriceGroup',
+        sku: world.identity,
+        priceGroupID: priceGroup.getPriceGroupID(),
+      },
+    );
+
+    expect(result.outcome).toBe('price');
+    expect(entitlements.decisions).toStrictEqual([
+      {
+        member: 'isEntitledToPriceGroup',
+        priceGroupID: priceGroup.getPriceGroupID(),
+        entitled: true,
+      },
+    ]);
+  });
+
+  it('★★ decides the RATE arm on the rate\u2019s OWNING group, not on a group the caller holds', async () => {
+    // ★★★ THE ARM A NAIVE GATE GETS WRONG. `calculateSkuPriceBasedOnPriceGroupRate` names a RATE and no
+    // group at all, so a gate that tested "some group this caller holds" would admit every rate in the
+    // store to any account holding any one group. The decision has to come off the rate itself -
+    // `PriceGroupRate.priceGroup` is a many-to-one on `priceGroupID`
+    // [model/entity/PriceGroupRate.cfc:L67] - which is what this case pins.
+    //
+    // The account is entitled to the CHILD group while the loaded rate belongs to the ROOT group, so a
+    // gate reading the wrong side would serve the request.
+    const { world, graph, priceGroups, priceGroup, priceGroupRate, entityLoaders } =
+      makeDoubledCascade();
+
+    expect(priceGroupRate.getPriceGroup()?.getPriceGroupID()).toBe(
+      graph.rootPriceGroup.getPriceGroupID(),
+    );
+    expect(graph.rootPriceGroup.getPriceGroupID()).not.toBe(priceGroup.getPriceGroupID());
+
+    const entitlements = makeEntitlementsDouble({
+      admin: false,
+      entitledPriceGroupIDs: [priceGroup.getPriceGroupID()],
+    });
+
+    const result = await dispatchPriceResolution(
+      makeScope({
+        entityLoaders,
+        priceGroupService: priceGroups.service,
+        accountID: ACCOUNT_ID,
+        entitlements,
+      }),
+      {
+        operation: 'calculateSkuPriceBasedOnPriceGroupRate',
+        sku: world.identity,
+        priceGroupRateID: priceGroupRate.getPriceGroupRateID(),
+      },
+    );
+
+    expect(result).toStrictEqual({ outcome: 'unresolved', reason: 'priceGroupRateNotFound' });
+    expect(entitlements.decisions).toStrictEqual([
+      {
+        member: 'isEntitledToPriceGroupRate',
+        priceGroupID: graph.rootPriceGroup.getPriceGroupID(),
+        entitled: false,
+      },
+    ]);
+    expect(priceGroups.calls).toStrictEqual([]);
+  });
+
+  it('★★★ CONSULTS the entitlement surface on every one of the five group-named operations', async () => {
+    // ★★★ THE TRIPWIRE THAT MAKES THE PERMISSIVE DEFAULT SAFE. Every other case in this file runs with
+    // the administrative entitlement double, so an arm that stopped consulting the surface entirely
+    // would still pass all of them. This case runs each of the five with the surface RECORDING and
+    // asserts that each one asked - which no silent omission can satisfy.
+    const operations = [
+      'getRateForProductTypeBasedOnPriceGroup',
+      'getRateForProductBasedOnPriceGroup',
+      'getRateForSkuBasedOnPriceGroup',
+      'calculateSkuPriceBasedOnPriceGroup',
+      'calculateSkuPriceBasedOnPriceGroupRate',
+    ] as const;
+
+    for (const operation of operations) {
+      const { world, priceGroups, priceGroup, priceGroupRate, entityLoaders } =
+        makeDoubledCascade();
+      const entitlements = makeEntitlementsDouble({ admin: true });
+      const scope = makeScope({
+        entityLoaders,
+        priceGroupService: priceGroups.service,
+        accountID: ACCOUNT_ID,
+        entitlements,
+      });
+
+      const request =
+        operation === 'getRateForProductTypeBasedOnPriceGroup'
+          ? {
+              operation,
+              productTypeID: world.productType.getProductTypeID(),
+              priceGroupID: priceGroup.getPriceGroupID(),
+            }
+          : operation === 'getRateForProductBasedOnPriceGroup'
+            ? {
+                operation,
+                productID: world.product.getProductID(),
+                priceGroupID: priceGroup.getPriceGroupID(),
+              }
+            : operation === 'calculateSkuPriceBasedOnPriceGroupRate'
+              ? {
+                  operation,
+                  sku: world.identity,
+                  priceGroupRateID: priceGroupRate.getPriceGroupRateID(),
+                }
+              : { operation, sku: world.identity, priceGroupID: priceGroup.getPriceGroupID() };
+
+      // No assertion needed here: `operations` is `as const`, so `request` is already the discriminated
+      // union the dispatcher declares. The negative case above needs one only because `it.each` widens
+      // its parameters to `string`.
+      await dispatchPriceResolution(scope, request);
+
+      expect(entitlements.decisions, `${operation} consulted no entitlement`).toHaveLength(1);
+      expect(entitlements.decisions[0]?.member).toBe(
+        operation === 'calculateSkuPriceBasedOnPriceGroupRate'
+          ? 'isEntitledToPriceGroupRate'
+          : 'isEntitledToPriceGroup',
+      );
+    }
+  });
+
+  it('★★ ASKS NOTHING of the entitlement surface for the operations that name no price group', async () => {
+    // The three account-scoped operations SELECT a price group rather than accepting one - that
+    // selection is their whole job [model/service/PriceGroupService.cfc:L343-L362] - and the account
+    // they select for is already admitted by `admitNamedAccount` or established as the principal. A
+    // second gate here would refuse an account the price its own tier entitles it to.
+    const { world, priceGroups, entityLoaders } = makeDoubledCascade();
+    const entitlements = makeEntitlementsDouble({ admin: false, entitledPriceGroupIDs: [] });
+    const scope = makeScope({
+      entityLoaders,
+      priceGroupService: priceGroups.service,
+      accountID: ACCOUNT_ID,
+      entitlements,
+    });
+
+    await dispatchPriceResolution(scope, {
+      operation: 'calculateSkuPriceBasedOnCurrentAccount',
+      sku: world.identity,
+    });
+    await dispatchPriceResolution(scope, {
+      operation: 'calculateSkuPriceBasedOnAccount',
+      sku: world.identity,
+      accountID: ACCOUNT_ID,
+    });
+    await dispatchPriceResolution(scope, {
+      operation: 'getBestPriceGroupDetailsBasedOnSkuAndAccount',
+      sku: world.identity,
+      accountID: ACCOUNT_ID,
+    });
+
+    expect(entitlements.decisions).toStrictEqual([]);
+    // All three were nonetheless served, so this is not an assertion about them failing early.
+    expect(priceGroups.calls).toHaveLength(3);
+  });
+
+  it('★ folds identifier case when deciding, so a differently-cased entitled group still resolves', async () => {
+    // Every other identifier comparison in this subtree is case-folded - the SKU load, the order-view
+    // hydration and the price-group hydration alike - and an entitlement that a differently-cased but
+    // VALID identifier could not satisfy would be the same defect pointing the other way: a legitimate
+    // caller refused its own price group.
+    const { world, priceGroups, priceGroup, entityLoaders } = makeDoubledCascade();
+    const entitlements = makeEntitlementsDouble({
+      admin: false,
+      entitledPriceGroupIDs: [priceGroup.getPriceGroupID().toUpperCase()],
+    });
+
+    const result = await dispatchPriceResolution(
+      makeScope({
+        entityLoaders,
+        priceGroupService: priceGroups.service,
+        accountID: ACCOUNT_ID,
+        entitlements,
+      }),
+      {
+        operation: 'calculateSkuPriceBasedOnPriceGroup',
+        sku: world.identity,
+        priceGroupID: priceGroup.getPriceGroupID(),
+      },
+    );
+
+    expect(result.outcome).toBe('price');
+    expect(entitlements.decisions[0]?.entitled).toBe(true);
+  });
+});
 
 describe('the surface this entrypoint exposes, and the members it withholds', () => {
   it('publishes twelve operations, every one named for its legacy method', () => {
@@ -5103,12 +5585,23 @@ describe('the Lambda entrypoint, through its dependency seam (F3)', () => {
     const envelope = readSuccessEnvelope(response);
 
     expect(response.statusCode).toBe(200);
-    // ★ THE SCOPE INPUT CARRIES EXACTLY ONE KEY, AND IT CAME FROM THE AUTHORIZER. No clock - the scope
-    // reads the instant once itself - no feed host, and no allow-list: a price request cannot mint an
-    // origin for a capability that renders no feed. `toStrictEqual` rather than `toMatchObject`, so a
-    // second key appearing here fails rather than passing unnoticed.
+    // ★ THE SCOPE INPUT CARRIES EXACTLY TWO KEYS, AND BOTH CAME FROM THE AUTHORIZER. No clock - the
+    // scope reads the instant once itself - no feed host, and no allow-list: a price request cannot mint
+    // an origin for a capability that renders no feed. `toStrictEqual` rather than `toMatchObject`, so a
+    // third key appearing here fails rather than passing unnoticed.
+    //
+    // ★★★ `adminAccountFlag` IS THE SECOND KEY NOW (SEC-A), AND THIS ASSERTION USED TO READ
+    // `toStrictEqual({ accountID: ACCOUNT_ID })` - it was one of the assertions that LOCKED the finding
+    // in place. The flag used to be omitted on the stated ground that this route performs no durable
+    // write and so has no audit stamp to attribute; that remains true, and it is no longer the only
+    // thing the flag decides. It is now the administrative bypass over the price-group entitlement test,
+    // so a route that dropped it would refuse every administrative caller. `false` here is the honest
+    // value for THIS caller: the authorizer carried an account and no administrative claim.
     expect(bed.root.scopeInputs).toHaveLength(1);
-    expect(bed.root.scopeInputs[0]).toStrictEqual({ accountID: ACCOUNT_ID });
+    expect(bed.root.scopeInputs[0]).toStrictEqual({
+      accountID: ACCOUNT_ID,
+      adminAccountFlag: false,
+    });
     // The account reached the service, which is what makes the plumbing assertion above non-vacuous.
     expect(
       priceGroups.calls.filter(
@@ -5171,7 +5664,10 @@ describe('the Lambda entrypoint, through its dependency seam (F3)', () => {
     );
 
     expect(response.statusCode).toBe(200);
-    expect(bed.root.scopeInputs[0]).toStrictEqual({ accountID: ACCOUNT_ID });
+    expect(bed.root.scopeInputs[0]).toStrictEqual({
+      accountID: ACCOUNT_ID,
+      adminAccountFlag: false,
+    });
     expect(readSuccessEnvelope(response).result['outcome']).toBe('price');
   });
 
@@ -5217,7 +5713,13 @@ describe('the Lambda entrypoint, through its dependency seam (F3)', () => {
     // explicit `undefined`, and the composition root is what turns that into the OMITTED key on
     // `CurrentAccountContext` - asserted in `tests/unit/handlers/bootstrap.test.ts`.
     expect(bed.root.scopeInputs).toHaveLength(1);
-    expect(bed.root.scopeInputs[0]).toStrictEqual({ accountID: undefined });
+    // ★★ AND THE ADMINISTRATIVE FLAG IS `false` FOR AN UNIDENTIFIED CALLER (SEC-A). There is no
+    // principal to carry a claim, so the entitlement bypass resolves closed - which is why the one
+    // anonymously-permitted operation cannot acquire it.
+    expect(bed.root.scopeInputs[0]).toStrictEqual({
+      accountID: undefined,
+      adminAccountFlag: false,
+    });
     // ★★★ THE SKU'S OWN PRICE, NOT A ZERO AND NOT AN ABSENCE.
     expect(envelope.result['outcome']).toBe('price');
     expect(readObject(envelope.result['price'], 'the served price')['amount']).toBe(
@@ -5346,7 +5848,10 @@ describe('the Lambda entrypoint, through its dependency seam (F3)', () => {
     const envelope = readSuccessEnvelope(response);
 
     expect(response.statusCode).toBe(200);
-    expect(bed.root.scopeInputs[0]).toStrictEqual({ accountID: ACCOUNT_ID });
+    expect(bed.root.scopeInputs[0]).toStrictEqual({
+      accountID: ACCOUNT_ID,
+      adminAccountFlag: false,
+    });
     expect(envelope.operation).toBe('getPriceByCurrencyCode');
     expect(envelope.result['outcome']).toBe('currencyPrice');
 

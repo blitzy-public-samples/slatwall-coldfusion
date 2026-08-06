@@ -2352,14 +2352,25 @@ describe('catalogQueryHandler', () => {
       }
     });
 
-    it('opens the request scope with the account the gate established', async () => {
+    it('opens the request scope with the account AND the administrative claim the gate established', async () => {
       const response = await bed.invoke({
         authorizer: { accountID: CALLER_ACCOUNT_ID, adminAccountFlag: true },
         query: queryFor('findProducts', { keyword: 'jorden' }),
       });
 
       expect(response.statusCode).toBe(200);
-      expect(bed.scopeInputs).toStrictEqual([{ accountID: CALLER_ACCOUNT_ID }]);
+
+      // ★★★ `adminAccountFlag` IS PART OF THIS ASSERTION NOW (SEC-D, CWE-223/CWE-778). The call
+      // used to pass `{ accountID }` alone, and this case used to assert exactly that. The omission
+      // was not inert: the composition root builds the audit actor as
+      // `adminAccountFlag: input.adminAccountFlag ?? false`, and that flag is the second half of the
+      // stamping gate `HibachiEntity` applies [org/Hibachi/HibachiEntity.cfc:L628, L633] - so with it
+      // absent, the nine mutations this route publishes wrote no attribution at all. The claim is
+      // available right here, already resolved from the authorizer, which is what made the gap a
+      // wiring omission rather than a missing capability.
+      expect(bed.scopeInputs).toStrictEqual([
+        { accountID: CALLER_ACCOUNT_ID, adminAccountFlag: true },
+      ]);
     });
 
     it('reads the account claim case-insensitively', async () => {
@@ -2370,8 +2381,59 @@ describe('catalogQueryHandler', () => {
 
       // BOTH claims are read case-insensitively, which is CFML struct-key semantics and the reason
       // `structGet` is used for each. An authorizer that spells either differently is the same caller.
+      // The scope therefore receives the RESOLVED claim, not the key the authorizer happened to use.
       expect(response.statusCode).toBe(200);
-      expect(bed.scopeInputs).toStrictEqual([{ accountID: CALLER_ACCOUNT_ID }]);
+      expect(bed.scopeInputs).toStrictEqual([
+        { accountID: CALLER_ACCOUNT_ID, adminAccountFlag: true },
+      ]);
+    });
+
+    it.each([['true'], ['1'], [' TRUE '], ['True']])(
+      '★★ carries the RESOLVED boolean into the scope for the string rendering %s, never the raw claim',
+      async (rendering) => {
+        // The authorizer can carry the flag as one of several truthy strings, and the scope member is
+        // typed `boolean`. What travels must therefore be the value `errorMapper` resolved - so a
+        // downstream audit stamp records a decided permission rather than re-deciding a string, and
+        // `?? false` can never see a truthy string it would have to interpret a second time.
+        const fresh = makeTestBed();
+        const response = await fresh.invoke({
+          authorizer: { accountID: CALLER_ACCOUNT_ID, adminAccountFlag: rendering },
+          query: queryFor('findProducts', { keyword: 'jorden' }),
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(fresh.scopeInputs).toStrictEqual([
+          { accountID: CALLER_ACCOUNT_ID, adminAccountFlag: true },
+        ]);
+      },
+    );
+
+    it('★★★ cannot be told the actor by the REQUEST - the claim comes only from the authorizer (SEC-D)', async () => {
+      // The stamped actor must be server-established, or the audit trail records whatever the caller
+      // asserted about itself. Every caller-authored surface is loaded here with a contradicting
+      // administrative claim - query string, headers, and a body - while the authorizer carries a
+      // NON-administrative identity. The route must refuse on the authorizer's claim alone.
+      const response = await bed.invoke({
+        authorizer: { accountID: CALLER_ACCOUNT_ID },
+        query: {
+          ...queryFor('findProducts', { keyword: 'jorden' }),
+          adminAccountFlag: 'true',
+        },
+        headers: {
+          adminAccountFlag: 'true',
+          'x-admin-account-flag': 'true',
+        },
+        body: JSON.stringify({ adminAccountFlag: true, accountID: 'acct-somebody-else' }),
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(readFailureBody(response).error.category).toBe('forbidden');
+
+      // Refused BEFORE any scope was opened, so no spoofed actor could reach the audit stamp even
+      // transiently, and the response never names the claim it read.
+      expect(bed.scopeInputs).toStrictEqual([]);
+      expect(bed.findProductsCalls).toHaveLength(0);
+      expect(response.body).not.toContain('adminAccountFlag');
     });
 
     it('serves the administrative default caller past the gate', async () => {
@@ -3986,7 +4048,16 @@ describe('catalogQueryHandler', () => {
 
       expect(response.statusCode).toBe(200);
       expect(bed.counters.scopesOpened).toBe(1);
-      expect(atIndex(bed.scopeInputs, 0)).toEqual({ accountID: CALLER_ACCOUNT_ID });
+
+      // The default authorizer for this suite is administrative, so BOTH members travel. The
+      // administrative half used to be missing here and everywhere else (SEC-D): the audit actor is
+      // assembled as `adminAccountFlag: input.adminAccountFlag ?? false`, so omitting it silently
+      // disabled the stamping gate [org/Hibachi/HibachiEntity.cfc:L628, L633] for every one of the
+      // nine mutations this route publishes.
+      expect(atIndex(bed.scopeInputs, 0)).toEqual({
+        accountID: CALLER_ACCOUNT_ID,
+        adminAccountFlag: true,
+      });
     });
 
     it('maps the SKU batch bound the service raises rather than swallowing it', async () => {

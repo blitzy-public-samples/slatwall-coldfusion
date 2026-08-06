@@ -466,6 +466,83 @@ class MissingProductFeedPortError extends Error {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// ★★★ PUBLIC-FEED AVAILABILITY: ESCALATED ON AAP GROUNDS, NOT SILENTLY ACCEPTED (SEC-C, CWE-400).
+//
+// A project-wide final security assessment graded this route MEDIUM for public resource exhaustion:
+// the feed is recomputed in full on every allowed-Host request - whole-catalog selection, the batched
+// follow-up hydration and a complete in-memory render - with no application cache, conditional
+// validator, rate limit or concurrency guard, and any network caller can repeat allowed-Host requests
+// in parallel. THE MECHANISM IS ACCURATE. Every word of the paragraph above the entrypoint describes
+// the same shape from the parity side, and nothing here disputes the finding.
+//
+// WHAT IT ASKED FOR, AND THE AUTHORITY THAT BLOCKS EACH ONE. Its resolution guidance was:
+// "Pre-generate/cache the feed artifact, provide ETag/Last-Modified handling, enforce edge/WAF rate
+// and concurrency limits, and monitor duration/memory. Do not silently truncate the Merchant feed."
+// Taken clause by clause:
+//
+//   1. AN APPLICATION CACHE OR PRE-GENERATED ARTIFACT IS MODULE-SCOPE STATE ON A WARM CONTAINER, and
+//      AAP 0.6.5 rules on that directly: every component-level cache the legacy slice held becomes
+//      REQUEST-SCOPED in this port, because module state persists between unrelated requests and
+//      reproducing it "would be actively unsafe". THE TEST IS NOT A HEADCOUNT. `slatwall-ts/README.md`
+//      enumerates FIVE module-scope mutable bindings and says so in terms - a connection pool, the
+//      stateless executor over it, the wiring, validated configuration and the adopted log threshold -
+//      and what every one of them has in common is that it is EXPENSIVE TO BUILD, REQUEST-INDEPENDENT
+//      AND HOLDS NO REQUEST DATA. A rendered catalog document is none of those things: it would be the
+//      first module-scope binding in this subtree holding business data derived from one caller's
+//      request, which is the property the mandate protects rather than the count. That README also
+//      states the route for a sixth - "a design decision to raise, not a local optimisation" - which is
+//      what this block is. AAP 0.6.7 authorizes exactly three deliberate behaviour changes in this port
+//      and all three are spent, so this is not available without an amendment. It is also not merely
+//      disallowed but WRONG under the current contract: the document is built from the REQUEST'S OWN
+//      origin authority and pinned to the REQUEST'S single instant, so retaining one would answer a
+//      caller on another caller's authority and timestamp unless a keying and expiry policy were
+//      invented - which is precisely the invention AAP 0.8.1 forbids. "Pre-generate" is a
+//      deployment activity in any case, and AAP 0.2.2 excludes infrastructure as code entirely.
+//   2. `etag`, `last-modified`, `cache-control` AND CONDITIONAL REQUESTS ARE ALREADY NAMED, BY THOSE
+//      NAMES, IN THE RULING ABOVE {@link FEED_RESPONSE_HEADERS}, which classifies them as HTTP
+//      semantics the source lacked and their addition as an invented requirement (AAP 0.8.1). That
+//      ruling is not merely stated but APPLIED: a code review withdrew `x-content-type-options` from
+//      this response under it - a different header, and deliberately cited as the precedent rather than
+//      as the same header - on the ground that neither the source nor the AAP prescribes it and that
+//      being conventionally sensible does not make a header any less an invention. If a hardening
+//      header with no behavioural consequence did not survive that test, a caching-and-validator family
+//      that changes what a consumer re-fetches certainly does not. Re-adding it here would reverse a
+//      settled decision rather than answer this finding. AND IT WOULD BUY
+//      NOTHING ON ITS OWN, which is the engineering half of the argument: a strong validator has to be
+//      computed from the document, so without the cache clause 1 blocks, a conditional request still
+//      pays for the whole selection and the whole render before it can answer 304. Validators reduce
+//      transferred BYTES; they do not reduce the work this finding is about.
+//   3. RATE AND CONCURRENCY LIMITS ARE ASSIGNED TO THE EDGE BY THE FINDING ITSELF - "edge/WAF" - and
+//      that tier is out of scope by AAP 0.2.2. A per-container concurrency counter would again be
+//      module-scope mutable state, a refusal would need the 429 and retry vocabulary this module
+//      records that it does not carry, and a concurrency ceiling IS a throughput figure, which AAP
+//      0.8.1 forbids inventing - the same clause under which the legacy runtime's own 60-, 45- and
+//      30-second lock timeouts are noted and deliberately not implemented.
+//   4. DURATION AND MEMORY ARE ALREADY MEASURED, BY THE PLATFORM, per invocation, without this module
+//      inventing a measurement vocabulary the source lacks - see the served-feed line, which records
+//      deliberately no size, count or elapsed figure and is asserted to record none.
+//   5. "DO NOT SILENTLY TRUNCATE" IS ALREADY SATISFIED, and is the one clause that needed no change: a
+//      `MAX_FEED_SELECTION_ROWS` ceiling in `../integrations/google/googleFeedRepository.js` was
+//      REMOVED by an earlier review for exactly this reason, and the block recording that removal
+//      states the rule this finding restates - a security goal does not license replacing a working
+//      feed with an error on correct data.
+//
+// WHAT IS ALREADY TRUE, SO THE RESIDUAL IS BOUNDED RATHER THAN OPEN. The route answers only for a Host
+// in the deployment-owned allow-list and fails closed: absent or empty configuration trusts NO host and
+// the route answers no document at all, so an unconfigured deployment has no exposure here. Per
+// invocation the work is one selection statement plus four batched follow-up statements - one round
+// trip per feed, never one per row - one pure render, one scope, no duplicate buffer and nothing
+// retained. Capacity is characterized against platform ceilings above, and a catalog past them fails
+// visibly instead of shrinking.
+//
+// THE DEPLOYMENT OBLIGATION, STATED SO IT IS NOT ASSUMED. Request rate limiting, request concurrency
+// limiting, a cache or CDN in front of this route, and duration and memory alarms are owned by the
+// deployment, and this subtree ships no infrastructure by AAP mandate. `slatwall-ts/README.md` carries
+// the same record for an operator, and `tests/traceability/legacyTestMap.ts` holds the two together so
+// they cannot drift apart. Escalate, do not patch unilaterally.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // The entrypoint.
 // ---------------------------------------------------------------------------
 
