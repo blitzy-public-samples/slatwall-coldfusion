@@ -93,6 +93,13 @@
 // position the whole header above would disappear from `build/**`. Anchoring the leading comments
 // to a statement that survives erasure is what keeps them in the emitted artifact.
 import { cfLen, cfTruthy } from '../../lib/cfml/truthiness.js';
+// ★★ CFML NUMBER STRINGIFICATION IS IMPORTED FOR THE SAME REASON THE HOST GRAMMAR BELOW IS. The two
+// monetary elements interpolate a value with no mask [.../product.cfm:L27, L29], so the feed's
+// numerals are whatever CFML's `#value#` produces - full precision, plain notation, trailing zeros
+// dropped. `src/lib/cfml/numberFormat.ts` already owns that semantic for this port, and a renderer
+// that re-derived it would be a second place for it to drift. See {@link monetaryBody}, which also
+// records the two-decimal normalisation this import replaced.
+import { cfNumberToString } from '../../lib/cfml/numberFormat.js';
 // ★★ THE HOST GRAMMAR IS IMPORTED, NOT RESTATED, AND THAT IS THE POINT OF THE IMPORT. This module
 // and `../../lib/config.ts` both decide whether a value is a bare host authority - here at the
 // point it is written into five URL sites, there when a deployment authorizes it - and they used to
@@ -308,6 +315,18 @@ const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for ';
  * applied to both implementations. The transport of the feed RESPONSE itself is unaffected by this
  * literal - it is whatever the gateway terminates - and the deployment posture that mitigates the
  * links today is publishing an allow-listed authority that answers HTTPS.
+ *
+ * ★★★ RAISED A THIRD TIME, AS S-03 (MINOR, CWE-319), AND THE DISPOSITION IS UNCHANGED. The
+ * final element-by-element completeness review measured the same five sites - this literal and the
+ * four URL compositions - and asked for the same two things: a deployment-owned canonical HTTPS
+ * origin "with explicit product/AAP authorization", and never inferring the scheme from an
+ * untrusted forwarding header. The second half remains satisfied and is asserted by this file's
+ * suite: no header is read here or in the handler, and the authority comes from configuration.
+ * The first half remains blocked by the same three facts above, and the authorization has not
+ * arrived - so the literal stays, the finding stays OPEN, and it is escalated a third time rather
+ * than closed by a fourth divergence. THE ESCALATION IS THE ACTION: a plan owner ratifying an
+ * HTTPS origin in the AAP is what unblocks it, and this record is where the next reviewer finds
+ * that stated instead of rediscovering it.
  */
 const FEED_ORIGIN_SCHEME_PREFIX = 'http://';
 
@@ -584,20 +603,44 @@ function textElement(name: string, text: string | undefined): string {
  * would offer the product for free. Emitting nothing says "no price"; emitting `0.00` says
  * something false.
  *
- * JUDGMENT CALL: two-decimal presentation is a plan-mandated normalisation, recorded as a
- * correction. The template applies no mask at L27 or L29 - raw CFML numeric stringification renders
- * a stored `9.50` as `9.5`. All money here is presented through `Money.toFixed2()`, the equivalent
- * of `numberFormat(v,"0.00")`, so it renders as `9.50`. Applied at the boundary, never inside an
- * arithmetic step.
+ * CFML parity [integrationServices/google/views/feed/product.cfm:L27, L29]: a PRESENT price is
+ * rendered the way CFML stringifies a number - full precision, plain notation, trailing zeros
+ * dropped - because that is literally what the template does. Both lines interpolate the value
+ * directly, `#local.sku.getProduct().getPrice()#` and `#local.sku.getSalePrice()#`, with NO
+ * `numberFormat` mask and no `decimalFormat`. So a `big_decimal` column holding `9.50` reaches the
+ * feed as `9.5`, and one holding `1234.567` reaches it as `1234.567`. `cfNumberToString` is the one
+ * module that owns that semantic for this port, so the rendering goes through it rather than being
+ * re-derived here.
+ *
+ * ★★★ QUOTE-THEN-REVISE, BECAUSE THIS EMITTED THE WRONG BYTES AND A REVIEW MEASURED IT. The
+ * paragraph above replaces this one:
+ *
+ *   "JUDGMENT CALL: two-decimal presentation is a plan-mandated normalisation, recorded as a
+ *    correction. The template applies no mask at L27 or L29 - raw CFML numeric stringification
+ *    renders a stored `9.50` as `9.5`. All money here is presented through `Money.toFixed2()`, the
+ *    equivalent of `numberFormat(v,"0.00")`, so it renders as `9.50`."
+ *
+ * ITS READING OF THE TEMPLATE WAS CORRECT AND ITS CONCLUSION WAS NOT AUTHORIZED. `Money.toFixed2()`
+ * applies the `'0.00'` mask, so it changed `9.5` to `9.50` and - worse - ROUNDED `1234.567` to
+ * `1234.57`, losing a digit the legacy feed publishes. Calling it "plan-mandated" was the error:
+ * nothing in the plan mandates a mask on this element. AAP 0.8.1 requires the Google feed's
+ * observable behaviour to be preserved exactly, and AAP 0.6.7 authorizes exactly THREE deliberate
+ * divergences, all three spent elsewhere - the un-`var`'d discount scope leak, the `amountOff`
+ * precision gap and the entity memo repairs. A fourth is forbidden, so a normalisation this pleasant
+ * still has to go: preserving output is not the same thing as improving it, and a Merchant Center
+ * consumer diffing the two implementations would have seen every price differ.
+ *
+ * IF TWO-DECIMAL PRESENTATION IS WANTED, IT IS A PRODUCT DECISION taken in the plan and applied to
+ * both implementations - not one this renderer may take alone.
  *
  * NO CURRENCY CODE IS EMITTED, and none is invented: the legacy feed carries no currency anywhere,
  * so there is nothing to represent.
  *
  * @param value the monetary quantity, or `undefined` when there is none.
- * @returns the value presented to two decimals, or the empty string when absent.
+ * @returns the value as CFML would stringify it, or the empty string when absent.
  */
 function monetaryBody(value: Money | undefined): string {
-  return value === undefined ? '' : value.toFixed2();
+  return value === undefined ? '' : cfNumberToString(value.toDecimalString());
 }
 
 /**
@@ -918,13 +961,17 @@ function renderFeedItem(
   // `skuShippingWeight`, declared `fieldType="text"` with a default of `1`
   // [model/service/SettingService.cfc:L232], and `skuShippingWeightUnitCode`,
   // declared `fieldType="select"` with a default of `"lb"`
-  // [model/service/SettingService.cfc:L233]. Neither key is among the SEVEN that
+  // [model/service/SettingService.cfc:L233]. Neither key is among the FOUR that
   // `src/domain/ports/settingsProvider.ts` admits - `globalURLKeyProduct` [:L178],
-  // `globalURLKeyProductType` [:L179], `productImageDefaultExtension` [:L191],
-  // `productImageOptionCodeDelimiter` [:L192], `productTitleString` [:L193],
-  // `skuCurrency` [:L221] and `skuEligibleCurrencies` [:L222] - and adding an eighth
-  // would be a scope violation, as would extending a sibling's locked contract or
-  // adding a fourteenth port for feed presentation values. The route that remains is
+  // `globalURLKeyProductType` [:L179], `skuCurrency` [:L221] and
+  // `skuEligibleCurrencies` [:L222] - and adding a fifth would be a scope violation, as
+  // would extending a sibling's locked contract or adding a fourteenth port for feed
+  // presentation values. (This said SEVEN and listed `productImageDefaultExtension`
+  // [:L191], `productImageOptionCodeDelimiter` [:L192] and `productTitleString` [:L193]
+  // among them, which was true of one revision of the union; a review measured the
+  // shipped one. Those three are resolved at composition time and handed inward as
+  // plain strings, so they are values rather than askable keys - which, if anything,
+  // strengthens the point being made here.) The route that remains is
   // the right one anyway: a pure renderer should not be resolving configuration, so
   // the values are resolved before hydration and the projection carries them. The
   // two legacy defaults are cited above as evidence of SHAPE only; neither is
@@ -939,11 +986,17 @@ function renderFeedItem(
   //   as text - which is what makes this renderer indifferent to where they came
   //   from, and is the point of resolving them before it runs.
   //
-  //   The key COUNT above needed correcting too, in the opposite direction to an
-  //   earlier revision of this comment: the union holds SEVEN members, not four, so
-  //   the enumeration above is the port's full surface and "adding an eighth" is the
-  //   accurate statement of the lock. What never changed is the only fact this
-  //   renderer depends on - neither shipping-weight key is on that union at all.
+  //   ★★ THAT CORRECTION'S SECOND HALF IS ITSELF WITHDRAWN, SO ALL THREE POSITIONS
+  //   ARE ON THE RECORD. It read: "The key COUNT above needed correcting too, in the
+  //   opposite direction to an earlier revision of this comment: the union holds
+  //   SEVEN members, not four, so the enumeration above is the port's full surface
+  //   and 'adding an eighth' is the accurate statement of the lock." A code review
+  //   measured the shipped union at FOUR - the enumeration above is correct as
+  //   written, and "adding a fifth" is the accurate statement of the lock. The
+  //   sentence survived a narrowing it should have been retired by, and while it
+  //   stood it contradicted the paragraph directly above it. What never changed
+  //   across any of the three positions is the only fact this renderer depends on -
+  //   neither shipping-weight key is on that union at all.
   //
   // They are STRINGS - not numbers and not `Money` - so they are emitted as text
   // with a single space between them, in the template's order, and the pair is

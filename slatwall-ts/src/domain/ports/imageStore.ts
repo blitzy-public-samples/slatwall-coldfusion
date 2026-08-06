@@ -114,14 +114,24 @@
  *   `productImageOptionCodeDelimiter` (default `-`) [model/service/SettingService.cfc:L192] are
  *   read at exactly two sites, both inside `Sku.generateImageFileName()`
  *   [model/entity/Sku.cfc:L138] and [model/entity/Sku.cfc:L135], which composes an image FILE
- *   NAME and does nothing else. Both keys ARE declared on `SettingKey` - they are the third and
- *   fourth of its seven literals, in the order the legacy declares them - because the legacy read
- *   for each is a `setting()` call and settings RESOLUTION has exactly one authority in this
- *   target. What stays out of this port is the RESOLUTION, not the values: the composition root
- *   reads both through `settingsProvider` and hands the already-resolved pair inward, so
- *   `generateSkuImageFileName` receives values and never a resolver. No settings key is declared
- *   HERE, no key is resolved twice anywhere, and no EIGHTH settings key may be added to make
- *   anything compile.
+ *   NAME and does nothing else. Neither key is declared on `SettingKey`: that union is CLOSED at
+ *   FOUR - `globalURLKeyProduct`, `globalURLKeyProductType`, `skuCurrency`,
+ *   `skuEligibleCurrencies` - and these two are among the THREE product-presentation names the
+ *   composition root resolves eagerly from `SwSetting` and hands inward as plain immutable
+ *   strings. Settings RESOLUTION still has exactly one authority in this target, which is the only
+ *   property this paragraph ever needed: what stays out of this port is the RESOLUTION, not the
+ *   values. `src/handlers/bootstrap.ts` reads both in its one composition-time settings query and
+ *   hands the already-resolved pair inward, so `generateSkuImageFileName` receives values and
+ *   never a resolver. No settings key is declared HERE, no key is resolved twice anywhere, and no
+ *   FIFTH settings key may be added to `SettingKey` to make anything compile.
+ *
+ *   ★★ QUOTE-THEN-REVISE: this read "Both keys ARE declared on `SettingKey` - they are the third
+ *   and fourth of its seven literals, in the order the legacy declares them", and closed "no
+ *   EIGHTH settings key may be added". The union really did carry seven literals for one revision;
+ *   a code review measured the shipped one at four and found this sentence still asserting the
+ *   widened count, which also left it contradicting the corrected paragraph further down this same
+ *   header. The division it describes is unchanged - resolution here, values there - so only the
+ *   count and the membership claim were wrong.
  *
  *   ★ THAT REASONING IS NOW ACTED ON RATHER THAN ONLY RECORDED. "Image-file-name composition
  *   ... belongs behind THIS port" was written before any member expressed it, and in the
@@ -173,11 +183,18 @@
  *
  *   Adding it here rather than anywhere else follows from where the two settings are CONSUMED:
  *   image-file-name composition is an image concern, and this port is the image subsystem's only
- *   seam. The alternative placements were each worse. Widening `SettingsProvider` past the seven
- *   keys the in-scope slice proves would import out-of-scope configuration into the domain layer.
- *   Adding parameters to an entity method would spend a signature reshaping the project has
- *   fully allocated. And leaving the no-op in place would mean shipping a method whose name
- *   promises a write it never performs.
+ *   seam. The alternative placements were each worse. Widening `SettingsProvider` past the FOUR
+ *   keys it publishes would widen a frozen interface and import out-of-scope configuration into
+ *   the domain layer. Adding parameters to an entity method would spend a signature reshaping the
+ *   project has fully allocated. And leaving the no-op in place would mean shipping a method whose
+ *   name promises a write it never performs.
+ *
+ *   ★★ QUOTE-THEN-REVISE: this read "past the seven keys the in-scope slice proves". The union
+ *   carried seven literals for one revision and was narrowed back to four - `globalURLKeyProduct`,
+ *   `globalURLKeyProductType`, `skuCurrency`, `skuEligibleCurrencies` - after a review found the
+ *   widening unauthorized. The two image settings this paragraph is about are among the three the
+ *   composition root resolves eagerly and hands inward as VALUES, which is why they can be consumed
+ *   here without being askable anywhere. The argument is unchanged; only its count was wrong.
  *
  *   The chosen stub behaviour is deliberately NOT decided here. Whether an implementation
  *   reports failure, refuses outright, or does something else is an implementation decision;

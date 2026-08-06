@@ -201,7 +201,11 @@ export interface TwoPassRewardIterationResult {
 export class TwoPassRewardIterator {
   /**
    * @param promotionRepository The promotion port, sole collaborator. Only
-   *   `getActivePromotionRewards` is reached; the port's other seven members are untouched here.
+   *   `getActivePromotionRewards` is reached; the port's other SIX members are untouched here.
+   *   (This said "other seven". `PromotionRepository` declares seven members IN TOTAL - the
+   *   reward read plus six use-count and query members - so "other seven" implied an eighth that
+   *   does not exist. Corrected against the shipped interface while verifying a count-accuracy
+   *   finding elsewhere; nothing about what this class reaches has changed.)
    */
   constructor(private readonly promotionRepository: PromotionRepository) {}
 

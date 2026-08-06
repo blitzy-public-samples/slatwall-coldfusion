@@ -262,12 +262,22 @@ describe('the framework dead-call-target contract', () => {
 
     // This case previously asserted the opposite, on the grounds that `throw('<x>')`
     // is what the LEGACY CFML construct emits. That premise does not survive
-    // contact with the target: no CFML runs here, and every one of the 163 `throw`
-    // sites in `src/**` is `throw new ...` - the seven that raise this very
-    // contract included [src/domain/entities/promotionPeriod.ts:L1379, L1407,
-    // L1433, L1468; src/domain/entities/promotionAccount.ts:L560, L563, L634].
+    // contact with the target: no CFML runs here, and NO `throw` site in `src/**`
+    // throws a string - every one raises an `Error` instance, whether constructed
+    // inline with `new` or returned by a local factory such as
+    // `Sku.missingCollaborator`. The seven that raise this very contract are
+    // [src/domain/entities/promotionPeriod.ts:L1154, L1179, L1203, L1237;
+    // src/domain/entities/promotionAccount.ts:L558, L561, L632].
     // The recognizer therefore requires a real `Error`, which removes a shape a
     // caller could forge without rejecting any producer that exists.
+    //
+    // ★★ TWO CORRECTIONS HERE, BOTH DRIFT RATHER THAN REASONING. The locators read
+    // `L1379, L1407, L1433, L1468` against a 1,346-line file and `L560, L563, L634`
+    // against the sibling, and a review measured them. The sentence also counted
+    // "163 `throw` sites in `src/**`"; the tree holds over three hundred, and the
+    // count was doing no work - what the case needs is that no producer throws a
+    // STRING, which is now what it says. A number nothing derives is a number that
+    // goes stale, so this one is gone rather than re-fixed.
     //
     // The byte-exact-message requirement is untouched and is still covered: the
     // first case in this block maps `new Error(CONTRACT_MESSAGE)` and gets the

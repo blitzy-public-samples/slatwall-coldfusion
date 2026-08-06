@@ -43,10 +43,13 @@
  * distinction stays visible; its deadness is recorded so nobody mistakes it for the live
  * fulfillment path, `PeriodQualification.qualifiedFulfillmentIDs`.
  *
- * LEGACY-NOTE [slatwall-ts/src/lib/cfml/list.ts:L477-L529]: the shipped `listGetAt` THROWS
- * `CfmlListIndexError` rather than returning `''` out of range, mirroring CFML's own
- * `ListDeleteAt(list, 0)`. Recorded here because the comma-list helper typed below is the one place
- * in this file where that hazard is reachable.
+ * LEGACY-NOTE [slatwall-ts/src/lib/cfml/list.ts:L271-L316]: the shipped `listGetAt` THROWS
+ * `CfmlListIndexError` - declared at [slatwall-ts/src/lib/cfml/list.ts:L137-L159] - rather than
+ * returning `''` out of range, mirroring CFML's own `ListDeleteAt(list, 0)`. Recorded here because
+ * the comma-list helper typed below is the one place in this file where that hazard is reachable.
+ *
+ * (These locators read `L477-L529`, past the end of a 464-line file, until a review checked them
+ * against disk. The referent had not moved; the citation had never matched it.)
  */
 import type { PromotionPeriod } from '../entities/promotionPeriod.js';
 import type { PromotionQualifier } from '../entities/promotionQualifier.js';

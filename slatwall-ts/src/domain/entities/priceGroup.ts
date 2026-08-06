@@ -1147,7 +1147,10 @@ export class PriceGroup {
   // NO SMART-LIST METHOD EXISTS ON THIS ENTITY, AND NONE MAY BE ADDED. Unlike ProductType.cfc (four
   // of them) and Product.cfc / Sku.cfc, `model/entity/PriceGroup.cfc` hand-writes none. The framework
   // would have synthesised `getPriceGroupRatesSmartList()`, and its only call site in the whole tree
-  // is admin/views/entity/pricegrouprates.cfm:L51 - admin/** is out of scope. `HibachiSmartList` is a
+  // is admin/views/entity/pricegrouptabs/pricegrouprates.cfm:L51 - admin/** is out of scope. (The
+  // `pricegrouptabs/` segment was missing until a review checked the path; the file it named does not
+  // exist, and the one it meant carries the `cf_HibachiListingDisplay` tag on that line.)
+  // `HibachiSmartList` is a
   // generic, string-keyed, dynamically-filtered query builder; porting it faithfully would re-import
   // exactly the framework coupling this refactor exists to remove and would be untypeable under the
   // strict profile. It is replaced by explicit typed repository query methods owned by

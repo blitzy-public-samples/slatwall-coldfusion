@@ -488,8 +488,10 @@ function citesAnySiteOf(text: string, citation: string): boolean {
 // so a revision that adds one is told to extend this scanner rather than being mis-scanned in silence.
 //
 // WHY A SCANNER RATHER THAN A PARSER, AND RATHER THAN AN IMPORT. Parsing the build script would mean a
-// JavaScript parser, and AAP 0.8.3 pins the dependency set at exactly fourteen packages with exact
-// versions - adding a fifteenth to read one 800-line configuration file is not a trade this gate is
+// JavaScript parser, and the plan pins the dependency set with exact versions and admits no addition to
+// it - AAP 0.8.3 calls it "fourteen packages" while AAP 0.5.1's table enumerates THIRTEEN, an
+// inconsistency in the plan's own prose that the README records and this comment does not resolve;
+// either way, adding one more to read a single 800-line configuration file is not a trade this gate is
 // allowed to make. Importing the script is not available either: it runs its build at module scope, so
 // an import would bundle five Lambda artifacts as a side effect of collecting a test. Scanning gets the
 // executable values without a new dependency and without a build, and its one unmodelled construct is
@@ -1072,20 +1074,66 @@ interface FrozenScopeContract {
  * A path this tree carries that the frozen enumeration does not, recorded rather than
  * absorbed.
  *
+ * TWO KINDS OF AUTHORITY, AND EXACTLY ONE PER ROW - which is the correction a review required and the
+ * reason this is a union rather than one string field.
+ *
  * `sanctioningPattern` is the TRAILING WILDCARD from the plan's own target-artifact
  * patterns (AAP 0.2.1 "Target Artifacts Created" and AAP 0.4.4 "legitimate patterns used in
- * this plan") that admits the path. That is the only authority an addition may claim: the
- * plan states the boundary as patterns and the layout as instances, so a file inside a
- * sanctioned pattern is IN SCOPE and out-of-enumeration, which is a difference worth
- * recording and is not the same thing as being out of scope. A path matching no pattern is
- * a scope violation and no entry may be written for it.
+ * this plan") that admits the path. The plan states the boundary as patterns and the layout as
+ * instances, so a file inside a sanctioned pattern is IN SCOPE and out-of-enumeration, which is a
+ * difference worth recording and is not the same thing as being out of scope.
+ *
+ * ★★★ QUOTE-THEN-REVISE. This docblock used to end: "That is the only authority an addition may
+ * claim ... A path matching no pattern is a scope violation and no entry may be written for it." The
+ * SECOND sentence was right and the FIRST was false of this register's own contents, because the
+ * `.gitignore` row claimed a pattern - `slatwall-ts/<root artifact>` - that appears NOWHERE in the
+ * plan. AAP 0.4.4 enumerates the legitimate patterns and every one is a trailing wildcard over a
+ * DIRECTORY; the plan states the subtree root as an INSTANCE list of twelve artifacts and gives no
+ * root pattern at all. A review recorded the invention, and it also recorded the mechanical
+ * consequence: the pattern-match assertion was skipped for `rootArtifact`, so any root filename could
+ * be admitted by adding a row that named the pseudo-pattern.
+ *
+ * `rootScopeException` is therefore what a root artifact claims instead, and it is NOT a pattern. It
+ * names the recorded review decision that admits ONE EXACT FILENAME - see `ROOT_SCOPE_EXCEPTIONS`,
+ * which is a closed table keyed by that filename. A root artifact carries no `sanctioningPattern` at
+ * all, because none exists to carry; a path under a directory carries no `rootScopeException`. Adding
+ * a second root artifact means adding a second entry to that table, which is a visible edit requiring
+ * plan-owner authority rather than a row this register can absorb.
  */
 interface RecordedScopeAddition {
   readonly path: string;
   readonly kind: 'rootArtifact' | 'sourceModule' | 'unitSuite' | 'integrationSuite';
-  readonly sanctioningPattern: string;
+  /** Present for the four directory kinds, and absent for a root artifact. */
+  readonly sanctioningPattern?: string;
+  /** Present ONLY for a root artifact: the exact recorded exception that admits this one filename. */
+  readonly rootScopeException?: string;
   readonly reason: string;
 }
+
+/**
+ * The CLOSED set of root-artifact scope exceptions, keyed by the EXACT filename each admits.
+ *
+ * ★★★ THIS TABLE IS THE WHOLE OF THE ROOT AUTHORITY, AND IT IS DELIBERATELY NOT A PATTERN. AAP 0.3.1
+ * enumerates the subtree root as twelve artifacts and the plan publishes no root wildcard, so a
+ * thirteenth root file cannot be in-scope-and-out-of-enumeration the way an extra suite can be: there
+ * is no boundary statement for it to sit inside. What admits `.gitignore` is a named SECURITY REVIEW
+ * DECISION - SEC-G (CWE-200/CWE-540), which required a committed ignore mechanism after the file had
+ * been deleted once on enumeration grounds - and that is an exception to the frozen enumeration rather
+ * than a reading of it. Recording it as an exception is what keeps it reviewable; recording it as a
+ * pattern made it look derived from the plan, and made every other root filename look derivable too.
+ *
+ * IT REMAINS AN OPEN ITEM FOR THE PLAN OWNER, and this comment is the record of that: the exception is
+ * stated, its security ground is stated, and ratifying it into AAP 0.3.1 - or reconciling the root back
+ * to twelve - is a decision this port may not take for itself. Until then the tree is thirteen root
+ * artifacts, and `A18` reports that as an itemised exception rather than as silent drift.
+ *
+ * A SECOND KEY IS A SCOPE DECISION, NOT A CONVENIENCE. The assertion below pins the key set exactly,
+ * so widening this table shows up in a diff as a change to the scope contract itself.
+ */
+const ROOT_SCOPE_EXCEPTIONS: Readonly<Record<string, string>> = Object.freeze({
+  '.gitignore':
+    'SEC-G (CWE-200/CWE-540): a committed ignore mechanism, required by security review',
+});
 
 /**
  * A module the frozen plan classified as EXEMPT that has since earned a dedicated suite,
@@ -1101,6 +1149,75 @@ interface FrozenExemptPromotion {
   readonly frozenZeroContribution: boolean;
   readonly supersededBy: string;
   readonly reason: string;
+}
+
+/**
+ * One REVIEW checkpoint, and the finding identifiers it owns.
+ *
+ * ★★★ WHY THIS EXISTS. Nine review and QA checkpoints have run over this subtree and each numbered its
+ * own findings from the top, so the tree now cites `F-01`, `F1`, `F10`, `INFO-2`, `S-01`, `SEC-G` and
+ * more - and several of those strings belong to MORE THAN ONE review. A reader meeting "finding F10" in
+ * a comment had no way to learn which review raised it, and a reader auditing a remediation had no way
+ * to check the claimed count against the identifiers actually named. A review recorded both problems
+ * after finding that the `869ec135c` remediation claims twenty-one findings and names twenty.
+ *
+ * `qualifier` is what makes an identifier unique: `qualifier` + `/` + the review's own id resolves to
+ * exactly one finding across the whole project history, which is the property the gate below asserts.
+ * It is the remediation commit's short hash wherever one exists, because a hash is a fact that cannot
+ * drift.
+ *
+ * `findingIds` are the ids AS THAT REVIEW NUMBERED THEM, transcribed from the remediation record rather
+ * than reconstructed. It is EMPTY for a checkpoint whose remediation record does not enumerate them -
+ * and when it is empty the note has to say so, because an empty list must read as "not enumerated
+ * there" and never as "raised nothing".
+ *
+ * `claimedFindingCount` is what the remediation record CLAIMED. Where it disagrees with the number of
+ * ids named, the note carries the discrepancy: that disagreement is the finding this structure answers,
+ * so it is recorded rather than reconciled away.
+ */
+interface PriorFindingLedgerEntry {
+  readonly qualifier: string;
+  readonly review: string;
+  readonly remediationCommit: string;
+  readonly findingIds: readonly string[];
+  readonly claimedFindingCount: number;
+  readonly status: string;
+  readonly note: string;
+}
+
+/**
+ * A legacy path this subtree CITES and that does not exist, recorded as deliberate.
+ *
+ * ★★★ WHY THE ABSENCES HAVE TO BE ENUMERATED. `A27` requires every legacy path any artifact cites to
+ * exist in the CFML tree, because a citation naming a file that is not there is a citation a reader
+ * cannot check - a review found one, a legacy admin view cited with a directory segment dropped out of
+ * the middle of its path. (The broken form is not reproduced here for the reason `A27` records: this
+ * comment would then be reported as a citation of a file that does not exist.)
+ * But some absences are the POINT of the citation: AAP 0.2.1 names six validation files as "absent by
+ * design, not to be invented", the port records that no `CategoryService.cfc` exists, and this file
+ * itself names a synthetic path to prove its own reader raises. A blanket existence rule would fail on
+ * every one of those, so each is registered here with the reason it is cited while absent.
+ *
+ * The register is CLOSED in practice: a new absence has to be added deliberately, which is a visible
+ * edit, and the gate names any unregistered one by path.
+ */
+interface DeliberateLegacyAbsence {
+  readonly path: string;
+  readonly reason: string;
+}
+
+/**
+ * An identifier STRING that more than one review has used, so a citation of it alone is ambiguous.
+ *
+ * These are the strings a reader is most likely to be misled by, named individually with the reviews
+ * that share them. `citedInTree` is asserted to really occur in `src/**` or `tests/**`, so this cannot
+ * become a list of hazards nobody actually faces.
+ */
+interface UnqualifiedCitationHazard {
+  readonly id: string;
+  readonly sharedBy: readonly string[];
+  readonly citedInTree: boolean;
+  readonly note: string;
 }
 
 // --- Shared justifications -------------------------------------------------
@@ -1134,6 +1251,9 @@ export const LEGACY_TEST_MAP: {
   readonly frozenScope: FrozenScopeContract;
   readonly recordedScopeAdditions: readonly RecordedScopeAddition[];
   readonly frozenExemptPromotions: readonly FrozenExemptPromotion[];
+  readonly priorFindingLedger: readonly PriorFindingLedgerEntry[];
+  readonly unqualifiedCitationHazards: readonly UnqualifiedCitationHazard[];
+  readonly deliberateLegacyAbsences: readonly DeliberateLegacyAbsence[];
   readonly coveredModules: readonly CoveredModule[];
   readonly namingExceptions: readonly CoveredModule[];
   readonly exemptModules: readonly ExemptModule[];
@@ -1259,10 +1379,18 @@ export const LEGACY_TEST_MAP: {
     // name, it was deleted once on exactly that ground, and a security review then required it back
     // (SEC-G); recording it here is what keeps "a thirteenth root file" a LOUD, itemised, reviewable
     // fact instead of the silent drift the enumeration argument was rightly worried about.
+    //
+    // ★★★ AND IT CLAIMS AN EXCEPTION, NOT A PATTERN, WHICH IS A CORRECTION. This row used to read
+    // `sanctioningPattern: 'slatwall-ts/<root artifact>'`, and no such pattern exists anywhere in the
+    // plan - AAP 0.4.4's legitimate patterns are all trailing wildcards over directories, and the root
+    // is an instance list of twelve. A review recorded the invention; the authority is now the exact,
+    // closed `ROOT_SCOPE_EXCEPTIONS` entry for this one filename, and the assertion below refuses a
+    // root row whose filename that table does not name.
     {
       path: '.gitignore',
       kind: 'rootArtifact',
-      sanctioningPattern: 'slatwall-ts/<root artifact>',
+      rootScopeException:
+        'SEC-G (CWE-200/CWE-540): a committed ignore mechanism, required by security review',
       reason:
         'SEC-G (CWE-200/CWE-540): the committed ignore mechanism. AAP 0.8.3 commits this port ' +
         'to "environment-driven configuration with no hardcoded credentials, accompanied by a ' +
@@ -1360,7 +1488,7 @@ export const LEGACY_TEST_MAP: {
     },
   ],
 
-  // ★ THE SIX FROZEN-EXEMPT MODULES THAT HAVE SINCE EARNED SUITES, WITH THE PLAN'S OWN
+  // ★ THE FROZEN-EXEMPT MODULES THAT HAVE SINCE EARNED SUITES, WITH THE PLAN'S OWN
   // CLASSIFICATION PRESERVED.
   //
   // The plan put each of these among the thirty-two exemptions, and for two of them it went
@@ -1368,8 +1496,18 @@ export const LEGACY_TEST_MAP: {
   // verbatim in structure, because the honest statement is BOTH halves at once: this is what
   // the plan froze, this is the recorded addition that supersedes it, and this is why. That
   // is what `A18` asserts - it reconciles the frozen 57/32 to the current census through
-  // exactly these six rows plus the two recorded module additions, and fails if the
-  // arithmetic stops closing.
+  // exactly these rows plus any recorded MODULE additions, and fails if the arithmetic stops
+  // closing.
+  //
+  // ★★★ NO COUNT IS WRITTEN IN THIS PROSE ANY MORE, AND THAT IS A CORRECTION A REVIEW REQUIRED.
+  // The heading used to say "THE SIX FROZEN-EXEMPT MODULES" and the paragraph used to close with
+  // "exactly these six rows plus the two recorded module additions". By then the array held SEVEN
+  // rows and there were ZERO recorded module additions - the two European-Central-Bank rows had
+  // been withdrawn when their files were re-homed into the composition root, as the register above
+  // records. The reconciliation in `A18` is DERIVED from `promotions.length` and from the recorded
+  // rows themselves, so it kept closing while the prose beside it described a tree that no longer
+  // existed. A number stated only in prose is a number nothing checks; the arithmetic is asserted
+  // and the prose now points at it instead of restating it.
   frozenExemptPromotions: [
     {
       module: 'src/handlers/router.ts',
@@ -1444,6 +1582,358 @@ export const LEGACY_TEST_MAP: {
         'Exempt as a shared internal of the handler tier under the same five-suite budget. ' +
         'It has no legacy antecedent, so every response contract it decides is net-new ' +
         'behaviour, pinned by recorded addition seven.',
+    },
+  ],
+
+  // ★ THE PRIOR-FINDING LEDGER: ONE ROW PER REVIEW CHECKPOINT, SO A CITED IDENTIFIER RESOLVES.
+  //
+  // ★★★ WHY IT IS HERE AND NOT IN A COMMIT MESSAGE. A review recorded that the `869ec135c`
+  // remediation "claims 21 findings but names only 20 unique IDs" and that `F10` is separately in
+  // live use across `src/handlers/**` for an unrelated review - so neither the count nor the
+  // identifier could be checked from inside the tree. A commit message cannot carry that record:
+  // it is not versioned alongside the code it describes, it cannot be asserted, and a reader
+  // holding only the working tree never sees it. This array is the record, and the `A26` block
+  // below is what keeps it honest.
+  //
+  // WHAT A ROW IS NOT: it is not a claim that a review's findings were all correct, and it is not
+  // a substitute for the review report itself. It states four checkable things - who raised the
+  // findings, which identifiers they used, how many the remediation claimed, and where each
+  // stands now - and it says plainly where a record stops.
+  priorFindingLedger: [
+    {
+      qualifier: '8cf4203cb',
+      review:
+        'NOT APPROVED code review at Boundary C composition reconciliation (5 CRITICAL, 10 MAJOR, ' +
+        '3 MINOR)',
+      remediationCommit: '8cf4203cb',
+      findingIds: [
+        'F1',
+        'F2',
+        'F3',
+        'F4',
+        'F5',
+        'F6',
+        'F7',
+        'F8',
+        'F9',
+        'F10',
+        'F11',
+        'F12',
+        'F13',
+        'F14',
+        'F15',
+        'F16',
+        'F17',
+        'F18',
+      ],
+      claimedFindingCount: 18,
+      status:
+        'All eighteen remediated at that commit, across eleven production files, grouped by root ' +
+        'cause. Several remain the live authority for decisions still in force: F1/F2/F5/F6/F8/F12 ' +
+        'removed six unauthorized read ceilings, F3/F4/F11 restored the Google feed HTTP contract, ' +
+        'and F10 withdrew two unpaged operations from the routed SKU surface.',
+      note:
+        'THIS IS THE NAMESPACE THAT OWNS THE BARE `F<n>` FORM, and it is the one a reader is most ' +
+        'likely to mistake for a later review: its ids carry NO hyphen (`F10`), while the ' +
+        'checkpoint review remediated at 869ec135c numbers its own with one and a leading zero ' +
+        '(`F-10`). The forty-seven `F10` citations under src/handlers/** and tests/** are all this ' +
+        'review, and none of them is the finding 869ec135c left unnamed.',
+    },
+    {
+      qualifier: 'fa63e4da3',
+      review: 'QA findings on the price-group and rounding slice',
+      remediationCommit: 'fa63e4da3',
+      findingIds: ['INFO-1', 'INFO-2'],
+      claimedFindingCount: 2,
+      status: 'Both remediated at that commit.',
+      note:
+        'The FIRST of two QA checkpoints numbering its findings `INFO-<n>` from the top, which is ' +
+        'why `INFO-2` alone is ambiguous - see the hazard register below. This one is the ' +
+        'price-group/rounding INFO-2; the composition-root INFO-2 is 7cbe74d0c.',
+    },
+    {
+      qualifier: '7cbe74d0c',
+      review: 'QA findings on the published composition-root surface',
+      remediationCommit: '7cbe74d0c',
+      findingIds: ['INFO-2', 'INFO-3'],
+      claimedFindingCount: 2,
+      status: 'Both remediated at that commit.',
+      note:
+        'The SECOND `INFO-<n>` checkpoint. Two further ids from this namespace are cited in the ' +
+        'tree - INFO-4, which corrected a case-sensitive settings lookup, and INFO-8 - and neither ' +
+        'appears in a remediation record that enumerates it, so neither is attributed to a ' +
+        'qualifier here rather than being guessed at.',
+    },
+    {
+      qualifier: 'a93372c1c',
+      review: 'code review of the Lambda capability boundary',
+      remediationCommit: 'a93372c1c',
+      findingIds: ['S-09', 'V-12'],
+      claimedFindingCount: 2,
+      status: 'Both remediated at that commit.',
+      note:
+        'The only checkpoint whose record names an id from the `S-<nn>` and `V-<nn>` namespaces. ' +
+        'BOTH NAMESPACES ARE LARGER THAN THIS ROW: twenty-two `S-<nn>` and six `V-<nn>` ids are ' +
+        'cited across src/** and tests/**, carried in code by the modules that answer them, and ' +
+        'their remediation records do not enumerate them. The limit of the record is stated here ' +
+        'rather than filled in from inference.',
+    },
+    {
+      qualifier: 'af54a125a',
+      review: 'QA findings: promotion 500, client-fault mapping, save refusals, lost updates',
+      remediationCommit: 'af54a125a',
+      findingIds: ['QA-I1', 'QA-I2', 'QA-I3', 'QA-I4', 'QA-I5', 'QA-I6', 'QA-I7'],
+      claimedFindingCount: 7,
+      status:
+        'QA-I2, QA-I3, QA-I5 and QA-I7 fixed. QA-I1 (omitted skuCode) and QA-I4 (a nosniff header) ' +
+        'were each SUPERSEDED by a later review - the first restoring optional parity, the second ' +
+        'withdrawing the header under the no-invented-HTTP-semantics ruling. QA-I6 (a retry policy) ' +
+        'is an explicit DECLINE: AAP 0.8.1 forbids inventing the non-functional requirement it asks ' +
+        'for, so a write outcome can be unknown and that is recorded rather than papered over.',
+      note:
+        'Four numbered Issues 1-4 were remediated at the same commit and are cited by that bare ' +
+        'form. They are not listed as ids here because "Issue 1" is not a project-unique ' +
+        'identifier in any namespace, which is itself the reason this ledger prefers a qualifier.',
+    },
+    {
+      qualifier: '869ec135c',
+      review: 'checkpoint code review of the whole subtree (1 CRITICAL, 7 MAJOR, 12 MINOR, 1 INFO)',
+      remediationCommit: '869ec135c',
+      findingIds: [
+        'F-01',
+        'F-02',
+        'F-03',
+        'F-04',
+        'F-05',
+        'F-06',
+        'F-07',
+        'F-08',
+        'F-09',
+        'F-11',
+        'F-12',
+        'F-13',
+        'F-14',
+        'F-15',
+        'F-16',
+        'F-17',
+        'F-18',
+        'F-19',
+        'F-20',
+        'F-21',
+      ],
+      claimedFindingCount: 21,
+      status:
+        'The twenty ids named above were remediated at that commit. F-06 (the total CurrencyConverter) ' +
+        'and F-07 (one settings contract, not two) are the two whose DOCUMENTATION later regressed ' +
+        'and was re-raised; the rest stand.',
+      note:
+        '★★★ THE DISCREPANCY THIS LEDGER EXISTS FOR. The remediation claims TWENTY-ONE findings and ' +
+        'names TWENTY: the sequence runs F-01 to F-21 with F-10 ABSENT. Either the twenty-first ' +
+        'finding was remediated without being named, or the claimed count was wrong; the record ' +
+        'does not say which, and this row does not invent an answer. What it does do is stop the ' +
+        'gap being invisible, and stop `F-10` being read as the bare `F10` of 8cf4203cb, which is a ' +
+        'different finding of a different review.',
+    },
+    {
+      qualifier: '5d8c150c1',
+      review: 'project-wide final security assessment (SEC-A..SEC-L)',
+      remediationCommit: '5d8c150c1',
+      findingIds: [
+        'SEC-A',
+        'SEC-B',
+        'SEC-C',
+        'SEC-D',
+        'SEC-E',
+        'SEC-F',
+        'SEC-G',
+        'SEC-H',
+        'SEC-I',
+        'SEC-J',
+        'SEC-K',
+        'SEC-L',
+      ],
+      claimedFindingCount: 12,
+      status:
+        'Nine fixed in code (SEC-A, SEC-B, SEC-D, SEC-G, SEC-H, SEC-I, SEC-J, SEC-K, SEC-L) and ' +
+        'three ESCALATED with AAP citations rather than patched: SEC-C (feed availability, every ' +
+        'requested control blocked by AAP 0.6.5/0.8.1/0.2.2), SEC-E (Node 20 lifecycle, pins frozen ' +
+        'by AAP 0.5.1/0.9.1) and SEC-F (cleartext feed scheme, contract frozen by AAP 0.1.1/0.8.1). ' +
+        'All three remain OPEN and were raised again by the review this ledger was added for.',
+      note:
+        'SEC-H - a stale fail-closed comment - was fixed here and then REGRESSED: the same false ' +
+        'claim survived in .env.example and in the composition root and was re-raised. That is why ' +
+        'a status column is worth having: "fixed once" and "true now" are different facts.',
+    },
+    {
+      qualifier: '169bcfbe9',
+      review: 'code review of four findings (2 MAJOR, 2 MINOR)',
+      remediationCommit: '169bcfbe9',
+      findingIds: ['F-01', 'F-02', 'F-03', 'F-04'],
+      claimedFindingCount: 4,
+      status:
+        'All four remediated at that commit: F-02 restricted the promotion route to a service-only ' +
+        'grant, F-03 bounded the selected-option subquery count, and F-01/F-04 corrected ' +
+        'remediation and security documentation.',
+      note:
+        'ITS FOUR IDS COLLIDE BY SPELLING with the first four of 869ec135c, which is the collision ' +
+        'that makes qualification necessary rather than tidy: `F-02` names a promotion-route ' +
+        'authorization finding here and a catalog-transport finding there.',
+    },
+    {
+      qualifier: 'cr/review o004',
+      review:
+        'final element-by-element completeness review of all 165 planned artifacts plus the nine ' +
+        'current-tree additions (6 MAJOR, 6 MINOR, 1 INFO)',
+      remediationCommit: 'the commit carrying this ledger',
+      findingIds: [
+        'C-01',
+        'C-02',
+        'C-03',
+        'C-04',
+        'M-01',
+        'M-02',
+        'M-03',
+        'M-04',
+        'M-05',
+        'S-01',
+        'S-02',
+        'S-03',
+        'I-01',
+      ],
+      claimedFindingCount: 13,
+      status:
+        'C-01 (this defect register split into its thirty-numbered and eight-secondary base ' +
+        'inventories plus an open-ended supplemental one), C-02 (the invented root pattern replaced ' +
+        'by an exact closed scope exception), C-03 (feed money restored to raw CFML ' +
+        'stringification), C-04 (the currency contract aligned to the implemented pass-through), ' +
+        'M-01 to M-05 and I-01 are all remediated at that commit. S-01 (Node lifecycle), S-02 (feed ' +
+        'capacity) and S-03 (cleartext feed scheme) are the three standing escalations of ' +
+        '5d8c150c1 raised again, and remain OPEN on the same AAP grounds - each needs a plan-owner ' +
+        'or product decision, not a code change.',
+      note:
+        'ITS `S-01`, `S-02` AND `S-03` COLLIDE BY SPELLING with three ids of the earlier `S-<nn>` ' +
+        'security namespace that are cited throughout src/**, and they are entirely different ' +
+        'findings. The remediation commit is named self-referentially rather than by hash, because ' +
+        'a hash is not knowable from inside the change that introduces the row and a placeholder ' +
+        'would rot; every other row carries the hash, which is the form a later reader should use.',
+    },
+  ],
+
+  // ★ THE IDENTIFIER STRINGS THAT MORE THAN ONE REVIEW HAS USED.
+  //
+  // Derived from the ledger above and asserted against it, so this cannot drift out of agreement
+  // with the rows it summarises. Each is a string a reader will meet in a comment WITHOUT a
+  // qualifier, which is exactly when it misleads.
+  unqualifiedCitationHazards: [
+    {
+      id: 'F-01',
+      sharedBy: ['869ec135c', '169bcfbe9'],
+      citedInTree: true,
+      note: 'A catalog-transport CRITICAL at 869ec135c; a remediation-documentation MINOR at 169bcfbe9.',
+    },
+    {
+      id: 'F-02',
+      sharedBy: ['869ec135c', '169bcfbe9'],
+      citedInTree: true,
+      note:
+        'A documentation-accuracy finding at 869ec135c; the promotion-route authorization MAJOR ' +
+        '(CWE-862/CWE-285) at 169bcfbe9.',
+    },
+    {
+      id: 'F-03',
+      sharedBy: ['869ec135c', '169bcfbe9'],
+      citedInTree: true,
+      note:
+        'A module-census correction at 869ec135c; the selected-options resource-exhaustion MAJOR ' +
+        '(CWE-400) at 169bcfbe9.',
+    },
+    {
+      id: 'F-04',
+      sharedBy: ['869ec135c', '169bcfbe9'],
+      citedInTree: true,
+      note:
+        'The findPrototypeKeyPath removal (CWE-209/532) at 869ec135c; stale security documentation ' +
+        'at 169bcfbe9.',
+    },
+    {
+      id: 'INFO-2',
+      sharedBy: ['fa63e4da3', '7cbe74d0c'],
+      citedInTree: true,
+      note:
+        'Two QA checkpoints both numbered an INFO-2: one on the price-group/rounding slice, one on ' +
+        'the published composition-root surface.',
+    },
+    {
+      id: 'S-01',
+      sharedBy: ['cr/review o004'],
+      citedInTree: true,
+      note:
+        'The completeness review numbers its Node-lifecycle escalation S-01, and the earlier ' +
+        'security namespace already had an S-01 cited in src/**. The ledger attributes only the ' +
+        'former, because only the former has a record naming it - which is the honest half of the ' +
+        'hazard rather than a resolution of it.',
+    },
+    {
+      id: 'S-02',
+      sharedBy: ['cr/review o004'],
+      citedInTree: true,
+      note: 'Same collision as S-01: the completeness review\u2019s feed-capacity escalation.',
+    },
+    {
+      id: 'S-03',
+      sharedBy: ['cr/review o004'],
+      citedInTree: true,
+      note: 'Same collision as S-01: the completeness review\u2019s cleartext-scheme escalation.',
+    },
+  ],
+
+  // ★ THE LEGACY PATHS THIS SUBTREE CITES THAT DO NOT EXIST, AND WHY EACH IS CITED ANYWAY.
+  //
+  // Read alongside `A27`, which requires every OTHER cited legacy path to be on disk. Six absences
+  // are load-bearing: four validation files the plan names as absent by design, a service the port
+  // records as never having existed, and one synthetic path this file uses to prove its own reader
+  // raises. Everything else must resolve.
+  deliberateLegacyAbsences: [
+    {
+      path: 'model/validation/Category.json',
+      reason:
+        'AAP 0.2.1 names it among the six validation files that are "absent by design, not to be ' +
+        'invented". Cited by src/domain/entities/category.ts and two suites precisely to record that ' +
+        'Category contributes no declaratively-invoked validator.',
+    },
+    {
+      path: 'model/validation/PromotionQualifier.json',
+      reason:
+        'The same AAP 0.2.1 absence. Cited by src/domain/entities/promotionQualifier.ts and the ' +
+        'promotion fixtures so the entity\u2019s lack of a declared validator is stated rather than ' +
+        'inferred from silence.',
+    },
+    {
+      path: 'model/validation/PromotionApplied.json',
+      reason:
+        'The same AAP 0.2.1 absence, cited by the write-side entity and its suite. PromotionApplied ' +
+        'is the engine\u2019s output and validates nothing declaratively, which is worth stating at the ' +
+        'one entity a reader would expect a schema for.',
+    },
+    {
+      path: 'model/validation/PromotionAccount.json',
+      reason:
+        'The same AAP 0.2.1 absence. Cited where PromotionAccount is recorded as INERT in this slice: ' +
+        'no validation file, no service reference, no engine path.',
+    },
+    {
+      path: 'model/service/CategoryService.cfc',
+      reason:
+        'Cited to record that it does not exist. Category.cfc declares hb_serviceName="contentService", ' +
+        'so category operations live in ContentService by design - AAP 0.1.1 resolves this as an ' +
+        'ambiguity, and the citation is the proof that no CategoryService was omitted.',
+    },
+    {
+      path: 'model/no-such-file.cfc',
+      reason:
+        'A SYNTHETIC path, used by this file only, to prove `readRepositoryFile` raises on absence ' +
+        'rather than answering an empty string. It must never exist; if it ever did, the case ' +
+        'asserting the refusal would pass vacuously.',
     },
   ],
 
@@ -2690,17 +3180,32 @@ export const LEGACY_TEST_MAP: {
         'than refusing the table, so validating eagerly would be the divergence.',
     },
     {
+      // ★★★ QUOTE-THEN-REVISE. This row asserted the OPPOSITE behaviour and outlived the code that
+      // justified it. It read: "An EMPTY rate table makes a cross-currency conversion FAIL CLOSED
+      // instead of returning the amount unconverted." That was true of an intervening revision which
+      // raised `CurrencyRateTableUnavailableError`; a code review removed the refusal, because
+      // `CurrencyConverter.convertCurrency` publishes a TOTAL function and the routed price operation
+      // documents no error path, so the throw broke the contract it was reached through. The refinement
+      // that remains runs the other way and is stated below - and a review found the same stale claim
+      // surviving in `.env.example` and in the composition root's own comment, which is why this row
+      // is corrected here rather than only there.
       summary:
-        'An EMPTY rate table makes a cross-currency conversion FAIL CLOSED instead of returning the ' +
-        'amount unconverted. A table that is present but does not list one of the two codes still ' +
-        'passes the amount through, unchanged, which is the must-preserve pass-through.',
+        'An unavailable rate table does NOT RAISE as the legacy does. Both unavailable-rate states - ' +
+        'no table at all, and a table that does not list one of the two codes - take the ' +
+        'model/service/CurrencyService.cfc:L100-L101 pass-through and answer the amount unchanged, ' +
+        'because the port publishes convertCurrency as a total function. The event is never silent: ' +
+        'every pass-through notifies the pass-through observer with the two currency codes, and the ' +
+        'composition root logs once when it wires a converter over an empty table.',
       owningModule: 'src/handlers/bootstrap.ts',
       assertedBy: 'tests/unit/handlers/bootstrap.test.ts',
       aapAuthority:
-        'AAP 0.4.2 maps convertCurrency onto the legacy states, and the legacy distinguishes them: ' +
+        'AAP 0.4.2 freezes the convertCurrency SIGNATURE, and it returns Money rather than Money or ' +
+        'an error, so totality is the mapped contract. The legacy distinguishes the two states - ' +
         'model/service/CurrencyService.cfc:L100-L101 returns the amount for an unlisted code, while ' +
         'L104-L131 swallows the fetch failure and then reads an unassigned variable, which CFML ' +
-        'refuses at runtime. The legacy RAISES for a table it never obtained; it does not price at par.',
+        'refuses at runtime - so answering the L100-L101 arm for both is the refinement, and it is ' +
+        'the one the mapped signature permits. Reporting rather than refusing also keeps AAP 0.8.1 ' +
+        'intact: a refusal on unavailable rates would be an invented failure mode, not a preserved one.',
     },
     {
       summary:
@@ -3194,6 +3699,14 @@ export const LEGACY_TEST_MAP: {
       authority: 'AAP 0.4.1',
       reason:
         "The legacy escaping formulation is malformed. AAP 0.4.1 prescribes a hand-rolled five-entity XML escaper for this renderer, so emitting well-formed output is the plan's own instruction rather than a chosen deviation.",
+    },
+    {
+      module: 'src/integrations/google/rssFeedRenderer.ts',
+      quote: 'escalated a third time rather than closed by a fourth divergence',
+      classification: 'disclaimer',
+      authority: '',
+      reason:
+        'A REFUSAL to spend, recorded at the cleartext-scheme literal. CWE-319 has now been raised three times against the five feed URL sites, and each time the remedy asked for - a canonical HTTPS origin - would change the emitted document, which AAP 0.1.1 and 0.8.1 freeze and whose AAP 0.6.7 budget is fully spent. Nothing diverges here: the literal is unchanged and the finding is escalated for a plan-owner decision, which is the opposite of a spend.',
     },
     {
       module: 'src/lib/cfml/numberFormat.ts',
@@ -5929,6 +6442,15 @@ describe('A16 runtime platform pin: the frozen Node line, across every artifact 
     expect(readme).toContain('`A16`');
     expect(readme).not.toContain('Verified 2026-08-05');
     expect(readme).not.toContain('Block function _create_');
+
+    // ★★★ AND THE TRAIL IS CUMULATIVE, WHICH IS WHAT MAKES IT EVIDENCE. The same runtime line has now
+    // been raised five times under five identifiers, by five different reviews, and answered the same
+    // way each time. Pinning EVERY identifier - not just the first ones - is what stops a later
+    // revision tidying the record down to "this was raised once": a reader deciding whether to grant
+    // the AAP exception needs to know it has been asked for repeatedly, and the count is the argument.
+    expect(readme).toContain('SEC-E');
+    expect(readme).toContain('S-01');
+    expect(readme).toContain('fifth');
   });
 
   it('★★★ states the support status as lapsed, not merely as a date to go and check (F46)', () => {
@@ -6985,19 +7507,55 @@ describe('A24 per-method inventory: every public method is named by its own suit
 // nothing more. A floor cannot detect the one entry that quietly stopped being annotated, and that
 // entry is precisely the interesting one: an un-annotated defect is a defect somebody repaired.
 //
-// So this block enumerates the AAP 0.6.7 authority and requires each entry to be provably annotated.
+// A LATER REVIEW THEN MEASURED THIS BLOCK ITSELF and found it proving the wrong thirty: the "30+8"
+// the earlier finding named is THIRTY NUMBERED PLUS EIGHT SECONDARY, and the register here had folded
+// the two into a single thirty-row array. So the shape is corrected below as well as the mechanism.
 //
-// THE ARITHMETIC, RECONCILED HONESTLY, because "30+8" does not obviously add up and the reason is worth
-// writing down. AAP 0.6.7 tabulates TWENTY numbered defects and then says "eight secondary items are
-// registered alongside them" - while the sentence that follows enumerates TEN distinct things: the
-// `getSalePricExpirationDateTime` typo, the invalid duplicate `var`, the inverted cache-clear, the
-// duplicated `getStartDateTime()` tests (which are TWO sites, in two different DAO methods), the
-// `returntype` mismatch, and FOUR source identifier typos. Twenty plus ten is the thirty this port's
-// own prose calls a "thirty-entry defect register", so the register below carries thirty entries and
-// the plan's "eight" is an undercount of its own list rather than a different list. Recording that is
-// better than silently matching either number.
+// So this block enumerates the preservation authority and requires each entry to be provably annotated.
 //
-// TWO PROOF MECHANISMS, because the register has two kinds of member:
+// ★★★ QUOTE-THEN-REVISE, BECAUSE THIS REGISTER WAS THE WRONG SHAPE AND A REVIEW MEASURED IT.
+//
+// It used to be ONE flat array of thirty rows - the plan's twenty numbered defects followed by ten
+// rows labelled `S1` through `S10` - introduced under this reconciliation, quoted here in full so the
+// reasoning that produced it stays readable rather than being deleted along with it:
+//
+//   "AAP 0.6.7 tabulates TWENTY numbered defects and then says 'eight secondary items are registered
+//    alongside them' - while the sentence that follows enumerates TEN distinct things: the
+//    `getSalePricExpirationDateTime` typo, the invalid duplicate `var`, the inverted cache-clear, the
+//    duplicated `getStartDateTime()` tests (which are TWO sites, in two different DAO methods), the
+//    `returntype` mismatch, and FOUR source identifier typos. Twenty plus ten is the thirty this
+//    port's own prose calls a 'thirty-entry defect register', so the register below carries thirty
+//    entries and the plan's 'eight' is an undercount of its own list rather than a different list."
+//
+// THE READING OF AAP 0.6.7 WAS SOUND. THE CONCLUSION WAS NOT, AND IT COST NINE PROOFS. The port's
+// authority is not "twenty plus ten": it is the register published at
+// `tests/unit/domain/entities/promotionReward.test.ts` - THIRTY numbered entries, of which 1-20 are the
+// plan's and 21-30 were found by reading the in-scope source, PLUS eight secondary items. Collapsing
+// those two inventories into one thirty-row array made the TOTAL agree while leaving nine numbered
+// entries unrepresented: 21-24 and 26-30 appeared nowhere at all, and 25 - the
+// `getSalePricExpirationDateTime` typo, which that register PROMOTES out of the secondary list into the
+// numbered set - was carried as `S1`. A register can be the right length and still not prove what it
+// claims to, which is exactly the failure a floor was replaced to avoid.
+//
+// SO THERE ARE THREE INVENTORIES NOW, AND THE SPLIT IS THE POINT:
+//
+//   * `AAP_NUMBERED_DEFECTS`  - the THIRTY numbered entries, frozen, ids '1' through '30'. Closed:
+//                              a number means one thing forever, so nothing may be renumbered and
+//                              nothing may be appended here.
+//   * `AAP_SECONDARY_DEFECTS` - the EIGHT secondary items, frozen. Unnumbered by design, because each
+//                              is a typo, a duplicate statement or a declaration mismatch rather than
+//                              a behavioural fault. Nine were named by the plan and eight remain,
+//                              because entry 25 was promoted; nothing was dropped.
+//   * `SUPPLEMENTAL_TARGET_DISCOVERIES` - OPEN-ENDED. Findings the port made about fixture-facing
+//                              behaviour while converting, which are deliberately NOT numbered: adding
+//                              one must not enlarge the closed numbered set, and neither must it
+//                              require rewriting the frozen base authority to record it. A row may be
+//                              added here at any time; each is held to the same individual proof.
+//
+// Thirty plus eight is THIRTY-EIGHT base entries, every one proven individually below, and the
+// supplemental inventory is proven the same way without a length that a discovery would have to break.
+//
+// TWO PROOF MECHANISMS, because the inventories have two kinds of member:
 //   * a SPAN entry is proven by a marker citation naming its legacy file with a line inside its span;
 //   * an IDENTIFIER entry - the four typos - is proven by `verbatimIdentifiers`, because a preserved
 //     misspelling is proven by the spelling itself appearing, not by a line locator.
@@ -7005,17 +7563,42 @@ describe('A24 per-method inventory: every public method is named by its own suit
 // Marker kind is deliberately NOT constrained. Five entries (12, 13, 17, 18, 19) are the port's three
 // sanctioned divergences and carry `DELIBERATE DIVERGENCE`; the rest carry `LEGACY-DEFECT`; several
 // carry both. What matters is that the site is annotated, which is what makes the choice auditable.
+//
+// AND THE SEARCH SURFACE DIFFERS BY INVENTORY, DELIBERATELY. The thirty-eight base entries are legacy
+// defects the SHIPPED CODE reproduces, so they are proven inside `src/**` and a base entry annotated
+// only in a test would fail. The supplemental discoveries are observations about fixture-facing
+// behaviour, so they are proven across `src/**` AND `tests/**` - that is where three of the four
+// actually live, and requiring them in `src/**` would either fail honestly or push an annotation
+// somewhere it does not belong.
 
 interface DefectRegisterEntry {
   readonly id: string;
   readonly legacyFile: string;
   /** Inclusive line span. `undefined` for a whole-file entry. */
   readonly span?: readonly [number, number];
+  /**
+   * A SECOND disjoint span the same entry covers, proven independently of the first.
+   *
+   * Exactly one entry needs it: the plan names the duplicated `getStartDateTime()` test ONCE and
+   * cites two lines for it, in two different DAO methods. Widening `span` to enclose both would
+   * accept a citation anywhere between them, which proves neither site; two spans prove both while
+   * keeping the secondary inventory at the eight items the authority publishes.
+   */
+  readonly companionSpan?: readonly [number, number];
   /** For the four preserved misspellings, proven through `verbatimIdentifiers` instead of a locator. */
   readonly identifier?: string;
 }
 
-const AAP_DEFECT_REGISTER: readonly DefectRegisterEntry[] = Object.freeze([
+/**
+ * A finding the PORT made while converting, which the closed numbered set may not absorb.
+ *
+ * `subject` is what the discovery is, in a phrase, because these have no number to be cited by.
+ */
+interface SupplementalDiscovery extends DefectRegisterEntry {
+  readonly subject: string;
+}
+
+const AAP_NUMBERED_DEFECTS: readonly DefectRegisterEntry[] = Object.freeze([
   { id: '1', legacyFile: 'integrationServices/google/Integration.cfc', span: [49, 49] },
   { id: '2', legacyFile: 'integrationServices/google/Integration.cfc', span: [73, 77] },
   { id: '3', legacyFile: 'integrationServices/google/model/dao/FeedDAO.cfc', span: [52, 75] },
@@ -7028,7 +7611,7 @@ const AAP_DEFECT_REGISTER: readonly DefectRegisterEntry[] = Object.freeze([
   { id: '10', legacyFile: 'model/service/PromotionService.cfc', span: [621, 623] },
   { id: '11', legacyFile: 'model/service/PromotionService.cfc', span: [703, 703] },
   { id: '12', legacyFile: 'model/service/PromotionService.cfc', span: [998, 998] },
-  { id: '13', legacyFile: 'model/service/PromotionService.cfc', span: [1007, 1009] },
+  { id: '13', legacyFile: 'model/service/PromotionService.cfc', span: [1007, 1014] },
   { id: '14', legacyFile: 'model/service/PromotionService.cfc', span: [1013, 1015] },
   { id: '15', legacyFile: 'model/service/PromotionService.cfc', span: [1094, 1100] },
   { id: '16', legacyFile: 'model/entity/Sku.cfc', span: [258, 258] },
@@ -7036,97 +7619,259 @@ const AAP_DEFECT_REGISTER: readonly DefectRegisterEntry[] = Object.freeze([
   { id: '18', legacyFile: 'model/entity/Sku.cfc', span: [512, 522] },
   { id: '19', legacyFile: 'model/entity/Product.cfc', span: [524, 532] },
   { id: '20', legacyFile: 'model/entity/Product.cfc', span: [598, 598] },
+  // 21-30: found by the port, reading the in-scope source line by line. Ordered by legacy path,
+  // then by line, exactly as the number-to-locator index publishes them.
+  { id: '21', legacyFile: 'model/entity/ProductType.cfc', span: [117, 119] },
+  { id: '22', legacyFile: 'model/entity/PromotionAccount.cfc', span: [90, 95] },
+  { id: '23', legacyFile: 'model/entity/PromotionAccount.cfc', span: [101, 101] },
+  { id: '24', legacyFile: 'model/entity/PromotionAccount.cfc', span: [103, 103] },
+  // 25 IS THE PROMOTED SECONDARY ITEM, and it is numbered here rather than carried as a secondary
+  // row: the plan named nine secondary items, this one became numbered, and eight remain below.
+  { id: '25', legacyFile: 'model/entity/Product.cfc', span: [614, 622] },
+  { id: '26', legacyFile: 'model/entity/PromotionPeriod.cfc', span: [110, 110] },
+  { id: '27', legacyFile: 'model/entity/PromotionPeriod.cfc', span: [116, 130] },
+  { id: '28', legacyFile: 'model/entity/Sku.cfc', span: [569, 569] },
+  { id: '29', legacyFile: 'model/service/PriceGroupService.cfc', span: [243, 243] },
+  { id: '30', legacyFile: 'model/service/PriceGroupService.cfc', span: [400, 400] },
+]);
+
+const AAP_SECONDARY_DEFECTS: readonly DefectRegisterEntry[] = Object.freeze([
+  { id: 'duplicate var hql', legacyFile: 'model/dao/SkuDAO.cfc', span: [163, 163] },
+  { id: 'inverted cache clear', legacyFile: 'model/dao/SkuDAO.cfc', span: [222, 226] },
+  // ONE ITEM, TWO SITES - see `companionSpan`. One row, both sites proven.
   {
-    id: 'S1 getSalePricExpirationDateTime',
-    legacyFile: 'model/entity/Product.cfc',
-    span: [614, 622],
-  },
-  { id: 'S2 duplicate var', legacyFile: 'model/dao/SkuDAO.cfc', span: [163, 163] },
-  { id: 'S3 inverted cache clear', legacyFile: 'model/dao/SkuDAO.cfc', span: [222, 226] },
-  {
-    id: 'S4 getStartDateTime (use count)',
+    id: 'duplicated getStartDateTime',
     legacyFile: 'model/dao/PromotionDAO.cfc',
     span: [177, 177],
+    companionSpan: [244, 244],
   },
   {
-    id: 'S5 getStartDateTime (code count)',
-    legacyFile: 'model/dao/PromotionDAO.cfc',
-    span: [244, 244],
-  },
-  {
-    id: 'S6 roundValue returntype',
+    id: 'roundValue returntype',
     legacyFile: 'model/service/RoundingRuleService.cfc',
     span: [88, 88],
   },
   {
-    id: 'S7 orderItemQulifiedDiscounts',
+    id: 'orderItemQulifiedDiscounts',
     legacyFile: 'model/service/PromotionService.cfc',
-    span: [82, 133],
+    span: [82, 142],
     identifier: 'orderItemQulifiedDiscounts',
   },
   {
-    id: 'S8 promtionRewards',
+    id: 'promtionRewards',
     legacyFile: 'model/entity/PromotionReward.cfc',
     identifier: 'promtionRewards',
   },
-  { id: 'S9 singlularname', legacyFile: 'model/entity/Product.cfc', identifier: 'singlularname' },
+  { id: 'singlularname', legacyFile: 'model/entity/Product.cfc', identifier: 'singlularname' },
   {
-    id: 'S10 subsciptionUsageBenefit',
+    id: 'subsciptionUsageBenefit',
     legacyFile: 'model/entity/PriceGroup.cfc',
     identifier: 'subsciptionUsageBenefit',
   },
 ]);
 
-describe('A25 defect register: every entry of the AAP 0.6.7 authority, proven individually', () => {
+/**
+ * The port's own discoveries, kept OUT of the closed numbered set and free to grow.
+ *
+ * Each row is a behaviour the port found while building fixtures or reading a graph through, recorded
+ * where it was found. The four here are the four the number-to-locator index names as deliberately
+ * unnumbered; a fifth may be appended without touching either frozen inventory above, which is the
+ * whole reason this array exists separately.
+ */
+const SUPPLEMENTAL_TARGET_DISCOVERIES: readonly SupplementalDiscovery[] = Object.freeze([
+  {
+    id: 'isCurrent vs getCurrentFlag',
+    subject:
+      'isCurrent() and getCurrentFlag() answer the same question with opposite end-boundary ' +
+      'semantics, so they disagree at exactly the endDateTime instant',
+    legacyFile: 'model/entity/PromotionPeriod.cfc',
+    span: [78, 81],
+  },
+  {
+    id: 'getPromotionCodesDeletableFlag memo',
+    subject:
+      'three distinct spellings across five sites mean the memo can never hit, and the accessor ' +
+      'is the delete-validation gate model/validation/Promotion.json wires',
+    legacyFile: 'model/entity/Promotion.cfc',
+    span: [123, 133],
+  },
+  {
+    id: 'hasUniqueOptions on an option-less sku',
+    subject:
+      'the option-list comparison is built from a query returning every OPTIONED sku of the ' +
+      'product, so an option-less sku fails hasUniqueOptions spuriously',
+    legacyFile: 'model/entity/Sku.cfc',
+    span: [756, 769],
+  },
+  {
+    id: 'sorted versus unsorted defensive check',
+    subject:
+      'getSortedProductSkus applies a defensive option-count check that getProductSkus does not, ' +
+      'so the two answer different sets for the same product',
+    legacyFile: 'model/service/SkuService.cfc',
+    span: [236, 237],
+  },
+]);
+
+describe('A25 defect register: every entry of the preservation authority, proven individually', () => {
   const MARKER_CITATION = /(?:LEGACY-DEFECT|DELIBERATE DIVERGENCE|LEGACY-NOTE)\s+\[([^\]]+)\]/gu;
 
-  const citations: { readonly module: string; readonly citation: string }[] = [];
-  for (const module of SOURCE_MODULES_ON_DISK) {
-    for (const match of readSubtreeFile(module).matchAll(MARKER_CITATION)) {
-      citations.push({ module, citation: (match[1] ?? '').trim() });
-    }
+  interface Citation {
+    readonly module: string;
+    readonly citation: string;
   }
 
-  it('carries all thirty entries, so the register cannot be trimmed to the ones that still pass', () => {
-    expect(AAP_DEFECT_REGISTER.length).toBe(30);
-    expect(new Set(AAP_DEFECT_REGISTER.map((entry) => entry.id)).size).toBe(30);
-  });
-
-  it('★★★ proves every span entry with a marker citing a line inside its span', () => {
-    const unproven: string[] = [];
-
-    for (const entry of AAP_DEFECT_REGISTER) {
-      if (entry.identifier !== undefined && entry.span === undefined) {
-        continue; // proven by verbatimIdentifiers, asserted below
-      }
-      const proven = citations.some(({ citation }) => {
-        if (!citation.includes(entry.legacyFile)) {
-          return false;
-        }
-        if (entry.span === undefined) {
-          return true; // a whole-file entry: the .cfm view carries no line locator
-        }
-        const [low, high] = entry.span;
-        return [...citation.matchAll(/L(\d+)/gu)].some((line) => {
-          const value = Number(line[1]);
-          return value >= low && value <= high;
-        });
-      });
-
-      if (!proven) {
-        unproven.push(
-          `defect ${entry.id} (${entry.legacyFile}${
-            entry.span === undefined ? '' : `:L${String(entry.span[0])}-L${String(entry.span[1])}`
-          }) is annotated nowhere in src/`,
-        );
+  const collectCitations = (modules: readonly string[]): Citation[] => {
+    const found: Citation[] = [];
+    for (const module of modules) {
+      for (const match of readSubtreeFile(module).matchAll(MARKER_CITATION)) {
+        found.push({ module, citation: (match[1] ?? '').trim() });
       }
     }
+    return found;
+  };
+
+  /** The shipped code. The thirty-eight base entries must be annotated HERE. */
+  const citations = collectCitations(SOURCE_MODULES_ON_DISK);
+
+  /** Shipped code plus every suite and fixture. The supplemental discoveries live across both. */
+  const allCitations = [
+    ...citations,
+    ...collectCitations([
+      ...TEST_FILES_ON_DISK,
+      ...listTypeScriptFiles('tests').filter((file) => !file.endsWith('.test.ts')),
+    ]),
+  ];
+
+  const BASE_ENTRIES: readonly DefectRegisterEntry[] = [
+    ...AAP_NUMBERED_DEFECTS,
+    ...AAP_SECONDARY_DEFECTS,
+  ];
+
+  /** Is one span of one entry cited by at least one marker in `where`? */
+  const spanIsProven = (
+    where: readonly Citation[],
+    legacyFile: string,
+    span: readonly [number, number] | undefined,
+  ): boolean =>
+    where.some(({ citation }) => {
+      if (!citation.includes(legacyFile)) {
+        return false;
+      }
+      if (span === undefined) {
+        return true; // a whole-file entry: the .cfm view carries no line locator
+      }
+      const [low, high] = span;
+      return [...citation.matchAll(/L(\d+)/gu)].some((line) => {
+        const value = Number(line[1]);
+        return value >= low && value <= high;
+      });
+    });
+
+  const describeSpan = (span: readonly [number, number] | undefined): string =>
+    span === undefined ? '' : `:L${String(span[0])}-L${String(span[1])}`;
+
+  /**
+   * Every span an entry claims, unproven ones reported by name.
+   *
+   * `companionSpan` is checked as its own obligation, so an entry covering two disjoint sites cannot
+   * be discharged by annotating one of them.
+   */
+  const unprovenSpansOf = (
+    where: readonly Citation[],
+    entry: DefectRegisterEntry,
+    tree: string,
+  ): string[] => {
+    const failures: string[] = [];
+    if (entry.identifier !== undefined && entry.span === undefined) {
+      return failures; // proven by verbatimIdentifiers, asserted below
+    }
+    if (!spanIsProven(where, entry.legacyFile, entry.span)) {
+      failures.push(
+        `defect ${entry.id} (${entry.legacyFile}${describeSpan(entry.span)}) is annotated nowhere in ${tree}`,
+      );
+    }
+    if (
+      entry.companionSpan !== undefined &&
+      !spanIsProven(where, entry.legacyFile, entry.companionSpan)
+    ) {
+      failures.push(
+        `defect ${entry.id} (${entry.legacyFile}${describeSpan(entry.companionSpan)}, its second site) is annotated nowhere in ${tree}`,
+      );
+    }
+    return failures;
+  };
+
+  it('★★★ carries the numbered set at THIRTY and the secondary set at EIGHT, as two inventories', () => {
+    // THE TWO BASE INVENTORIES ARE STATED SEPARATELY BECAUSE THEY ARE SEPARATE THINGS. A single
+    // thirty-row array agreed with the total while leaving nine numbered entries unrepresented, which
+    // is the exact failure recorded above this block.
+    expect(AAP_NUMBERED_DEFECTS.length).toBe(30);
+    expect(AAP_SECONDARY_DEFECTS.length).toBe(8);
+    expect(BASE_ENTRIES.length).toBe(38);
+
+    // The numbered ids are EXACTLY '1'..'30' - no gap, no duplicate, no renumbering. This is what
+    // makes "defect 22" mean one thing forever, and it is why 25 is numbered rather than carried as a
+    // secondary row.
+    expect(AAP_NUMBERED_DEFECTS.map((entry) => entry.id)).toEqual(
+      Array.from({ length: 30 }, (_, index) => String(index + 1)),
+    );
+
+    // Every id across both inventories is distinct, so neither can silently absorb the other.
+    expect(duplicatesIn(BASE_ENTRIES.map((entry) => entry.id))).toEqual([]);
+  });
+
+  it('★★★ leaves the supplemental discovery inventory OPEN-ENDED, with no length to break', () => {
+    // ★★★ THIS IS THE HALF THE FLAT REGISTER MADE IMPOSSIBLE. `expect(length).toBe(30)` meant a
+    // discovery made tomorrow could be recorded only by editing the frozen base authority - so the
+    // gate itself discouraged recording one. There is deliberately NO exact-length assertion here:
+    // a row may be appended at any time and this block still passes, while every row present is held
+    // to the same individual proof as a base entry.
+    //
+    // The floor is anti-vacuity only. It stops the inventory being emptied to make the proof case
+    // below trivially true, and it is a FLOOR rather than an equality precisely so growth is free.
+    expect(SUPPLEMENTAL_TARGET_DISCOVERIES.length).toBeGreaterThanOrEqual(4);
+    expect(duplicatesIn(SUPPLEMENTAL_TARGET_DISCOVERIES.map((entry) => entry.id))).toEqual([]);
+
+    // A discovery may never claim a number: that set is closed at thirty, and an id that looks like
+    // one would put a supplemental row into the numbered namespace.
+    expect(
+      SUPPLEMENTAL_TARGET_DISCOVERIES.filter((entry) => /^\d+$/u.test(entry.id)).map(
+        (entry) => entry.id,
+      ),
+    ).toEqual([]);
+
+    // And each one says what it IS, because it has no number to be cited by.
+    expect(
+      SUPPLEMENTAL_TARGET_DISCOVERIES.filter((entry) => entry.subject.trim().length < 40).map(
+        (entry) => entry.id,
+      ),
+    ).toEqual([]);
+  });
+
+  it('★★★ proves every one of the thirty-eight base entries with a marker citing a line inside its span', () => {
+    const unproven = BASE_ENTRIES.flatMap((entry) => unprovenSpansOf(citations, entry, 'src/'));
 
     expect(
       unproven.sort(),
-      'each AAP 0.6.7 register entry here has no annotation in the source tree. An un-annotated ' +
-        'defect is a defect somebody repaired, which for these is a money change: reproduce it and ' +
+      'each base register entry here has no annotation in the source tree. An un-annotated defect ' +
+        'is a defect somebody repaired, which for these is a money change: reproduce it and ' +
         'annotate it, or record it among the three sanctioned divergences.',
+    ).toEqual([]);
+  });
+
+  it('★★★ proves every supplemental discovery too, across src/ and tests/', () => {
+    // Three of the four were found while authoring fixtures and are annotated there, which is where
+    // the behaviour is reachable. Requiring them under `src/` would either fail honestly or push an
+    // annotation somewhere it does not belong, so the search surface is both trees - and it is stated
+    // rather than left as a quiet difference from the case above.
+    const unproven = SUPPLEMENTAL_TARGET_DISCOVERIES.flatMap((entry) =>
+      unprovenSpansOf(allCitations, entry, 'src/ or tests/'),
+    );
+
+    expect(
+      unproven.sort(),
+      'each supplemental discovery here is annotated nowhere. A discovery nobody annotated is a ' +
+        'discovery the next reader cannot check, which is the whole reason this inventory exists.',
     ).toEqual([]);
   });
 
@@ -7138,7 +7883,7 @@ describe('A25 defect register: every entry of the AAP 0.6.7 authority, proven in
       LEGACY_TEST_MAP.verbatimIdentifiers.map((entry) => entry.identifier),
     );
 
-    const unregistered = AAP_DEFECT_REGISTER.filter(
+    const unregistered = BASE_ENTRIES.filter(
       (entry) => entry.identifier !== undefined && !registered.has(entry.identifier),
     ).map((entry) => entry.id);
 
@@ -7148,21 +7893,411 @@ describe('A25 defect register: every entry of the AAP 0.6.7 authority, proven in
         'source spelling survived.',
     ).toEqual([]);
 
-    // Four identifier entries, matching the four typos AAP 0.6.7 enumerates.
-    expect(AAP_DEFECT_REGISTER.filter((entry) => entry.identifier !== undefined).length).toBe(4);
+    // Four identifier entries, matching the four source identifier typos the authority enumerates -
+    // and all four sit in the SECONDARY inventory, because a typo is not a behavioural fault.
+    expect(BASE_ENTRIES.filter((entry) => entry.identifier !== undefined).length).toBe(4);
+    expect(AAP_NUMBERED_DEFECTS.filter((entry) => entry.identifier !== undefined)).toEqual([]);
   });
 
   it('and the derivation itself is non-vacuous, so a broken matcher fails instead of passing', () => {
     // If the citation walk ever stopped matching, every entry above would be "unproven" and the block
     // would fail loudly - but a subtler break is a walk that finds citations in only one module. Both
-    // the count and the spread are checked.
+    // the count and the spread are checked, for each tree the cases above actually search.
     expect(citations.length).toBeGreaterThanOrEqual(300);
     expect(new Set(citations.map((entry) => entry.module)).size).toBeGreaterThanOrEqual(30);
+    expect(allCitations.length).toBeGreaterThan(citations.length);
 
     // And the register really is stricter than the curated floor it replaces: A13 requires seven
-    // curated citations, this requires thirty entries each individually proven.
-    expect(AAP_DEFECT_REGISTER.length).toBeGreaterThan(
-      LEGACY_TEST_MAP.requiredDefectCitations.length,
+    // curated citations, this requires thirty-eight base entries each individually proven, plus every
+    // supplemental discovery on top.
+    expect(BASE_ENTRIES.length).toBeGreaterThan(LEGACY_TEST_MAP.requiredDefectCitations.length);
+  });
+});
+
+// --- A26: the prior-finding ledger, so a cited identifier resolves to one finding --------------------
+//
+// ★★★ A REVIEW FOUND THAT A REMEDIATION "claims 21 findings but names only 20 unique IDs" and that
+// `F10` is "reused in current files for unrelated reviews", and asked for a review-qualified ledger
+// carrying unique ids, the source checkpoint, the remediation commit and the current status. That is
+// `priorFindingLedger`; this block is what makes it an accounting rather than a paragraph.
+//
+// FOUR PROPERTIES, AND EACH ONE ANSWERS PART OF THE FINDING:
+//   * a qualifier appears once, and `qualifier/id` is unique across the whole history - so any
+//     citation can be resolved to exactly one finding of exactly one review;
+//   * a claimed count that disagrees with the ids named is ALLOWED but must be explained, so the
+//     21-versus-20 gap is a stated fact instead of an invisible one;
+//   * the ids more than one review has used are derived here and compared with the hazard register,
+//     so that summary cannot drift away from the rows it summarises;
+//   * every hazard claiming to be cited in the tree really is, so the register cannot fill up with
+//     warnings about strings nobody writes.
+
+describe('A26 prior-finding ledger: every cited finding identifier resolves to one review', () => {
+  const LEDGER = LEGACY_TEST_MAP.priorFindingLedger;
+  const HAZARDS = LEGACY_TEST_MAP.unqualifiedCitationHazards;
+
+  /** Every subtree artifact a finding id is plausibly cited in: the shipped code and every suite. */
+  const CITATION_SURFACE = [...SOURCE_MODULES_ON_DISK, ...listTypeScriptFiles('tests')];
+
+  const treeText = CITATION_SURFACE.map((file) => readSubtreeFile(file)).join('\n');
+
+  it('states each checkpoint once, with a commit and a status worth reading', () => {
+    expect(duplicatesIn(LEDGER.map((entry) => entry.qualifier))).toEqual([]);
+
+    const offenders: string[] = [];
+    for (const entry of LEDGER) {
+      // A qualifier that is a short hash must BE the remediation commit, so the two can never
+      // disagree; the one row that names no hash says so in words instead of carrying a placeholder.
+      if (/^[0-9a-f]{9}$/u.test(entry.qualifier) && entry.remediationCommit !== entry.qualifier) {
+        offenders.push(`${entry.qualifier}: its qualifier and remediation commit disagree`);
+      }
+      if (entry.remediationCommit.trim().length === 0) {
+        offenders.push(`${entry.qualifier}: recorded without a remediation commit`);
+      }
+      if (entry.review.trim().length < 20 || entry.status.trim().length < 20) {
+        offenders.push(`${entry.qualifier}: recorded without a review description or a status`);
+      }
+      if (entry.note.trim().length < 40) {
+        offenders.push(`${entry.qualifier}: recorded without a note worth reading`);
+      }
+      if (entry.claimedFindingCount < 1) {
+        offenders.push(`${entry.qualifier}: recorded as claiming no findings at all`);
+      }
+      if (duplicatesIn([...entry.findingIds]).length > 0) {
+        offenders.push(`${entry.qualifier}: names the same finding id twice`);
+      }
+      // An EMPTY id list is permitted - some remediation records do not enumerate their findings -
+      // but it must read as "not enumerated there" rather than as "raised nothing", so the note has
+      // to say so. No row needs this today; the rule is what keeps a future one honest.
+      if (entry.findingIds.length === 0 && !/not enumerate|does not name/u.test(entry.note)) {
+        offenders.push(
+          `${entry.qualifier}: names no finding id and does not say why the record stops there`,
+        );
+      }
+    }
+    expect(offenders.sort()).toEqual([]);
+
+    // ANTI-VACUITY. Nine checkpoints have run over this subtree; a ledger that lost most of them
+    // would still satisfy every rule above.
+    expect(LEDGER.length).toBeGreaterThanOrEqual(9);
+  });
+
+  it('★★★ makes every qualified identifier unique, which is the property a citation needs', () => {
+    const qualified = LEDGER.flatMap((entry) =>
+      entry.findingIds.map((id) => `${entry.qualifier}/${id}`),
+    );
+
+    expect(duplicatesIn(qualified)).toEqual([]);
+    expect(qualified.length).toBeGreaterThanOrEqual(80);
+  });
+
+  it('★★★ requires a claimed count that disagrees with the ids named to be EXPLAINED', () => {
+    // The 21-versus-20 gap is the finding this ledger was added for. It is not reconciled away -
+    // nobody can now say which finding the twenty-first was - so the rule is that the disagreement
+    // must be stated in the row, and a row that hides one fails.
+    const unexplained = LEDGER.filter(
+      (entry) =>
+        entry.findingIds.length > 0 &&
+        entry.claimedFindingCount !== entry.findingIds.length &&
+        !/claims|discrepanc|does not/iu.test(entry.note),
+    ).map((entry) => entry.qualifier);
+
+    expect(
+      unexplained.sort(),
+      'each row here claims a different number of findings than it names, without saying so.',
+    ).toEqual([]);
+
+    // And the one row that HAS the gap is pinned, so the gap cannot be quietly closed by editing a
+    // count instead of finding the missing finding.
+    const withGap = LEDGER.filter(
+      (entry) =>
+        entry.findingIds.length > 0 && entry.claimedFindingCount !== entry.findingIds.length,
+    );
+
+    expect(withGap.map((entry) => entry.qualifier)).toEqual(['869ec135c']);
+    expect(withGap[0]?.claimedFindingCount).toBe(21);
+    expect(withGap[0]?.findingIds.length).toBe(20);
+    expect(withGap[0]?.findingIds).not.toContain('F-10');
+  });
+
+  it('★★★ derives the ambiguous identifiers and holds the hazard register to them', () => {
+    const occurrences = new Map<string, string[]>();
+    for (const entry of LEDGER) {
+      for (const id of entry.findingIds) {
+        occurrences.set(id, [...(occurrences.get(id) ?? []), entry.qualifier]);
+      }
+    }
+
+    const shared = [...occurrences.entries()]
+      .filter(([, qualifiers]) => qualifiers.length > 1)
+      .map(([id]) => id)
+      .sort();
+
+    const registered = HAZARDS.map((hazard) => hazard.id);
+
+    // Every id two ledger rows share is registered as a hazard. The converse is deliberately NOT
+    // asserted: three hazards - S-01, S-02 and S-03 - collide with the earlier `S-<nn>` security
+    // namespace, whose ids are cited in code but enumerated in no remediation record, so the
+    // collision is real while only one side of it can be attributed. That asymmetry is stated on the
+    // rows themselves rather than smoothed over by dropping them.
+    expect(missingFrom(shared, registered).sort()).toEqual([]);
+
+    // The derived agreement, pinned: the four `F-0<n>` ids and `INFO-2`.
+    expect(shared).toEqual(['F-01', 'F-02', 'F-03', 'F-04', 'INFO-2']);
+
+    const offenders: string[] = [];
+    for (const hazard of HAZARDS) {
+      if (hazard.note.trim().length < 40) {
+        offenders.push(`${hazard.id}: registered without a note distinguishing the two`);
+      }
+      if (hazard.sharedBy.length === 0) {
+        offenders.push(`${hazard.id}: registered without naming a review that uses it`);
+      }
+      for (const qualifier of hazard.sharedBy) {
+        if (!LEDGER.some((entry) => entry.qualifier === qualifier)) {
+          offenders.push(`${hazard.id}: names ${qualifier}, which is not a ledger row`);
+        }
+      }
+      // A hazard is only a hazard if the string is actually written somewhere a reader will meet it.
+      if (hazard.citedInTree && !treeText.includes(hazard.id)) {
+        offenders.push(`${hazard.id}: recorded as cited in the tree, and it is not`);
+      }
+    }
+    expect(offenders.sort()).toEqual([]);
+
+    // Non-vacuity for the surface this case reads, so a broken file walk fails instead of passing.
+    expect(CITATION_SURFACE.length).toBeGreaterThanOrEqual(150);
+    expect(treeText).toContain('F10');
+  });
+});
+
+// --- A27: locator integrity, so a citation always resolves to a line that exists -------------------
+//
+// ★★★ A REVIEW MEASURED FIVE STALE LOCATORS AND OBSERVED THAT NOTHING IN THE REPOSITORY PREVENTED
+// LOCATOR DRIFT. It was right on both counts. This port cites tens of thousands of locators - a legacy
+// path with one or more `L<n>` line references, and occasionally a locator into its OWN source - and
+// every one of them is an invitation to go and look. Four of the five it found pointed PAST THE END of
+// the file they named (`list.ts:L477` against 464 lines, `priceGroupRepository.ts:L674` against 415,
+// `optionRepository.ts:L285` against 86, `promotionPeriod.ts:L1379` against 1,346) and the fifth named
+// a legacy admin view with a directory segment dropped out of the middle of its path - the broken form
+// is deliberately NOT reproduced here, because the first case below would then report this very comment
+// as a citation of a file that does not exist, which is a small demonstration that it works. Each was
+// individually harmless and collectively
+// corrosive: a reader who follows two dead citations stops following them, and the annotations are the
+// mechanism by which every preserved defect in this port is auditable.
+//
+// SO THE CLASS OF ERROR IS CLOSED HERE RATHER THAN THE FIVE INSTANCES BEING FIXED ALONE. Three
+// mechanical properties, each cheap and each impossible to satisfy by accident:
+//
+//   1. EVERY LEGACY PATH CITED EXISTS in the CFML tree, unless it is a registered deliberate absence.
+//      This is what catches a missing directory segment, a renamed component and a typo.
+//   2. EVERY LEGACY LINE CITED IS INSIDE ITS FILE. Tens of thousands of `L<n>` references, checked
+//      against the real line count. This catches the shape the review found four times over.
+//   3. EVERY SELF-REFERENTIAL LOCATOR IS INSIDE ITS OWN FILE. A citation into `src/**` or `tests/**`
+//      is the one kind that drifts on every edit, because the file it names is a file this port keeps
+//      changing - which is exactly why all four in-subtree failures were of this kind.
+//
+// WHAT IT DELIBERATELY DOES NOT CHECK, stated so nobody mistakes the gate for more than it is: that
+// the cited LINE says what the citation claims. That is a reading, not a measurement, and no test can
+// take it. What this gate guarantees is that the line is there to be read - which is the difference
+// between a citation a reviewer can check and one that wastes their time.
+
+describe('A27 locator integrity: every cited locator resolves to a line that exists', () => {
+  // THE LEGACY TOP-LEVEL DIRECTORIES A CITATION MAY NAME, spelled INSIDE the expression below rather
+  // than as a separate list joined into it. A joined list reads as more maintainable and is not: the
+  // pattern is the thing under review, and a reader checking whether `frontend/` is covered should be
+  // able to see the answer in the pattern instead of reconstructing it from an array. The twelve are
+  // model, integrationServices, org, config, meta, admin, frontend, public, custom, tags, templates
+  // and assets - every directory the repository root holds that this port cites into.
+  //
+  // A legacy path, optionally followed by one or more `L<n>` references. The leading lookbehind is
+  // load-bearing: without it, `functional/admin/entity/ProductTest.cfc` - a path written relative to
+  // `meta/tests/`, which the sentence carrying it establishes - would match from `admin/` onward and
+  // be reported as a file that does not exist. A path is only read as legacy when it STARTS at one of
+  // the roots above.
+  const LEGACY_CITATION =
+    /(?<![A-Za-z0-9_./-])((?:model|integrationServices|org|config|meta|admin|frontend|public|custom|tags|templates|assets)\/[A-Za-z0-9_./-]+?\.(?:cfc|cfm|json|txt|xml))((?:\s*:?\s*L\d+(?:\s*-\s*L?\d+)?[,;]?)*)/gu;
+
+  /** A locator into this subtree's own source, in either the bare or `slatwall-ts/`-prefixed form. */
+  const SUBTREE_CITATION =
+    /(?:slatwall-ts\/)?((?:src|tests)\/[A-Za-z0-9_./-]+?\.(?:ts|mjs))((?:\s*:?\s*L\d+(?:\s*-\s*L?\d+)?[,;]?)+)/gu;
+
+  /**
+   * Every artifact that carries citations: the shipped code, every suite and fixture, and the root
+   * documents. The generated trees are not read at all.
+   */
+  const CITING_ARTIFACTS = [
+    ...SOURCE_MODULES_ON_DISK,
+    ...listTypeScriptFiles('tests'),
+    'README.md',
+    'NOTICE-GPL.md',
+    '.env.example',
+    'esbuild.config.mjs',
+    'eslint.config.mjs',
+    'vitest.config.ts',
+  ];
+
+  const legacyLineCounts = new Map<string, number | undefined>();
+  const legacyLineCount = (relativePath: string): number | undefined => {
+    if (!legacyLineCounts.has(relativePath)) {
+      legacyLineCounts.set(
+        relativePath,
+        existsSync(path.join(REPOSITORY_ROOT, relativePath))
+          ? countLines(readRepositoryFile(relativePath))
+          : undefined,
+      );
+    }
+    return legacyLineCounts.get(relativePath);
+  };
+
+  const subtreeLineCounts = new Map<string, number | undefined>();
+  const subtreeLineCount = (relativePath: string): number | undefined => {
+    if (!subtreeLineCounts.has(relativePath)) {
+      subtreeLineCounts.set(
+        relativePath,
+        subtreeFileExists(relativePath) ? countLines(readSubtreeFile(relativePath)) : undefined,
+      );
+    }
+    return subtreeLineCounts.get(relativePath);
+  };
+
+  const linesIn = (tail: string): number[] =>
+    [...tail.matchAll(/L(\d+)/gu)].map((match) => Number(match[1]));
+
+  interface CitedLocator {
+    readonly citingArtifact: string;
+    readonly citedPath: string;
+    readonly lines: readonly number[];
+  }
+
+  const collect = (expression: RegExp): CitedLocator[] => {
+    const found: CitedLocator[] = [];
+    for (const artifact of CITING_ARTIFACTS) {
+      const text = readSubtreeFile(artifact);
+      for (const match of text.matchAll(expression)) {
+        found.push({
+          citingArtifact: artifact,
+          citedPath: match[1] ?? '',
+          lines: linesIn(match[2] ?? ''),
+        });
+      }
+    }
+    return found;
+  };
+
+  const legacyLocators = collect(LEGACY_CITATION);
+  const subtreeLocators = collect(SUBTREE_CITATION);
+
+  it('★★★ cites no legacy path that is absent, unless the absence is registered and explained', () => {
+    const registered = new Map(
+      LEGACY_TEST_MAP.deliberateLegacyAbsences.map((absence) => [absence.path, absence.reason]),
+    );
+
+    const offenders = new Set<string>();
+    for (const locator of legacyLocators) {
+      if (legacyLineCount(locator.citedPath) === undefined && !registered.has(locator.citedPath)) {
+        offenders.add(
+          `${locator.citingArtifact} cites ${locator.citedPath}, which is not in the legacy tree`,
+        );
+      }
+    }
+
+    expect(
+      [...offenders].sort(),
+      'each citation here names a legacy file that does not exist, so a reader following it finds ' +
+        'nothing. Correct the path, or register the absence as deliberate with the reason it is cited.',
+    ).toEqual([]);
+
+    // The register must not rot in the other direction either: an entry naming a path that has since
+    // appeared, or that nothing cites, is a stale exemption.
+    const cited = new Set(legacyLocators.map((locator) => locator.citedPath));
+    const stale: string[] = [];
+    for (const [absentPath, reason] of registered) {
+      if (existsSync(path.join(REPOSITORY_ROOT, absentPath))) {
+        stale.push(`${absentPath}: registered as absent and it exists`);
+      }
+      if (!cited.has(absentPath)) {
+        stale.push(`${absentPath}: registered as a cited absence and nothing cites it`);
+      }
+      if (reason.trim().length < 40) {
+        stale.push(`${absentPath}: registered without a reason worth reading`);
+      }
+    }
+    expect(stale.sort()).toEqual([]);
+  });
+
+  it('★★★ cites no legacy LINE beyond the end of the file it names', () => {
+    const offenders = new Set<string>();
+    for (const locator of legacyLocators) {
+      const lineCount = legacyLineCount(locator.citedPath);
+      if (lineCount === undefined) {
+        continue; // absence is the case above's business, and it is registered or already failing
+      }
+      for (const line of locator.lines) {
+        if (line < 1 || line > lineCount) {
+          offenders.add(
+            `${locator.citingArtifact} cites ${locator.citedPath}:L${String(line)}, and that file ` +
+              `has ${String(lineCount)} lines`,
+          );
+        }
+      }
+    }
+
+    expect(
+      [...offenders].sort(),
+      'each locator here points past the end of the legacy file it names. Re-derive it from the ' +
+        'file rather than adjusting the prose around it.',
+    ).toEqual([]);
+  });
+
+  it('★★★ cites no line of its OWN source beyond the end of that file', () => {
+    // The kind that drifts on every edit, because the cited file is one this port keeps changing.
+    // Four of the five stale locators a review found were of exactly this kind.
+    const offenders = new Set<string>();
+    for (const locator of subtreeLocators) {
+      const lineCount = subtreeLineCount(locator.citedPath);
+      if (lineCount === undefined) {
+        offenders.add(
+          `${locator.citingArtifact} cites ${locator.citedPath}, which is not in this subtree`,
+        );
+        continue;
+      }
+      for (const line of locator.lines) {
+        if (line < 1 || line > lineCount) {
+          offenders.add(
+            `${locator.citingArtifact} cites ${locator.citedPath}:L${String(line)}, and that file ` +
+              `has ${String(lineCount)} lines`,
+          );
+        }
+      }
+    }
+
+    expect(
+      [...offenders].sort(),
+      'each locator here points past the end of a file in this subtree. Prefer naming the SYMBOL ' +
+        'and giving the line, so a reader can still find it when the line moves.',
+    ).toEqual([]);
+  });
+
+  it('and the walk is non-vacuous, so a broken matcher fails instead of passing silently', () => {
+    // Every figure below is a floor measured on the tree this gate was written against. A matcher that
+    // stopped matching would drop to zero and fail here rather than reporting a clean sweep of nothing.
+    expect(CITING_ARTIFACTS.length).toBeGreaterThanOrEqual(150);
+    expect(legacyLocators.length).toBeGreaterThanOrEqual(2_000);
+    expect(subtreeLocators.length).toBeGreaterThanOrEqual(40);
+
+    const legacyLineReferences = legacyLocators.reduce(
+      (total, locator) => total + locator.lines.length,
+      0,
+    );
+    expect(legacyLineReferences).toBeGreaterThanOrEqual(15_000);
+
+    // And the spread matters as much as the count: a walk that found citations in one file only would
+    // satisfy every figure above.
+    expect(
+      new Set(legacyLocators.map((locator) => locator.citingArtifact)).size,
+    ).toBeGreaterThanOrEqual(100);
+    expect(new Set(legacyLocators.map((locator) => locator.citedPath)).size).toBeGreaterThanOrEqual(
+      100,
     );
   });
 });
@@ -7187,10 +8322,20 @@ describe('A25 defect register: every entry of the AAP 0.6.7 authority, proven in
 //
 // WHAT AN ENTRY IN `recordedScopeAdditions` IS AND IS NOT. It is not permission. The plan states
 // its target boundary twice - as the INSTANCE list of AAP 0.3.1 and as the trailing PATTERNS of
-// AAP 0.2.1 and 0.4.4 - and an addition may only claim the second. A path inside a sanctioned
-// pattern is in scope and out of enumeration; a path outside every pattern is a scope violation
-// that no entry can launder, and the pattern-match assertion below is what enforces that
+// AAP 0.2.1 and 0.4.4 - and an addition under a directory may only claim the second. A path inside a
+// sanctioned pattern is in scope and out of enumeration; a path outside every pattern is a scope
+// violation that no entry can launder, and the pattern-match assertion below is what enforces that
 // distinction rather than trusting the row's own word for it.
+//
+// ★★★ AND THE ROOT IS THE ONE PLACE WHERE NEITHER STATEMENT REACHES, WHICH A REVIEW MADE PLAIN. The
+// plan gives the subtree root as an instance list of twelve artifacts and publishes NO root pattern, so
+// a thirteenth root file cannot be "inside the boundary but outside the enumeration" - there is no
+// boundary statement for it to be inside. This register used to paper over that by quoting a
+// pseudo-pattern, `slatwall-ts/<root artifact>`, which the plan never states; worse, the loop below
+// skipped the pattern match entirely for a root artifact, so the placeholder authorized every possible
+// root filename. Both are corrected: a root artifact now claims an exact, closed exception from
+// `ROOT_SCOPE_EXCEPTIONS` - today exactly one, `.gitignore` under SEC-G - and the exception table's key
+// set is asserted, so a second root artifact fails until a plan owner rules on it.
 
 describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift is itemised', () => {
   const FROZEN = LEGACY_TEST_MAP.frozenScope;
@@ -7267,8 +8412,16 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
     // prohibit leading-wildcard forms outright. Holding an addition to this closed set is what
     // stops a row inventing a broader pattern than the plan ever gave, which is the way an
     // allow-list would otherwise become permission to add anything.
+    //
+    // ★★★ AND ONE ENTRY HAS BEEN REMOVED FROM THIS LIST, WHICH IS THE POINT OF THIS REVISION. It read
+    // `'slatwall-ts/<root artifact>'` and it was NOT a pattern the plan states - it was a placeholder
+    // written to give the `.gitignore` row something to name. Two failures followed from it. The list
+    // stopped being "the plan's patterns, verbatim", so the closed set no longer meant what its own
+    // comment claimed; and because the loop below skipped `patternMatches` for a `rootArtifact`, the
+    // pseudo-pattern was never matched against anything, so ANY root filename could be laundered into
+    // scope by adding a row that quoted it. Root artifacts now claim an exact, closed exception
+    // instead - see `ROOT_SCOPE_EXCEPTIONS` - and this list holds only genuine plan patterns again.
     const PLAN_PATTERNS: readonly string[] = [
-      'slatwall-ts/<root artifact>',
       'slatwall-ts/src/domain/entities/*.ts',
       'slatwall-ts/src/domain/valueObjects/*.ts',
       'slatwall-ts/src/domain/views/*.ts',
@@ -7288,6 +8441,15 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
       'slatwall-ts/tests/fixtures/*.ts',
     ];
 
+    // NO PLACEHOLDER MAY RETURN. Every legitimate pattern is a literal path with `*` wildcards, so a
+    // `<...>` bracket is the signature of an invented one and is refused by shape rather than by name.
+    expect(PLAN_PATTERNS.filter((pattern) => /[<>]/u.test(pattern))).toEqual([]);
+
+    // AND THE ROOT EXCEPTION TABLE IS EXACTLY ONE KEY. Widening it is a scope decision for the plan
+    // owner (see `ROOT_SCOPE_EXCEPTIONS`); pinning it here is what makes that decision show up as a
+    // failing test rather than as a quiet thirteenth, fourteenth or fifteenth root file.
+    expect(Object.keys(ROOT_SCOPE_EXCEPTIONS).sort()).toEqual(['.gitignore']);
+
     const offenders: string[] = [];
     for (const addition of ADDITIONS) {
       if (!subtreeFileExists(addition.path)) {
@@ -7296,21 +8458,50 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
       if (addition.reason.trim().length < 40) {
         offenders.push(`${addition.path}: recorded without a reason worth reading`);
       }
-      if (!PLAN_PATTERNS.includes(addition.sanctioningPattern)) {
-        offenders.push(
-          `${addition.path}: claims ${addition.sanctioningPattern}, which is not a pattern the ` +
-            'plan states',
-        );
-      }
       if (addition.kind === 'rootArtifact') {
+        // ★★★ A ROOT ARTIFACT IS ADMITTED BY AN EXACT, CLOSED EXCEPTION AND BY NOTHING ELSE. The
+        // filename must be the key of a `ROOT_SCOPE_EXCEPTIONS` entry and the row must quote that
+        // entry verbatim, so a new root file cannot be admitted by writing a row: the table has to
+        // change too, and that change is the reviewable one. It must also claim no pattern, because
+        // the plan publishes none for the root.
         if (addition.path.includes('/')) {
           offenders.push(`${addition.path}: a root artifact cannot sit in a directory`);
         }
-      } else if (!patternMatches(addition.sanctioningPattern, addition.path)) {
-        offenders.push(
-          `${addition.path}: is not admitted by ${addition.sanctioningPattern}, so no plan ` +
-            'pattern sanctions it',
-        );
+        if (addition.sanctioningPattern !== undefined) {
+          offenders.push(
+            `${addition.path}: claims a plan pattern, and the plan publishes no root pattern at all`,
+          );
+        }
+        const recognized = ROOT_SCOPE_EXCEPTIONS[addition.path];
+        if (recognized === undefined) {
+          offenders.push(
+            `${addition.path}: no recorded root scope exception names this filename, so nothing ` +
+              'admits it - a thirteenth root artifact needs plan-owner authority, not a register row',
+          );
+        } else if (addition.rootScopeException !== recognized) {
+          offenders.push(
+            `${addition.path}: its recorded exception does not match the one this filename is ` +
+              'admitted by',
+          );
+        }
+      } else {
+        if (addition.rootScopeException !== undefined) {
+          offenders.push(
+            `${addition.path}: claims a root scope exception while sitting in a directory`,
+          );
+        }
+        const claimed = addition.sanctioningPattern;
+        if (claimed === undefined) {
+          offenders.push(`${addition.path}: recorded without the plan pattern that admits it`);
+        } else if (!PLAN_PATTERNS.includes(claimed)) {
+          offenders.push(
+            `${addition.path}: claims ${claimed}, which is not a pattern the plan states`,
+          );
+        } else if (!patternMatches(claimed, addition.path)) {
+          offenders.push(
+            `${addition.path}: is not admitted by ${claimed}, so no plan pattern sanctions it`,
+          );
+        }
       }
       const expectedPrefix = {
         rootArtifact: '',
@@ -7388,10 +8579,12 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
     expect(ruleLines.filter((line) => line.includes('..'))).toEqual([]);
     expect(ruleLines.filter((line) => line.startsWith('/'))).toEqual([]);
 
-    // (4) THE RESTORATION IS RECORDED AS A SANCTIONED ADDITION, not as an unexplained thirteenth
-    // file. The register case above already proves the row exists with a reason and a plan pattern;
-    // this pins the row to THIS path, so the census and the file cannot part company.
+    // (4) THE RESTORATION IS RECORDED AS AN EXACT SCOPE EXCEPTION, not as an unexplained thirteenth
+    // file and not as a pattern the plan never gave. The register case above proves the row exists
+    // with a reason and with the one recorded exception that names this filename; this pins the row to
+    // THIS path, so the census and the file cannot part company.
     expect(ADDED_PATHS).toContain('.gitignore');
+    expect(Object.keys(ROOT_SCOPE_EXCEPTIONS)).toContain('.gitignore');
   });
 
   it('holds every frozen source directory at its planned size, addition by addition', () => {
@@ -7465,12 +8658,26 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
     const promotions = LEGACY_TEST_MAP.frozenExemptPromotions;
     const addedModules = ADDITIONS.filter((addition) => addition.kind === 'sourceModule');
 
-    // Six frozen-exempt modules earned suites, and two recorded modules arrived already
-    // covered. Nothing else may move a module between categories.
+    // Frozen-exempt modules that earned suites, plus any recorded module additions that arrived
+    // already covered. Nothing else may move a module between categories.
+    //
+    // ★★★ THE TWO FIGURES ARE DERIVED, AND THE COMMENT NO LONGER STATES THEM. It used to read "Six
+    // frozen-exempt modules earned suites, and two recorded modules arrived already covered" while the
+    // promotion array held seven rows and no module addition remained - the identity below kept
+    // closing, so nothing failed and the sentence rotted unnoticed. A review measured it. The
+    // arithmetic is the contract; the prose describes its shape and leaves the counting to the code.
     expect(FROZEN.mappedModules + promotions.length + addedModules.length).toBe(
       MAPPED_MODULES.length,
     );
     expect(FROZEN.exemptModules - promotions.length).toBe(EXEMPT_MODULES.length);
+
+    // AND THE TWO INVENTORIES ARE PINNED AT WHAT THEY ACTUALLY HOLD, so a promotion appearing or a
+    // module addition returning is a visible change to this file rather than an absorbed one. These
+    // are the figures the prose above deliberately stops repeating: seven promotions, no module
+    // additions. Either may legitimately move - by a path entering or leaving the tree - and when it
+    // does, this case is where it is re-stated.
+    expect(promotions.length).toBe(7);
+    expect(addedModules).toEqual([]);
 
     // The frozen contract has no pending category at all, and this tree has nothing in it.
     expect(PENDING_MODULES).toEqual([]);

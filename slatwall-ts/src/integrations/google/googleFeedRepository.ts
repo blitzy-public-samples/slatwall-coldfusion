@@ -402,10 +402,15 @@ export interface ResolvedSkuShippingWeightSetting {
  *
  * WHAT IT MUST NOT BE. It is not a settings provider and must not be mistaken for
  * one: it admits no arbitrary key, answers no other setting, and its result cannot
- * reach a `WHERE` clause. `src/domain/ports/settingsProvider.ts` stays at its SEVEN
- * keys, untouched - the same locked count {@link ResolvedFeedSettingValues} and
- * {@link GoogleProductFeedRow.imageLinkPath} state above, and the count the port
- * itself publishes.
+ * reach a `WHERE` clause. `src/domain/ports/settingsProvider.ts` stays at its FOUR
+ * keys, untouched - the count that port itself publishes.
+ *
+ * ★★ QUOTE-THEN-REVISE: this said "stays at its SEVEN keys ... the same locked count
+ * {@link ResolvedFeedSettingValues} and {@link GoogleProductFeedRow.imageLinkPath}
+ * state above". The union carried seven literals for one revision and was narrowed
+ * back to four after a review found the widening unauthorized; the sentence outlived
+ * the narrowing. The ARGUMENT is untouched - this resolver widens nothing either way -
+ * and the two members it cross-referenced are unchanged.
  */
 export interface SkuFeedSettingResolver {
   /**

@@ -1473,7 +1473,7 @@ describe('renderGoogleProductFeed - element 11, the product price', () => {
     //
     // JUDGMENT CALL: the asymmetry is REPRODUCED, NEVER RECONCILED. Either collapse changes money,
     // which is why the projection carries three price fields.
-    expect(itemElementBody(document, 'g:price')).toBe('24.50');
+    expect(itemElementBody(document, 'g:price')).toBe('24.5');
     expect(itemElementBody(document, 'g:price')).not.toBe('19.99');
   });
 
@@ -1487,24 +1487,51 @@ describe('renderGoogleProductFeed - element 11, the product price', () => {
 
     // The three fields are genuinely independent: the SKU pair moved far below the product price
     // and opened a sale, and the advertised price did not move.
-    expect(itemElementBody(document, 'g:price')).toBe('24.50');
-    expect(itemElementBody(document, 'g:sale_price')).toBe('1.00');
+    //
+    // `'1.00'` in, `'1'` out: the template applies no mask, so a trailing-zero scale does not
+    // survive stringification. See the raw-stringification case below.
+    expect(itemElementBody(document, 'g:price')).toBe('24.5');
+    expect(itemElementBody(document, 'g:sale_price')).toBe('1');
   });
 
-  it('presents the price to two decimals through the money value object', () => {
+  it('★★★ stringifies the price the way CFML does, applying NO mask and NO rounding', () => {
     const wholeUnits = renderOneRow({ productPrice: Money.fromDecimalString('9') });
+    const trailingZero = renderOneRow({ productPrice: Money.fromDecimalString('9.50') });
     const oneDecimal = renderOneRow({ productPrice: Money.fromDecimalString('9.5') });
     const manyDecimals = renderOneRow({ productPrice: Money.fromDecimalString('1234.567') });
 
-    // JUDGMENT CALL: two-decimal presentation NORMALISES the legacy output rather than reproducing
-    // it, so it is a correction and carries no defect marker. The template applies no mask at L27,
-    // so raw CFML numeric stringification rendered a stored `9.50` as `9.5`. All money here is
-    // presented through the value object's two-decimal rendering, the target equivalent of
-    // `numberFormat(v,"0.00")`.
-    expect(itemElementBody(wholeUnits, 'g:price')).toBe('9.00');
-    expect(itemElementBody(oneDecimal, 'g:price')).toBe('9.50');
-    expect(itemElementBody(manyDecimals, 'g:price')).toBe('1234.57');
-    expect(itemElementBody(oneDecimal, 'g:price')).toBe(Money.fromDecimalString('9.5').toFixed2());
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L27]: the body is a bare
+    // interpolation, `#local.sku.getProduct().getPrice()#`, with no `numberFormat` and no
+    // `decimalFormat` anywhere in the template. CFML stringifies a number at full precision, in
+    // plain notation, with trailing zeros dropped - so a `big_decimal` holding `9.50` publishes as
+    // `9.5`, a whole `9` publishes as `9`, and three decimal places publish as three.
+    expect(itemElementBody(wholeUnits, 'g:price')).toBe('9');
+    expect(itemElementBody(trailingZero, 'g:price')).toBe('9.5');
+    expect(itemElementBody(oneDecimal, 'g:price')).toBe('9.5');
+    expect(itemElementBody(manyDecimals, 'g:price')).toBe('1234.567');
+
+    // ★★★ QUOTE-THEN-REVISE. This case was called "presents the price to two decimals through the
+    // money value object" and asserted `'9.00'`, `'9.50'` and `'1234.57'`, on this reasoning:
+    //
+    //   "JUDGMENT CALL: two-decimal presentation NORMALISES the legacy output rather than
+    //    reproducing it, so it is a correction and carries no defect marker."
+    //
+    // A review rejected the normalisation and was right to: AAP 0.8.1 requires the feed's observable
+    // behaviour to be preserved exactly and AAP 0.6.7 authorizes three deliberate divergences, all
+    // three spent elsewhere. The old expectations did not merely add a zero - `'1234.57'` ROUNDED a
+    // value the legacy feed publishes in full, so a Merchant Center consumer would have been quoted a
+    // different number. A suite that locks an unauthorized correction makes the correction harder to
+    // find than no suite at all, which is why the assertions moved rather than the renderer staying.
+    expect(itemElementBody(manyDecimals, 'g:price')).not.toBe('1234.57');
+    expect(itemElementBody(trailingZero, 'g:price')).not.toBe('9.50');
+
+    // And the rendering really is the value object's full-precision numeral, not a masked one.
+    expect(itemElementBody(oneDecimal, 'g:price')).toBe(
+      Money.fromDecimalString('9.5').toDecimalString(),
+    );
+    expect(itemElementBody(oneDecimal, 'g:price')).not.toBe(
+      Money.fromDecimalString('9.5').toFixed2(),
+    );
   });
 
   it('emits an empty price element when the product has no price, never a zero', () => {
@@ -1553,7 +1580,7 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
     // inside ONE conditional, so they are emitted together or not at all. The gate is
     // `local.sku.getPrice() gt local.sku.getSalePrice()` - the SKU against itself - evaluated here
     // through the money value object, never as a float.
-    expect(itemElementBody(document, 'g:sale_price')).toBe('9.50');
+    expect(itemElementBody(document, 'g:sale_price')).toBe('9.5');
     expect(itemElementBody(document, 'g:sale_price_effective_date')).toBe(
       `${RANGE_START_RENDERED}/${SALE_EXPIRATION_RENDERED}`,
     );
@@ -1561,7 +1588,7 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
     expect(itemElementNames(document)).toContain('g:sale_price_effective_date');
 
     // And the advertised price is STILL the product's, inside the sale case too.
-    expect(itemElementBody(document, 'g:price')).toBe('24.50');
+    expect(itemElementBody(document, 'g:price')).toBe('24.5');
   });
 
   it('emits a well-formed ISO 8601 UTC interval driven by the supplied instant', () => {
@@ -1705,7 +1732,7 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
     // null end date qualifies as current [model/dao/PromotionDAO.cfc:L319] and projects a null
     // expiration [:L344]. So a live sale silently stopped being advertised. The interval argument
     // is sound and now applies only to the element that IS an interval.
-    expect(itemElementBody(document, 'g:sale_price')).toBe('9.50');
+    expect(itemElementBody(document, 'g:sale_price')).toBe('9.5');
     expect(itemElementNames(document)).toContain('g:sale_price');
     expect(itemElementNames(document)).not.toContain('g:sale_price_effective_date');
   });
@@ -1728,7 +1755,7 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
     // fail-closed reasoning holds for the INTERVAL and not for the price: an unrenderable range
     // START is still no reason to withdraw a sale the price comparison decided. What must not appear
     // is a placeholder, and none does.
-    expect(itemElementBody(document, 'g:sale_price')).toBe('9.50');
+    expect(itemElementBody(document, 'g:sale_price')).toBe('9.5');
     expect(itemElementNames(document)).not.toContain('g:sale_price_effective_date');
     expect(document).not.toContain('NaN');
     expect(document).not.toContain('Invalid Date');
@@ -1743,7 +1770,7 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
       salePriceExpirationDateTime: new Date(Number.NaN),
     });
 
-    expect(itemElementBody(document, 'g:sale_price')).toBe('9.50');
+    expect(itemElementBody(document, 'g:sale_price')).toBe('9.5');
     expect(itemElementNames(document)).not.toContain('g:sale_price_effective_date');
     expect(document).not.toContain('NaN');
   });
@@ -2480,8 +2507,12 @@ describe('renderGoogleProductFeed - the complete rendered document', () => {
         '      <g:additional_image_link>http://feed.example.invalid/fake-image-base/product/fake-additional-1.jpg</g:additional_image_link>',
         '      <g:condition>new</g:condition>',
         '      <g:availability>in stock</g:availability>',
-        '      <g:price>24.50</g:price>',
-        '      <g:sale_price>9.50</g:sale_price>',
+        // The two monetary elements carry NO mask: `24.5` and `9.5`, exactly as CFML stringifies
+        // the `big_decimal` values behind them [.../product.cfm:L27, L29]. They read `24.50` and
+        // `9.50` until a review found the two-decimal normalisation unauthorized - see the
+        // raw-stringification case in section 11.
+        '      <g:price>24.5</g:price>',
+        '      <g:sale_price>9.5</g:sale_price>',
         '      <g:sale_price_effective_date>2024-06-01T12:34:56Z/2024-12-31T23:59:59Z</g:sale_price_effective_date>',
         '      <g:brand>Fake Brand</g:brand>',
         '      <g:item_group_id>FAKE-PRODUCT-1</g:item_group_id>',

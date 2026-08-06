@@ -540,6 +540,24 @@ class MissingProductFeedPortError extends Error {
 // deployment, and this subtree ships no infrastructure by AAP mandate. `slatwall-ts/README.md` carries
 // the same record for an operator, and `tests/traceability/legacyTestMap.ts` holds the two together so
 // they cannot drift apart. Escalate, do not patch unilaterally.
+//
+// ★★★ RAISED AGAIN AS S-02 (MAJOR, CWE-400), AND THE DISPOSITION IS UNCHANGED. The final
+// element-by-element completeness review measured the same three modules - this handler, the feed
+// repository and the feed service - and reached the same finding: "the source-public route can
+// recompute the complete catalog feed on every request. The query has no limit, all rows are
+// materialized, and one full document is built in memory. Host allow-listing controls emitted origin,
+// not request rate." EVERY WORD OF THAT IS ACCURATE, and its own resolution names the same five
+// remedies with the same precondition - "with explicit deployment/AAP authority" - plus the same
+// prohibition: "Do not silently truncate the feed."
+//
+// NOTHING HAS CHANGED ON EITHER SIDE, so nothing here changes. The clause-by-clause record above is the
+// answer: four remedies are blocked by AAP 0.6.5, 0.8.1 and 0.2.2, the fifth was already satisfied, and
+// the sixth clause - no silent truncation - is why a row ceiling was removed rather than added. What a
+// second raising DOES establish is that the residual is not an oversight: two independent reviews have
+// now examined it, neither has found a control this subtree may add, and the decision that closes it
+// sits with a plan owner authorizing a module-scope cache exception and the HTTP validator family, or
+// with a deployment putting a cache, a rate limit and a concurrency ceiling in front of the route. Both
+// are recorded, in code and in the README. The finding stays OPEN, and it stays open honestly.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

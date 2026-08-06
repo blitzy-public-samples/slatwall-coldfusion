@@ -43,14 +43,33 @@
 #   because `.git/info/exclude` is per-clone and never travels: a FRESH CLONE
 #   has no rules at all, so a developer following this README can create `.env`
 #   with `DB_PASSWORD` in it and stage it, or stage `dist/`'s bundles and source
-#   maps. The enumeration argument was not wrong about the plan text — it was
-#   wrong that nothing may be added to it. AAP 0.4.4 and 0.2.1 also state the
-#   target as trailing PATTERNS, and `legacyTestMap.ts` publishes the mechanism
-#   for exactly this case: `recordedScopeAdditions` itemises a sanctioned
-#   addition, so this file is reconciled LOUDLY against the frozen 165-file
-#   census rather than silently drifting past it. The `A18` block fails if this
-#   row is ever removed while the file stays, or the file removed while the row
-#   stays.
+#   maps.
+#
+#   WHAT AUTHORIZES IT, STATED PRECISELY, BECAUSE AN EARLIER VERSION OF THIS
+#   NOTE OVERSTATED IT. It read: "AAP 0.4.4 and 0.2.1 also state the target as
+#   trailing PATTERNS, and `legacyTestMap.ts` publishes the mechanism for exactly
+#   this case: `recordedScopeAdditions` itemises a sanctioned addition." A later
+#   review checked that claim against the plan and rejected it: every pattern
+#   AAP 0.4.4 lists is a trailing wildcard over a DIRECTORY, and the subtree root
+#   is given as an INSTANCE list of twelve artifacts with no root pattern at all.
+#   So no plan pattern sanctions this file, and the register row that claimed one
+#   named a pseudo-pattern — `slatwall-ts/<root artifact>` — that appears nowhere
+#   in the plan.
+#
+#   THE HONEST AUTHORITY IS THE SECURITY DECISION ITSELF. This file is admitted
+#   as ONE EXACT, CLOSED EXCEPTION to the frozen root enumeration, recorded in
+#   `legacyTestMap.ts` as the single entry of `ROOT_SCOPE_EXCEPTIONS`, keyed by
+#   this filename and naming SEC-G as its ground. `recordedScopeAdditions` still
+#   itemises the path, so the tree is reconciled LOUDLY against the frozen
+#   165-file census rather than silently drifting past it, and the `A18` block
+#   fails if this row is ever removed while the file stays, or the file removed
+#   while the row stays. It also fails if a SECOND root filename is added, because
+#   the exception table's key set is asserted to be exactly this one name.
+#
+#   IT REMAINS AN OPEN ITEM FOR THE PLAN OWNER. Ratifying a thirteenth root
+#   artifact into AAP 0.3.1 — or reconciling the root back to twelve and closing
+#   SEC-G another way — is a scope decision this port may not take for itself.
+#   Until it is taken, the exception is what a reviewer sees, by name.
 #
 # The rules are deliberately scoped to this subtree. Nothing here can affect the
 # CFML tree, because a `.gitignore` applies to its own directory and below. They

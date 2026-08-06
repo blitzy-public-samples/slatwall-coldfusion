@@ -3132,8 +3132,13 @@ export class ProductService {
    * reasons the review-side effects are not reproduced. None of them concerns the product.
    *
    * FIRST, [L159] reads `arguments.product.setting('productAutoApproveReviewsFlag')`,
-   * and that key is NOT among the seven members of the `SettingKey` union published
-   * by `src/domain/ports/settingsProvider.ts`. That union is closed. The key is
+   * and that key is NOT among the FOUR members of the `SettingKey` union published
+   * by `src/domain/ports/settingsProvider.ts` - `globalURLKeyProduct`,
+   * `globalURLKeyProductType`, `skuCurrency` and `skuEligibleCurrencies`. (This said
+   * SEVEN until a review measured the shipped union: it carried seven literals for one
+   * revision and was narrowed back, and the three product-presentation names are
+   * resolved at composition time and handed inward as values rather than published as
+   * keys.) That union is closed. The key is
    * neither added to it nor hardcoded to a value here - inventing a default would
    * decide, silently, whether every incoming review is published. This is the same
    * treatment `src/services/brandService.ts` gave `globalURLKeyBrand`
@@ -3323,9 +3328,9 @@ export class ProductService {
    *
    * LEGACY-NOTE [model/service/ProductService.cfc:L200, L201]: both lines build their
    * path from `getHibachiScope().setting('globalAssetsImageFolderPath')`
-   * [model/service/SettingService.cfc:L164], and that key is NOT among the seven
-   * members of the closed `SettingKey` union. It is neither
-   * added nor hardcoded. The RESOLVABLE part of the path - `product/default/` plus the
+   * [model/service/SettingService.cfc:L164], and that key is NOT among the FOUR
+   * members of the closed `SettingKey` union - the count said seven until a review
+   * measured the shipped union. It is neither added nor hardcoded. The RESOLVABLE part of the path - `product/default/` plus the
    * file name - is what this service supplies, and the asset root belongs to the
    * adapter behind `src/domain/ports/imageStore.ts`, which is where a filesystem
    * location is configuration rather than business logic.
@@ -3886,13 +3891,16 @@ export class ProductService {
    *
    * ★ WHERE THE PATH COMES FROM, GIVEN THAT ITS ROOT IS UNAVAILABLE.
    * [L240] builds `getHibachiScope().setting('globalAssetsImageFolderPath') &
-   * "/product/default"`, and that key is outside the closed SEVEN-member `SettingKey` union -
+   * "/product/default"`, and that key is outside the closed FOUR-member `SettingKey` union -
    * neither added to it nor hardcoded. (The union holds `globalURLKeyProduct`
    * [model/service/SettingService.cfc:L178], `globalURLKeyProductType` [:L179],
-   * `productImageDefaultExtension` [:L191], `productImageOptionCodeDelimiter` [:L192],
-   * `productTitleString` [:L193], `skuCurrency` [:L221] and `skuEligibleCurrencies` [:L222];
-   * `globalAssetsImageFolderPath` [:L164] has never been among them.) The path handed to the
-   * port is therefore the
+   * `skuCurrency` [:L221] and `skuEligibleCurrencies` [:L222];
+   * `globalAssetsImageFolderPath` [:L164] has never been among them. This parenthetical said
+   * SEVEN and listed `productImageDefaultExtension` [:L191], `productImageOptionCodeDelimiter`
+   * [:L192] and `productTitleString` [:L193] alongside the four - true of one revision of the
+   * union, and corrected after a review measured the shipped one: those three are resolved at
+   * composition time and handed inward as plain strings, so they are DATA rather than port
+   * keys.) The path handed to the port is therefore the
    * STORE-RELATIVE remainder, `product/default/<imageFile>`, and the root belongs to the
    * implementation: the port states in its own contract that it "holds no notion of a root, a
    * prefix or a provider". This is not a new convention invented here - it is exactly what

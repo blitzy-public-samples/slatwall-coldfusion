@@ -351,7 +351,9 @@ export class OptionService {
     // [slatwall-ts/src/domain/entities/option.ts:L865], because
     // [model/entity/Option.cfc:L54] declares `optionName ormtype="string"` with no
     // `notnull` and no default, so the column is genuinely nullable. The port's row type
-    // requires a `string`, at [slatwall-ts/src/domain/ports/optionRepository.ts:L285].
+    // requires a `string` - `SelectOption.name` at
+    // [slatwall-ts/src/domain/ports/optionRepository.ts:L35-L38], a locator that read `:L285`
+    // against an 86-line file until a review checked it.
     // The absent case is resolved to the EMPTY STRING, and that is a reproduction of
     // legacy behaviour rather than an invented default: Slatwall targets ColdFusion 9.0.1
     // and Railo 4.1 [readme.md:L1-L14], engines on which full null support is off by

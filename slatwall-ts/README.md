@@ -70,10 +70,14 @@ What that means in practice:
   deliberately absent for one revision, and the reversal is recorded in the file itself.** It keeps
   `node_modules/`, `dist/`, `build/`, `coverage/`, the tooling caches and a local `.env` out of the
   index, while re-including `.env.example` so the committed environment contract stays tracked. It is
-  the thirteenth root file, which the plan's enumeration does not name, so it is itemised as a
-  sanctioned addition in `tests/traceability/legacyTestMap.ts` (`recordedScopeAdditions`) and asserted
-  there — a later "the root is exactly twelve artifacts" tidy-up now fails a test instead of quietly
-  deleting your protection. The earlier position was that the enumeration forbade a thirteenth file
+  the thirteenth root file, which the plan's enumeration does not name and **no plan pattern
+  sanctions** — AAP 0.4.4's patterns are all trailing wildcards over directories, and the root is an
+  instance list of twelve. It is therefore admitted as **one exact, closed scope exception**, keyed by
+  this filename in `ROOT_SCOPE_EXCEPTIONS` and itemised in `recordedScopeAdditions`, both in
+  `tests/traceability/legacyTestMap.ts` and both asserted — so a later "the root is exactly twelve
+  artifacts" tidy-up fails a test instead of quietly deleting your protection, and a _fourteenth_ root
+  file fails too until a plan owner rules on it. Ratifying the thirteenth into AAP 0.3.1 is still an
+  open plan-owner decision. The earlier position was that the enumeration forbade a thirteenth file
   and that `.git/info/exclude` would do the job; a security review (SEC-G) rejected it, because that
   exclude is per-clone and never travels: a fresh clone had no rules at all, so a real `.env` holding
   `DB_PASSWORD` was one `git add` away from the index. Do not add a `.prettierignore` — the format
@@ -152,10 +156,15 @@ asserts the `5.` prefix so the drift fails a test run instead of passing unnotic
 > **This is a plan-level decision that has been escalated, not a defect this subtree claims to have
 > fixed.** The pinned Node 20 / Lambda `nodejs20.x` line was raised as **S-17**, re-raised as
 > **V-10**, raised a third time as **F46** (CWE-1104, _Use of Unmaintained Third-Party
-> Components_), and raised a fourth time as **SEC-E** by the project-wide final security assessment,
+> Components_), raised a fourth time as **SEC-E** by the project-wide final security assessment,
 > which files it as HIGH and states its own required resolution as obtaining "a product/AAP
-> exception" _before_ migrating the coupled artifacts. That precondition is the whole reason this
-> record exists rather than a code change: the exception is the plan owner's to grant, an agent may
+> exception" _before_ migrating the coupled artifacts, and raised a **fifth** time as **S-01** by the
+> final element-by-element completeness review, which files it as MAJOR and asks for plan-owner
+> authorization to "migrate the coupled runtime, typings, engines, lockfile, bundler target, and
+> packaging evidence to a supported Lambda runtime" — the same precondition, named more precisely.
+> Five raisings and one unchanged answer is worth stating plainly: **the finding is not disputed, and
+> it is not closable here.** That precondition is the whole reason this record exists rather than a
+> code change: the exception is the plan owner's to grant, an agent may
 > not grant it to itself, and the AAP may not be edited to manufacture one. SEC-E also proposes a
 > successor line — Node 24, for support runway — which is recorded here as the reviewer's
 > recommendation and **not** adopted, because selecting the successor is the same plan-owner
@@ -234,10 +243,25 @@ asserts the `5.` prefix so the drift fails a test run instead of passing unnotic
 | `prettier`            | `3.9.6`    | Formatting. It owns layout outright; `eslint.config.mjs` enables zero layout rules.                                           |
 | `dotenv`              | `17.4.2`   | Local and test environment loading only. Lambda injects environment variables natively, so this never executes in production. |
 
-That is three runtime and ten development dependencies — **thirteen direct package pins**. Counting
-the Node runtime itself, pinned through `.nvmrc` and `engines.node`, gives the fourteen the plan's
-prose refers to; the plan says "fourteen" and then enumerates thirteen packages, and the enumeration
-is the authority. Every one is an exact version triple with no caret, tilde or wildcard; the
+The `dotenv` row's Role text is reproduced verbatim from AAP 0.5.1 and is deliberately not reworded
+here, because this table's job is to mirror the plan's own inventory. Read on its own it overstates
+what the code does: "local" loading is not automatic, and only `tests/setup.ts` imports the package.
+The operative behaviour, with the exact local invocation, is stated under
+[Environment-variable contract](#environment-variable-contract) below; that section, not this cell,
+is the description of how loading actually works.
+
+That is three runtime and ten development dependencies — **thirteen direct package pins**, which is
+exactly what `package.json` and `package-lock.json` carry.
+
+**AAP 0.5.1 says "fourteen" and then enumerates thirteen. Its prose total is arithmetically
+inconsistent with its own table, and the table is the authority.** This paragraph used to reconcile
+the difference by counting the Node runtime as the fourteenth package; a review rejected that, and
+correctly — the plan describes Node separately, in the sentence immediately before the table ("the
+runtime baseline is Node.js 20.20.2 … with npm 10.8.2"), so counting it again turns a description
+into an inventory entry. There is no fourteenth package, none is inferred, and none may be added to
+make a total agree.
+
+Every one of the thirteen is an exact version triple with no caret, tilde or wildcard. The
 traceability suite fails on any specifier that is not, and it deliberately writes down no total of
 its own so that the number cannot go stale in two places at once.
 
@@ -521,10 +545,22 @@ previously misdescribed here:
   assigns. Neither exists in a deployed bundle, which is why the sentence above is scoped to
   `src/**`.
 
-In Lambda these values arrive as native environment variables and `dotenv` never runs. Locally and
-under test, `dotenv` loads a `.env` file from this directory if one is present; that file is your
-own, it is never committed, and `.env.example` rather than `.env` is the artifact under version
-control.
+In Lambda these values arrive as native environment variables and `dotenv` never runs.
+
+**Under test**, `dotenv` loads a `.env` file from this directory if one is present. **A local
+non-test run loads nothing by itself** — and that distinction is a correction: this paragraph used to
+say "locally and under test", which overstated it. The only importer of `dotenv` in the whole subtree
+is `tests/setup.ts`, wired in by `vitest.config.ts` as a setup file; nothing under `src/**` imports
+it, and `src/lib/config.ts` reads whatever the process was actually given and refuses when a required
+value is absent. To invoke a handler locally, put the variables into the environment yourself:
+
+```bash
+set -a; . ./.env; set +a          # export the file into your shell, then run anything
+node --env-file=.env <script>     # or let Node 20 load it for one process
+```
+
+Either way that `.env` file is your own, it is never committed, and `.env.example` rather than `.env`
+is the artifact under version control.
 
 Where the contract comes from, so a reviewer can check it against the legacy source rather than take
 it on trust:
@@ -681,8 +717,10 @@ Four classes of local artifact must never reach a commit — the installed depen
 report (`coverage/`) and tooling caches (`.eslintcache`, `.vitest/`), and your real `.env`. This
 subtree carries a **committed `slatwall-ts/.gitignore`** covering all four, with `!.env.example` so
 the environment contract itself stays tracked. It is a thirteenth root artifact that AAP 0.3.1's
-enumeration does not name, which is why it is itemised and asserted as a sanctioned addition in
-`tests/traceability/legacyTestMap.ts` rather than left to be discovered as drift.
+enumeration does not name, and — as the section above states — no AAP pattern admits a root file at
+all, so it is itemised and asserted in `tests/traceability/legacyTestMap.ts` as **one exact, closed
+SEC-G scope exception** rather than as a pattern-sanctioned addition, and rather than left to be
+discovered as drift.
 
 **It was absent for one revision, and the reasoning on both sides is worth keeping.** The earlier
 position was that the enumeration forbade a thirteenth root file, that the rules could live in this
@@ -744,7 +782,12 @@ order of preference:
 Two things hold either way:
 
 - **The gate is `git ls-files`.** `git ls-files slatwall-ts` must list only hand-authored sources —
-  the twelve root artifacts, `src/**`, `tests/**`. If it ever names a path under `node_modules/`,
+  the root artifacts, `src/**`, `tests/**`. The root is **thirteen** files today: the twelve AAP 0.3.1
+  enumerates plus `.gitignore`, admitted as the one recorded SEC-G scope exception described above.
+  (This sentence read "the twelve root artifacts" while the same document explained the thirteenth two
+  sections earlier; a review measured the contradiction. The frozen figure is twelve and the committed
+  figure is thirteen — both are stated, because stating only one of them is how the difference goes
+  missing.) If it ever names a path under `node_modules/`,
   `dist/`, `build/` or `coverage/`, or names a `.env` that is not `.env.example`, that artifact has
   been committed and must be removed from the index.
 - **Check before staging, do not assume.** Run `git status --porcelain` and confirm only intended
@@ -862,6 +905,16 @@ Two things hold either way:
 > Closing the two blocked clauses inside this subtree needs an **AAP amendment** authorizing both a
 > second module-scope state exception and the HTTP validator family. Until then: escalate, do not patch
 > unilaterally.
+>
+> **Raised again as S-02 (MAJOR, CWE-400), and the answer is unchanged.** The final
+> element-by-element completeness review measured the same three modules — the handler, the feed
+> repository and the feed service — and asked for the same five remedies under the same precondition,
+> "with explicit deployment/AAP authority", with the same prohibition on silent truncation. Nothing on
+> either side has moved, so nothing here moves. What a second independent raising does establish is
+> that the residual is not an oversight: two reviews have examined it, neither found a control this
+> subtree may add, and the decision that closes it belongs to a plan owner (authorizing the cache
+> exception and the validator family) or to a deployment (putting a cache, a rate limit and a
+> concurrency ceiling in front of the route). The finding stays **open**.
 
 ---
 
@@ -1249,10 +1302,36 @@ it explicit and non-optional, and a test asserts that reversing the two changes 
 Legacy defects are carried forward deliberately, and **the ledger is the markers in the source, not a
 number in this file.** AAP 0.6.7 publishes twenty numbered defects plus eight secondary items as the set
 found while the plan was written; the register carried forward here holds **thirty** numbered entries,
-because reading the in-scope source line by line during the port found ten more, and `A25` in
-`tests/traceability/legacyTestMap.ts` proves every one of the thirty individually. The annotated SITES
-are a larger and open-ended set again — one register entry is often reproduced at several sites, and each
-site is annotated where it sits rather than counted here. To take the current census, derive it:
+because reading the in-scope source line by line during the port found ten more.
+
+`A25` in `tests/traceability/legacyTestMap.ts` proves the authority as **three separate inventories**,
+and the split is what makes the claim checkable:
+
+| Inventory                         | Size               | Proven by                                                                    |
+| --------------------------------- | ------------------ | ---------------------------------------------------------------------------- |
+| `AAP_NUMBERED_DEFECTS`            | **30**, frozen     | a marker citation naming the legacy file with a line inside the entry's span |
+| `AAP_SECONDARY_DEFECTS`           | **8**, frozen      | the same, plus `verbatimIdentifiers` for the four preserved misspellings     |
+| `SUPPLEMENTAL_TARGET_DISCOVERIES` | **open-ended** (4) | the same proof, across `src/**` and `tests/**`, with no length to break      |
+
+**That shape is a correction, and the previous sentence here was wrong.** This section used to claim
+`A25` "proves every one of the thirty individually". It did not: the register it read was a single
+thirty-row array holding entries 1–20 followed by ten rows labelled as secondary items, so entries
+**21–24 and 26–30 appeared nowhere at all** and entry 25 — the `getSalePricExpirationDateTime` typo,
+which the authority promotes out of the secondary list into the numbered set — was carried as a
+secondary row. Thirty rows, nine numbered entries unproven. A review measured it. Thirty numbered plus
+eight secondary is **thirty-eight** base entries, and all thirty-eight are now proven one at a time.
+
+The third inventory exists for the same reason. `expect(length).toBe(30)` meant a discovery made
+tomorrow could be recorded only by editing the frozen base authority, so the gate discouraged recording
+one; the four findings the port made about fixture-facing behaviour — the `isCurrent` /
+`getCurrentFlag` disagreement, the `getPromotionCodesDeletableFlag` memo, `hasUniqueOptions` on an
+option-less sku, and the sorted-versus-unsorted defensive check — now sit in an inventory that takes a
+fifth without either frozen set moving. The numbered set stays closed at thirty so that a number means
+one thing forever; discovery stays open. Those are different properties.
+
+The annotated SITES are a larger and open-ended set again — one register entry is often reproduced at
+several sites, and each site is annotated where it sits rather than counted here. To take the current
+census, derive it:
 
 ```bash
 grep -roh 'LEGACY-DEFECT \[[^]]*\]' src | sort -u        # the distinct legacy sites annotated

@@ -125,8 +125,10 @@ export interface SubscriptionPriceGroupIDsCriteria {
    * it does not produce a query with a missing predicate; it produces a runtime
    * failure before any SQL is composed. The sole caller
    * ([model/service/PriceGroupService.cfc:L277]) always supplies it, and
-   * `slatwall-ts/src/domain/ports/priceGroupRepository.ts:L674` declares it
-   * required for that reason. A required property is therefore the honest
+   * `getAccountSubscriptionPriceGroups` at
+   * `slatwall-ts/src/domain/ports/priceGroupRepository.ts:L180` declares it
+   * required for that reason. (That locator read `:L674`, past the end of a
+   * 415-line file, until a review checked it against disk.) A required property is therefore the honest
    * model, and it is also the one that behaves under
    * `exactOptionalPropertyTypes`, where `accountID?: string` would introduce an
    * `undefined` state the legacy has no representation for.

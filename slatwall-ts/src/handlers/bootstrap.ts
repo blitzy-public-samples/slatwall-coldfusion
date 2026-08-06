@@ -1822,14 +1822,25 @@ const SKU_CURRENCY_DEFAULT = 'USD';
 /**
  * `setting('productImageDefaultExtension')` [model/service/SettingService.cfc:L191].
  *
- * ONE OF THE SEVEN SETTINGS-PORT KEYS, and this constant is the DECLARED LEGACY
- * DEFAULT the provider is built from. The image subsystem does not resolve it
- * separately: `imageSettingValues` reads it back OUT of `settingsProvider` at
- * section 6 step 5, so `SkuImageSettingValues` and
- * `ImageStore.generateSkuImageFileName` receive a value that came through the one
- * flat provider rather than a second, parallel resolution of the same setting.
- * That single-authority shape is the point - the legacy read was itself a
- * `setting(...)` call, on the PRODUCT [model/entity/Sku.cfc:L138].
+ * ONE OF THE THREE PRODUCT-PRESENTATION SETTING NAMES THIS COMPOSITION RESOLVES,
+ * AND NOT A KEY ON THE PUBLISHED PORT. This constant is the DECLARED LEGACY DEFAULT
+ * the provider is built from. The image subsystem does not resolve it separately:
+ * `imageSettingValues` reads it back OUT of `BootstrapSettingsProvider` at section 6
+ * step 5, so `SkuImageSettingValues` and `ImageStore.generateSkuImageFileName`
+ * receive a value that came through the one flat table rather than a second,
+ * parallel resolution of the same setting. That single-authority shape is the point -
+ * the legacy read was itself a `setting(...)` call, on the PRODUCT
+ * [model/entity/Sku.cfc:L138].
+ *
+ * ★★ QUOTE-THEN-REVISE: this opened "ONE OF THE SEVEN SETTINGS-PORT KEYS". It is not
+ * a port key at all. `SettingKey` in `../domain/ports/settingsProvider.ts` is closed
+ * at FOUR - `globalURLKeyProduct`, `globalURLKeyProductType`, `skuCurrency`,
+ * `skuEligibleCurrencies` - and this name is one of the three the composition
+ * resolves EAGERLY and hands inward as a plain immutable string. Seven names are read
+ * from `SwSetting`; only four are askable through a port. The union really did carry
+ * seven literals for one revision, which is where the phrasing came from, and a
+ * review found the sentence still asserting it after the narrowing. See
+ * {@link ProductPresentationSettingName}.
  */
 const PRODUCT_IMAGE_DEFAULT_EXTENSION_DEFAULT = 'jpg';
 
@@ -1838,8 +1849,9 @@ const PRODUCT_IMAGE_DEFAULT_EXTENSION_DEFAULT = 'jpg';
  * whose legacy option list is exactly `['-','_']`
  * [model/service/SettingService.cfc:L346-L347].
  *
- * Also one of the seven settings-port keys, resolved through the provider exactly
- * as the extension above is [model/entity/Sku.cfc:L135].
+ * Also one of the three product-presentation setting names - not a port key -
+ * resolved through the same composition-time table as the extension above and handed
+ * inward as a value [model/entity/Sku.cfc:L135].
  */
 const PRODUCT_IMAGE_OPTION_CODE_DELIMITER_DEFAULT = '-';
 
@@ -1852,11 +1864,18 @@ const PRODUCT_IMAGE_OPTION_CODE_DELIMITER_DEFAULT = '-';
  * `hibachiUtilityService.replaceStringTemplate` resolves against the entity graph
  * [model/entity/Product.cfc:L542], and nothing in this subtree evaluates them.
  *
- * The seventh-declared of the seven port keys, and the only one whose consumer is
- * not ported: `Product.getTitle()` stays out because that renderer lives under
- * `org/Hibachi/`, the boundary this migration extracts from and never ports. The
- * setting itself belongs to the in-scope product subsystem, so it is resolved
- * here and published on the port regardless.
+ * The third of the three product-presentation setting names, and the only one whose
+ * consumer is not ported: `Product.getTitle()` stays out because that renderer lives
+ * under `org/Hibachi/`, the boundary this migration extracts from and never ports.
+ * The setting itself belongs to the in-scope product subsystem, so it is resolved
+ * here and handed to `Product` as its `productTitleTemplate` - a resolved string, not
+ * a resolver, and NOT a key on the published four-key port.
+ *
+ * ★★ QUOTE-THEN-REVISE: this read "The seventh-declared of the seven port keys ...
+ * resolved here and published on the port regardless." The second half was the
+ * substantive error - nothing about this name is published on a port. Its removal from
+ * the port surface is exactly what the earlier finding required, and the sentence
+ * claiming otherwise outlived it.
  */
 const PRODUCT_TITLE_STRING_DEFAULT = '${brand.brandName} ${productName}';
 
@@ -2556,11 +2575,19 @@ const SELECT_BRAND_BY_BRAND_ID = 'bootstrapSelectBrandByBrandID';
 const SELECT_SKU_FEED_SETTINGS = 'bootstrapSelectSkuFeedSettings';
 const SELECT_PRODUCT_TYPE_PATHS = 'bootstrapSelectProductTypePaths';
 
-// The statement behind the SETTINGS PORTS - the general, relationship-free rows for the seven names the
-// two settings contracts publish. Distinct from the per-SKU pair above because it asks a different
-// question: not "which override applies to THIS sku" but "what has this installation configured
-// globally", which is the legacy's final `getSettingRecordBySettingRelationships(settingName=...)`
-// probe with no relationships at all [model/service/SettingService.cfc:L490, L595-L608].
+// The statement behind the SETTINGS RESOLUTION - the general, relationship-free rows for the seven
+// names this composition resolves: the FOUR keys the ONE published `SettingsProvider` contract answers,
+// plus the THREE product-presentation values handed inward as plain strings. Distinct from the per-SKU
+// pair above because it asks a different question: not "which override applies to THIS sku" but "what
+// has this installation configured globally", which is the legacy's final
+// `getSettingRecordBySettingRelationships(settingName=...)` probe with no relationships at all
+// [model/service/SettingService.cfc:L490, L595-L608].
+//
+// ★★ QUOTE-THEN-REVISE: this said "the SETTINGS PORTS ... the seven names the two settings contracts
+// publish". There is ONE settings contract and it publishes FOUR names. A second resolver interface did
+// exist for one revision and was removed as unauthorized scope; the plural and the seven survived it,
+// and a review measured them. The statement's own bind list is unchanged - seven names really are read
+// - so only the description of what publishes them was wrong.
 const SELECT_GENERAL_SETTINGS = 'bootstrapSelectGeneralSettings';
 
 // The framework-generated writes. `HibachiService.save` [org/Hibachi/HibachiService.cfc:L155] reached
@@ -3001,8 +3028,17 @@ const SELECT_SKU_FEED_SETTINGS_SQL = [
 ].join(' ');
 
 /**
- * The configured value of every name the two settings contracts publish, read ONCE at composition
- * time.
+ * The configured value of every one of the SEVEN names this composition resolves - the FOUR keys the
+ * ONE published `SettingsProvider` contract answers, plus the THREE product-presentation values
+ * handed inward as plain strings - read ONCE at composition time.
+ *
+ * ★★ QUOTE-THEN-REVISE: this read "every name the two settings contracts publish". There is ONE
+ * settings contract and it publishes FOUR names; a second resolver interface existed for one
+ * revision and was withdrawn as unauthorized scope, and the plural outlived it. A code review
+ * measured that. The statement's own bind list is untouched - seven names really are read from
+ * `SwSetting` here - so only the description of what publishes them was wrong. See the
+ * quote-then-revise on {@link SELECT_GENERAL_SETTINGS}, which records the same correction at the
+ * statement label.
  *
  * ★★★ WHY THIS STATEMENT HAD TO EXIST. Until it did, `BootstrapSettingsProvider` was built from
  * the DECLARED DEFAULTS ALONE and `SwSetting` was never consulted for a general setting at all. Code
@@ -3948,8 +3984,21 @@ type EuroPivotScaling =
 //     composition root, which is where AAP 0.3.1 says implementations are instantiated and wired.
 //
 // What genuinely changed on the behavioural side is recorded at `convertCurrency` below: an
-// unavailable rate table now FAILS CLOSED instead of pricing every foreign currency at the base
-// numeral.
+// unavailable rate table takes the [model/service/CurrencyService.cfc:L100-L101] PASS-THROUGH and
+// REPORTS it, rather than raising as the legacy does for a table it never obtained.
+//
+// ★★★ QUOTE-THEN-REVISE, AND THIS SENTENCE HAD GONE STALE IN THE DIRECTION THAT MATTERS MOST. It
+// read: "an unavailable rate table now FAILS CLOSED instead of pricing every foreign currency at the
+// base numeral." That described an intervening revision which really did refuse - with a
+// `CurrencyRateTableUnavailableError` - and a code review removed the refusal, because
+// `CurrencyConverter.convertCurrency` publishes a TOTAL function and the routed price operation
+// documents no error path, so the throw broke the contract it was reached through. The class is gone
+// and both unavailable-rate states pass through; the sentence describing the opposite survived the
+// code that justified it. A live comment claiming a financial safety property the implementation does
+// not have is worse than no comment, which is why this correction is recorded rather than made
+// quietly: see the branch at `convertCurrency` for the behaviour, and
+// {@link CurrencyPassThroughObserver} for why the value may not move while the EVENT still must be
+// reported.
 export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
   /**
    * The `SwCurrency` projection both listing methods read, active flags resolved.

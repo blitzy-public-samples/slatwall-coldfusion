@@ -123,10 +123,30 @@
 // it did not enumerate: a dedicated traceability module belongs to a later boundary, and standing
 // one up early to hold a comment would be exactly the premature artefact the plan forbids.
 //
-// THE NUMBERED SET IS CLOSED AT THIRTY. Entries 1-20 are the twenty the plan publishes. Ten more
-// were added by the port after reading the in-scope source line by line, and every one of the ten
-// is a defect the plan's own criteria would have admitted; the set is closed at thirty so that a
-// number means one thing forever. Every locator below was read first-hand in the legacy tree.
+// THE NUMBERED SET IS CLOSED AT THIRTY, AND "CLOSED" MEANS NO RENUMBERING - NOT NO FURTHER
+// DISCOVERY. Entries 1-20 are the twenty the plan publishes. Ten more were added by the port after
+// reading the in-scope source line by line, and every one of the ten is a defect the plan's own
+// criteria would have admitted; the set is closed at thirty so that a number means one thing
+// forever. Every locator below was read first-hand in the legacy tree.
+//
+// ★★★ AND THE OTHER HALF OF "CLOSED" IS PUBLISHED SEPARATELY, WHICH A REVIEW REQUIRED. Read on its
+// own, "closed at thirty" said that a finding made tomorrow had nowhere to go: the gate that proves
+// this register asserted an exact length, so the only way to record a new discovery was to edit the
+// frozen base authority - and a gate that penalises recording is a gate that discourages it. The
+// register is therefore stated as THREE inventories in
+// `tests/traceability/legacyTestMap.ts`, and each is proven entry by entry there:
+//
+//   * the THIRTY numbered entries below, frozen and closed - ids 1..30, never renumbered;
+//   * the EIGHT secondary items below, frozen;
+//   * `SUPPLEMENTAL_TARGET_DISCOVERIES` - OPEN-ENDED, holding the four unnumbered findings this
+//     comment already names at the end, and free to take a fifth without either frozen inventory
+//     being touched.
+//
+// So the numbered set stays closed and the port's own discoveries stay recordable. Those are
+// different properties, and folding them into one thirty-row array cost nine individual proofs: the
+// register that gate carried had 1-20 plus ten SECONDARY-labelled rows, so 21-24 and 26-30 appeared
+// nowhere and 25 was carried as a secondary item. That is fixed there; this comment is the authority
+// it reads from, so the distinction is stated here too.
 //
 //   PLAN-PUBLISHED (1-20)
 //    1  [integrationServices/google/Integration.cfc:L49]        displayname="USA epay" vs "Google"
@@ -223,6 +243,13 @@
 //   `getSortedProductSkus` / `getProductSkus` defensive-check divergence. Each stays annotated
 //   where it was found. Numbering them would enlarge a closed set and blur the line between a
 //   legacy defect the port must reproduce and an observation the port made about its own fixtures.
+//
+//   THESE FOUR ARE THE SUPPLEMENTAL INVENTORY, and they are now recorded as one rather than only
+//   listed here: `SUPPLEMENTAL_TARGET_DISCOVERIES` in `tests/traceability/legacyTestMap.ts` carries
+//   a row per finding with its legacy locator, and proves each is annotated somewhere in `src/**` or
+//   `tests/**`. That inventory has no exact length, so a fifth discovery is appended to it and this
+//   list grows with it - which is what makes "not numbered" a place to put something rather than a
+//   reason to leave it unrecorded.
 //
 // ---------------------------------------------------------------------------
 // !! HARD BOUNDARIES - WHAT THIS SUITE DELIBERATELY DOES NOT TEST !!
