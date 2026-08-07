@@ -72,9 +72,17 @@
 #   Until it is taken, the exception is what a reviewer sees, by name.
 #
 # The rules are deliberately scoped to this subtree. Nothing here can affect the
-# CFML tree, because a `.gitignore` applies to its own directory and below. They
-# are also the same eight names `UNTRACKED_ROOT_NAMES` declares, so the census
-# and this file cannot disagree about what "generated" means.
+# CFML tree, because a `.gitignore` applies to its own directory and below.
+#
+# Eleven rules, and `UNTRACKED_ROOT_NAMES` in `tests/traceability/legacyTestMap.ts`
+# declares nine of them. The two it does not are `.vitest/`, a directory rule the
+# root census never reaches because it censuses files only, and `!.env.example`,
+# the single negation - a name the census must keep VISIBLE because it is a frozen
+# root artifact. The `A18` block checks the agreement in BOTH directions: every
+# name the census calls generated is a rule here, and every rule here that can
+# match a root FILE is a name the census calls generated. Without the second
+# direction a `.env.local` would be gitignored and simultaneously reported as
+# scope drift.
 
 # Dependencies
 node_modules/
@@ -87,11 +95,11 @@ build/
 # Test / coverage output
 coverage/
 
-# Tooling caches and local logs. Written as globs, not exact names, so they match
-# the eight generated names `UNTRACKED_ROOT_NAMES` declares in
-# `tests/traceability/legacyTestMap.ts` rule for rule - a traceability case
-# asserts that agreement, because a census that thinks a file is generated while
-# this file does not would report a build product as scope drift.
+# Tooling caches and local logs. Written as globs, not exact names, and each glob
+# is one of the names `UNTRACKED_ROOT_NAMES` declares in
+# `tests/traceability/legacyTestMap.ts` - a traceability case asserts that
+# agreement, because a census that thinks a file is generated while this file does
+# not would report a build product as scope drift.
 *.eslintcache
 *.log
 .vitest/

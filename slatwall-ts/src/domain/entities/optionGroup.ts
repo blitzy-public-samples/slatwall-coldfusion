@@ -146,8 +146,9 @@ function optionSortKeyAsCfmlString(value: OptionSortKey): string {
 /**
  * The tie-breaking random source the legacy sort used.
  *
- * [model/service/HibachiUtilityService.cfc:L521] draws `randRange(1,100)` once per element and
- * concatenates it onto the struct key, so it participates in the ordering and it decides ties.
+ * [model/service/HibachiUtilityService.cfc:L522] draws `randRange(1,100)` once per element and
+ * [model/service/HibachiUtilityService.cfc:L523] concatenates it onto the struct key, so it
+ * participates in the ordering and it decides ties.
  *
  * @returns An integer in the inclusive range 1..100, matching `randRange(1,100)`.
  */
@@ -168,7 +169,7 @@ function randRangeOneToOneHundred(): number {
  * random number.
  *
  * Verbatim from [model/service/HibachiUtilityService.cfc:L523], whose key format the source
- * comment at L518-L520 documents as `{VALUE}.{RAND NUMBER}`.
+ * comment at L519-L521 documents as `{VALUE}.{RAND NUMBER}`.
  */
 function composeLegacySortKey(valueText: string, tieBreak: number): string {
   return `${valueText}.${String(tieBreak)}`;

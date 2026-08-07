@@ -2298,7 +2298,7 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
     // CFML parity [model/entity/ProductType.cfc:L170-L172]: the body is
     // `arguments.ChildProductType.removeParentProductType( this )`, which splices the child out of
     // the parent's live array [model/entity/ProductType.cfc:L159-L161] and then clears the child's
-    // own `parentProductType` [model/entity/ProductType.cfc:L162].
+    // own `parentProductType` [model/entity/ProductType.cfc:L163].
     const parent = new ProductType({ productTypeID: 'pt-remove-parent' });
     const first = new ProductType({ productTypeID: 'pt-remove-first' });
     const second = new ProductType({ productTypeID: 'pt-remove-second' });

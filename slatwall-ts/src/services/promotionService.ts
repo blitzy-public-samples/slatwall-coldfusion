@@ -542,8 +542,9 @@ interface PromotionEngineState {
  *
  * Twelve public methods, matching the component's twelve declarations name for name.
  *
- * @see the file header for the ordering constraint, the six order-dependence vectors, the
- * ownership split, the budget ledgers and the defect-register accounting.
+ * @see the file header for the two divergences AAP 0.6.7 spends in `./promotion/discountAmount.ts`
+ * and for the `newPromotionApplied()` note. The ordering constraint is documented at
+ * `./promotion/overUseStripping.ts`, and each order-dependence vector is labelled where it lives.
  */
 export class PromotionService {
   /**

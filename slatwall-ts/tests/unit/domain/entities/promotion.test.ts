@@ -1668,53 +1668,42 @@ describe('getPromotionCodesDeletableFlag returns the right answer and never cach
 
 // CFML parity [model/entity/Promotion.cfc:L127, model/entity/PromotionCode.cfc]: isDeletable is
 // not declared on PromotionCode.cfc -- it was inherited from the Hibachi base, which is not
-// ported. Recording the cross-file gap rather than fabricating a collaborator.
-describe('the absent PromotionCode.isDeletable is recorded as a gap, not papered over', () => {
-  it('raises with a diagnostic naming both ends of the gap when a real code is reached', () => {
-    // A REAL, un-doubled `PromotionCode`. The raise is the shipped behaviour and is asserted as
-    // such - not as a bug in this suite, and not routed around.
+// ported, so the member is reproduced on the entity from its own delete-context rule in
+// model/validation/PromotionCode.json. These cases drive REAL, un-doubled promotion codes.
+describe('the framework-inherited PromotionCode.isDeletable is reproduced, not doubled', () => {
+  it('answers on a real code with no order references, without raising', () => {
     const subject: Promotion = aPromotion({
       promotionCodes: [
         aPromotionCode({
-          promotionCodeID: 'genuinely-missing-is-deletable',
+          promotionCodeID: 'real-code-unused',
           startDateTimeUTC: PERIOD_START_UTC,
           endDateTimeUTC: PERIOD_END_UTC,
         }),
       ],
     });
 
-    expect(() => subject.getPromotionCodesDeletableFlag()).toThrow(
-      /model\/entity\/Promotion\.cfc:L127/,
-    );
-    // The diagnostic names the file the member is missing from, so a reader is not left guessing
-    // which of the two entities needs the follow-up.
-    expect(() => subject.getPromotionCodesDeletableFlag()).toThrow(
-      /model\/entity\/PromotionCode\.cfc/,
-    );
-    // and the framework locator the legacy call actually resolved through.
-    expect(() => subject.getPromotionCodesDeletableFlag()).toThrow(/HibachiEntity\.cfc/);
+    expect(() => subject.getPromotionCodesDeletableFlag()).not.toThrow();
+    expect(subject.getPromotionCodesDeletableFlag()).toBe(true);
   });
 
-  it('confirms the member is absent from the ported promotion code rather than merely unreachable', () => {
-    // The raise could in principle come from something else. It does not: the member genuinely is
-    // not on the class.
-    expect(prototypeMembers(PromotionCode)).not.toContain('isDeletable');
+  it('confirms the member is declared on the ported promotion code', () => {
+    // The structural counterpart: the answer above comes from the class, not from a test double.
+    expect(prototypeMembers(PromotionCode)).toContain('isDeletable');
   });
 
   it('does not raise when there is no code to reach', () => {
-    // The gap is confined to the walk.
     expect(aPromotion({ promotionCodes: [] }).getPromotionCodesDeletableFlag()).toBe(true);
   });
 
-  it('agrees with the fixture exhibit that records the same gap independently', () => {
-    // The fixture publishes this as data, including the follow-up. Two independent records of one
-    // cross-file gap, so neither can quietly drift into silence.
+  it('agrees with the fixture exhibit that records the same contract independently', () => {
+    // The fixture publishes this as data. Two independent records of one cross-file contract, so
+    // neither can quietly drift into silence.
     const graph = makePromotionFixtures();
     const defect = graph.promotionCodesDeletableFlagDefect;
 
-    expect(defect.portedAccessorRaisesOnMaterializedCode).toBe(true);
+    expect(defect.portedAccessorRaisesOnMaterializedCode).toBe(false);
     expect(defect.memoCanEverHit).toBe(false);
-    expect(defect.requiredCrossFileFollowUp.length).toBeGreaterThan(0);
+    expect(defect.resolvedBy.length).toBeGreaterThan(0);
 
     // And the spelling census, reconciled above: three distinct spellings.
     expect(defect.distinctSpellingCount).toBe(3);
@@ -1727,16 +1716,19 @@ describe('the absent PromotionCode.isDeletable is recorded as a gap, not papered
     ).toBe(3);
   });
 
-  it('reaches the permissive answer on the one fixture variant built to be callable', () => {
-    // `codelessPromotion` is the only variant that can answer without raising, and the fixture
-    // says so in as many words. Reading it here ties the gap to the truth table's permissive row.
+  it('answers on both fixture variants, from the same graph, in the same test', () => {
     const graph = makePromotionFixtures();
 
+    // No codes at all: the walk is vacuous and the permissive answer stands.
     expect(graph.codelessPromotion.getPromotionCodes()).toEqual([]);
     expect(graph.codelessPromotion.getPromotionCodesDeletableFlag()).toBe(true);
 
-    // While the coded variant raises, from the same graph, in the same test.
-    expect(() => graph.promotion.getPromotionCodesDeletableFlag()).toThrow(/isDeletable/);
+    // The coded variant answers too, and it answers `false` for a reason the graph carries: its
+    // code is referenced by `promotionCodeOrders`, which is exactly what
+    // `model/validation/PromotionCode.json`'s `maxCollection: 0` delete rule forbids.
+    expect(graph.promotion.getPromotionCodes().length).toBeGreaterThan(0);
+    expect(graph.promotionCodeOrders.length).toBeGreaterThan(0);
+    expect(graph.promotion.getPromotionCodesDeletableFlag()).toBe(false);
   });
 });
 
@@ -2049,10 +2041,10 @@ describe('isDeletable counts applied promotions and nothing else', () => {
     expect(subject.isDeletable()).toBe(false);
   });
 
-  it('consults no child, so a period or code that would raise cannot affect it', () => {
-    // The ISOLATION PROPERTY. `getPromotionCodesDeletableFlag()` raises on a real code and
-    // `removePromotionPeriod()` raises on a present period, yet `isDeletable()` is unbothered by
-    // either.
+  it('consults no child, so neither a period nor a code can affect it', () => {
+    // The ISOLATION PROPERTY. `removePromotionPeriod()` raises on a present period and
+    // `getPromotionCodesDeletableFlag()` walks every code, yet `isDeletable()` reads only
+    // `appliedPromotions` and is unbothered by either.
     const subject: Promotion = aPromotion({
       promotionPeriods: [
         aPromotionPeriod({
@@ -2071,9 +2063,9 @@ describe('isDeletable counts applied promotions and nothing else', () => {
       appliedPromotions: [],
     });
 
-    // The code gate raises on this very promotion...
-    expect(() => subject.getPromotionCodesDeletableFlag()).toThrow();
-    // and `isDeletable()` answers anyway.
+    // The code gate walks the code and answers on its own terms...
+    expect(subject.getPromotionCodesDeletableFlag()).toBe(true);
+    // and `isDeletable()` answers from `appliedPromotions` alone, which is empty.
     expect(() => subject.isDeletable()).not.toThrow();
     expect(subject.isDeletable()).toBe(true);
   });

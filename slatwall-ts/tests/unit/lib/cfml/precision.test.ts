@@ -24,7 +24,7 @@ import {
   isZero,
   multiply,
   subtract,
-  toDecimalString,
+  toPlainDecimalString,
 } from '../../../../src/lib/cfml/precision.js';
 // The module's two exported TYPES are part of its contract, not incidental annotations, so they
 // are imported by name and asserted directly rather than covered only through the values that
@@ -87,20 +87,20 @@ describe('the eleven verified in-scope precisionEvaluate arithmetic shapes', () 
     const listExtended = multiply('19.99', '3');
     const saleExtended = multiply('17.49', '3');
 
-    expect(toDecimalString(subtract(listExtended, saleExtended))).toBe('7.5');
+    expect(toPlainDecimalString(subtract(listExtended, saleExtended))).toBe('7.5');
   });
 
   it('L252 - a - (b - c), the price-group discount adjustment', () => {
     // CFML parity [model/service/PromotionService.cfc:L252]:
     // `precisionEvaluate('originalDiscountAmount - (orderItem.getExtendedSkuPrice() - orderItem.getExtendedPrice())')`.
-    expect(toDecimalString(subtract('10.00', subtract('59.97', '52.47')))).toBe('2.5');
+    expect(toPlainDecimalString(subtract('10.00', subtract('59.97', '52.47')))).toBe('2.5');
   });
 
   it('L299 - a / b, the discount-per-use value the usage ledger sorts on', () => {
     // CFML parity [model/service/PromotionService.cfc:L299]:
     // `precisionEvaluate('discountAmount / discountQuantity')`. The legacy site applies no zero
     // check to its divisor; see the division block below for where that guard belongs.
-    expect(toDecimalString(divide('7.49625', '3'))).toBe('2.49875');
+    expect(toPlainDecimalString(divide('7.49625', '3'))).toBe('2.49875');
   });
 
   it('L486 - (a / b) x (b - c), the over-use discount reduction', () => {
@@ -109,14 +109,14 @@ describe('the eleven verified in-scope precisionEvaluate arithmetic shapes', () 
     const perUse = divide('7.49625', '3');
     const retainedQuantity = subtract('3', '1');
 
-    expect(toDecimalString(multiply(perUse, retainedQuantity))).toBe('4.9975');
+    expect(toPlainDecimalString(multiply(perUse, retainedQuantity))).toBe('4.9975');
   });
 
   it('L990 - a x b, the extended original amount', () => {
     // CFML parity [model/service/PromotionService.cfc:L990]:
     // `precisionEvaluate('arguments.price * arguments.quantity')` - the first statement of the
     // discount calculation.
-    expect(toDecimalString(multiply('19.99', '3'))).toBe('59.97');
+    expect(toPlainDecimalString(multiply('19.99', '3'))).toBe('59.97');
   });
 
   it('L995 - a x (b / 100), the percentageOff discount branch', () => {
@@ -124,27 +124,27 @@ describe('the eleven verified in-scope precisionEvaluate arithmetic shapes', () 
     // `precisionEvaluate('originalAmount * (reward.getAmount()/100)')`. The division by the
     // literal 100 is nested INSIDE the multiplication, so the percentage is resolved before it is
     // applied.
-    expect(toDecimalString(multiply('59.97', divide('12.5', '100')))).toBe('7.49625');
+    expect(toPlainDecimalString(multiply('59.97', divide('12.5', '100')))).toBe('7.49625');
   });
 
   it('L1001 - (a - b) x c, the amount discount branch', () => {
     // CFML parity [model/service/PromotionService.cfc:L1001]:
     // `precisionEvaluate('(arguments.price - reward.getAmount()) * arguments.quantity')` - the
     // per-unit shortfall against a target amount, extended over the quantity.
-    expect(toDecimalString(multiply(subtract('19.99', '12.495'), '3'))).toBe('22.485');
+    expect(toPlainDecimalString(multiply(subtract('19.99', '12.495'), '3'))).toBe('22.485');
   });
 
   it('L1006 - a - b, the amount handed to the rounding rule', () => {
     // CFML parity [model/service/PromotionService.cfc:L1006]:
     // `roundValueByRoundingRule(value=precisionEvaluate('originalAmount - discountAmountPreRounding'), roundingRule=reward.getRoundingRule())`.
     // This is the site omitted from the published list.
-    expect(toDecimalString(subtract('59.97', '7.49625'))).toBe('52.47375');
+    expect(toPlainDecimalString(subtract('59.97', '7.49625'))).toBe('52.47375');
   });
 
   it('L1007 - a - b, the discount the rounded final amount implies', () => {
     // CFML parity [model/service/PromotionService.cfc:L1007]:
     // `precisionEvaluate('originalAmount - roundedFinalAmount')`.
-    expect(toDecimalString(subtract('59.97', '52.47375'))).toBe('7.49625');
+    expect(toPlainDecimalString(subtract('59.97', '52.47375'))).toBe('7.49625');
   });
 
   it('L323 - a - (a x (b / 100)), the price-group percentageOff rate', () => {
@@ -153,13 +153,13 @@ describe('the eleven verified in-scope precisionEvaluate arithmetic shapes', () 
     const basePrice = '19.99';
     const percentageTerm = multiply(basePrice, divide('12.5', '100'));
 
-    expect(toDecimalString(subtract(basePrice, percentageTerm))).toBe('17.49125');
+    expect(toPlainDecimalString(subtract(basePrice, percentageTerm))).toBe('17.49125');
   });
 
   it('L331 - a - b, the price-group amountOff rate', () => {
     // CFML parity [model/service/PriceGroupService.cfc:L331]:
     // `precisionEvaluate('arguments.sku.getPrice() - arguments.priceGroupRate.getAmount()')`.
-    expect(toDecimalString(subtract('19.99', '2.50'))).toBe('17.49');
+    expect(toPlainDecimalString(subtract('19.99', '2.50'))).toBe('17.49');
   });
 });
 
@@ -170,13 +170,13 @@ describe('addition, which no in-scope precisionEvaluate site performs', () => {
   it('serves the unguarded upward candidate of the rounding search at RRS L108', () => {
     // CFML parity [model/service/RoundingRuleService.cfc:L108]:
     // `var higherValue = inputValue + rrPower;` - plain CFML addition with no precision guard.
-    expect(toDecimalString(add('12.3456', '0.99'))).toBe('13.3356');
+    expect(toPlainDecimalString(add('12.3456', '0.99'))).toBe('13.3356');
   });
 
   it('serves the downward candidate at RRS L101 through subtract', () => {
     // CFML parity [model/service/RoundingRuleService.cfc:L101]:
     // `var lowerValue = inputValue - rrPower;` - the counterpart of L108.
-    expect(toDecimalString(subtract('12.3456', '0.99'))).toBe('11.3556');
+    expect(toPlainDecimalString(subtract('12.3456', '0.99'))).toBe('11.3556');
   });
 });
 
@@ -191,7 +191,7 @@ describe('the decimal-fidelity reference chain', () => {
 
   it('step 1 - extends the unit price over the quantity to 59.97', () => {
     // The quantity is passed as the decimal STRING '3'.
-    expect(toDecimalString(multiply('19.99', '3'))).toBe('59.97');
+    expect(toPlainDecimalString(multiply('19.99', '3'))).toBe('59.97');
   });
 
   it('step 2 - resolves 12.5 per cent of the extended price to 7.49625', () => {
@@ -199,14 +199,14 @@ describe('the decimal-fidelity reference chain', () => {
     // expression at [model/service/PromotionService.cfc:L995].
     const extendedPrice = multiply('19.99', '3');
 
-    expect(toDecimalString(divide('12.5', '100'))).toBe('0.125');
-    expect(toDecimalString(multiply(extendedPrice, divide('12.5', '100')))).toBe('7.49625');
+    expect(toPlainDecimalString(divide('12.5', '100'))).toBe('0.125');
+    expect(toPlainDecimalString(multiply(extendedPrice, divide('12.5', '100')))).toBe('7.49625');
   });
 
   it('step 3 - subtracts the discount to 52.47375 and stops there', () => {
     // As IEEE-754 doubles this exact subtraction yields 52.473749999999995, so the assertion below
     // is the one that actually demonstrates why the module exists.
-    expect(toDecimalString(subtract('59.97', '7.49625'))).toBe('52.47375');
+    expect(toPlainDecimalString(subtract('59.97', '7.49625'))).toBe('52.47375');
   });
 
   it('composes the whole chain without an intermediate rendering step', () => {
@@ -214,20 +214,20 @@ describe('the decimal-fidelity reference chain', () => {
     // way and are rendered once, at the end - which is how a caller is expected to use the module.
     const discount = multiply(multiply('19.99', '3'), divide('12.5', '100'));
 
-    expect(toDecimalString(subtract(multiply('19.99', '3'), discount))).toBe('52.47375');
+    expect(toPlainDecimalString(subtract(multiply('19.99', '3'), discount))).toBe('52.47375');
   });
 
   it('reaches the same result when the quantity enters through fromInteger', () => {
     // JUDGMENT CALL: asserted because the integer entry point genuinely ships, and a caller
     // holding an integer quantity will reasonably use it. It must agree with the string route
     // exactly, or there would be two arithmetic surfaces rather than one.
-    expect(toDecimalString(multiply('19.99', fromInteger(3)))).toBe('59.97');
+    expect(toPlainDecimalString(multiply('19.99', fromInteger(3)))).toBe('59.97');
   });
 
   it('adds 0.1 and 0.2 to exactly 0.3, which doubles cannot do', () => {
     // The canonical IEEE-754 counter-example: as doubles, 0.1 + 0.2 yields 0.30000000000000004.
     // Here it is exactly 0.3.
-    expect(toDecimalString(add('0.1', '0.2'))).toBe('0.3');
+    expect(toPlainDecimalString(add('0.1', '0.2'))).toBe('0.3');
   });
 });
 
@@ -297,8 +297,8 @@ describe('comparison semantics: by decimal value, never lexical', () => {
     // CFML parity [model/service/RoundingRuleService.cfc:L123-L130]: the rounding search computes
     // `var valueOptionOneDelta = inputValue - valueOptionOne;` and then flips the sign by hand
     // with `valueOptionOneDelta = valueOptionOneDelta*-1;` when the delta is negative.
-    expect(toDecimalString(absolute('-0.58'))).toBe('0.58');
-    expect(toDecimalString(absolute('0.58'))).toBe('0.58');
+    expect(toPlainDecimalString(absolute('-0.58'))).toBe('0.58');
+    expect(toPlainDecimalString(absolute('0.58'))).toBe('0.58');
   });
 });
 
@@ -341,7 +341,7 @@ describe('division', () => {
 
   it('resolves a non-terminating quotient at the declared precision without throwing', () => {
     // 1/3 has no exact decimal representation, so division has to stop somewhere.
-    const oneThird = toDecimalString(divide('1', '3'));
+    const oneThird = toPlainDecimalString(divide('1', '3'));
 
     expect(oneThird.startsWith('0.3333')).toBe(true);
     expect(oneThird).toBe('0.33333333333333333333');
@@ -350,7 +350,7 @@ describe('division', () => {
   it('rounds the final digit of a non-terminating quotient rather than truncating', () => {
     // 2/3 settles on a trailing 7, not a trailing 6, which is what shows the declared half-up
     // rounding is genuinely in force at the precision boundary.
-    expect(toDecimalString(divide('2', '3'))).toBe('0.66666666666666666667');
+    expect(toPlainDecimalString(divide('2', '3'))).toBe('0.66666666666666666667');
   });
 });
 
@@ -369,15 +369,15 @@ describe('input-type discipline', () => {
     const stringOperand: PreciseInput = '59.97';
 
     // String x string, produced x string, string x produced, produced x produced.
-    expect(toDecimalString(multiply(stringOperand, '0.125'))).toBe('7.49625');
-    expect(toDecimalString(multiply(producedAsOperand, '59.97'))).toBe('7.49625');
-    expect(toDecimalString(multiply('59.97', produced))).toBe('7.49625');
-    expect(toDecimalString(multiply(produced, multiply('59.97', '1')))).toBe('7.49625');
+    expect(toPlainDecimalString(multiply(stringOperand, '0.125'))).toBe('7.49625');
+    expect(toPlainDecimalString(multiply(producedAsOperand, '59.97'))).toBe('7.49625');
+    expect(toPlainDecimalString(multiply('59.97', produced))).toBe('7.49625');
+    expect(toPlainDecimalString(multiply(produced, multiply('59.97', '1')))).toBe('7.49625');
 
     // The comparison and rendering boundaries accept the union too.
     expect(equals('0.125', produced)).toBe(true);
     expect(compare(produced, '0.125')).toBe(0);
-    expect(toDecimalString(produced)).toBe('0.125');
+    expect(toPlainDecimalString(produced)).toBe('0.125');
   });
 
   it('REFUSES a raw number at the operand type and at every arithmetic entry point', () => {
@@ -410,15 +410,15 @@ describe('input-type discipline', () => {
     // Easiest place for a double to slip in unnoticed.
     // @ts-expect-error - a JavaScript number is not assignable at the rendering boundary, which
     // would otherwise be the easiest place for a double to slip in unnoticed.
-    expect(toDecimalString(12.5)).toBe('12.5');
+    expect(toPlainDecimalString(12.5)).toBe('12.5');
   });
 
   it('accepts a safe integer through the one named integer entry point', () => {
     // JUDGMENT CALL: this entry point genuinely ships, so it is pinned.
-    expect(toDecimalString(fromInteger(3))).toBe('3');
-    expect(toDecimalString(fromInteger(100))).toBe('100');
-    expect(toDecimalString(fromInteger(0))).toBe('0');
-    expect(toDecimalString(fromInteger(-5))).toBe('-5');
+    expect(toPlainDecimalString(fromInteger(3))).toBe('3');
+    expect(toPlainDecimalString(fromInteger(100))).toBe('100');
+    expect(toPlainDecimalString(fromInteger(0))).toBe('0');
+    expect(toPlainDecimalString(fromInteger(-5))).toBe('-5');
   });
 
   it('rejects an integer beyond exact representation', () => {
@@ -465,7 +465,7 @@ describe('input-type discipline', () => {
   it('rejects malformed input at every entry point, not only the arithmetic ones', () => {
     // The comparison and rendering boundaries coerce their operands through the same input
     // boundary, so none of them is a way in for a malformed amount.
-    expect(() => toDecimalString('abc')).toThrow();
+    expect(() => toPlainDecimalString('abc')).toThrow();
     expect(() => isZero('abc')).toThrow();
     expect(() => compare('abc', '1')).toThrow();
     expect(() => absolute('abc')).toThrow();
@@ -553,7 +553,7 @@ describe('rendering discipline', () => {
   // a misreading.
 
   it('renders a very large magnitude in plain notation, never exponential', () => {
-    const rendered = toDecimalString('1000000000000000000000');
+    const rendered = toPlainDecimalString('1000000000000000000000');
 
     expect(rendered).toBe('1000000000000000000000');
     expect(rendered.includes('e+')).toBe(false);
@@ -561,7 +561,7 @@ describe('rendering discipline', () => {
   });
 
   it('renders a very small magnitude in plain notation, never exponential', () => {
-    const rendered = toDecimalString('0.000000001');
+    const rendered = toPlainDecimalString('0.000000001');
 
     expect(rendered).toBe('0.000000001');
     expect(rendered.includes('e-')).toBe(false);
@@ -572,9 +572,9 @@ describe('rendering discipline', () => {
     // CFML's two-decimal mask yields "1234.50", never "1,234.50", so no grouping may appear here
     // either. Checked on a value large enough that a grouping implementation would certainly have
     // inserted one.
-    expect(toDecimalString('1234.50').includes(',')).toBe(false);
-    expect(toDecimalString('1000000000000000000000').includes(',')).toBe(false);
-    expect(toDecimalString('123456789.123')).toBe('123456789.123');
+    expect(toPlainDecimalString('1234.50').includes(',')).toBe(false);
+    expect(toPlainDecimalString('1000000000000000000000').includes(',')).toBe(false);
+    expect(toPlainDecimalString('123456789.123')).toBe('123456789.123');
   });
 
   it('imposes no scale: it neither pads to two decimals nor drops a trailing zero', () => {
@@ -582,30 +582,30 @@ describe('rendering discipline', () => {
     //
     // JUDGMENT CALL: this suite asserts the SHIPPED behaviour and does not edit the module to
     // match a differently-worded expectation.
-    expect(toDecimalString('19.90')).toBe('19.9');
-    expect(toDecimalString('19.9')).toBe('19.9');
-    expect(toDecimalString('0.00')).toBe('0');
+    expect(toPlainDecimalString('19.90')).toBe('19.9');
+    expect(toPlainDecimalString('19.9')).toBe('19.9');
+    expect(toPlainDecimalString('0.00')).toBe('0');
 
     // And nothing is padded on the way out either: a value with one decimal place does not acquire
     // a second one.
-    expect(toDecimalString(subtract('19.99', '2.50'))).toBe('17.49');
-    expect(toDecimalString(multiply('0.5', '1'))).toBe('0.5');
+    expect(toPlainDecimalString(subtract('19.99', '2.50'))).toBe('17.49');
+    expect(toPlainDecimalString(multiply('0.5', '1'))).toBe('0.5');
   });
 
   it('leaves both opposing scale transformations to the sibling formatting module', () => {
     // Padding to two decimals - the mask applied at [model/service/PromotionService.cfc:L1017] and
     // at [model/service/PriceGroupService.cfc:L339], which is what would turn the chain's 52.47375
     // into a two-decimal amount.
-    expect(toDecimalString(subtract('59.97', '7.49625'))).toBe('52.47375');
+    expect(toPlainDecimalString(subtract('59.97', '7.49625'))).toBe('52.47375');
   });
 
   it('round-trips a value the module itself produced', () => {
     // Rendering is not a one-way door: a rendered value can re-enter the precise domain and come
     // back unchanged, which is what makes the string form a safe carrier between layers.
     const discount = multiply('59.97', divide('12.5', '100'));
-    const rendered = toDecimalString(discount);
+    const rendered = toPlainDecimalString(discount);
 
-    expect(toDecimalString(rendered)).toBe(rendered);
+    expect(toPlainDecimalString(rendered)).toBe(rendered);
     expect(equals(rendered, discount)).toBe(true);
   });
 });
@@ -619,8 +619,8 @@ describe('schema fidelity for arbitrary-precision money columns', () => {
   it('round-trips a money value at sub-cent scale without loss', () => {
     // The chain's intermediate carries five decimal places - well past the two a display amount
     // shows - and it must persist and reload exactly.
-    expect(toDecimalString('52.47375')).toBe('52.47375');
-    expect(toDecimalString('0.000000000000000001')).toBe('0.000000000000000001');
+    expect(toPlainDecimalString('52.47375')).toBe('52.47375');
+    expect(toPlainDecimalString('0.000000000000000001')).toBe('0.000000000000000001');
   });
 
   it('round-trips a high-precision value through an operation', () => {
@@ -628,9 +628,9 @@ describe('schema fidelity for arbitrary-precision money columns', () => {
     // digit it is given, and each exact operation carries them through untouched.
     const stored = '12345678.90123456789';
 
-    expect(toDecimalString(add(stored, '0'))).toBe(stored);
-    expect(toDecimalString(subtract(stored, '0'))).toBe(stored);
-    expect(toDecimalString(multiply(stored, '1'))).toBe(stored);
+    expect(toPlainDecimalString(add(stored, '0'))).toBe(stored);
+    expect(toPlainDecimalString(subtract(stored, '0'))).toBe(stored);
+    expect(toPlainDecimalString(multiply(stored, '1'))).toBe(stored);
   });
 
   it('carries a MySQL DECIMAL(65,s) operand through an exact operation without truncating it', () => {
@@ -640,9 +640,9 @@ describe('schema fidelity for arbitrary-precision money columns', () => {
     const widest = `${'9'.repeat(45)}.${'9'.repeat(20)}`;
 
     expect(widest.replace('.', '')).toHaveLength(65);
-    expect(toDecimalString(add(widest, '0'))).toBe(widest);
-    expect(toDecimalString(subtract(widest, '0'))).toBe(widest);
-    expect(toDecimalString(multiply(widest, '1'))).toBe(widest);
+    expect(toPlainDecimalString(add(widest, '0'))).toBe(widest);
+    expect(toPlainDecimalString(subtract(widest, '0'))).toBe(widest);
+    expect(toPlainDecimalString(multiply(widest, '1'))).toBe(widest);
   });
 
   it('adds, subtracts and multiplies EXACTLY past twenty significant digits', () => {
@@ -650,21 +650,21 @@ describe('schema fidelity for arbitrary-precision money columns', () => {
     //
     // Multiplication: two 19-digit operands produce a 38-digit product. Capped arithmetic answers
     // '1219326311370217952200', DISCARDING the tail; this module keeps it.
-    expect(toDecimalString(multiply('12345678901.23456789', '98765432109.87654321'))).toBe(
+    expect(toPlainDecimalString(multiply('12345678901.23456789', '98765432109.87654321'))).toBe(
       '1219326311370217952237.4638011112635269',
     );
 
     // Subtraction: a tiny subtrahend against a large minuend.
-    expect(toDecimalString(subtract('100000000000000000000', '0.000000001'))).toBe(
+    expect(toPlainDecimalString(subtract('100000000000000000000', '0.000000001'))).toBe(
       '99999999999999999999.999999999',
     );
 
     // Addition, for symmetry: 21 significant digits in the augend, and the sum keeps all of them.
     // Capped -> '100000000000000000000'.
-    expect(toDecimalString(add('99999999999999999999.9999999999', '0.0000000001'))).toBe(
+    expect(toPlainDecimalString(add('99999999999999999999.9999999999', '0.0000000001'))).toBe(
       '100000000000000000000',
     );
-    expect(toDecimalString(add('12345678901234567890.12345', '0.00001'))).toBe(
+    expect(toPlainDecimalString(add('12345678901234567890.12345', '0.00001'))).toBe(
       '12345678901234567890.12346',
     );
   });
@@ -687,22 +687,22 @@ describe('schema fidelity for arbitrary-precision money columns', () => {
 
     // The square: 130 significant digits, and its tail is the sharpest canary in this suite.
     const expectedSquare = withPoint(nines * nines, 40);
-    expect(toDecimalString(multiply(widest, widest))).toBe(expectedSquare);
+    expect(toPlainDecimalString(multiply(widest, widest))).toBe(expectedSquare);
     expect(expectedSquare.replace('.', '')).toHaveLength(130);
     expect(expectedSquare.endsWith('0000000001')).toBe(true);
 
     // The cube: 195 significant digits, the reachable worst case this module's exact precision is
     // sized against.
     const expectedCube = withPoint(nines * nines * nines, 60);
-    expect(toDecimalString(multiply(multiply(widest, widest), widest))).toBe(expectedCube);
+    expect(toPlainDecimalString(multiply(multiply(widest, widest), widest))).toBe(expectedCube);
     expect(expectedCube.replace('.', '')).toHaveLength(195);
   });
 
   it('resolves EVERY quotient at the declared division scale, terminating or not', () => {
     // Division is the one operation in this module that stops at a declared scale, and these two
     // non-terminating quotients pin that constant.
-    expect(toDecimalString(divide('1', '3'))).toBe('0.33333333333333333333');
-    expect(toDecimalString(divide('2', '3'))).toBe('0.66666666666666666667');
+    expect(toPlainDecimalString(divide('1', '3'))).toBe('0.33333333333333333333');
+    expect(toPlainDecimalString(divide('2', '3'))).toBe('0.66666666666666666667');
 
     // Stated explicitly because it surprises: the declared scale is applied to every quotient,
     // including one that would terminate exactly.
@@ -710,13 +710,13 @@ describe('schema fidelity for arbitrary-precision money columns', () => {
     // The INGRESS is nonetheless lossless, which is a different claim and is what makes this safe:
     // the wide operand arrives intact and is then resolved.
     const wide = `1.${'1'.repeat(80)}`;
-    expect(toDecimalString(divide(wide, '1'))).toBe(`1.${'1'.repeat(19)}`);
-    expect(toDecimalString(multiply(divide('1', '3'), '3'))).toBe('0.99999999999999999999');
+    expect(toPlainDecimalString(divide(wide, '1'))).toBe(`1.${'1'.repeat(19)}`);
+    expect(toPlainDecimalString(multiply(divide('1', '3'), '3'))).toBe('0.99999999999999999999');
 
     // And an exact-homed operand handed to division is resolved at the DIVISION scale rather than
     // at the exact one. Without `divide` re-homing its operands this would come back with hundreds
     // of digits.
-    expect(toDecimalString(divide(multiply('1', '1'), '3'))).toBe('0.33333333333333333333');
+    expect(toPlainDecimalString(divide(multiply('1', '1'), '3'))).toBe('0.33333333333333333333');
   });
 
   it('keeps a persisted discount and a recomputed discount comparable by value', () => {

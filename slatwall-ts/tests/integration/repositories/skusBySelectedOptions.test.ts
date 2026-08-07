@@ -4,8 +4,14 @@
 //
 // The PARITY HALF asserts the emitted text and the bind order character for character.
 //
-// That revision imported a `SELECTED_OPTIONS_INPUT_CONTRACT` from the module under test and pinned
-// a list of rejections: a list past a count bound, a list past a serialized-length bound.
+// The REFUSAL HALF asserts the input bound instead: `MAX_PLACEHOLDER_COUNT` is imported from the
+// module the statement builder shares with the pool, and the rejections are pinned - a list one
+// element past the placeholder ceiling is refused, and the ceiling itself is accepted.
+//
+// Why this sits under tests/integration/repositories/ and needs no database: the tier names the
+// layer under test - the seam between adapter and statement - not the presence of a server. This
+// half builds statement text from a pure function, so `TEST_LIVE_DATABASE` is neither imported nor
+// consulted and setting it changes nothing this suite proves.
 
 import { describe, expect, it } from 'vitest';
 

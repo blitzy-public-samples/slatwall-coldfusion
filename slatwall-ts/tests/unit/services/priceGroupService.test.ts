@@ -5,7 +5,7 @@
 // behaviour that has to be authored explicitly now.
 //
 // The slice's one subscription-price-group statement - `PriceGroupDAO.cfc` declares EXACTLY one
-// function, `getAccountSubscriptionPriceGroups` at [model/service/PriceGroupService.cfc:L52].
+// function, `getAccountSubscriptionPriceGroups` at [model/dao/PriceGroupDAO.cfc:L52].
 //
 // No visibility widening is claimed here (all five are in the promotion slice) and no signature
 // widening is claimed here (the one is spent on a sibling entity).

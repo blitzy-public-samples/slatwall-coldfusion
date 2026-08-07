@@ -176,7 +176,7 @@ const COLUMN_NOT_SUPPLIED: PopulatedColumn = Object.freeze({ supplied: false });
  * [org/Hibachi/HibachiTransient.cfc:L169-L205] read it.
  *
  * The test is `structKeyExists(arguments.data, currentProperty.name)`
- * [org/Hibachi/HibachiTransient.cfc:L175]: a key the payload does not hold is not populated, and the
+ * [org/Hibachi/HibachiTransient.cfc:L185]: a key the payload does not hold is not populated, and the
  * stored value survives.
  *
  * `null` and `undefined` have no CFML counterpart - a struct key cannot hold either - so both are

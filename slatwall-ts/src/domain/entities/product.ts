@@ -1338,14 +1338,14 @@ export class Product {
    *
    * LEGACY-DEFECT [model/entity/Product.cfc:L191-L197]: `getPageIDs()` iterates `getPages()`,
    * which is undeclared, so the call reaches [org/Hibachi/HibachiEntity.cfc:L559] and then throws
-   * at [model/entity/Product.cfc:L565].
+   * at [org/Hibachi/HibachiEntity.cfc:L565].
    * Preserved deliberately; do not fix without a product decision.
    */
   public getPageIDs(): never {
     throw new Error(
       `Product '${this.productID}': getPageIDs() cannot return. ` +
         `[model/entity/Product.cfc:L193] iterates getPages(), which is not declared on the ` +
-        `component and corresponds to no property - the component declares listingPages at [L82], ` +
+        `component and corresponds to no property - the component declares listingPages at [L79], ` +
         `not pages. In CFML the call reaches the onMissingMethod dispatcher at ` +
         `[org/Hibachi/HibachiEntity.cfc:L507-L565], matches no name pattern, falls through to the ` +
         `getAttributeValue fallback at [L559] and terminates at the throw at [L565]. This throw is ` +

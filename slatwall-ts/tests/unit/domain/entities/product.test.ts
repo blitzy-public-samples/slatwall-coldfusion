@@ -1124,9 +1124,9 @@ describe('PRESERVED THROWS: getPageIDs and getProductOptionsByGroup, with their 
     expect(() => subject.getPageIDs()).toThrow(/org\/Hibachi\/HibachiEntity\.cfc:L507-L565/);
     expect(() => subject.getPageIDs()).toThrow(/not a stub awaiting implementation/);
 
-    // C17 - a locator correction, recorded and not applied. The shipped message cites
-    // `listingPages` at [model/entity/Product.cfc:L82].
-    expect(() => subject.getPageIDs()).toThrow(/listingPages at \[L82\]/);
+    // The message names the property the caller probably meant, at the line that declares it:
+    // `listingPages` is [model/entity/Product.cfc:L79].
+    expect(() => subject.getPageIDs()).toThrow(/listingPages at \[L79\]/);
   });
 
   it('B6.1 - the WORKING TWIN: getCategoryIDs builds a comma list with NO leading delimiter', () => {

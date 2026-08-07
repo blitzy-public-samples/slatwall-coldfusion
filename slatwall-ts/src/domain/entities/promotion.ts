@@ -32,32 +32,6 @@ type PersistedBooleanColumn = string | number | boolean | null;
 const ACTIVE_FLAG_ORM_DEFAULT = '1' as const;
 
 /**
- * The one member [model/entity/Promotion.cfc:L127] reaches on a promotion code.
- *
- * The member is not invented on that file, nothing is widened to `any`, no suppression comment is
- * used, and the call is not silently dropped.
- *
- * The cross-file follow-up that closes the contract: declare `isDeletable(): boolean` on
- * `promotionCode.ts` reproducing [org/Hibachi/HibachiEntity.cfc:L204-L206].
- */
-interface FrameworkDeletableEntity {
-  isDeletable(): boolean;
-}
-
-/**
- * Whether a promotion code carries the framework-inherited `isDeletable()` described above.
- *
- * The assertion is a DOWNCAST to an intersection that merely adds the member as OPTIONAL - not a
- * widening to `any`, not a bounce through `unknown`, and not a claim that the member is present.
- */
-function reachesFrameworkIsDeletable(
-  candidate: PromotionCode,
-): candidate is PromotionCode & FrameworkDeletableEntity {
-  const probe = candidate as PromotionCode & Partial<FrameworkDeletableEntity>;
-  return typeof probe.isDeletable === 'function';
-}
-
-/**
  * The `SwPromotion` row: the hub entity of the promotion aggregate.
  *
  * `src/repositories/mysql/**` owns hydration and documents the chosen fetch shape at the producing
@@ -440,33 +414,22 @@ export class Promotion {
    * [model/entity/Promotion.cfc:L123-L134]
    *
    * The legacy body starts from `true` and flips to `false` on the first non-deletable code, with
-   * a `break`.
+   * a `break`. `Array.prototype.every` short-circuits on the same first `false`, so the number of
+   * codes consulted matches.
    *
-   * @throws Error when a promotion code does not carry the framework-inherited `isDeletable()`.
+   * The member it reaches - `PromotionCode.isDeletable()` - is not declared on
+   * `model/entity/PromotionCode.cfc`; it resolves in the legacy tree to
+   * [org/Hibachi/HibachiEntity.cfc:L204-L206] and is reproduced on `promotionCode.ts` from that
+   * entity's own `model/validation/PromotionCode.json` delete-context rule. See the docblock there.
+   *
+   * @returns `true` when every promotion code on this promotion is deletable, including when there
+   * are none.
    */
   getPromotionCodesDeletableFlag(): boolean {
-    return this.promotionCodes.every((promotionCode: PromotionCode): boolean => {
-      if (!reachesFrameworkIsDeletable(promotionCode)) {
-        throw new Error(
-          'Promotion.getPromotionCodesDeletableFlag cannot evaluate a promotion code: ' +
-            'model/entity/Promotion.cfc:L127 calls promotionCode.isDeletable(), which is NOT ' +
-            'declared on model/entity/PromotionCode.cfc and resolves in the legacy tree to the ' +
-            'framework base at org/Hibachi/HibachiEntity.cfc:L204-L206, whose body is ' +
-            '!getService("hibachiValidationService").validate(object=this, context="delete", ' +
-            'setErrors=false).hasErrors(). That base class is deliberately not ported, so the ' +
-            'member is absent on this promotion code. No boolean is substituted: both answers are ' +
-            'load-bearing on a delete path, true would report a promotion as deletable while its ' +
-            'codes are still attached to live orders - the exact outcome ' +
-            'model/validation/PromotionCode.json\'s {"contexts":"delete","maxCollection":0} rule ' +
-            'exists to prevent - and false would block a legitimate deletion permanently. The fix ' +
-            'is to declare isDeletable(): boolean on src/domain/entities/promotionCode.ts as that ' +
-            'delete-context rule over its already-materialized getOrders() collection.',
-        );
-      }
-
+    return this.promotionCodes.every((promotionCode: PromotionCode): boolean =>
       // [model/entity/Promotion.cfc:L127] - the member is called exactly as the legacy calls it.
-      return promotionCode.isDeletable();
-    });
+      promotionCode.isDeletable(),
+    );
   }
 
   // Non-Persistent Property Methods.

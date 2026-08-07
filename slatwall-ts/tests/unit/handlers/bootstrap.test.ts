@@ -4117,8 +4117,8 @@ describe('bootstrapCompositionRoot', () => {
     it('converts a same-currency call through the pivot, and reports nothing, once it has a rate', async () => {
       // The other side of the case above, and what makes the distinction observable: with USD in
       // the table the gate PASSES, so the legacy divides into euros
-      // [model/service/SettingService.cfc:L90] and multiplies straight back out
-      // [model/service/SettingService.cfc:L96].
+      // [model/service/CurrencyService.cfc:L90] and multiplies straight back out
+      // [model/service/CurrencyService.cfc:L96].
       const { lines } = captureLogLines();
       const root = await makeRoot({
         env: {
@@ -4346,7 +4346,7 @@ describe('bootstrapCompositionRoot', () => {
     });
 
     it('answers the unsuffixed slug when nothing in the family is taken', async () => {
-      // [model/service/SettingService.cfc:L60] `var returnTitle = urlTitle;` - the bare slug is
+      // [model/service/DataService.cfc:L60] `var returnTitle = urlTitle;` - the bare slug is
       // the FIRST candidate, so an empty family must not produce `acme-2`.
       const executor = tableWithTitles([]);
 
@@ -4357,7 +4357,7 @@ describe('bootstrapCompositionRoot', () => {
 
     it('starts at -2 and never at -1 when only the bare slug is taken', async () => {
       // `addon` starts at 1 and is incremented before use
-      // [model/service/SettingService.cfc:L55, L65], so the first suffix the legacy can ever emit
+      // [model/service/DataService.cfc:L55, L65], so the first suffix the legacy can ever emit
       // is `-2`.
       const executor = tableWithTitles(['acme']);
 
@@ -4407,7 +4407,7 @@ describe('bootstrapCompositionRoot', () => {
       const read = familyReads(executor)[0];
 
       // Sanitization first: `&` and `.` are outside `[a-z0-9 -]` and are stripped, then the space
-      // run collapses to a hyphen [model/service/SettingService.cfc:L57-L58].
+      // run collapses to a hyphen [model/service/DataService.cfc:L57-L58].
       expect(read?.params).toStrictEqual(['acme-widgets-co', 'acme-widgets-co-%']);
       expect(read?.sql).not.toContain('acme');
       expect(read?.sql).toContain('WHERE urlTitle = ? OR urlTitle LIKE ?');
@@ -4448,7 +4448,7 @@ describe('bootstrapCompositionRoot', () => {
       const { urlTitle, saved } = await resolveThrough(executor, 'Acme');
 
       // The legacy route: the generated slug is written into the payload
-      // [model/service/SettingService.cfc:L70] and populate folds it onto the entity.
+      // [model/service/DataService.cfc:L70] and populate folds it onto the entity.
       expect(urlTitle).toBe('acme-3');
 
       // And it REACHED the STATEMENT. One write was issued, it is the brand update, and `acme-3`
@@ -5946,8 +5946,8 @@ describe('the European Central Bank currency converter, moved into the compositi
   const SUB_CENT_AMOUNT = '19.999';
 
   /**
-   * `SUB_CENT_AMOUNT` after the cent rounding at [model/service/SettingService.cfc:L94] /
-   * [model/service/SettingService.cfc:L96].
+   * `SUB_CENT_AMOUNT` after the cent rounding at [model/service/CurrencyService.cfc:L94] /
+   * [model/service/CurrencyService.cfc:L96].
    */
   const SUB_CENT_AMOUNT_ROUNDED = '20.00';
 
@@ -5987,7 +5987,7 @@ describe('the European Central Bank currency converter, moved into the compositi
   }
   describe('EuropeanCentralBankCurrencyConverter - the euro pivot [model/service/CurrencyService.cfc:L87-L97]', () => {
     it('scales OUT of the euro by the target rate [L96]', async () => {
-      // [model/service/SettingService.cfc:L93] is false, so [model/service/SettingService.cfc:L96]
+      // [model/service/CurrencyService.cfc:L93] is false, so [model/service/CurrencyService.cfc:L96]
       // multiplies `amountInEUR` by the target rate. 20 * 1.0850 = 21.70, exactly.
       const converted = await converterWithRates().convertCurrency(money(TWENTY_EUR), EUR, USD);
 
@@ -5995,9 +5995,9 @@ describe('the European Central Bank currency converter, moved into the compositi
     });
 
     it('scales INTO the euro by dividing by the source rate [L90, L94]', async () => {
-      // [model/service/SettingService.cfc:L87] is false so [model/service/SettingService.cfc:L90]
-      // divides; [model/service/SettingService.cfc:L93] is true so
-      // [model/service/SettingService.cfc:L94] returns without a second scaling. 21.70 / 1.0850 =
+      // [model/service/CurrencyService.cfc:L87] is false so [model/service/CurrencyService.cfc:L90]
+      // divides; [model/service/CurrencyService.cfc:L93] is true so
+      // [model/service/CurrencyService.cfc:L94] returns without a second scaling. 21.70 / 1.0850 =
       // 20, exactly.
       const converted = await converterWithRates().convertCurrency(
         money(TWENTY_EUR_IN_USD),
@@ -6051,9 +6051,9 @@ describe('the European Central Bank currency converter, moved into the compositi
     });
 
     it('★ converts euro to euro through the no-scaling path, and still rounds [L88, L94]', async () => {
-      // [model/service/SettingService.cfc:L87] takes the assignment branch and
-      // [model/service/SettingService.cfc:L93] takes the early return, so neither rate is
-      // consulted - yet [model/service/SettingService.cfc:L94] still rounds. A same-currency
+      // [model/service/CurrencyService.cfc:L87] takes the assignment branch and
+      // [model/service/CurrencyService.cfc:L93] takes the early return, so neither rate is
+      // consulted - yet [model/service/CurrencyService.cfc:L94] still rounds. A same-currency
       // conversion is therefore not the identity.
       const converted = await converterWithRates().convertCurrency(
         money(SUB_CENT_AMOUNT),
@@ -6093,9 +6093,9 @@ describe('the European Central Bank currency converter, moved into the compositi
     });
 
     it('★★ does NOT round the pass-through, while every converted path does', async () => {
-      // The ASYMMETRY at [model/service/SettingService.cfc:L101] vs
-      // [model/service/SettingService.cfc:L94]/[model/service/SettingService.cfc:L96], stated as
-      // one assertion pair. [model/service/SettingService.cfc:L101] hands back `arguments.amount`
+      // The ASYMMETRY at [model/service/CurrencyService.cfc:L101] vs
+      // [model/service/CurrencyService.cfc:L94]/[model/service/CurrencyService.cfc:L96], stated as
+      // one assertion pair. [model/service/CurrencyService.cfc:L101] hands back `arguments.amount`
       // verbatim; both return paths round.
       const converter = converterWithRates();
       const amount = money(SUB_CENT_AMOUNT);
@@ -6108,7 +6108,7 @@ describe('the European Central Bank currency converter, moved into the compositi
     });
 
     it('★★★ answers at par when the rate table is EMPTY, on the same terms as an unlisted code', async () => {
-      // It first asserted par, reasoning that "[model/service/SettingService.cfc:L127-L128] the
+      // It first asserted par, reasoning that "[model/service/CurrencyService.cfc:L127-L128] the
       // retrieval's `catch` is EMPTY, so a failed fetch leaves the table as it was - possibly
       // never populated at all".
       const converter = converterWithRates({});
@@ -6168,8 +6168,8 @@ describe('the European Central Bank currency converter, moved into the compositi
   });
   describe('EuropeanCentralBankCurrencyConverter - the guard runs before any arithmetic [model/service/CurrencyService.cfc:L86]', () => {
     it('★★ a ZERO source rate with an unreachable target is a pass-through, not a division error', async () => {
-      // The ORDERING TEST. [model/service/SettingService.cfc:L86] tests both halves before
-      // [model/service/SettingService.cfc:L90] divides, so the legacy never divides here.
+      // The ORDERING TEST. [model/service/CurrencyService.cfc:L86] tests both halves before
+      // [model/service/CurrencyService.cfc:L90] divides, so the legacy never divides here.
       const converter = converterWithRates({ USD: '0' });
       const amount = money(SUB_CENT_AMOUNT);
 
@@ -6210,7 +6210,7 @@ describe('the European Central Bank currency converter, moved into the compositi
     });
 
     it('★ a ZERO TARGET rate is legitimate arithmetic and answers zero, not a failure', async () => {
-      // [model/service/SettingService.cfc:L96] multiplies by the target rate, and multiplying by
+      // [model/service/CurrencyService.cfc:L96] multiplies by the target rate, and multiplying by
       // zero is defined. The asymmetry with the source position is the division, not the value.
       const converted = await converterWithRates({ USD: '0' }).convertCurrency(
         money(TWENTY_EUR),
@@ -6251,8 +6251,8 @@ describe('the European Central Bank currency converter, moved into the compositi
   });
   describe('EuropeanCentralBankCurrencyConverter.getAllActiveCurrencyIDList [model/service/CurrencyService.cfc:L57-L67]', () => {
     it('answers only the active codes, in record order', async () => {
-      // [model/service/SettingService.cfc:L60] filters `activeFlag` to 1 and
-      // [model/service/SettingService.cfc:L63-L65] appends each surviving record in the order the
+      // [model/service/CurrencyService.cfc:L60] filters `activeFlag` to 1 and
+      // [model/service/CurrencyService.cfc:L63-L65] appends each surviving record in the order the
       // query returned it. There is no `ORDER BY`, so record order is the contract.
       const converter = converterWithRecords([
         currencyRecord(JPY, true),
@@ -6578,7 +6578,7 @@ describe('the SKU batch-write collaborator the root supplies to ProductService',
 
     expect(skuUpdates.length).toBeGreaterThanOrEqual(4);
 
-    // [model/service/SettingService.cfc:L232] the argument product comes back.
+    // [model/service/ProductService.cfc:L232] the argument product comes back.
     expect(answered).toBe(product);
   });
 

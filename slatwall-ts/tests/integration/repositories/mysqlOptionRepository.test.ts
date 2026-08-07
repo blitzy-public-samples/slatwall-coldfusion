@@ -4,10 +4,10 @@
 // in this port are `meta/tests/unit/entity/BrandTest.cfc` and
 // `meta/tests/unit/entity/ProductTest.cfc`, both owned by tests/unit/domain/entities/.
 //
-// Why this sits under tests/integration/repositories/ and needs no database The tier names the
-// layer under test, not the presence of a server.
-//
-// `liveDatabaseTestsEnabled` from tests/setup.ts is therefore not consulted and is not imported.
+// Why this sits under tests/integration/repositories/ and needs no database: the tier names the
+// layer under test - the seam between adapter and statement - not the presence of a server. Every
+// adapter here runs against a recording executor that opens no socket, so `TEST_LIVE_DATABASE` is
+// neither imported nor consulted and setting it changes nothing this suite proves.
 
 import { describe, expect, it } from 'vitest';
 

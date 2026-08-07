@@ -607,17 +607,17 @@ type PromotionCodesDeletableFlagDefect = {
   readonly validationLocator: string;
 
   /**
-   * A SEPARATE, CROSS-FILE gap in the port, recorded here rather than worked around: the ported
-   * accessor RAISES when it reaches a materialized promotion code.
+   * Whether the ported accessor raises when it reaches a materialized promotion code.
    *
-   * Both facts are exposed as data so a suite can assert the raise instead of discovering it.
+   * `false`: it did raise while `promotionCode.ts` declared no `isDeletable()`, and it no longer
+   * does. Exposed as data so a suite asserts the answer rather than discovering it.
    */
   readonly portedAccessorRaisesOnMaterializedCode: boolean;
 
   /**
-   * The follow-up that closes the gap, stated so it is actionable rather than noted.
+   * What closes the cross-file contract, stated so it is checkable rather than noted.
    */
-  readonly requiredCrossFileFollowUp: string;
+  readonly resolvedBy: string;
 };
 
 /**
@@ -1019,9 +1019,9 @@ interface PromotionFixtureGraph {
    * All FOURTEEN of the reward's many-to-many link tables, as data.
    *
    * Only three declare `type="array"` in the legacy source - `eligiblePriceGroups`
-   * [model/service/PromotionService.cfc:L74], `excludedBrands`
-   * [model/service/PromotionService.cfc:L86] and `excludedOptions`
-   * [model/service/PromotionService.cfc:L87].
+   * [model/entity/PromotionReward.cfc:L74], `excludedBrands`
+   * [model/entity/PromotionReward.cfc:L86] and `excludedOptions`
+   * [model/entity/PromotionReward.cfc:L87].
    */
   readonly rewardManyToManyCollections: readonly RewardManyToManyCollection[];
 
@@ -2030,9 +2030,9 @@ const PROMOTION_CODES_DELETABLE_FLAG_DEFECT: PromotionCodesDeletableFlagDefect =
   distinctSpellingCount: 3,
   memoCanEverHit: false,
   validationLocator: 'model/validation/Promotion.json:L5',
-  portedAccessorRaisesOnMaterializedCode: true,
-  requiredCrossFileFollowUp:
-    'Declare isDeletable(): boolean on src/domain/entities/promotionCode.ts, ' +
+  portedAccessorRaisesOnMaterializedCode: false,
+  resolvedBy:
+    'isDeletable(): boolean is declared on src/domain/entities/promotionCode.ts, ' +
     'reproducing org/Hibachi/HibachiEntity.cfc:L204-L206 over the delete-context ' +
     'rule model/validation/PromotionCode.json declares as ' +
     '"orders": [{"contexts":"delete","maxCollection":0}], counted over the ' +

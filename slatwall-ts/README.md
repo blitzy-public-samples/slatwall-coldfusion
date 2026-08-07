@@ -647,7 +647,7 @@ bound, and a bound tight enough to catch a typo would become a second and worse 
 be able to abort a cold start, since configuration reports its own fatal failure through the logger.
 Its bytes still count toward the aggregate.
 
-The pre-deploy check runs in CI. `tests/traceability/legacyTestMap.ts` (block `A18`) recomputes that
+The pre-deploy check runs in CI. `tests/traceability/legacyTestMap.ts` (block `A29`) recomputes that
 sum from the source and fails the suite if it ever exceeds the quota, so a raised maximum or a
 twentieth variable is caught by `npm test` rather than by a failed deployment.
 

@@ -12,8 +12,10 @@
 // `precision.ts` owns the configured decimal constructor, the finiteness boundary and the
 // zero-divisor refusal; this file owns the monetary surface over it.
 //
-// `toDecimalString` is aliased on both imports because the two dependencies export that name with
-// two DIFFERENT meanings.
+// Both imports are aliased at the point of use because the two dependencies answer two DIFFERENT
+// questions about a decimal string: `precision.ts` RENDERS one, `numberFormat.ts` VALIDATES one and
+// brands the result. The names differ at the source too - `toPlainDecimalString` against
+// `toDecimalString` - so a reader who follows either import lands on the right function.
 import {
   add,
   compare,
@@ -24,7 +26,7 @@ import {
   isLessThan,
   multiply,
   subtract,
-  toDecimalString as renderPlainDecimal,
+  toPlainDecimalString as renderPlainDecimal,
 } from '../../lib/cfml/precision.js';
 import {
   numberFormat,

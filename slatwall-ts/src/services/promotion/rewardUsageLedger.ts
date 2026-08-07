@@ -191,9 +191,10 @@ export class RewardUsageLedger {
     // reward has been used" - `usedInOrder += discountQuantity`, in PLACE on the shared entry.
     usage.usedInOrder += discountQuantity;
 
-    // LEGACY-NOTE [model/service/PromotionService.cfc:L299]: the divisor is unguarded, and the
-    // absence of the guard is reproduced deliberately. The source applies no zero check to
-    // `discountQuantity`, so a zero divisor raises a division-by-zero error in CFML.
+    // LEGACY-NOTE [model/service/PromotionService.cfc:L299]: AAP 0.6.1 order-dependence VECTOR 5,
+    // the unguarded division. The divisor's absent guard is reproduced deliberately - the source
+    // applies no zero check to `discountQuantity`, so a zero divisor raises a division-by-zero
+    // error in CFML.
     const discountPerUseValue = discountAmount.dividedBy(discountQuantity);
 
     this.insertUsageInAscendingOrder(

@@ -340,8 +340,14 @@ export function isZero(value: PreciseInput): boolean {
  * The boundary at which a precise value leaves this module - for persistence into a `big_decimal`
  * column, or for a presentation step that applies a mask.
  *
+ * NAMED `toPlainDecimalString`, not `toDecimalString`, on purpose. `numberFormat.ts` exports
+ * `toDecimalString`, which VALIDATES a numeral and returns the branded `DecimalString`; this one
+ * RENDERS and returns a plain `string`. Two functions with one name in the same folder would let a
+ * consumer reach for the wrong import and silently bypass the brand that the single-arithmetic-
+ * surface discipline relies on, so the bare name belongs to the brand-preserving one.
+ *
  * JUDGMENT CALL: plain notation is guaranteed by construction.
  */
-export function toDecimalString(value: PreciseInput): string {
+export function toPlainDecimalString(value: PreciseInput): string {
   return toPrecise(value).toFixed();
 }

@@ -10,6 +10,12 @@ import { appConfig } from '../../lib/config.js';
 /**
  * The dialect spellings, verbatim from [config/configORM.cfm:L10], [config/configORM.cfm:L12] and
  * [config/configORM.cfm:L14].
+ *
+ * `src/lib/config.ts` declares a union of the same name, derived from its own `DATABASE_DIALECTS`
+ * array: it SUPPLIES the configured spelling and this module INTERPRETS it. The two declarations are
+ * deliberately independent rather than shared, because that is what makes them reconcilable - the
+ * `DialectRoster` below and the `connection.ts` seam turn any divergence between them into a compile
+ * error instead of a silent agreement.
  */
 export type DatabaseDialect = 'MySQL' | 'MicrosoftSQLServer' | 'Oracle10g';
 

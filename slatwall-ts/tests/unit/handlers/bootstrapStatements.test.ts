@@ -548,7 +548,7 @@ describe('the SKU-creation option list is loaded as a SET, never one option at a
 
   /**
    * Drive `saveProduct` on a NEW product, which is what reaches `createSkus`
-   * [model/service/PriceGroupService.cfc:L279].
+   * [model/service/SkuService.cfc:L58].
    */
   async function resolveOptions(optionIDList: string): Promise<CapturingExecutor> {
     const executor = new CapturingExecutor();

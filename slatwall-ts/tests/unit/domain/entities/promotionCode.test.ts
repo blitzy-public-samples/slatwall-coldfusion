@@ -282,6 +282,7 @@ const PUBLIC_SURFACE: readonly string[] = Object.freeze([
   'hasAccount',
   'hasOrder',
   'hasUniquePromotionCode',
+  'isDeletable',
   'isNew',
   'preInsert',
   'removeAccount',
@@ -307,12 +308,13 @@ const PRIVATE_HELPERS: readonly string[] = Object.freeze([
 /**
  * Members `model/entity/PromotionCode.cfc` does not declare, asserted absent.
  *
- * `isDeletable` is the consequential one and is the subject of its own block below.
+ * `isDeletable` is deliberately NOT in this list: the component does not declare it either, but the
+ * legacy call at [model/entity/Promotion.cfc:L127] resolves it through the framework base, so the
+ * port reproduces it from the entity's own delete-context rule. It has its own block below.
  */
 const UNDECLARED_MEMBERS: readonly string[] = Object.freeze([
   'getSimpleRepresentation',
   'isCurrent',
-  'isDeletable',
   'isExpired',
   'preUpdate',
 ]);
@@ -500,7 +502,7 @@ afterEach(() => {
 });
 
 describe('PromotionCode installs the ported surface and nothing else', () => {
-  it('installs exactly the twenty-nine public members and the four private helpers', () => {
+  it('installs exactly the thirty public members and the four private helpers', () => {
     const expected = [...PUBLIC_SURFACE, ...PRIVATE_HELPERS].sort();
 
     expect(prototypeMembers()).toStrictEqual(expected);
@@ -514,7 +516,7 @@ describe('PromotionCode installs the ported surface and nothing else', () => {
     }
   });
 
-  it('declares no isDeletable, no isCurrent, no isExpired, no getSimpleRepresentation and no preUpdate', () => {
+  it('declares no isCurrent, no isExpired, no getSimpleRepresentation and no preUpdate', () => {
     const subject = aPromotionCode();
     const members = prototypeMembers();
 
@@ -592,6 +594,7 @@ describe('PromotionCode installs the ported surface and nothing else', () => {
       subject.getModifiedDateTime(),
       subject.getModifiedByAccountID(),
       subject.isNew(),
+      subject.isDeletable(),
       subject.getCurrentFlag(),
       subject.hasUniquePromotionCode(),
       subject.getSimpleRepresentationPropertyName(),
@@ -604,44 +607,81 @@ describe('PromotionCode installs the ported surface and nothing else', () => {
   });
 });
 
-describe('PromotionCode does not declare isDeletable, and the gap is recorded not filled', () => {
-  it('exposes no isDeletable member of any kind', () => {
-    const subject = aPromotionCode({ promotionCodeID: 'pc-gap' });
+describe('isDeletable() resolves the framework predicate from the entity own delete rule', () => {
+  // CFML parity [model/entity/PromotionCode.cfc, org/Hibachi/HibachiEntity.cfc:L204-L206]:
+  // `isDeletable` is not declared on `PromotionCode.cfc` - a grep of all 192 lines returns zero
+  // hits - so the legacy call at [model/entity/Promotion.cfc:L127] reached the framework base,
+  // whose body validates the entity in the `delete` context. AAP 0.5.3 replaces that framework
+  // responsibility with typed schemas, and `model/validation/PromotionCode.json` declares exactly
+  // one delete-context rule, so the predicate reduces to "no order references this code".
 
-    // CFML parity [model/entity/PromotionCode.cfc, model/entity/Promotion.cfc:L123-L134]:
-    // `isDeletable` is not declared on `PromotionCode.cfc` - a grep of all 192 lines returns zero
-    // hits.
-    //
-    // JUDGMENT CALL: the gap is RECORDED, not filled. No `isDeletable` is invented here, no stub
-    // returns a convenient `true`, and no fake far-side member is added to make the consumer
-    // succeed.
-    expect(prototypeMembers()).not.toContain('isDeletable');
-    expect('isDeletable' in subject).toBe(false);
+  it('is declared on the prototype, with no argument and no injected collaborator', () => {
+    const subject = aPromotionCode({ promotionCodeID: 'pc-deletable' });
 
-    // @ts-expect-error `isDeletable` was framework-inherited and is not ported onto the row.
-    const frameworkInherited: unknown = subject.isDeletable;
-
-    expect(frameworkInherited).toBeUndefined();
+    expect(prototypeMembers()).toContain('isDeletable');
+    expect(subject.isDeletable.bind(subject)).toHaveLength(0);
   });
 
-  it('records the consumer that depends on the missing member without exercising it', () => {
+  it('answers true for a code no order references', () => {
+    const subject = aPromotionCode({ promotionCodeID: 'pc-unused', orders: [] });
+
+    expect(subject.getOrders()).toEqual([]);
+    expect(subject.isDeletable()).toBe(true);
+  });
+
+  it('answers false as soon as one order references it - maxCollection is 0, not 1', () => {
+    const subject = aPromotionCode({
+      promotionCodeID: 'pc-used-once',
+      orders: [anOrderLink('order-1')],
+    });
+
+    expect(subject.isDeletable()).toBe(false);
+  });
+
+  it('answers false for many referencing orders, on the same rule', () => {
+    const subject = aPromotionCode({
+      promotionCodeID: 'pc-used-often',
+      orders: [anOrderLink('order-1'), anOrderLink('order-2'), anOrderLink('order-3')],
+    });
+
+    expect(subject.isDeletable()).toBe(false);
+  });
+
+  it('is the rule the validation record already carries, read from that record', () => {
+    // Derived from `VALIDATION_RULES_AS_WRITTEN` rather than restated, so the predicate and the
+    // recorded schema cannot drift apart.
+    const ordersRules = VALIDATION_RULES_AS_WRITTEN.properties.orders;
+
+    expect(ordersRules).toHaveLength(1);
+    expect(ordersRules?.[0]?.contexts).toBe('delete');
+    expect(ordersRules?.[0]?.maxCollection).toBe(0);
+  });
+
+  it('re-reads the live collection on every call, so it observes a far-side mutation', () => {
+    const order = anOrderLink('order-late');
+    const subject = aPromotionCode({ promotionCodeID: 'pc-live', orders: [] });
+
+    expect(subject.isDeletable()).toBe(true);
+
+    // The owning side is `Order.cfc`, so the near side is mutated the way the far side would.
+    subject.getOrders().push(order);
+
+    expect(subject.isDeletable()).toBe(false);
+  });
+
+  it('closes the consumer that depends on it, and the fixture record says so', () => {
     const fixtures = makePromotionFixtures();
 
-    // The shared fixture record names the consumer, its spelling mismatch and the raise, so the
-    // dependency direction is machine-readable from both ends.
+    // The shared fixture record names the consumer and its spelling mismatch, so the dependency
+    // direction stays machine-readable from both ends.
     expect(fixtures.promotionCodesDeletableFlagDefect.methodName).toBe(
       'getPromotionCodesDeletableFlag',
     );
     expect(fixtures.promotionCodesDeletableFlagDefect.portedAccessorRaisesOnMaterializedCode).toBe(
-      true,
+      false,
     );
-    expect(fixtures.promotionCodesDeletableFlagDefect.requiredCrossFileFollowUp).toContain(
-      'isDeletable',
-    );
-
-    // The follow-up names `src/domain/entities/promotionCode.ts` as the file that must eventually
-    // declare the member.
-    expect(fixtures.promotionCodesDeletableFlagDefect.requiredCrossFileFollowUp).toContain(
+    expect(fixtures.promotionCodesDeletableFlagDefect.resolvedBy).toContain('isDeletable');
+    expect(fixtures.promotionCodesDeletableFlagDefect.resolvedBy).toContain(
       'src/domain/entities/promotionCode.ts',
     );
   });
@@ -1757,7 +1797,7 @@ describe('the orders many-to-many is pure inverse-side delegation, kept entirely
     }
   });
 
-  it('records the delete-context tension between the schema and the boundary, unresolved', () => {
+  it('connects the delete-context schema to the member that consults it', () => {
     const subject = aPromotionCode({ promotionCodeID: 'pc-1', orders: [anOrderLink('order-1')] });
 
     // CFML parity `model/validation/PromotionCode.json`: the ENTIRE delete context for this entity
@@ -1765,12 +1805,13 @@ describe('the orders many-to-many is pure inverse-side delegation, kept entirely
     // has ever been used on an order may not be deleted.
     expect(subject.getOrders()).toHaveLength(1);
 
-    // but the member that would CONSULT it, `isDeletable`, is the one
-    // `model/entity/PromotionCode.cfc` never declares. So the gate's input exists while its
-    // evaluator does not.
+    // The member that CONSULTS it is `isDeletable`, which `model/entity/PromotionCode.cfc` never
+    // declares and the framework base supplied. The gate's input and its evaluator now sit on the
+    // same object, and the evaluator answers from that input.
     expect(VALIDATION_RULES_AS_WRITTEN.properties.orders[0]?.contexts).toBe('delete');
     expect(VALIDATION_RULES_AS_WRITTEN.properties.orders[0]?.maxCollection).toBe(0);
-    expect('isDeletable' in subject).toBe(false);
+    expect('isDeletable' in subject).toBe(true);
+    expect(subject.isDeletable()).toBe(false);
   });
 });
 

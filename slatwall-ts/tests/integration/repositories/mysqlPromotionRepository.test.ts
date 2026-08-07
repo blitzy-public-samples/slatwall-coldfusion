@@ -9,6 +9,11 @@
  *
  * CFML parity [model/dao/PromotionDAO.cfc:L51-L591]: every method name is the legacy camelCase
  * name verbatim, so the two surfaces can be diffed directly.
+ *
+ * Why this sits under tests/integration/repositories/ and needs no database: the tier names the
+ * layer under test - the seam between adapter and statement - not the presence of a server. Every
+ * adapter here runs against a recording executor that opens no socket, so `TEST_LIVE_DATABASE` is
+ * neither imported nor consulted and setting it changes nothing this suite proves.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -2969,7 +2974,8 @@ describe('the dialect contract - no fallback, no silent default', () => {
     // Three spellings exist in the source and a `===` comparison would fail on two of them:
     // `MySQL` at [config/configORM.cfm:L10], and again at [model/dao/PromotionDAO.cfc:L482]
     // `mySQL` at [model/dao/PriceGroupDAO.cfc:L57], and again at [model/dao/ProductDAO.cfc:L288]
-    // `mySql` [model/dao/ProductDAO.cfc:L304] `findNoCase` was case-insensitive.
+    // and `mySql` at [model/dao/ProductDAO.cfc:L304]. All three worked in the legacy because the
+    // comparison is CFML `eq`, which folds case; a `===` in the port would not.
     for (const spelling of ['mysql', 'MYSQL', 'MySQL', 'mySQL', 'mySql', '  MySQL  ']) {
       expect(resolveDialect(spelling)).toBe('MySQL');
     }

@@ -252,7 +252,7 @@ export interface ProductSaveInput {
   sortOrder?: number | undefined;
 
   /**
-   * `remoteID` [model/entity/Product.cfc:L67]. Populated at
+   * `remoteID` [model/entity/Product.cfc:L93]. Populated at
    * [model/service/ProductService.cfc:L266]; no save rule is declared on it.
    *
    * The integration-identity column an external system stamps its own key into.
@@ -313,7 +313,7 @@ export interface ProductTypeSaveInput {
   readonly activeFlag?: boolean | undefined;
 
   /**
-   * `publishedFlag` [model/entity/ProductType.cfc:L54]. Populated by `super.save`'s populate step;
+   * `publishedFlag` [model/entity/ProductType.cfc:L55]. Populated by `super.save`'s populate step;
    * no save rule is declared on it.
    */
   readonly publishedFlag?: boolean | undefined;

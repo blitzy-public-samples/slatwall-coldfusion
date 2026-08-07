@@ -50,14 +50,6 @@ export interface QualifiedDiscount {
 export type OrderItemQualifiedDiscounts = Record<string, QualifiedDiscount[]>;
 
 /**
- * Which level of the order a promotion was applied to.
- *
- * JUDGMENT CALL: declared inline rather than imported from `promotionApplied.ts`, because an
- * intent is the engine's write-side instruction rather than the ORM entity.
- */
-export type PromotionAppliedType = 'order' | 'orderItem' | 'orderFulfillment';
-
-/**
  * The one member every applied-promotion intent carries, whatever its target level and whatever
  * its operation.
  *
@@ -80,6 +72,11 @@ interface PromotionAppliedIntentPromotion {
 //
 // Each pairs one `appliedType` literal with the one opaque identifier that names a target at that
 // level, and forbids the other two identifiers outright by typing them `?: never`.
+//
+// The UNION of the three literals is owned by `src/domain/entities/promotionApplied.ts`, which
+// declares `PromotionAppliedType` for the `SwPromotionApplied.appliedType` column. It is not
+// re-declared here: the literals below are what the discriminated union needs, and a second
+// declaration of the same union would leave the type with no single owner.
 
 /**
  * The ORDER level: `appliedType: 'order'`, addressed by `orderID`.

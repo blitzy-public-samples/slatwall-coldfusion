@@ -537,7 +537,7 @@ export interface OrderViewDocument {
 
   /**
    * `getSubtotalAfterItemDiscounts()`, read by the order-level reward branch
-   * [model/service/SettingService.cfc:L417].
+   * [model/service/PromotionService.cfc:L417].
    */
   readonly subtotalAfterItemDiscounts: string;
 
@@ -937,7 +937,7 @@ const GLOBAL_URL_KEY_PRODUCT_TYPE_DEFAULT = 'spt';
  * `{fieldType="select", defaultValue="USD"}`.
  *
  * Hardcoded `"USD"` anywhere in `model/entity/Sku.cfc`; `getCurrencyCode()`
- * [model/service/SettingService.cfc:L360-L365] merely memoizes `this.setting('skuCurrency')`.
+ * [model/entity/Sku.cfc:L360-L365] merely memoizes `this.setting('skuCurrency')`.
  */
 const SKU_CURRENCY_DEFAULT = 'USD';
 const PRODUCT_IMAGE_DEFAULT_EXTENSION_DEFAULT = 'jpg';
@@ -2226,7 +2226,7 @@ export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
   private readonly rates: EuropeanCentralBankRateTable;
 
   /**
-   * Notified whenever a conversion takes the [model/service/SettingService.cfc:L100-L101]
+   * Notified whenever a conversion takes the [model/service/CurrencyService.cfc:L100-L101]
    * pass-through.
    *
    * Defaults to a no-op, so no caller is forced to supply one and no test has to thread a sink it
@@ -2307,9 +2307,9 @@ export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
   // currency-conversion integration can supply the rate.
   /**
    * CFML parity [model/service/CurrencyService.cfc:L85-L101], branch for branch: the guard at
-   * [model/service/SettingService.cfc:L86] resolves both halves before any arithmetic;
-   * [model/service/SettingService.cfc:L87-L91] expresses the amount in euro, dividing by the
-   * source rate unless the source is the euro; [model/service/SettingService.cfc:L93-L97] scales
+   * [model/service/CurrencyService.cfc:L86] resolves both halves before any arithmetic;
+   * [model/service/CurrencyService.cfc:L87-L91] expresses the amount in euro, dividing by the
+   * source rate unless the source is the euro; [model/service/CurrencyService.cfc:L93-L97] scales
    * into the target.
    *
    * @param amount the amount expressed in `originalCurrencyCode`.
@@ -2327,7 +2327,7 @@ export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
   ): Promise<Money> {
     // Why a promise executor rather than `Promise.resolve(...)`.
     return new Promise<Money>((resolve) => {
-      // [model/service/SettingService.cfc:L86] Both halves first. No arithmetic has happened yet,
+      // [model/service/CurrencyService.cfc:L86] Both halves first. No arithmetic has happened yet,
       // and none may.
       const source: EuroPivotScaling | undefined = this.resolveScaling(originalCurrencyCode);
       const target: EuroPivotScaling | undefined = this.resolveScaling(convertToCurrencyCode);
@@ -2336,23 +2336,23 @@ export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
         // The euro pivot is unaffected either way: a EUR-to-EUR conversion resolves both sides as
         // `{ kind: 'euro' }` and never reaches this branch.
 
-        // [model/service/SettingService.cfc:L100-L101] The pass-through.
+        // [model/service/CurrencyService.cfc:L100-L101] The pass-through.
         this.onUnconvertedPassThrough(originalCurrencyCode, convertToCurrencyCode);
 
         resolve(amount);
       } else {
-        // [model/service/SettingService.cfc:L87-L91] `amountInEUR`. The euro branch divides by
-        // nothing at all, which is [model/service/SettingService.cfc:L88]; every other source
-        // divides by its own rate, [model/service/SettingService.cfc:L90].
+        // [model/service/CurrencyService.cfc:L87-L91] `amountInEUR`. The euro branch divides by
+        // nothing at all, which is [model/service/CurrencyService.cfc:L88]; every other source
+        // divides by its own rate, [model/service/CurrencyService.cfc:L90].
         const amountInEuro: Money = source.kind === 'euro' ? amount : amount.dividedBy(source.rate);
 
-        // [model/service/SettingService.cfc:L93-L97] Into the target. The euro branch multiplies
-        // by nothing, which is [model/service/SettingService.cfc:L94]; every other target
-        // multiplies by its own rate, [model/service/SettingService.cfc:L96].
+        // [model/service/CurrencyService.cfc:L93-L97] Into the target. The euro branch multiplies
+        // by nothing, which is [model/service/CurrencyService.cfc:L94]; every other target
+        // multiplies by its own rate, [model/service/CurrencyService.cfc:L96].
         const scaled: Money =
           target.kind === 'euro' ? amountInEuro : amountInEuro.times(target.rate);
 
-        // [model/service/SettingService.cfc:L94]/[model/service/SettingService.cfc:L96]
+        // [model/service/CurrencyService.cfc:L94]/[model/service/CurrencyService.cfc:L96]
         // `round(... * 100) / 100`. Two decimals, half away from zero.
         resolve(Money.fromDecimalString(scaled.toFixed2()));
       }
@@ -2404,14 +2404,14 @@ class CfmlAddressZoneEvaluator implements AddressZoneEvaluator {
     // [model/service/AddressService.cfc:L58] `var addressInZone = false;`
     let addressInZone = false;
 
-    // [model/service/SettingService.cfc:L60]
+    // [model/service/AddressService.cfc:L60]
     // `for(var i=1; i<=arrayLen(arguments.addressZone.getAddressZoneLocations()); i++)`
     for (const location of this.resolveAddressZoneLocations(addressZone)) {
-      // [model/service/SettingService.cfc:L62] `var inLocation = true;` - reset for every
+      // [model/service/AddressService.cfc:L62] `var inLocation = true;` - reset for every
       // location.
       let inLocation = true;
 
-      // [model/service/SettingService.cfc:L63-L74] four tests, each of the form
+      // [model/service/AddressService.cfc:L63-L74] four tests, each of the form
       // `if(!isNull(location.getX()) && location.getX() != address.getX())`. The guard is on the
       // LOCATION value: a location that does not constrain a field imposes nothing.
       if (locationValueExcludes(location, 'postalCode', address.postalCode)) {
@@ -2430,7 +2430,7 @@ class CfmlAddressZoneEvaluator implements AddressZoneEvaluator {
         inLocation = false;
       }
 
-      // [model/service/SettingService.cfc:L75-L78] the first fully-matching location wins and
+      // [model/service/AddressService.cfc:L75-L78] the first fully-matching location wins and
       // stops the search.
       if (inLocation) {
         addressInZone = true;
@@ -2438,7 +2438,7 @@ class CfmlAddressZoneEvaluator implements AddressZoneEvaluator {
       }
     }
 
-    // [model/service/SettingService.cfc:L81] `return addressInZone;`
+    // [model/service/AddressService.cfc:L81] `return addressInZone;`
     return addressInZone;
   }
 
@@ -2743,25 +2743,25 @@ class SqlUrlTitleGenerator implements UrlTitleGenerator {
     titleString: string,
     tableName: UrlTitleTableName,
   ): Promise<string> {
-    // [model/service/SettingService.cfc:L57]
+    // [model/service/DataService.cfc:L57]
     // `reReplace(lcase(trim(titleString)), "[^a-z0-9 \-]", "", "all")`.
     const sanitized = titleString
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9 -]/g, '');
 
-    // [model/service/SettingService.cfc:L58] `reReplace(urlTitle, "[ ]+", "-", "all")` - runs of
+    // [model/service/DataService.cfc:L58] `reReplace(urlTitle, "[ ]+", "-", "all")` - runs of
     // spaces collapse to a single hyphen.
     const urlTitle = sanitized.replace(/ +/g, '-');
 
     // The one statement, and the only structural change from the legacy body.
     const takenTitles = await this.readUrlTitleFamily(tableName, urlTitle);
 
-    // [model/service/SettingService.cfc:L55] `var addon = 1;` - one, not two, so that the first
-    // suffix [model/service/SettingService.cfc:L65-L66] produces is `-2`.
+    // [model/service/DataService.cfc:L55] `var addon = 1;` - one, not two, so that the first
+    // suffix [model/service/DataService.cfc:L65-L66] produces is `-2`.
     let addon = 1;
 
-    // [model/service/SettingService.cfc:L60] `var returnTitle = urlTitle;` - the unsuffixed
+    // [model/service/DataService.cfc:L60] `var returnTitle = urlTitle;` - the unsuffixed
     // candidate is tried first, which is why the FIRST SUFFIX is `-2` and never `-1`.
     let returnTitle = urlTitle;
 
@@ -2776,7 +2776,7 @@ class SqlUrlTitleGenerator implements UrlTitleGenerator {
       returnTitle = `${urlTitle}-${String(addon)}`;
     }
 
-    // [model/service/SettingService.cfc:L70] `return returnTitle;`
+    // [model/service/DataService.cfc:L70] `return returnTitle;`
     return returnTitle;
   }
 
@@ -2907,7 +2907,7 @@ function sanitizeImageNameSegment(segment: string | undefined): string {
  *
  * LEGACY-DEFECT [model/service/SkuService.cfc:L163-L165]: the `renewalSubscriptionBenefits` loop
  * dereferences the loaded benefit with no null guard, unlike the guarded sites at
- * [model/service/SettingService.cfc:L142] and [model/service/SettingService.cfc:L147].
+ * [model/service/SkuService.cfc:L142] and [model/service/SkuService.cfc:L147].
  * Preserved deliberately; do not fix without a product decision.
  *
  * No subscription business logic is added here, and none may be.
@@ -2931,7 +2931,7 @@ class RefusingSubscriptionTermProvider implements SubscriptionTermProvider {
   ): Promise<SubscriptionBenefitHandle | undefined> {
     // LEGACY-DEFECT [model/service/SkuService.cfc:L163-L165]: the `renewalSubscriptionBenefits`
     // loop reaches this lookup with no preceding existence guard, unlike the guarded reads at
-    // [model/service/SettingService.cfc:L142] and [model/service/SettingService.cfc:L147], so the
+    // [model/service/SkuService.cfc:L142] and [model/service/SkuService.cfc:L147], so the
     // legacy raised there on a null.
     // Preserved deliberately; do not fix without a product decision.
     return Promise.reject(
@@ -5080,10 +5080,10 @@ async function toCreateSkusInput(
 
   if (data.price === undefined) {
     // LEGACY-NOTE [model/service/SkuService.cfc:L93]: `arguments.data.price` is read with no
-    // `structKeyExists` guard - at [model/service/SettingService.cfc:L93],
-    // [model/service/SettingService.cfc:L129], [model/service/SettingService.cfc:L156],
-    // [model/service/SettingService.cfc:L157], [model/service/SettingService.cfc:L183] and
-    // [model/service/SettingService.cfc:L193] - so an absent price raised in CFML.
+    // `structKeyExists` guard - at [model/service/SkuService.cfc:L93],
+    // [model/service/SkuService.cfc:L129], [model/service/SkuService.cfc:L156],
+    // [model/service/SkuService.cfc:L157], [model/service/SkuService.cfc:L183] and
+    // [model/service/SkuService.cfc:L193] - so an absent price raised in CFML.
     throw new CompositionDataError(
       'SKU creation was asked for without a price. [model/service/ProductService.cfc:L133] ' +
         'reads it unguarded from the default SKU, and [model/service/SkuService.cfc:L93] ' +

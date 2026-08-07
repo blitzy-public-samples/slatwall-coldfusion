@@ -198,7 +198,7 @@ export class PromotionQualifier {
 
   /**
    * [model/entity/PromotionQualifier.cfc:L78] include list. Read by `hasAnyOption()` at
-   * [model/service/PromotionService.cfc:L885].
+   * [model/service/PromotionService.cfc:L914].
    */
   private readonly options: Option[];
 
@@ -224,7 +224,7 @@ export class PromotionQualifier {
 
   /**
    * [model/entity/PromotionQualifier.cfc:L84] exclude list, `type="array"`. Read by
-   * `hasAnyExcludedOption()` at [model/service/PromotionService.cfc:L914].
+   * `hasAnyExcludedOption()` at [model/service/PromotionService.cfc:L885].
    */
   private readonly excludedOptions: Option[];
 

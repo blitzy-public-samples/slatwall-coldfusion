@@ -55,9 +55,18 @@ export interface TwoPassRewardIterationResult {
 }
 
 /**
- * The two-pass promotion-reward iteration mechanism - order-dependence vector.
+ * The two-pass promotion-reward iteration mechanism - AAP 0.6.1 order-dependence VECTOR 2, the
+ * hand-rolled two-pass loop implemented by mutating the loop counter
+ * [model/service/PromotionService.cfc:L458-L461].
  *
- * That cross-service constraint is not enforced by this module.
+ * Pass two must follow pass one because the order-level branch reads
+ * `order.getSubtotalAfterItemDiscounts()` [model/service/PromotionService.cfc:L417], a value that
+ * only exists once the item discounts are applied. The reset sits INSIDE the loop body, so an
+ * empty reward collection never reaches pass two at all - reproduced deliberately below rather
+ * than accidentally.
+ *
+ * The separate cross-service constraint - the price-group pass running before the promotion pass -
+ * is not enforced by this module.
  *
  * @see {@link RewardVisitor} for what the caller supplies.
  */

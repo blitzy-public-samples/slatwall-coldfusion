@@ -715,11 +715,34 @@ export class PromotionCode {
     order.removePromotionCode(this);
   }
 
-  // LEGACY-NOTE `model/validation/PromotionCode.json` - the `maxCollection:0` delete-context
-  // tension.
-  //
-  // model/validation/PromotionCode.json declares, as its ENTIRE delete context, exactly one rule:
-  // `"orders": [{"contexts":"delete","maxCollection":0}]`.
+  /**
+   * `isDeletable` - may this promotion code be deleted?
+   *
+   * NOT declared on `model/entity/PromotionCode.cfc`: the legacy call at
+   * [model/entity/Promotion.cfc:L127] resolves to the framework base
+   * [org/Hibachi/HibachiEntity.cfc:L204-L206], whose body is
+   * `!getService("hibachiValidationService").validate(object=this, context="delete",
+   * setErrors=false).hasErrors()`. AAP 0.5.3 replaces that framework responsibility with typed
+   * schemas rather than porting the base class, so the predicate is resolved here from the entity's
+   * own declarative rules.
+   *
+   * `model/validation/PromotionCode.json` declares, as its ENTIRE delete context, exactly one rule:
+   * `"orders": [{"contexts":"delete","maxCollection":0}]`. Under that schema the framework body
+   * reduces to "no order references this code", which is what this reads.
+   *
+   * The same construction the legacy uses for the parent: `Promotion.cfc:L170-L172` overrides
+   * `isDeletable()` as `arrayLen(getAppliedPromotions()) == 0`, which is verbatim its own
+   * `model/validation/Promotion.json` rule `"appliedPromotions": [{"contexts":"delete",
+   * "maxCollection":0}]`.
+   *
+   * Synchronous, and over the already-materialized inverse collection - no `lazy="extra"` count
+   * query is issued, because the repository decided the fetch shape when it hydrated the row.
+   *
+   * @returns `true` when no `SwOrderPromotionCode` row references this code.
+   */
+  isDeletable(): boolean {
+    return this.orders.length === 0;
+  }
 
   // NOTE: the source has no `END: Bidirectional Helper Methods` banner closing the block opened at
   // [model/entity/PromotionCode.cfc:L98]. See wart 1 in the banner table at the foot of the file.

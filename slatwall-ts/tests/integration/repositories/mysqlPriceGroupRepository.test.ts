@@ -1,11 +1,14 @@
 // slatwall-ts - repository suite for the price-group reads and writes.
 //
-// Two published locators carry drift, corrected here rather than repeated.
+// The two-stage shape of `getAccountSubscriptionPriceGroups` is not this port's invention. The
+// legacy comment at [model/dao/PriceGroupDAO.cfc:L56] reads `can't figure out top 1 hql so, doing
+// query: Sumit` - the source author's own explanation of why stage one is a raw query rather than
+// HQL, and therefore of why the two-stage shape exists at all.
 //
-// It is the source author's own explanation of why stage one is a raw query rather than HQL, and
-// therefore of why the two-stage shape exists.
-//
-// Why this sits under tests/integration/repositories/ and needs no database.
+// Why this sits under tests/integration/repositories/ and needs no database: the tier names the
+// layer under test - the seam between adapter and statement - not the presence of a server. Every
+// adapter here runs against a recording executor that opens no socket, so `TEST_LIVE_DATABASE` is
+// neither imported nor consulted and setting it changes nothing this suite proves.
 
 import { describe, expect, it } from 'vitest';
 

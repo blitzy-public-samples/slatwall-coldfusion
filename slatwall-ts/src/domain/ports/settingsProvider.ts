@@ -4,8 +4,9 @@
 // The legacy platform reads a setting four different ways; all four collapse into this flat port.
 //
 // The four keys, in the order their declarations appear in `model/service/SettingService.cfc`,
-// with the defaults declared there: `globalURLKeyProduct` ("sp") [model/entity/Sku.cfc:L178],
-// `globalURLKeyProductType` ("spt") [model/entity/Sku.cfc:L179].
+// with the defaults declared there: `globalURLKeyProduct` ("sp")
+// [model/service/SettingService.cfc:L178], `globalURLKeyProductType` ("spt")
+// [model/service/SettingService.cfc:L179].
 export type SettingKey =
   /**
    * URL key segment for a product detail page.

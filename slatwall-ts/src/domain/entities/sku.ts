@@ -544,7 +544,7 @@ export class Sku {
   private currentAccountPriceMemo: Money | undefined;
 
   /**
-   * [model/entity/Sku.cfc:L576] `structKeyExists(variables, "skuDefinition")`.
+   * [model/entity/Sku.cfc:L575] `structKeyExists(variables, "skuDefinition")`.
    */
   private skuDefinitionMemo: string | undefined;
 
@@ -567,7 +567,15 @@ export class Sku {
       this.skuCode = input.skuCode;
     }
 
-    // [model/entity/Sku.cfc:L55-L57] default="0" the asymmetry documented on the fields above.
+    // [model/entity/Sku.cfc:L55-L57] all three money columns declare `default="0"`, so coercing an
+    // absent value to `Money.zero` agrees with the source's own declared default. None of the three
+    // declares `notnull`, so a row written outside the entity can still hold SQL NULL; on such a
+    // row the legacy would leave the Step 2 struct sub-key absent, fall through to Step 3 and raise
+    // inside `convertCurrency(null, ...)`, whereas this reads zero. The repository carries no DDL
+    // to settle whether such a row can exist, so the declared default is followed rather than a
+    // raise invented. Contrast the two readers that deliberately differ:
+    // `priceGroupRepository.readMoney` answers `undefined` and `promotionRepository.readMoney`
+    // throws, each because its own column has no declared default to fall back on.
     this.listPrice = input.listPrice ?? Money.zero;
     this.price = input.price ?? Money.zero;
     this.renewalPrice = input.renewalPrice ?? Money.zero;
@@ -1629,8 +1637,10 @@ export class Sku {
             continue;
           }
 
-          // [model/entity/Sku.cfc:L401-L404] A GENUINE runtime guard: `SkuCurrency.renewalPrice`
-          // `model/entity/SkuCurrency.cfc` declares no default, so it really can be null.
+          // [model/entity/Sku.cfc:L401-L404] The legacy's own `isNull()` guard, reproduced where
+          // the legacy put it. It is not redundant: [model/entity/SkuCurrency.cfc:L54] declares
+          // `default="0"` but no `notnull`, and the ORM default is applied to a new instance
+          // rather than to the column, so a stored NULL is readable here.
           const overrideRenewalPrice = skuCurrency.getRenewalPrice();
           // LEGACY-NOTE: `isNullish` carries the CFML `isNull()` semantics - null and undefined
           // both count - but it returns a plain boolean rather than a type predicate, so the
@@ -1641,7 +1651,8 @@ export class Sku {
             detail.renewalPriceFormatted = Sku.formatCurrency(overrideRenewalPrice);
           }
 
-          // [model/entity/Sku.cfc:L405-L408] Likewise genuine.
+          // [model/entity/Sku.cfc:L405-L408] The same guard on the same terms:
+          // [model/entity/SkuCurrency.cfc:L55] also declares `default="0"` and no `notnull`.
           const overrideListPrice = skuCurrency.getListPrice();
           // Same pairing as the renewal-price guard above.
           if (!isNullish(overrideListPrice) && overrideListPrice !== undefined) {
@@ -1651,7 +1662,9 @@ export class Sku {
 
           // LEGACY-NOTE [model/entity/Sku.cfc:L409]: CFML cannot store null in a struct key, so
           // when an override row's `price` is null the assignment leaves the sub-key absent rather
-          // than storing a null.
+          // than storing a null. The legacy assigns it UNGUARDED, and `price`
+          // [model/entity/SkuCurrency.cfc:L53] is the only one of the three money columns that
+          // declares no default at all.
           const overridePrice = skuCurrency.getPrice();
           // `isNullish` carries CFML `isNull()` semantics; the `!== undefined` conjunct narrows
           // the type - see the note on the renewal-price guard above.

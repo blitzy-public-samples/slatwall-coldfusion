@@ -7,7 +7,10 @@
 // SlatwallProductType/SlatwallProduct, reached through `new query()` and `setSQL()`, which
 // bypasses the name mapping entirely.
 //
-// Why this sits under tests/integration/repositories/ and needs no database.
+// Why this sits under tests/integration/repositories/ and needs no database: the tier names the
+// layer under test - the seam between adapter and statement - not the presence of a server. Every
+// adapter here runs against a recording executor that opens no socket, so `TEST_LIVE_DATABASE` is
+// neither imported nor consulted and setting it changes nothing this suite proves.
 
 import { describe, expect, it } from 'vitest';
 

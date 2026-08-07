@@ -106,19 +106,49 @@ const UNTRACKED_ROOT_NAMES: readonly string[] = [
   'build/',
   'coverage/',
   '.env',
+  '.env.*',
   '*.tsbuildinfo',
   '*.eslintcache',
   '*.log',
 ];
 
-function listSubtreeRootFiles(): string[] {
-  const isIgnored = (name: string): boolean =>
-    UNTRACKED_ROOT_NAMES.some((rule) =>
-      rule.startsWith('*') ? name.endsWith(rule.slice(1)) : name === rule.replace(/\/$/, ''),
-    );
+/**
+ * The one name a `.gitignore` rule matches and the census must still SEE.
+ *
+ * `.env.*` would swallow the committed environment contract, so `.gitignore` re-includes it with its
+ * single negation and this list is that negation's counterpart. Without it the census would stop
+ * reporting a frozen root artifact and the frozen-scope check would silently pass on its absence.
+ */
+const TRACKED_DESPITE_UNTRACKED_RULE: readonly string[] = ['.env.example'];
 
+/**
+ * Whether a root FILE name is one the census treats as generated.
+ *
+ * Three rule shapes, matching the three `.gitignore` writes: a trailing `/` is a directory rule, a
+ * leading `*` is a suffix glob, and a trailing `*` is a prefix glob. Anything else is an exact name.
+ */
+function isUntrackedRootName(name: string): boolean {
+  if (TRACKED_DESPITE_UNTRACKED_RULE.includes(name)) {
+    return false;
+  }
+
+  return UNTRACKED_ROOT_NAMES.some((rule) => {
+    if (rule.endsWith('/')) {
+      return name === rule.slice(0, -1);
+    }
+    if (rule.startsWith('*')) {
+      return name.endsWith(rule.slice(1));
+    }
+    if (rule.endsWith('*')) {
+      return name.startsWith(rule.slice(0, -1));
+    }
+    return name === rule;
+  });
+}
+
+function listSubtreeRootFiles(): string[] {
   return readdirSync(SUBTREE_ROOT, { withFileTypes: true })
-    .filter((entry) => !entry.isDirectory() && !isIgnored(entry.name))
+    .filter((entry) => !entry.isDirectory() && !isUntrackedRootName(entry.name))
     .map((entry) => entry.name)
     .sort();
 }
@@ -4261,6 +4291,36 @@ describe('A16 runtime platform pin: the frozen Node line, across every artifact 
     expect(config).not.toContain('CWE-');
     expect(config).not.toContain('npm audit');
     const readme = readSubtreeFile('README.md');
+
+    // The README claims this block "asserts the absence of both shapes", so the checks are on the
+    // SHAPES rather than on the two literal strings that were removed. An exact-literal ban lets a
+    // stamp dated any other day, or a differently-worded milestone row, reinstate exactly the rot
+    // the claim says is prevented.
+    //
+    // A dated verification stamp, in any of the three spellings a writer reaches for.
+    expect(
+      readme.match(/\b(?:Verified|Last verified|Checked)\s+\d{4}-\d{2}-\d{2}/gu) ?? [],
+      'a dated verification stamp rots into a false claim the first time it goes unrefreshed. ' +
+        'State the authority to read instead of the date it was read.',
+    ).toEqual([]);
+
+    // A milestone table: a row that pairs one of the two restriction milestones with a date. The
+    // emphasis markers are optional so a re-worded row is caught too.
+    expect(
+      readme.match(
+        /\|[^|\n]*\b(?:block|blocked|blocks|stop|stopped|stops)\b[^|\n]*\bfunction\b[^|\n]*\|[^|\n]*\d{4}-\d{2}-\d{2}/giu,
+      ) ?? [],
+      'AAP 0.8.1 forbids manufacturing a precision the published authorities do not agree on. ' +
+        'Name the authority to read rather than tabulating a milestone date.',
+    ).toEqual([]);
+    expect(
+      readme.match(
+        /\|[^|\n]*\bfunction\s+_?(?:creation|create|update|updates)_?\b[^|\n]*\|[^|\n]*\d{4}/giu,
+      ) ?? [],
+    ).toEqual([]);
+
+    // And the two passages that were removed stay removed, so the shape checks above cannot be
+    // satisfied by a rewrite that happens to dodge a regex.
     expect(readme).not.toContain('Verified 2026-08-05');
     expect(readme).not.toContain('Block function _create_');
   });
@@ -5461,6 +5521,342 @@ describe('A27 locator integrity: every cited locator resolves to a line that exi
       100,
     );
   });
+
+  // SYMBOL CORROBORATION, and exactly what it can and cannot catch.
+  //
+  // The three cases above prove a cited PATH exists and a cited LINE is inside it. Neither can see
+  // a citation that names the WRONG legacy file, because a wrong file usually exists and usually
+  // has a line of that number, and neither can see one that is off by a line. Both mistakes have
+  // occurred in this tree at scale: a currency routine attributed to the settings component
+  // eighteen times over, two setting keys attributed to an entity, and off-by-one locators into
+  // `model/service/HibachiUtilityService.cfc`.
+  //
+  // What corroborates a locator is the SYMBOL the surrounding prose names. Where a comment writes a
+  // legacy member or property in backticks immediately beside a citation, that name has to occur in
+  // the cited file, and for a single-line citation it has to occur in the method the cited line
+  // belongs to.
+  //
+  // WHAT THIS CATCHES: a wrong file, and a wrong line, whenever the citation is written beside the
+  // symbol it is about. WHAT IT DOES NOT: a citation with no symbol beside it, a symbol that is not
+  // member-shaped, one that appears nowhere in the legacy tree, a wrong line inside a multi-line
+  // span, and a wrong line that still falls inside the right method. The claim is deliberately no
+  // larger than the check.
+
+  /**
+   * A citation whose adjacent symbol legitimately belongs to something other than that citation.
+   *
+   * One shape recurs: a sentence names two symbols around a single citation, so the pairing the
+   * scan forms is not always the one the citation is about.
+   *
+   * The register is closed in practice. A new row is a visible edit, the case below reports any
+   * unregistered pair by artifact, path and symbol, and a row that stops corresponding to a real
+   * pairing is reported as stale.
+   */
+  interface CitedSymbolExemption {
+    readonly citingArtifact: string;
+    readonly citedPath: string;
+    readonly symbol: string;
+    readonly reason: string;
+  }
+
+  const CITED_SYMBOL_EXEMPTIONS: readonly CitedSymbolExemption[] = Object.freeze([
+    {
+      citingArtifact: 'src/domain/views/orderItemView.ts',
+      citedPath: 'model/entity/PromotionApplied.cfc',
+      symbol: 'arrayDeleteAt',
+      reason:
+        'The citation is about removeOrderItem, which is exactly the cited line. arrayDeleteAt is ' +
+        'the CFML builtin the same sentence goes on to name, further inside that method body.',
+    },
+  ]);
+
+  /**
+   * A legacy member or property name: lower camel case with an internal capital.
+   *
+   * This shape is what keeps the scan quiet. It excludes keywords and target type names, which are
+   * either all lower case or capitalised outright, and it excludes every `Sw` table name.
+   */
+  const MEMBER_SHAPED_SYMBOL = /^[a-z][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*$/u;
+
+  /**
+   * A citation or a backticked identifier, whichever comes next.
+   *
+   * Scanning both in ONE pass is what makes the pairing below unambiguous: the neighbours of an
+   * identifier are known, so a citation cannot be paired with a symbol that has another citation
+   * or another symbol in between.
+   */
+  const ADJACENCY_TOKEN = new RegExp(
+    '\\[((?:model|integrationServices|org|config|meta|admin|frontend|public|custom|tags|templates|assets)' +
+      '\\/[A-Za-z0-9_./-]+?\\.(?:cfc|cfm|json|txt|xml))((?::L\\d+(?:-L?\\d+)?)+)\\]' +
+      '|`([A-Za-z][A-Za-z0-9_]{4,})(?:\\([^`)]*\\))?`',
+    'gu',
+  );
+
+  /** What may sit between a symbol and a citation that FOLLOWS it. */
+  const SEPARATOR_BEFORE_CITATION = /^ *(?:[-:\u2014(]|\("[^"]*"\)|at|in|from)? *$/u;
+
+  /** What may sit between a citation and a symbol that FOLLOWS it. */
+  const SEPARATOR_AFTER_CITATION =
+    /^ *(?:[-:\u2014]|is|are|calls|reads|declares|draws|names|holds|returns|sets)? *$/u;
+
+  /** Strips the comment marker from a line, leaving the prose. */
+  const COMMENT_MARKER = /^\s*(?:\/\/+|\*\/?|\/\*\*?)\s?/u;
+
+  /**
+   * Splits an artifact into prose units: each run of consecutive comment lines joined into one
+   * string, and every other line on its own.
+   *
+   * Joining matters because a wrapped comment puts the symbol on one line and the citation on the
+   * next, and that wrap is a typographic accident rather than a break in the sentence. A blank
+   * comment line ends the run, so one paragraph never runs into the next.
+   */
+  const proseUnits = (text: string): string[] => {
+    const units: string[] = [];
+    let run: string[] = [];
+    const flush = (): void => {
+      if (run.length > 0) {
+        units.push(run.join(' '));
+        run = [];
+      }
+    };
+    for (const line of text.split('\n')) {
+      if (COMMENT_MARKER.test(line)) {
+        const prose = line.replace(COMMENT_MARKER, '').trim();
+        if (prose === '') {
+          flush();
+        } else {
+          run.push(prose);
+        }
+      } else {
+        flush();
+        units.push(line);
+      }
+    }
+    flush();
+    return units;
+  };
+
+  const occursAsWord = (text: string, symbol: string): boolean =>
+    new RegExp(`(?<![A-Za-z0-9_])${symbol}(?![A-Za-z0-9_])`, 'u').test(text);
+
+  /**
+   * The spellings a legacy property answers to.
+   *
+   * A persistent property is DECLARED once by its bare name and read everywhere through an accessor
+   * the framework synthesises, so `productTypeIDPath` is legitimately visible in a body only as
+   * `getProductTypeIDPath()`. Accepting the accessor forms is what keeps that from reading as drift.
+   */
+  const ACCESSOR_PREFIXES = ['get', 'set', 'has', 'is', 'add', 'remove'] as const;
+  const occursUnderAnySpelling = (text: string, symbol: string): boolean =>
+    occursAsWord(text, symbol) ||
+    ACCESSOR_PREFIXES.some((prefix) =>
+      occursAsWord(text, `${prefix}${symbol[0]?.toUpperCase() ?? ''}${symbol.slice(1)}`),
+    );
+
+  const legacyLinesOf = (() => {
+    const cache = new Map<string, string[]>();
+    return (relativePath: string): string[] => {
+      let split = cache.get(relativePath);
+      if (split === undefined) {
+        split = readRepositoryFile(relativePath).split('\n');
+        cache.set(relativePath, split);
+      }
+      return split;
+    };
+  })();
+
+  /**
+   * The CFML function a cited line sits inside, found by scanning upward to the nearest declaration.
+   *
+   * Citations in this tree deliberately name the REACH line rather than the declaration: the
+   * statement a sentence is about is more useful to a reader than the signature above it. A locator
+   * inside the method the prose names is therefore correct, and this is what recognises it.
+   */
+  const enclosingLegacyFunction = (
+    relativePath: string,
+    oneBasedLine: number,
+  ): string | undefined => {
+    const split = legacyLinesOf(relativePath);
+    for (let index = Math.min(oneBasedLine, split.length) - 1; index >= 0; index -= 1) {
+      const declaration = /\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/u.exec(split[index] ?? '');
+      if (declaration) {
+        return declaration[1];
+      }
+    }
+    return undefined;
+  };
+
+  interface CorroboratedPair {
+    readonly citingArtifact: string;
+    readonly citedPath: string;
+    readonly lines: readonly number[];
+    readonly symbol: string;
+  }
+
+  /**
+   * Every symbol that sits beside a citation, paired with that citation.
+   *
+   * A symbol that FOLLOWS a citation is paired with it only when no citation follows the symbol
+   * too: the trailing form attributes more explicitly, so it wins.
+   */
+  const corroboratedPairs = ((): CorroboratedPair[] => {
+    const paired: CorroboratedPair[] = [];
+    for (const artifact of CITING_ARTIFACTS) {
+      for (const unit of proseUnits(readSubtreeFile(artifact))) {
+        const tokens = [...unit.matchAll(ADJACENCY_TOKEN)].map((match) => ({
+          isSymbol: match[3] !== undefined,
+          start: match.index,
+          end: match.index + match[0].length,
+          citedPath: match[1] ?? '',
+          tail: match[2] ?? '',
+          symbol: match[3] ?? '',
+        }));
+        for (const [index, token] of tokens.entries()) {
+          if (!token.isSymbol || !MEMBER_SHAPED_SYMBOL.test(token.symbol)) {
+            continue;
+          }
+          const next = tokens[index + 1];
+          const previous = tokens[index - 1];
+          let citation: (typeof tokens)[number] | undefined;
+          if (
+            next !== undefined &&
+            !next.isSymbol &&
+            SEPARATOR_BEFORE_CITATION.test(unit.slice(token.end, next.start))
+          ) {
+            citation = next;
+          } else if (
+            previous !== undefined &&
+            !previous.isSymbol &&
+            SEPARATOR_AFTER_CITATION.test(unit.slice(previous.end, token.start))
+          ) {
+            citation = previous;
+          }
+          if (citation === undefined || legacyLineCount(citation.citedPath) === undefined) {
+            continue; // an absent path is the first case's business
+          }
+          paired.push({
+            citingArtifact: artifact,
+            citedPath: citation.citedPath,
+            lines: linesIn(citation.tail),
+            symbol: token.symbol,
+          });
+        }
+      }
+    }
+    // A symbol that occurs nowhere in the cited legacy corpus is a TARGET name, which nothing in
+    // the legacy tree could corroborate. Filtering on the whole corpus rather than per file is what
+    // keeps that from being mistaken for a wrong-file citation.
+    const corpus = [...new Set(paired.map((pair) => pair.citedPath))]
+      .map((relativePath) => readRepositoryFile(relativePath))
+      .join('\n');
+    return paired.filter((pair) => occursUnderAnySpelling(corpus, pair.symbol));
+  })();
+
+  const keyOf = (pair: CorroboratedPair): string =>
+    `${pair.citingArtifact}|${pair.citedPath}|${pair.symbol}`;
+  const exemptionKeys = new Set(
+    CITED_SYMBOL_EXEMPTIONS.map(
+      (exemption) => `${exemption.citingArtifact}|${exemption.citedPath}|${exemption.symbol}`,
+    ),
+  );
+
+  const wrongFile = corroboratedPairs.filter(
+    (pair) => !occursUnderAnySpelling(readRepositoryFile(pair.citedPath), pair.symbol),
+  );
+  const wrongFileKeys = new Set(wrongFile.map(keyOf));
+  const wrongLine = corroboratedPairs.filter((pair) => {
+    const only = pair.lines.length === 1 ? pair.lines[0] : undefined;
+    if (only === undefined || wrongFileKeys.has(keyOf(pair))) {
+      return false;
+    }
+    return (
+      !occursUnderAnySpelling(legacyLinesOf(pair.citedPath)[only - 1] ?? '', pair.symbol) &&
+      enclosingLegacyFunction(pair.citedPath, only) !== pair.symbol
+    );
+  });
+
+  it('names a symbol beside a citation only when the CITED FILE carries that symbol', () => {
+    const offenders = [
+      ...new Set(
+        wrongFile
+          .filter((pair) => !exemptionKeys.has(keyOf(pair)))
+          .map((pair) => `${pair.citingArtifact} cites ${pair.citedPath} for \`${pair.symbol}\``),
+      ),
+    ].sort();
+
+    expect(
+      offenders,
+      'each citation here names a legacy file that does not carry the symbol written beside it, ' +
+        'which is what a wrong-file citation looks like. Re-derive the path from the symbol, or ' +
+        'register the pairing in CITED_SYMBOL_EXEMPTIONS with the reason the symbol sits elsewhere.',
+    ).toEqual([]);
+  });
+
+  it('and, for a single-line citation, only when that LINE or its method carries it', () => {
+    const offenders = [
+      ...new Set(
+        wrongLine
+          .filter((pair) => !exemptionKeys.has(keyOf(pair)))
+          .map(
+            (pair) =>
+              `${pair.citingArtifact} cites ${pair.citedPath}:L${String(pair.lines[0])} for ` +
+              `\`${pair.symbol}\``,
+          ),
+      ),
+    ].sort();
+
+    expect(
+      offenders,
+      'each locator here misses the symbol written beside it, and misses the method that symbol ' +
+        'names as well. Re-derive it from the legacy file, or register the pairing in ' +
+        'CITED_SYMBOL_EXEMPTIONS with the reason.',
+    ).toEqual([]);
+  });
+
+  it('keeps the exemption register honest, and the corroboration walk non-vacuous', () => {
+    // A row that no longer corresponds to a real pairing would pre-authorise a FUTURE citation of
+    // the same shape without anyone noticing.
+    const detected = new Set([...wrongFile, ...wrongLine].map(keyOf));
+    expect(
+      [...exemptionKeys].filter((key) => !detected.has(key)).sort(),
+      'each row here exempts a pairing that no longer occurs; delete it so the exemption cannot be ' +
+        'inherited by a later change.',
+    ).toEqual([]);
+
+    for (const exemption of CITED_SYMBOL_EXEMPTIONS) {
+      expect(exemption.reason.trim().length).toBeGreaterThanOrEqual(40);
+      expect(legacyLineCount(exemption.citedPath)).not.toBeUndefined();
+      expect(subtreeFileExists(exemption.citingArtifact)).toBe(true);
+    }
+
+    // Non-vacuity. A matcher that found nothing would pass both cases above in silence, so the
+    // figures below record the breadth the walk actually reaches.
+    expect(corroboratedPairs.length).toBeGreaterThanOrEqual(500);
+    expect(new Set(corroboratedPairs.map((pair) => pair.symbol)).size).toBeGreaterThanOrEqual(250);
+    expect(
+      new Set(corroboratedPairs.map((pair) => pair.citingArtifact)).size,
+    ).toBeGreaterThanOrEqual(100);
+    expect(new Set(corroboratedPairs.map((pair) => pair.citedPath)).size).toBeGreaterThanOrEqual(
+      40,
+    );
+    expect(
+      corroboratedPairs.filter((pair) => pair.lines.length === 1).length,
+    ).toBeGreaterThanOrEqual(300);
+
+    // And both adjacency directions really match, proved on a probe rather than on the tree.
+    const probe =
+      'wraps [model/entity/Sku.cfc:L269] `getPriceByCurrencyCode` while ' +
+      '`getCurrencyDetails()` at [model/entity/Sku.cfc:L367] memoises the cascade';
+    const probed = proseUnits(`// ${probe}`).flatMap((unit) => [...unit.matchAll(ADJACENCY_TOKEN)]);
+    expect(probed.filter((match) => match[3] !== undefined).map((match) => match[3])).toEqual([
+      'getPriceByCurrencyCode',
+      'getCurrencyDetails',
+    ]);
+    expect(enclosingLegacyFunction('model/entity/Sku.cfc', 271)).toBe('getPriceByCurrencyCode');
+    expect(occursUnderAnySpelling('return getProductTypeIDPath();', 'productTypeIDPath')).toBe(
+      true,
+    );
+  });
 });
 
 // What an entry in `recordedScopeAdditions` is and is not.
@@ -5656,6 +6052,34 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
       .filter((line) => line.length > 0 && !line.startsWith('#'));
 
     expect(missingFrom(UNTRACKED_ROOT_NAMES, ruleLines).sort()).toEqual([]);
+
+    // THE OTHER DIRECTION, which the one-way check above cannot supply. A rule that can match a
+    // root FILE and is unknown to the census produces the worst possible pair of answers: `git`
+    // ignores the file while the census reports it as scope drift. Directory rules are excluded
+    // because the census reads files only, and negations because they RE-INCLUDE rather than ignore.
+    const fileMatchingRules = ruleLines.filter(
+      (line) => !line.startsWith('!') && !line.endsWith('/'),
+    );
+    expect(
+      missingFrom(fileMatchingRules, [...UNTRACKED_ROOT_NAMES]).sort(),
+      'each rule here gitignores a root file the census would still report as scope drift. Add the ' +
+        'name to UNTRACKED_ROOT_NAMES, or scope the rule to a directory.',
+    ).toEqual([]);
+
+    // Every negation names a frozen root artifact, and the census keeps it visible.
+    const negations = ruleLines.filter((line) => line.startsWith('!')).map((line) => line.slice(1));
+    expect(negations).toEqual([...TRACKED_DESPITE_UNTRACKED_RULE]);
+    for (const name of negations) {
+      expect(FROZEN.rootArtifacts).toContain(name);
+      expect(isUntrackedRootName(name)).toBe(false);
+    }
+
+    // The agreement, exercised rather than described: the file the finding named, and the one name
+    // the negation rescues from the same glob.
+    expect(isUntrackedRootName('.env.local')).toBe(true);
+    expect(isUntrackedRootName('.env')).toBe(true);
+    expect(isUntrackedRootName('.env.example')).toBe(false);
+    expect(isUntrackedRootName('README.md')).toBe(false);
 
     // And the committed contract stays tracked. `.env` is ignored, `.env.*` with it, and
     // `.env.example` is re-included - the one negation in the file.
@@ -5907,7 +6331,7 @@ describe('A19 no invented non-functional requirement, and no sampled entropy, in
   });
 });
 
-describe('A20 schema continuity: abbreviated link-table names, held to the legacy declarations', () => {
+describe('A30 schema continuity: abbreviated link-table names, held to the legacy declarations', () => {
   /**
    * AAP 0.8.1 "Schema Continuity" binds this port to the existing `Sw*` MySQL tables: no
    * migration, no rename, no column change.
@@ -6138,8 +6562,9 @@ describe('A20 schema continuity: abbreviated link-table names, held to the legac
   });
 
   it("keeps PriceGroupRate's one abbreviated exclude table abbreviated, and only that one", () => {
-    // Of the three exclude tables, only `excludedProductTypes` at [model/entity/Sku.cfc:L75]
-    // shortens `Group` to `Grp`; [model/entity/Sku.cfc:L76] and [model/entity/Sku.cfc:L77] spell
+    // Of the three exclude tables, only `excludedProductTypes` at
+    // [model/entity/PriceGroupRate.cfc:L75] shortens `Group` to `Grp`;
+    // [model/entity/PriceGroupRate.cfc:L76] and [model/entity/PriceGroupRate.cfc:L77] spell
     // it in full.
     const declarations: readonly (readonly [number, string, string])[] = [
       [71, 'productTypes', 'SwPriceGroupRateProductType'],
@@ -6239,7 +6664,7 @@ describe('A20 schema continuity: abbreviated link-table names, held to the legac
 // The arithmetic is recomputed from the source rather than restated, so the assertion cannot agree
 // with a comment while disagreeing with the code.
 
-describe('A18 the environment delivery-size contract fits the platform quota', () => {
+describe('A29 the environment delivery-size contract fits the platform quota', () => {
   const LAMBDA_ENVIRONMENT_QUOTA_BYTES = 4_096;
 
   /**
@@ -6628,6 +7053,46 @@ describe('A28 comment discipline: the doctrine, enforced against the tree rather
       offenders,
       'delete the glyph or rule; a short heading is the whole of what it bought.',
     ).toEqual([]);
+  });
+
+  it('carries no A-prefixed gate identifier twice, and explains the one number that is absent', () => {
+    // An identifier that names two blocks makes every citation of it ambiguous - `.gitignore`,
+    // `README.md` and `eslint.config.mjs` all cite these by number, and a reader following one
+    // cannot tell which block was meant. Derived from this file's own `describe` titles rather than
+    // listed, so the check cannot agree with a list while disagreeing with the tree.
+    const declared = [
+      ...readSubtreeFile('tests/traceability/legacyTestMap.ts').matchAll(
+        /^describe\('(A\d+[a-z]?) /gmu,
+      ),
+    ].map((match) => match[1] ?? '');
+
+    expect(declared.length).toBeGreaterThanOrEqual(30);
+    expect(
+      duplicatesIn(declared).sort(),
+      'each identifier here names two blocks, so every external citation of it is ambiguous. ' +
+        'Renumber one and update the citing sites.',
+    ).toEqual([]);
+
+    // The numeric sequence, and the ONE hole in it. `A26` was a prior-checkpoint ledger of review
+    // finding identifiers; a later checkpoint required that review narration be removed from the
+    // tree, which removed the gate with it. The number is left vacant rather than reused, because
+    // reusing it would make a citation of `A26` resolve to two different subjects across the
+    // project's history - the same ambiguity this case exists to prevent. The remediation history
+    // itself lives in the commit log and in the checkpoint reports, which is where a reader who
+    // needs it should look.
+    const numbers = [...new Set(declared.map((id) => Number(/\d+/u.exec(id)?.[0] ?? '-1')))].sort(
+      (left, right) => left - right,
+    );
+    const highest = numbers[numbers.length - 1] ?? 0;
+    const absent = Array.from({ length: highest + 1 }, (_unused, index) => index).filter(
+      (candidate) => !numbers.includes(candidate),
+    );
+
+    expect(
+      absent,
+      'a vacant gate number must be explained where it is asserted, so a reader does not read it ' +
+        'as a deleted check nobody noticed.',
+    ).toEqual([26]);
   });
 
   it('states behaviour without a floating temporal claim', () => {

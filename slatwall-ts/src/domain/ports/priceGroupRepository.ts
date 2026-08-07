@@ -5,8 +5,12 @@
 // `getAccountSubscriptionPriceGroups` [model/dao/PriceGroupDAO.cfc:L52-L100] is the whole
 // component.
 //
-// Unfulfilled test obligation: no test yet asserts that reversing the two passes changes the
-// computed discount.
+// AAP 0.9.3's ordering criterion is asserted, in both halves. That the price-group pass runs first
+// is pinned in tests/unit/handlers/bootstrap.test.ts; that REVERSING the two passes changes the
+// computed discount is pinned in tests/unit/services/promotionService.test.ts, describe
+// "the cross-service ordering constraint" - forward yields 3.01 and reversed yields 4.01 on the
+// same order, because [model/service/PromotionService.cfc:L241] chooses the discount base by
+// applied-price-group state that only the price-group pass writes.
 //
 // This port carries no sequence number, phase parameter, `runAfter` field, ordered-pipeline type
 // or orchestration method, and none may be added - `src/handlers/**` and `src/services/**` enforce

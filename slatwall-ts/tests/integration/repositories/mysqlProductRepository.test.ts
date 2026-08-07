@@ -3,12 +3,17 @@
 // Two things are asserted and nothing else: the exact SQL text the adapter emits, and the exact
 // array of parameters it binds to that text.
 //
-// parameterized-sql-exclusively in the entire migration, and one of the two carried-forward TODOs.
-// Both live on `getAttributeSets`, both come from the same four legacy lines, and both are
-// asserted below rather than described.
+// This suite also carries the ONE documented exception to parameterized-SQL-exclusively in the
+// entire migration, and one of the two carried-forward TODOs. Both live on `getAttributeSets`, both
+// come from the same four legacy lines, and both are asserted below rather than described.
 //
 // `meta/tests/unit/dao/` contains exactly two files - `AccountDAOTest.cfc` and
-// `PaymentDAOTest.cfc` - and both are out of scope.
+// `PaymentDAOTest.cfc` - and both are out of scope, so this coverage is net-new.
+//
+// Why this sits under tests/integration/repositories/ and needs no database: the tier names the
+// layer under test - the seam between adapter and statement - not the presence of a server. Every
+// adapter here runs against a recording executor that opens no socket, so `TEST_LIVE_DATABASE` is
+// neither imported nor consulted and setting it changes nothing this suite proves.
 
 import { describe, expect, it } from 'vitest';
 
@@ -3803,8 +3808,8 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
     it('names every out-of-scope child table from its OWN entity declaration', async () => {
       // Nothing is invented by reading them, and the foreign keys are declared in the same files -
       // `Image.product` is `fkcolumn="productID"` [model/entity/Image.cfc:L61] and
-      // `AttributeValue` carries both `productID` [model/entity/Image.cfc:L70] and `skuID`
-      // [model/entity/Image.cfc:L72].
+      // `AttributeValue` carries both `productID` [model/entity/AttributeValue.cfc:L70] and `skuID`
+      // [model/entity/AttributeValue.cfc:L72].
       const executor = new RecordingExecutor();
       const repository = aProductRepository(executor, TEST_AUDIT_ACTOR);
 
