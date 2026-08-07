@@ -1,179 +1,18 @@
-// ---------------------------------------------------------------------------
 // slatwall-ts - characterization suite pinning `src/services/promotion/discountAmount.ts`
 //
-// The subject is the ported form of
-// `private numeric function getDiscountAmount(required any reward, required numeric price,
-//  required numeric quantity)` [model/service/PromotionService.cfc:L987-L1018] - the arithmetic
-// leaf of MUST-PRESERVE AREA #1, promotion discount math together with use-limit enforcement.
-// Every discount this platform grants is computed by the thirty-two lines this file guards, so
-// each assertion below is a statement about money rather than about structure.
+// LEGACY-NOTE [model/service/PromotionService.cfc:L150, L252, L299, L486, L990, L995, L1001,
+// L1006, L1007]: the `precisionEvaluate` census for this component is nine sites, and
+// [model/service/PriceGroupService.cfc:L323, L331] is that component's pair - each read off the
+// source rather than taken from a summary.
 //
-// ---------------------------------------------------------------------------
-// 100% NET-NEW COVERAGE - NEVER TO BE PRESENTED AS PARITY
-// ---------------------------------------------------------------------------
-// Not one assertion below has a legacy antecedent, and recording that is a requirement rather
-// than a courtesy: presenting net-new coverage as parity fails the traceability gate.
-// `meta/tests/unit/service/` holds exactly four components - `AccountServiceTest.cfc`,
-// `HibachiServiceTest.cfc`, `PaymentServiceTest.cfc` and `UtilityRBServiceTest.cfc` - none of
-// them in scope, and `grep -rli 'promotion' meta/tests/` returns ZERO files: no legacy test
-// anywhere in the tree so much as mentions a promotion. Across the whole migration only
-// `tests/unit/domain/entities/brand.test.ts` and `tests/unit/domain/entities/product.test.ts`
-// extend a legacy suite, and `meta/tests/functional/admin/entity/ProductTest.cfc` is an empty
-// stub contributing zero coverage to anybody. There is no antecedent for this file, and no
-// lineage is claimed for it.
-//
-// ---------------------------------------------------------------------------
-// NO USER-SPECIFIED RULES EXIST, AND THE ABSENCE WAS VERIFIED
-// ---------------------------------------------------------------------------
-// The project's rules source was queried three independent ways while this suite was authored -
-// unpaged, over the full range, and at a high offset well past any plausible end of document -
-// and returned the identical single-line sentinel every time. It is a fixed sentinel, not a
-// truncated read: a genuinely paginated document would answer empty at a high offset.
-//
-// Consequently NO user-specified rule governs this file, no rule is invented to fill the gap,
-// and the absence is NOT treated as licence to lower the bar. The enterprise practices the
-// migration commits to apply at full strength in their place, and the rules source remains the
-// authoritative answer should rules ever be added - this note records its result and does not
-// substitute for it.
-//
-// ---------------------------------------------------------------------------
-// READ THIS BEFORE READING THE ASSERTIONS: THE ROUNDING IS AN INVERTED DELTA
-// ---------------------------------------------------------------------------
-// [model/service/PromotionService.cfc:L1005-L1007] DOES NOT ROUND THE DISCOUNT.
-//
-//   L1006  roundedFinalAmount = roundValueByRoundingRule(
-//              value = precisionEvaluate('originalAmount - discountAmountPreRounding'),
-//              roundingRule = reward.getRoundingRule() )
-//   L1007  discountAmount = precisionEvaluate('originalAmount - roundedFinalAmount')
-//
-// The value handed to the rounding rule is the NET PRICE the customer would pay, so the rule
-// lands on a resulting PRICE POINT - `$x.99`, say - and the discount is then DERIVED BACKWARDS
-// as whatever delta reaches that point. A suite written against a "round the discount" mental
-// model is wrong and would pass against an implementation that pays out different money. The
-// cases below therefore assert the DERIVATION DIRECTION explicitly, by capturing the argument
-// the collaborator actually received.
-//
-// ---------------------------------------------------------------------------
-// THE DEFECT REGISTER ENTRIES THIS FILE PINS, AND THE DIVERGENCE BUDGET
-// ---------------------------------------------------------------------------
-// The migration permits EXACTLY THREE deliberate divergences in total. TWO of them belong to
-// this subject, and both are pinned here:
-//
-//   * DIVERGENCE (a) - register entry 13 [L1007, L1009, L1014]: `discountAmount` is assigned
-//     without `var` and leaks into CFML component scope. Closed in the target as a
-//     function-local. Pinned by the isolation cases.
-//   * DIVERGENCE (b) - register entry 12 [L998]: the `amountOff` branch alone escapes
-//     arbitrary-precision arithmetic. Closed in the target by routing through `Money`. Pinned
-//     by the exact-decimal cases.
-//
-// The migration's third divergence is spent elsewhere, on register entry 19's poisoned
-// `getBrandName()` memo in `src/domain/entities/product.ts`. NO FOURTH IS PERMITTED ANYWHERE.
-//
-// ★ REGISTER ENTRY 14 [L1013-L1015] IS PRESERVED, NOT FIXED, AND IS NOT A THIRD DIVERGENCE.
-// The clamp gates on `discountAmountPreRounding` and assigns to `discountAmount`, so it misfires
-// in BOTH directions. Both misfires are asserted below as the current, shipping behaviour. The
-// absent `default:` case [L1003] is likewise preserved rather than diverged: no exhaustiveness
-// check is expected of the subject and none is asserted.
-//
-// ---------------------------------------------------------------------------
-// VISIBILITY WIDENING #5 OF EXACTLY 5, AND THE LEDGER IS NOW EXHAUSTED
-// ---------------------------------------------------------------------------
-// The legacy declaration is `private numeric function getDiscountAmount` [L987]. The target
-// exports it, which is what lets the must-preserve arithmetic be exercised directly instead of
-// only through the 489-line orchestrator. That is widening #5; the other four are #1 [L549],
-// #2 [L629], #3 [L752] and #4 [L783], all of them in this same folder. A sixth would be a gate
-// failure. The assertion that no SIXTH private helper was promoted belongs to
-// `../promotionService.test.ts` and is referenced here rather than duplicated.
-//
-// The widening alters visibility ONLY. No parameter is added, removed, reordered or defaulted,
-// so this file spends none of the signature-reshaping budget (3 project-wide, all elsewhere)
-// and none of the signature-widening budget (1 project-wide, already spent on
-// `isCurrent(now?: Date)` in `src/domain/entities/promotionPeriod.ts`). The four ledgers are
-// distinct and are never conflated.
-//
-// ---------------------------------------------------------------------------
-// LOCATOR CORRECTIONS, RECORDED BECAUSE THE SOURCE WINS
-// ---------------------------------------------------------------------------
-// LEGACY-NOTE [model/service/PromotionService.cfc:L990, L995, L1001, L1006, L1007]: the
-// `precisionEvaluate` census for this component is NINE sites, not the eight published - L150,
-// L252, L299, L486, L990, L995, L1001, L1006 and L1007, counted directly in the source. FIVE of
-// the nine sit inside `getDiscountAmount` alone. The published census lists L248 where the
-// source carries L252, and omits L1006 entirely - which is the semantically most important of
-// the nine, being the `originalAmount - discountAmountPreRounding` that produces the net price
-// the rounding rule shapes. Recorded rather than silently reconciled, because where a published
-// citation and the source disagree the SOURCE WINS.
-//
-// LEGACY-NOTE [model/service/PriceGroupService.cfc:L323, L331]: that component's two
-// `precisionEvaluate` sites are L323 and L331, not the published L322 and L328. Same rule
-// applied, same reason.
-//
-// ---------------------------------------------------------------------------
-// THE PRECISION GAP THIS FILE DOES NOT OWN
-// ---------------------------------------------------------------------------
 // LEGACY-NOTE [model/service/PromotionService.cfc:L417]: the plain `+` in
-// `getSubtotalAfterItemDiscounts() + getFulfillmentChargeAfterDiscountTotal()` is a DISTINCT
-// precision gap from register entry 12's, it is the only addition site in the whole in-scope
-// slice, and it belongs to `./twoPassRewardIterator.test.ts`. It is named here purely so nobody
-// conflates the two, and it is deliberately NOT asserted in this file.
+// `getSubtotalAfterItemDiscounts() + getFulfillmentChargeAfterDiscountTotal()` is the only
+// addition site in the in-scope slice, and a distinct precision gap from the `amountOff` one.
 //
-// ---------------------------------------------------------------------------
-// PARAMETERIZED SQL: NOT APPLICABLE HERE, AND WHY
-// ---------------------------------------------------------------------------
-// The migration's parameterized-SQL standard - every statement a prepared statement, preserving
-// the injection-safety property `cfqueryparam` provided - has NO application to this file, and
-// that is stated rather than silently omitted so its absence cannot be mistaken for an
-// oversight. The subject is pure synchronous arithmetic over three already-materialised reward
-// fields plus one synchronous collaborator: it issues no statement, opens no connection, binds
-// no parameter and names no table. This suite accordingly touches no SQL. Every SQL-shape and
-// parameter-binding assertion in the project belongs exclusively to the sibling-owned
-// `tests/integration/repositories/` tier.
-//
-// That claim is enforced STRUCTURALLY rather than asserted in prose: the repository the
-// collaborator is constructed with raises on every one of its seven members, so any data access
-// anywhere on the discount path would fail this suite loudly. See {@link makeUnreachedRepository}
-// and the reachability case at the end of the file.
-//
-// Likewise, and for the same reason it must pass in a completely empty environment: this file
-// reads no `process.env`, loads no `.env`, opens no pool, touches no network and no filesystem,
-// and contains no credential or connection literal of any kind.
-//
-// ---------------------------------------------------------------------------
-// HOW THIS SUITE ADAPTED TO THE SHIPPED SURFACE
-// ---------------------------------------------------------------------------
-// JUDGMENT CALL: the rounding collaborator double is a SUBCLASS of the shipped
-// `RoundingRuleService` rather than a free-standing class or an object literal, and that is
-// forced by the shipped surface rather than chosen. `RoundingRuleService` is a CLASS carrying
-// two private instance members - its request-scoped rounding-rule memo and its injected
-// repository - and TypeScript admits a value into a class-typed position only when any private
-// member originates in the same declaration. A structural stand-in is therefore rejected by the
-// compiler outright, which was confirmed against the real types before this file was written.
-// The subject is never modified, renamed, re-exported or wrapped to accommodate the suite; the
-// suite adapts, exactly as the authoring contract requires.
-//
-// JUDGMENT CALL: the repository the subclass must hand to `super` is typed by extracting it from
-// the class itself, as `ConstructorParameters<typeof RoundingRuleService>[0]`, rather than by
-// importing the port module. The port is not among this file's declared dependencies, and
-// extracting the type adds no module to the import set while still letting the compiler reject a
-// stand-in of the wrong shape.
-//
-// JUDGMENT CALL: `src/lib/cfml/numberFormat.ts` and `src/lib/cfml/precision.ts` are permitted
-// dependencies of this file and are deliberately NOT imported. Both are reached THROUGH the money
-// value object - the subject's own quantization goes through `numberFormat` and its arithmetic
-// through `precision`, and the value object's `toFixed2` applies the very `'0.00'` mask
-// [model/service/PromotionService.cfc:L1017] specifies. Importing either directly would let this
-// suite compute an expectation outside the value object, which is exactly what the single
-// arithmetic surface exists to prevent; importing one and leaving it unused is a lint error and
-// would be a declaration of intent the code does not honour. An accurate absence is preferable to
-// a tidy-looking import. The remaining declared dependencies - `tests/setup.ts`,
-// `vitest.config.ts`, `tsconfig.json`, `eslint.config.mjs` and `.prettierrc.json` - are ambient:
-// they are consumed as the runner, type and lint contract rather than imported, and none of them
-// is modified by this work.
-//
-// Nothing in this suite substitutes the money value object's zero for an absent value: there is no
-// `?? Money.zero`, no `|| Money.zero` and no parameter defaulting to zero anywhere below.
-// `Money.zero` appears only where the legacy code genuinely produces zero - the L988 seed that an
-// unrecognised `amountType` falls through with, and the sign comparisons that read against it.
-// ---------------------------------------------------------------------------
+// JUDGMENT CALL: the rounding collaborator double SUBCLASSES the shipped `RoundingRuleService`,
+// typing the repository it hands to `super` as
+// `ConstructorParameters<typeof RoundingRuleService>[0]`, because the shipped surface leaves no
+// narrower seam.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -186,16 +25,15 @@ import { RoundingRuleService } from '../../../../src/services/roundingRuleServic
 import type { RoundingRuleFrameworkWrites } from '../../../../src/services/roundingRuleService.js';
 import { makePromotionFixtures } from '../../../fixtures/promotionFixtures.js';
 
-// ---------------------------------------------------------------------------
 // The fixture graph's type.
 //
-// `makePromotionFixtures` publishes one named export and deliberately does not export the shape
-// it returns, so the shape is recovered from the function rather than restated. Restating it
-// would let this suite and the factory drift apart silently.
-// ---------------------------------------------------------------------------
+// `makePromotionFixtures` publishes one named export and deliberately does not export the shape it
+// returns, so the shape is recovered from the function rather than restated.
 type PromotionFixtureGraph = ReturnType<typeof makePromotionFixtures>;
 
-/** The repository the shipped `RoundingRuleService` constructor requires. */
+/**
+ * The repository the shipped `RoundingRuleService` constructor requires.
+ */
 type RoundingRuleServiceRepository = ConstructorParameters<typeof RoundingRuleService>[0];
 
 /**
@@ -203,8 +41,7 @@ type RoundingRuleServiceRepository = ConstructorParameters<typeof RoundingRuleSe
  *
  * The `value` is the whole point of the recording: it is
  * `precisionEvaluate('originalAmount - discountAmountPreRounding')`
- * [model/service/PromotionService.cfc:L1006], the NET price, and capturing it is the cleanest
- * available proof that the subject rounds the net price rather than the discount.
+ * [model/service/PromotionService.cfc:L1006], the NET price.
  */
 interface RecordedRoundingCall {
   readonly value: Money;
@@ -214,9 +51,8 @@ interface RecordedRoundingCall {
 /**
  * The synthetic net price the collaborator double answers with by default.
  *
- * Deliberately unrelated to any input, and deliberately not derivable from one, so that a
- * derived discount can only have come from the double. A plain decimal numeral, never a
- * floating-point literal.
+ * Deliberately unrelated to any input, and deliberately not derivable from one, so that a derived
+ * discount can only have come from the double.
  */
 const SYNTHETIC_ROUNDED_NET_AMOUNT = '49.99';
 
@@ -224,12 +60,10 @@ const SYNTHETIC_ROUNDED_NET_AMOUNT = '49.99';
  * Raises for a repository member the discount path must never reach.
  *
  * This is the structural half of the not-applicable statement above: rather than asserting in
- * prose that the discount calculation performs no data access, every member of the repository
- * handed to the collaborator raises, so a single stray read anywhere on the path fails loudly
- * and immediately.
+ * prose that the discount calculation performs no data access.
  *
- * @param memberName - the port member that was reached.
- * @returns never; it always raises.
+ * @param memberName the port member that was reached.
+ * @returns never ; it always raises.
  * @throws Error always.
  */
 function unreachedRepositoryMember(memberName: string): never {
@@ -249,10 +83,7 @@ function unreachedRepositoryMember(memberName: string): never {
  * and two collaborators can never observe one another through a shared object.
  *
  * Each member is written as a zero-argument arrow, which is assignable to the port's wider
- * signatures and keeps the stand-in to exactly the seven members the constructor's type demands -
- * no invented member, no partial implementation, no behaviour. SEVEN is the whole of
- * `PromotionRepository`: it declares seven reads and no write, so a stand-in with an eighth member
- * would not compile.
+ * signatures and keeps the stand-in to exactly the seven members the constructor's type demands.
  *
  * @returns a repository whose every member raises.
  */
@@ -272,14 +103,11 @@ function makeUnreachedRepository(): RoundingRuleServiceRepository {
 }
 
 /**
- * The durable-write collaborator every `RoundingRuleService` in this file is handed, which REFUSES.
+ * The durable-write collaborator every `RoundingRuleService` in this file is handed, which
+ * REFUSES.
  *
  * `saveRoundingRule` genuinely persists now, through a single-method contract the service declares
- * and `src/handlers/bootstrap.ts` satisfies over the request's executor. Nothing in this file saves
- * a rounding rule - the only member exercised is the SYNCHRONOUS `roundValueByRoundingRule`
- * [model/service/RoundingRuleService.cfc:L84] - so the strongest available statement is a writer
- * that fails by name if the write is ever reached from here. Same device as the refusing repository
- * above, for the same reason.
+ * and `src/handlers/bootstrap.ts` satisfies over the request's executor.
  */
 const refusingRoundingRuleFrameworkWrites: RoundingRuleFrameworkWrites = {
   saveRoundingRule: (): never => {
@@ -293,32 +121,18 @@ const refusingRoundingRuleFrameworkWrites: RoundingRuleFrameworkWrites = {
 /**
  * The hand-written rounding collaborator, declared inline in this file and nowhere else.
  *
- * It implements EXACTLY the one member the subject invokes - `roundValueByRoundingRule`
- * [model/service/RoundingRuleService.cfc:L84], reached from
- * [model/service/PromotionService.cfc:L1006] - records every call in order, and answers a fixed,
- * obviously-synthetic net price. There is no randomness, no clock, no environment read and no
- * counter that outlives an instance.
- *
- * ★ THE ROUNDING ALGORITHM IS DELIBERATELY NOT EXERCISED HERE. `roundValue`'s decimal-string
- * surgery and its ten pinned answers are owned by `../roundingRuleService.test.ts`. What this
- * suite asserts is the INTERACTION and the DERIVATION DIRECTION: which value the subject hands
- * over, and how it turns the answer back into a discount. Re-deriving the rounding arithmetic
- * here would duplicate a sibling's territory and couple two suites to one algorithm.
- *
- * CFML parity [model/service/RoundingRuleService.cfc:L89]: the real collaborator quantizes its
- * OWN input with `numberFormat(arguments.value, "0.00")` before its algorithm begins. That is
- * the first of the path's two quantization points and it belongs to the collaborator, not to the
- * subject - which is precisely why this double does NOT quantize, and why the cases below can
- * assert that the subject hands over a FULL-PRECISION net price.
+ * CFML parity [model/service/RoundingRuleService.cfc:L89]: the real collaborator quantizes its own
+ * input with `numberFormat(arguments.value, "0.00")` before its algorithm begins.
  */
 class RecordingRoundingRuleService extends RoundingRuleService {
-  /** Every call to `roundValueByRoundingRule`, in call order. Per instance, never shared. */
+  /**
+   * Every call to `roundValueByRoundingRule`, in call order. Per instance, never shared.
+   */
   readonly roundValueByRoundingRuleCalls: RecordedRoundingCall[] = [];
 
   /**
-   * @param syntheticRoundedNetAmount - the net price this double answers with, as a plain
-   *   decimal numeral. Defaults to {@link SYNTHETIC_ROUNDED_NET_AMOUNT}; a case that needs a
-   *   specific answer - a negative one, say - passes its own.
+   * @param syntheticRoundedNetAmount the net price this double answers with, as a plain decimal
+   * numeral.
    */
   constructor(private readonly syntheticRoundedNetAmount: string = SYNTHETIC_ROUNDED_NET_AMOUNT) {
     super(makeUnreachedRepository(), refusingRoundingRuleFrameworkWrites);
@@ -334,12 +148,10 @@ class RecordingRoundingRuleService extends RoundingRuleService {
 /**
  * The single recorded call, narrowed.
  *
- * Under `noUncheckedIndexedAccess` an indexed read is possibly-absent, and this suite uses
- * neither a non-null assertion nor a cast to sidestep that. The value is captured, checked, and
- * only then returned - so a case that expected a call and got none fails on the check rather
- * than on a confusing downstream comparison.
+ * Under `noUncheckedIndexedAccess` an indexed read is possibly-absent, and this suite uses neither
+ * a non-null assertion nor a cast to sidestep that.
  *
- * @param rounding - the collaborator double whose log is being read.
+ * @param rounding the collaborator double whose log is being read.
  * @returns the one recorded call.
  * @throws Error when the collaborator was not called exactly once.
  */
@@ -363,36 +175,14 @@ function onlyRoundingCall(rounding: RecordingRoundingRuleService): RecordedRound
   return first;
 }
 
-// ---------------------------------------------------------------------------
-// A NOTE ON THE REWARD VARIATIONS BUILT INLINE BELOW
-//
-// `makePromotionFixtures` publishes every reward this suite needs that CARRIES a rounding rule -
-// `percentageOffReward`, `amountOffReward`, `fixedAmountReward`, `roundedReward`,
-// `absentAmountTypeReward`, `absentAmountReward` - plus the unrounded percentage rewards
-// `unroundedReward` and `referenceCalculationReward`. It does not publish an unrounded `amountOff`
-// or `amount` reward, nor an unrounded absent-`amountType` reward, and those three shapes are
-// exactly what separate the amount-type strategies from the rounding branch and the clamp.
+// A note on the reward variations built inline below.
 //
 // They are therefore constructed INLINE, in this consuming suite, which is what the fixture
-// contract intends for a variation the factory does not offer. No fixture module is created, none
-// is edited, and no local helper module is introduced.
-//
-// In every inline construction `roundingRule` is OMITTED rather than passed as `undefined`:
-// `exactOptionalPropertyTypes` makes "key absent" and "key present carrying undefined" genuinely
-// different types, and absence is what `hb_optionsNullRBKey="define.none"`
-// [model/entity/PromotionReward.cfc:L71] describes - a configured "no rounding", not a missing
-// value. `amount` and `amountType` are omitted on the same principle wherever the case is about
-// a NULL column.
-// ---------------------------------------------------------------------------
+// contract intends for a variation the factory does not offer.
 
 describe('DiscountAmountCalculator', () => {
-  // A2 - REQUEST-SCOPED STATE.
-  //
   // A fresh fixture graph, a fresh collaborator double and a fresh subject are constructed for
-  // EVERY case. Nothing is hoisted, nothing is memoized between cases, and this file holds no
-  // mutable state at module scope at all. That is not tidiness: four legacy component-level
-  // mutable caches became request-scoped in the target, and a suite that shared a subject between
-  // cases could not tell a correctly-scoped local from a leaked one.
+  // every case.
   let fixtures: PromotionFixtureGraph;
   let rounding: RecordingRoundingRuleService;
   let calculator: DiscountAmountCalculator;
@@ -403,19 +193,11 @@ describe('DiscountAmountCalculator', () => {
     calculator = new DiscountAmountCalculator(rounding);
   });
 
-  // -------------------------------------------------------------------------
-  // The shipped surface, and the widening that exposes it
-  // -------------------------------------------------------------------------
+  // The shipped surface, and the widening that exposes it.
   describe('the exported surface', () => {
     it('exposes getDiscountAmount as a directly callable method, which is visibility widening #5', () => {
       // CFML parity [model/service/PromotionService.cfc:L987]: the legacy declaration is
-      // `private numeric function getDiscountAmount(...)`. Being able to call it at all - without
-      // routing through the 489-line orchestrator - IS the observable consequence of the widening,
-      // so this case asserts the widening rather than describing it.
-      //
-      // This is widening #5 of exactly 5, all five of which live in this folder, and the ledger is
-      // now exhausted. The complementary assertion - that no SIXTH private helper was promoted -
-      // belongs to `../promotionService.test.ts`.
+      // `private numeric function getDiscountAmount(...)`.
       expect(typeof calculator.getDiscountAmount).toBe('function');
 
       const result = calculator.getDiscountAmount(
@@ -430,8 +212,7 @@ describe('DiscountAmountCalculator', () => {
     it('is synchronous, returning Money rather than a promise of it', () => {
       // The legacy body reaches no DAO and no ORM - it reads three already-materialised reward
       // fields and calls one synchronous collaborator - so the async boundary rule keeps it
-      // synchronous. Three of its five legacy call sites consume the result inside an immediately
-      // following comparison, which an async signature would break.
+      // synchronous.
       const result = calculator.getDiscountAmount(
         fixtures.unroundedReward,
         Money.fromDecimalString('19.99'),
@@ -445,8 +226,7 @@ describe('DiscountAmountCalculator', () => {
 
     it('accepts the quantity as a plain count and never as money', () => {
       // `quantity` is a COUNT - `ormtype="integer"` on the order item - so it stays a `number`
-      // while `price` and the return are `Money`. Doubling the count doubles the extended amount
-      // and therefore the percentage discount, which is the observable consequence.
+      // while `price` and the return are `Money`.
       const price = Money.fromDecimalString('19.99');
 
       const atThree = calculator.getDiscountAmount(fixtures.unroundedReward, price, 3);
@@ -457,23 +237,18 @@ describe('DiscountAmountCalculator', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // The four amountType paths
+  // The four amountType paths.
   //
   // `switch(reward.getAmountType())` [model/service/PromotionService.cfc:L993] declares exactly
-  // three cases - L994 `percentageOff`, L997 `amountOff`, L1000 `amount` - and closes at L1003
-  // with NO `default:`. All three are covered here, and so is the fourth path: the one an
-  // unrecognised discriminator takes.
+  // three cases - L994 `percentageOff`, L997 `amountOff`, L1000 `amount`.
   //
-  // Each arm is covered TWICE - once with the source's canonical spelling and once with a
-  // mis-cased spelling the persisted column admits - because the legacy `switch` folds case and an
-  // arm covered only canonically is an arm whose fold is unpinned. See the banner mid-block.
-  // -------------------------------------------------------------------------
+  // Each arm is covered twice - once with the source's canonical spelling and once with a
+  // mis-cased spelling the persisted column admits.
   describe('amountType dispatch', () => {
     it('percentageOff scales the EXTENDED amount by the reward percentage', () => {
       // CFML parity [model/service/PromotionService.cfc:L995]:
-      //   `precisionEvaluate('originalAmount * (reward.getAmount()/100)')`
-      // 19.99 x 3 = 59.97 extended; 12.5% of that is 7.49625; presented to two places, 7.50.
+      // `precisionEvaluate('originalAmount * (reward.getAmount()/100)')` 19.99 x 3 = 59.97
+      // extended; 12.5% of that is 7.49625; presented to two places, 7.50.
       const result = calculator.getDiscountAmount(
         fixtures.unroundedReward,
         Money.fromDecimalString('19.99'),
@@ -485,15 +260,11 @@ describe('DiscountAmountCalculator', () => {
     });
 
     it('percentageOff keeps the /100 division at arbitrary precision, as the legacy expression does', () => {
-      // ★ CFML parity [model/service/PromotionService.cfc:L995]: THE `/100` SITS INSIDE THE
-      // `precisionEvaluate` STRING, so the division is arbitrary-precision in the legacy code too.
-      // It must not be hoisted out of the precise computation and must not be pre-divided as a
-      // floating-point literal.
+      // CFML parity [model/service/PromotionService.cfc:L995]: the `/100` sits inside the
+      // `precisionEvaluate` string, so the division is arbitrary-precision in the legacy code too.
       //
       // The proof is the FULL-PRECISION net price the subject hands the rounding rule: 12.3% of
-      // 59.97 is exactly 7.37631, so the net is exactly 52.59369. Any implementation that
-      // pre-divided 12.3 by 100 in IEEE-754 would hand over a numeral carrying drift digits, and
-      // this exact-string comparison would reject it.
+      // 59.97 is exactly 7.37631, so the net is exactly 52.59369.
       const roundedTwelvePointThree = new PromotionReward({
         promotionRewardID: 'discount-amount-pct-12-3-rounded',
         rewardType: 'merchandise',
@@ -509,9 +280,9 @@ describe('DiscountAmountCalculator', () => {
 
     it('amountOff scales the reward amount by the quantity', () => {
       // CFML parity [model/service/PromotionService.cfc:L998]:
-      //   `discountAmountPreRounding = reward.getAmount() * quantity;`
-      // A flat 5.00 per unit across three units is 15.00. Note that this branch reads the
-      // QUANTITY and never the extended amount.
+      // `discountAmountPreRounding = reward.getAmount() * quantity;` A flat 5.00 per unit across
+      // three units is 15.00. Note that this branch reads the QUANTITY and never the extended
+      // amount.
       const unroundedAmountOff = new PromotionReward({
         promotionRewardID: 'discount-amount-amount-off-unrounded',
         rewardType: 'merchandise',
@@ -530,16 +301,9 @@ describe('DiscountAmountCalculator', () => {
     });
 
     it('amount subtracts from the UNIT price and only then extends by the quantity', () => {
-      // ★ CFML parity [model/service/PromotionService.cfc:L1001]:
-      //   `precisionEvaluate('(arguments.price - reward.getAmount()) * arguments.quantity')`
-      // THIS BRANCH READS `arguments.price` - THE UNIT PRICE - NOT `originalAmount`. It is the one
-      // asymmetry in the three strategies and the easiest to get wrong.
-      //
-      // (19.99 - 15.00) x 3 = 4.99 x 3 = 14.97. Had the branch read the extended amount instead,
-      // (59.97 - 15.00) x 3 = 134.91 would have exceeded the extended amount and the clamp at
-      // [L1013-L1015] would have reported 59.97, so the two readings are not merely different by a
-      // rounding digit - they are different by a factor of four. Both outcomes are asserted, so a
-      // regression to the extended reading cannot pass.
+      // CFML parity [model/service/PromotionService.cfc:L1001]:
+      // `precisionEvaluate('(arguments.price - reward.getAmount()) * arguments.quantity')` this
+      // branch reads `arguments.price` - the unit price - not `originalAmount`.
       const unroundedFixedAmount = new PromotionReward({
         promotionRewardID: 'discount-amount-fixed-amount-unrounded',
         rewardType: 'merchandise',
@@ -562,8 +326,6 @@ describe('DiscountAmountCalculator', () => {
       // LEGACY-NOTE [model/service/PromotionService.cfc:L1001, L1013-L1015]: nothing requires the
       // reward's amount to sit below the unit price, and the clamp tests only the UPPER bound -
       // the legacy function has no lower bound anywhere in its thirty-two lines.
-      // A floor is therefore validation the legacy code does not perform, and none is asserted:
-      // (10.00 - 15.00) x 2 = -10.00 flows through untouched.
       const targetAboveUnitPrice = new PromotionReward({
         promotionRewardID: 'discount-amount-fixed-amount-above-price',
         rewardType: 'merchandise',
@@ -581,35 +343,15 @@ describe('DiscountAmountCalculator', () => {
       expect(result.isLessThan(Money.zero)).toBe(true);
     });
 
-    // -----------------------------------------------------------------------
-    // ★★★ CASE FOLDING IS PART OF THE DISPATCH CONTRACT, NOT AN IMPLEMENTATION DETAIL
-    //
-    // The cases above supply the source's canonical spellings, which every arm matches under an
-    // exact comparison just as readily as under a folded one. The cases below supply the spellings
-    // that ONLY a folded comparison matches, and they are the ones that fail the moment
-    // `matchesAmountType` [src/services/promotion/discountAmount.ts:L139-L141] stops delegating to
-    // `cfEquals` and starts comparing with `===`.
+    // Case folding is part of the dispatch contract, not an implementation detail.
     //
     // CFML parity [model/service/PromotionService.cfc:L993]: a CFML `switch` on a string compares
     // its `case` labels CASE-INSENSITIVELY, so a reward persisting `'AmountOff'` reaches
-    // `case "amountOff"` [L997] in the legacy engine and receives its discount.
-    // `SwPromoReward.amountType` is a plain `ormType="string"` column
-    // [model/entity/PromotionReward.cfc:L62] with no check constraint, so these spellings are states
-    // the column can genuinely hold - and `narrowOrAbsent` in
-    // src/repositories/mysql/mysqlPromotionRepository.ts hands back the PERSISTED BYTES rather than
-    // laundering them into a canonical spelling, which is exactly why the fold has to happen at the
-    // dispatch. An exact comparison here sends a mis-cased-but-valid reward down the zero-seed path:
-    // the promotion is silently skipped and the customer pays full price, with nothing reported.
+    // `case "amountOff"` [model/service/PromotionService.cfc:L997] in the legacy engine and
+    // receives its discount.
     //
     // JUDGMENT CALL: reaching a mis-cased spelling requires an `as AmountType` assertion, because
-    // the union spells only the three canonical values. The assertion expresses a value the
-    // persisted column admits but the union does not spell - the same idiom, for the same reason, as
-    // `../../domain/entities/promotionReward.test.ts` uses on `getAmountFormatted()`. Nothing is
-    // widened, no divergence is introduced and the subject is called exactly as shipped.
-    //
-    // Every case below asserts the folded outcome AND that the outcome is not the L988 zero seed, so
-    // a regression to `===` cannot pass by quietly taking the fall-through documented below it.
-    // -----------------------------------------------------------------------
+    // the union spells only the three canonical values.
     it('amountOff dispatches on a mis-cased amountType, in title and screaming case', () => {
       const titleCased = new PromotionReward({
         promotionRewardID: 'discount-amount-amount-off-title-cased',
@@ -629,8 +371,8 @@ describe('DiscountAmountCalculator', () => {
       expect(titleCasedResult.toFixed2()).not.toBe('0.00');
       expect(titleCasedResult.equals(Money.zero)).toBe(false);
 
-      // Screaming case as well, because a two-spelling allowlist would pass the title case and then
-      // fail here - only a genuine fold satisfies both.
+      // Screaming case as well, because a two-spelling allowlist would pass the title case and
+      // then fail here - only a genuine fold satisfies both.
       const screamingCased = new PromotionReward({
         promotionRewardID: 'discount-amount-amount-off-screaming-cased',
         rewardType: 'merchandise',
@@ -655,9 +397,7 @@ describe('DiscountAmountCalculator', () => {
 
     it('percentageOff dispatches on a mis-cased amountType, the first arm of the chain', () => {
       // The percentage arm fails differently from `amountOff` under an exact comparison: the chain
-      // drops past all three arms rather than past only one, so the zero seed is reached from the
-      // very first link. 12.5% of the 19.99 x 3 = 59.97 extended amount is 7.49625, quantized to
-      // 7.50 - identical to the canonical-spelling case that opens this block.
+      // drops past all three arms rather than past only one.
       const misCasedPercentage = new PromotionReward({
         promotionRewardID: 'discount-amount-percentage-off-title-cased',
         rewardType: 'merchandise',
@@ -677,9 +417,7 @@ describe('DiscountAmountCalculator', () => {
     });
 
     it('amount dispatches on a mis-cased amountType, closing the fold across all arms', () => {
-      // The third arm, so no arm of the chain is left resting on canonical spelling alone. The
-      // unit-price asymmetry is preserved through the fold: (19.99 - 15.00) x 3 = 14.97, the same
-      // value the canonical spelling produces, and NOT the 134.91 an extended-amount reading gives.
+      // The third arm, so no arm of the chain is left resting on canonical spelling alone.
       const misCasedFixedAmount = new PromotionReward({
         promotionRewardID: 'discount-amount-fixed-amount-title-cased',
         rewardType: 'merchandise',
@@ -699,17 +437,9 @@ describe('DiscountAmountCalculator', () => {
     });
 
     it('an unrecognised amountType takes NO branch and yields a zero discount', () => {
-      // LEGACY-DEFECT [model/service/PromotionService.cfc:L993-L1003]: the switch has NO
-      // `default:` clause - L1003 closes it immediately after the `amount` case. A discriminator
-      // matching none of the three, an absent one included, therefore leaves
-      // `discountAmountPreRounding` at its L988 seed of zero and, with no rounding rule attached,
-      // the function reports a ZERO DISCOUNT rather than raising or reporting a problem. A
-      // misconfigured reward is silently skipped and the customer pays full price.
+      // LEGACY-DEFECT [model/service/PromotionService.cfc:L993-L1003]: the switch has no
+      // `default:` clause - L1003 closes it immediately after the `amount` case.
       // Preserved deliberately; do not fix without a product decision.
-      //
-      // Preserved means preserved: no `default:` clause is expected of the subject, no
-      // exhaustiveness check is expected, no throw is expected, and none is asserted. This case
-      // pins the silent zero as the shipping behaviour.
       const unroundedAbsentAmountType = new PromotionReward({
         promotionRewardID: 'discount-amount-absent-amount-type-unrounded',
         rewardType: 'merchandise',
@@ -727,17 +457,13 @@ describe('DiscountAmountCalculator', () => {
     });
 
     it('carries the zero seed of an unrecognised amountType into the rounding input untouched', () => {
-      // The sharpest available proof that the L988 seed is what the fall-through leaves behind: the
-      // net price handed to the rounding rule is `originalAmount - discountAmountPreRounding`
-      // [model/service/PromotionService.cfc:L1006], so a seed of zero makes that argument equal the
-      // extended amount EXACTLY. 19.99 x 3 = 59.97 arrives unreduced.
+      // The sharpest available proof that the L988 seed is what the fall-through leaves behind:
+      // the net price handed to the rounding rule is `originalAmount - discountAmountPreRounding`
+      // [model/service/PromotionService.cfc:L1006].
       //
-      // LEGACY-NOTE [model/service/PriceGroupService.cfc:L319, L321]: the slice's other defaultless
-      // `amountType` switch seeds its accumulator with `arguments.sku.getPrice()` rather than with
-      // zero, so ITS fall-through is a PASSTHROUGH PRICE while this one is a zero discount. Two
-      // defaultless switches over the same three-value vocabulary with opposite fall-through
-      // values; neither may be reasoned about from the other, and that price-group behaviour is
-      // asserted by `../priceGroupService.test.ts`, not here.
+      // LEGACY-NOTE [model/service/PriceGroupService.cfc:L319, L321]: the slice's other
+      // defaultless `amountType` switch seeds its accumulator with `arguments.sku.getPrice()`
+      // rather than with zero.
       calculator.getDiscountAmount(
         fixtures.absentAmountTypeReward,
         Money.fromDecimalString('19.99'),
@@ -748,21 +474,12 @@ describe('DiscountAmountCalculator', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // ★★★ THE INVERTED DELTA
-  //
-  // The single most misunderstood mechanic on this path. The rounding rule shapes the NET PRICE
-  // and the discount is the residual, so the direction of the derivation is itself a behavioural
-  // contract. Every case below asserts that direction rather than assuming it.
-  // -------------------------------------------------------------------------
   describe('the inverted-delta rounding branch', () => {
     it('hands the rounding rule the NET PRICE, not the discount', () => {
       // CFML parity [model/service/PromotionService.cfc:L1006]: the argument is
-      //   `precisionEvaluate('originalAmount - discountAmountPreRounding')`.
-      // 19.99 x 3 = 59.97 extended, less 12.5% = 7.49625, gives a net of 52.47375 - which is
-      // exactly the migration's own worked example, reached here through the collaborator's
-      // recorded argument. Capturing that argument is the cleanest possible proof of direction:
-      // an implementation that rounded the DISCOUNT would have handed over 7.49625.
+      // `precisionEvaluate('originalAmount - discountAmountPreRounding')`. 19.99 x 3 = 59.97
+      // extended, less 12.5% = 7.49625, gives a net of 52.47375 - which is exactly the migration's
+      // own worked example.
       calculator.getDiscountAmount(
         fixtures.percentageOffReward,
         Money.fromDecimalString('19.99'),
@@ -777,10 +494,7 @@ describe('DiscountAmountCalculator', () => {
 
     it('derives the discount BACKWARDS out of the rounded net price', () => {
       // CFML parity [model/service/PromotionService.cfc:L1007]:
-      //   `discountAmount = precisionEvaluate('originalAmount - roundedFinalAmount')`.
-      // The double answers with the synthetic net 49.99, so the discount must be
-      // 59.97 - 49.99 = 9.98 - a value the subject can only have derived, since 49.99 bears no
-      // relation to any input.
+      // `discountAmount = precisionEvaluate('originalAmount - roundedFinalAmount')`.
       const result = calculator.getDiscountAmount(
         fixtures.percentageOffReward,
         Money.fromDecimalString('19.99'),
@@ -799,8 +513,7 @@ describe('DiscountAmountCalculator', () => {
 
     it('does NOT return the rounded value itself, which is what "rounding the discount" would do', () => {
       // The negative form of the previous case, stated separately because it is the assertion that
-      // actually rejects the wrong mental model. An implementation that rounded the discount would
-      // report the collaborator's answer, 49.99, verbatim. The subject reports 9.98.
+      // actually rejects the wrong mental model.
       const result = calculator.getDiscountAmount(
         fixtures.percentageOffReward,
         Money.fromDecimalString('19.99'),
@@ -828,9 +541,6 @@ describe('DiscountAmountCalculator', () => {
       // CFML parity [model/service/PromotionService.cfc:L1005, L1008-L1010]:
       // `if(!isNull(reward.getRoundingRule()))` guards the branch, and the `else` at L1009 passes
       // the pre-rounding value straight through UNQUANTIZED to the clamp and then to L1017.
-      // Absence is a configured state - `hb_optionsNullRBKey="define.none"`
-      // [model/entity/PromotionReward.cfc:L71] - so an absent rule means no rounding at all rather
-      // than rounding by an identity rule.
       const result = calculator.getDiscountAmount(
         fixtures.unroundedReward,
         Money.fromDecimalString('19.99'),
@@ -843,40 +553,24 @@ describe('DiscountAmountCalculator', () => {
 
     it('reaches the rounding rule at most once per invocation', () => {
       // There is exactly one call site, [model/service/PromotionService.cfc:L1006], and it sits
-      // outside any loop. Asserted so that a future decomposition cannot quietly round twice - the
-      // second application would compound and change the money paid out.
+      // outside any loop.
       calculator.getDiscountAmount(fixtures.roundedReward, Money.fromDecimalString('19.99'), 3);
 
       expect(rounding.roundValueByRoundingRuleCalls).toHaveLength(1);
     });
   });
 
-  // -------------------------------------------------------------------------
-  // ★★ REGISTER ENTRY 14 - THE CLAMP MISFIRES IN BOTH DIRECTIONS
+  // Register entry 14 - the clamp misfires in both directions.
   //
-  // L1013 gates on `discountAmountPreRounding`; L1014 assigns to `discountAmount`. They are
-  // different variables, so the guard and the correction describe different quantities. Both
-  // resulting misfires are pinned below, in separate cases, as the shipping behaviour.
-  //
-  // ★ THIS IS PRESERVED, NOT FIXED, AND IT IS NOT A THIRD DELIBERATE DIVERGENCE. The migration's
-  // three divergences are (a) and (b) - both spent by this subject and both asserted elsewhere in
-  // this file - and register entry 19's memo in `src/domain/entities/product.ts`. Aligning the
-  // compared variable with the assigned one would change the amount charged in both directions at
-  // once, which is a product decision rather than hardening.
-  // -------------------------------------------------------------------------
+  // This is preserved, not fixed, and it is not a third deliberate divergence.
   describe('the discount clamp', () => {
     it('FALSE POSITIVE: firing the clamp DISCARDS the whole rounding computation', () => {
       // LEGACY-DEFECT [model/service/PromotionService.cfc:L1013-L1015]: the guard tests
       // `discountAmountPreRounding > originalAmount` while the body assigns
-      // `discountAmount = originalAmount`. When a rounding rule fired and the PRE-ROUNDING value
-      // exceeded the extended amount, this assignment throws away the L1006/L1007 result outright:
-      // the price point the rule landed on is discarded and the customer is discounted to nothing.
+      // `discountAmount = originalAmount`.
       // Preserved deliberately; do not fix without a product decision.
       //
-      // A 150% reward on a 59.97 extended amount gives a pre-rounding discount of 89.955. The
-      // rounding rule IS consulted - it receives 59.97 - 89.955 = -29.985 - and its answer, which
-      // would have derived a discount of 9.98, is then overwritten by 59.97. Both halves are
-      // asserted: that the collaborator ran, and that its contribution was discarded.
+      // A 150% reward on a 59.97 extended amount gives a pre-rounding discount of 89.955.
       const overHundredPercent = new PromotionReward({
         promotionRewardID: 'discount-amount-pct-150-rounded',
         rewardType: 'merchandise',
@@ -901,7 +595,7 @@ describe('DiscountAmountCalculator', () => {
     it('FALSE POSITIVE also reports the extended amount when no rounding rule is attached', () => {
       // LEGACY-DEFECT [model/service/PromotionService.cfc:L1013-L1015]: on the unrounded path the
       // two variables happen to hold the same value, so the clamp does what its comment at L1012
-      // claims - the ONLY configuration in which the comment is true of the code beneath it.
+      // claims.
       // Preserved deliberately; do not fix without a product decision.
       const overHundredPercentUnrounded = new PromotionReward({
         promotionRewardID: 'discount-amount-pct-150-unrounded',
@@ -923,15 +617,8 @@ describe('DiscountAmountCalculator', () => {
     it('FALSE NEGATIVE: a NEGATIVE rounded net lets the discount escape the clamp uncaught', () => {
       // LEGACY-DEFECT [model/service/PromotionService.cfc:L1013-L1015]: the other direction, and
       // the one the comment at L1012 is simply wrong about. The rounding algorithm's candidate
-      // arithmetic is unsigned-agnostic and can return a NEGATIVE net price. When it does, the
-      // discount derived at L1007 EXCEEDS the extended amount - and the guard never notices,
-      // because it is testing `discountAmountPreRounding`, which did not exceed anything.
+      // arithmetic is unsigned-agnostic and can return a NEGATIVE net price.
       // Preserved deliberately; do not fix without a product decision.
-      //
-      // An extended amount of 0.42 with a 12.5% reward gives a pre-rounding discount of 0.0525 -
-      // comfortably under the extended amount, so the guard stays false. A rounded net of -0.99
-      // then derives 0.42 - (-0.99) = 1.41, which is more than three times the extended amount and
-      // is reported unchanged.
       const negativeNetRounding = new RecordingRoundingRuleService('-0.99');
       const negativeNetCalculator = new DiscountAmountCalculator(negativeNetRounding);
 
@@ -950,11 +637,6 @@ describe('DiscountAmountCalculator', () => {
       // CFML parity [model/service/PromotionService.cfc:L1013]: the comparison is a strict `>`, so
       // equality falls outside it. A 100% reward makes the pre-rounding discount exactly equal the
       // extended amount, the guard stays false, and the derived discount survives.
-      //
-      // The synthetic net is 5.00 rather than the default here, precisely so the surviving value
-      // (59.97 - 5.00 = 54.97) differs from the extended amount. Under the default answer the
-      // derived discount would have been 9.98 and a reader could not tell a non-firing guard from
-      // one that fired and coincidentally agreed.
       const exactlyHundredPercent = new PromotionReward({
         promotionRewardID: 'discount-amount-pct-100-rounded',
         rewardType: 'merchandise',
@@ -978,19 +660,11 @@ describe('DiscountAmountCalculator', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // THE TWO QUANTIZATION POINTS, WHICH SIT AT OPPOSITE ENDS OF THE PATH
+  // The two quantization points, which sit at opposite ends of the path.
   //
-  //   INPUT  [model/service/RoundingRuleService.cfc:L89]
-  //          `var inputValue = numberFormat(arguments.value, "0.00")` - the COLLABORATOR
-  //          quantizes its own argument before its algorithm begins.
-  //   OUTPUT [model/service/PromotionService.cfc:L1017]
-  //          `return numberFormat(discountAmount, "0.00")` - the SUBJECT quantizes on the way out.
-  //
-  // They are deliberately not collapsed into one. A full-precision net price and a two-decimal one
-  // can land on the same rounded price point while the discounts derived from them differ in the
-  // digits the output mask then discards.
-  // -------------------------------------------------------------------------
+  // INPUT [model/service/RoundingRuleService.cfc:L89]
+  // `var inputValue = numberFormat(arguments.value, "0.00")` - the COLLABORATOR quantizes its own
+  // argument before its algorithm begins.
   describe('quantization and the return contract', () => {
     it('quantizes the returned discount to two decimals, rounding half-up', () => {
       // CFML parity [model/service/PromotionService.cfc:L1017]: the mask is `"0.00"` and the
@@ -1004,7 +678,7 @@ describe('DiscountAmountCalculator', () => {
 
       expect(result.toFixed2()).toBe('7.50');
 
-      // A half-cent exactly on the boundary rounds UP rather than truncating: 1% of 0.50 is 0.005.
+      // A half-cent exactly on the boundary rounds up rather than truncating: 1% of 0.50 is 0.005.
       const onePercent = new PromotionReward({
         promotionRewardID: 'discount-amount-pct-1-unrounded',
         rewardType: 'merchandise',
@@ -1020,8 +694,7 @@ describe('DiscountAmountCalculator', () => {
     it('hands the collaborator a FULL-PRECISION net price, leaving input quantization to it', () => {
       // The subject does not pre-quantize. 52.47375 carries five decimals and arrives with all of
       // them, because the two-decimal narrowing of the rounding input belongs to
-      // [model/service/RoundingRuleService.cfc:L89] - the collaborator's own first statement - and
-      // this double faithfully declines to perform it.
+      // [model/service/RoundingRuleService.cfc:L89] - the collaborator's own first statement.
       calculator.getDiscountAmount(fixtures.roundedReward, Money.fromDecimalString('19.99'), 3);
 
       const call = onlyRoundingCall(rounding);
@@ -1034,11 +707,7 @@ describe('DiscountAmountCalculator', () => {
     it('returns a Money re-entering the value surface, as the shipped module represents it', () => {
       // LEGACY-NOTE [model/service/PromotionService.cfc:L987, L1017]: the legacy function declares
       // `returntype="numeric"` and then returns `numberFormat(discountAmount, "0.00")`, which is a
-      // STRING. CFML coerced across that boundary silently. The target cannot and does not: the
-      // quantized numeral re-enters the money surface through the value object's only construction
-      // path, so the declared and actual types agree for the first time.
-      // The return format is asserted AS THE SHIPPED MODULE REPRESENTS IT - a `Money` holding a
-      // two-decimal value - rather than as a format this suite would prefer.
+      // STRING. CFML coerced across that boundary silently.
       const result = calculator.getDiscountAmount(
         fixtures.roundedReward,
         Money.fromDecimalString('19.99'),
@@ -1053,8 +722,7 @@ describe('DiscountAmountCalculator', () => {
 
     it('presents a value that rounds to zero from below as 0.00 rather than -0.00', () => {
       // A signed zero is not a monetary value, and a discount line reading `-0.00` would be a
-      // presentation defect the legacy `numberFormat` never produced. A target one hundredth of a
-      // cent above the unit price gives a pre-rounding discount of -0.0001.
+      // presentation defect the legacy `numberFormat` never produced.
       const barelyAboveUnitPrice = new PromotionReward({
         promotionRewardID: 'discount-amount-fixed-amount-barely-above',
         rewardType: 'merchandise',
@@ -1073,42 +741,15 @@ describe('DiscountAmountCalculator', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // ★ DELIBERATE DIVERGENCE (b) - REGISTER ENTRY 12, THE amountOff PRECISION GAP
-  // -------------------------------------------------------------------------
+  // DELIBERATE DIVERGENCE (b) - register entry 12, the amountOff precision gap.
   describe('deliberate divergence (b): amountOff arithmetic', () => {
     it('computes amountOff at exact decimal precision, closing the legacy float gap', () => {
-      // ★ DOCUMENTED DELIBERATE DIVERGENCE (b) - REGISTER ENTRY 12.
+      // Documented deliberate divergence (b) - register entry.
       //
       // LEGACY-DEFECT [model/service/PromotionService.cfc:L998]:
-      //   `discountAmountPreRounding = reward.getAmount() * quantity;`
-      // is the ONLY monetary computation in the whole function that carries no
-      // `precisionEvaluate` - a raw IEEE-754 multiplication sitting between two neighbours that are
-      // both guarded [L995, L1001]. NOT reproduced. In the target it routes through the money value
-      // object, so the result is strictly MORE correct than the source.
-      //
-      // THE PRECISION JUSTIFICATION. Routing all arithmetic through one value object is a
-      // non-negotiable structural decision of this migration, and the value object is constructible
-      // only from a decimal numeral, publishes no float-valued operation and exposes no conversion
-      // to `number`. Preserving the drift would therefore mean deliberately bypassing the value
-      // object and hand-building IEEE-754 error - the single precedent the standard exists to
-      // prevent. The divergence is NARROW: only the arithmetic substrate changes, and no branch,
-      // no operand and no operator order moves.
-      //
-      // ★ THE DECISIVE IN-CODEBASE EVIDENCE THAT L998 IS AN OVERSIGHT RATHER THAN A POLICY.
-      // [model/service/PriceGroupService.cfc:L331] computes its own `amountOff` as
-      //   `precisionEvaluate('arguments.sku.getPrice() - arguments.priceGroupRate.getAmount()')`
-      // - WITH the guard. Same codebase, same amount-type name, same author-era: one guarded and
-      // one not. A codebase that intended float arithmetic for `amountOff` would not have guarded
-      // its other `amountOff`. This is the same shape of evidence that makes register entry 11 a
-      // bug rather than an intention, where a neighbouring method performs the very
-      // shipping-address-zone test that the qualifier branch omits.
-      //
-      // THE ASSERTION. 0.1 x 3 is exactly 0.3 in decimal and 0.30000000000000004 in IEEE-754. The
-      // rounding branch exposes the pre-rounding value at full precision, so 30.00 - 0.3 = 29.7
-      // must arrive as exactly `'29.7'`. A float implementation would hand over
-      // 29.699999999999996 and fail this comparison. The money value object is never bypassed to
-      // obtain the expectation - every figure here is a decimal numeral.
+      // `discountAmountPreRounding = reward.getAmount() * quantity;` is the only monetary
+      // computation in the whole function that carries no `precisionEvaluate`.
+      // Preserved deliberately; do not fix without a product decision.
       const roundedAmountOff = new PromotionReward({
         promotionRewardID: 'discount-amount-amount-off-rounded-drift',
         rewardType: 'merchandise',
@@ -1128,13 +769,11 @@ describe('DiscountAmountCalculator', () => {
     });
 
     it('presents an amountOff half-cent the way exact decimals require, not the way a float would', () => {
-      // ★ DOCUMENTED DELIBERATE DIVERGENCE (b), at the presentation boundary, where the difference
+      // Documented deliberate divergence (b), at the presentation boundary, where the difference
       // becomes a cent that a customer can see.
       //
       // 2.675 is not representable in IEEE-754; the nearest double is slightly BELOW it, so a
-      // float-based half-up presentation reports 2.67. Held as an exact decimal the value is
-      // 2.675 and presents as 2.68. One cent, on every line the reward touches.
-      // Preserving the legacy drift here would mean choosing the wrong cent on purpose.
+      // float-based half-up presentation reports 2.67.
       const halfCentAmountOff = new PromotionReward({
         promotionRewardID: 'discount-amount-amount-off-half-cent',
         rewardType: 'merchandise',
@@ -1154,8 +793,8 @@ describe('DiscountAmountCalculator', () => {
 
     it('accumulates amountOff across a larger quantity without drift', () => {
       // The same divergence over a longer multiplication: 0.07 x 21 is exactly 1.47. Asserted
-      // through the full-precision rounding input so that the output mask cannot hide a drift digit
-      // in the third decimal.
+      // through the full-precision rounding input so that the output mask cannot hide a drift
+      // digit in the third decimal.
       const pennyFractionAmountOff = new PromotionReward({
         promotionRewardID: 'discount-amount-amount-off-accumulated',
         rewardType: 'merchandise',
@@ -1170,40 +809,16 @@ describe('DiscountAmountCalculator', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // ★ DELIBERATE DIVERGENCE (a) - REGISTER ENTRY 13, THE UN-VAR'D ACCUMULATOR
+  // DELIBERATE DIVERGENCE (a) - register entry 13, the un-var'd accumulator.
   //
   // LEGACY-NOTE [model/service/PromotionService.cfc:L1007, L1009, L1014]: register entry 13 has
-  // THREE assignment sites, not the two published. Counted directly in the source: within
-  // L987-L1018 the identifier `discountAmount` is assigned at L1007, at L1009 and at L1014, and is
-  // declared with `var` at none of them - in pointed contrast to L988 and L989, which ARE properly
-  // `var`'d, and which is what shows the omission to be a slip rather than an idiom. The published
-  // register cites L1007 and L1009 and omits L1014. SOURCE WINS.
-  //
-  // The third site matters on its own terms: L1007 and L1009 are mutually exclusive, whereas L1014
-  // can overwrite EITHER of them, so the clamp - not the rounding branch - is the last writer
-  // whenever it fires. That is also the site register entry 14 turns into a defect.
-  // -------------------------------------------------------------------------
+  // three assignment sites, not the two published.
   describe('deliberate divergence (a): no state survives an invocation', () => {
     it('computes a second invocation solely from its own inputs, with no trace of the first', () => {
-      // ★ DOCUMENTED DELIBERATE DIVERGENCE (a) - REGISTER ENTRY 13, AND ITS ACCEPTANCE CRITERION.
+      // Documented deliberate divergence (a) - register entry 13, and its acceptance criterion.
       //
-      // In the legacy function `discountAmount` is assigned without `var`, so CFML resolves it into
-      // COMPONENT scope, where the binding outlives the call. NOT reproduced: in the target it is
-      // function-local.
-      //
-      // THE SAFETY JUSTIFICATION, stated plainly. A component-scoped binding becomes module-level
-      // state in the target, and module-level state survives between UNRELATED invocations on a
-      // warm container - so one customer's computed discount would still be sitting there when the
-      // next request arrived, and could be read into that customer's order. Reproducing the leak
-      // faithfully would leak one customer's discount into another customer's order. That is not a
-      // fidelity gain, so the variable is function-local and this case is the proof.
-      //
-      // THE PROOF ITSELF. The first invocation takes the rounding branch and derives a large
-      // discount. The second uses a reward whose `amountType` matches NO strategy arm, so the
-      // dispatch assigns nothing at all and the accumulator can only be the L988 zero seed - and
-      // carries no rounding rule, so the derivation is skipped too. If any accumulator were shared,
-      // the second invocation would report the first invocation's 9.98. It reports 0.00.
+      // In the legacy function `discountAmount` is assigned without `var`, so CFML resolves it
+      // into COMPONENT scope, where the binding outlives the call.
       const unroundedAbsentAmountType = new PromotionReward({
         promotionRewardID: 'discount-amount-isolation-absent-amount-type',
         rewardType: 'merchandise',
@@ -1229,9 +844,7 @@ describe('DiscountAmountCalculator', () => {
 
     it('does not carry a clamped result forward into a later invocation', () => {
       // The same divergence at the THIRD assignment site. The first invocation fires the clamp, so
-      // L1014 is the last writer and the reported value is the extended amount. The second is an
-      // ordinary 12.5% discount on the same price and quantity, and must report 7.50 rather than
-      // the clamped 59.97 the previous call ended on.
+      // L1014 is the last writer and the reported value is the extended amount.
       const overHundredPercentUnrounded = new PromotionReward({
         promotionRewardID: 'discount-amount-isolation-pct-150',
         rewardType: 'merchandise',
@@ -1256,9 +869,7 @@ describe('DiscountAmountCalculator', () => {
 
     it('does not carry a rounded derivation forward onto an unrounded reward', () => {
       // The complementary ordering, so neither the rounding branch nor the `else` can be the one
-      // that leaks. The first invocation derives 9.98 through the rounding rule; the second, on an
-      // identical price and quantity with no rounding rule, must report the unrounded 7.50 and must
-      // not consult the collaborator a second time.
+      // that leaks.
       const rounded = calculator.getDiscountAmount(
         fixtures.roundedReward,
         Money.fromDecimalString('19.99'),
@@ -1277,8 +888,7 @@ describe('DiscountAmountCalculator', () => {
 
     it('is repeatable: identical inputs give identical results, with nothing accumulated', () => {
       // A leaked accumulator does not have to change the answer to be a defect - but if the answer
-      // drifted across repeats it would certainly be one. Three identical invocations, three
-      // identical answers, and exactly one rounding call per invocation.
+      // drifted across repeats it would certainly be one.
       const price = Money.fromDecimalString('19.99');
 
       const results = [
@@ -1293,10 +903,7 @@ describe('DiscountAmountCalculator', () => {
 
     it('shares nothing between two independently constructed calculators', () => {
       // Two subjects, two collaborators, interleaved calls. Each collaborator sees only its own
-      // call, each subject answers only from its own inputs, and neither observes the other. This
-      // is the instance-level counterpart of the invocation-level proof above: a memo or an
-      // accumulator held anywhere other than the call frame would show up here as a shared answer
-      // or a shared call log.
+      // call, each subject answers only from its own inputs, and neither observes the other.
       const otherRounding = new RecordingRoundingRuleService('5.00');
       const otherCalculator = new DiscountAmountCalculator(otherRounding);
 
@@ -1321,20 +928,14 @@ describe('DiscountAmountCalculator', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // An absent amount column, and where the failure is allowed to happen
-  // -------------------------------------------------------------------------
+  // An absent amount column, and where the failure is allowed to happen.
   describe('an absent amount column', () => {
     it('raises when a matched strategy needs the amount, reproducing the legacy null operand', () => {
       // CFML parity [model/entity/PromotionReward.cfc:L61]: `amount` is `ormType="big_decimal"`
-      // with NO `default`, so a NULL column is a real persisted state. Each legacy branch then
-      // reads `reward.getAmount()` inside its own `case`, where a null is an arithmetic operand -
-      // and CFML raises on that. Reproducing the raise is behaviour preservation, not added
-      // validation: the legacy function fails on an absent amount too.
+      // with no `default`, so a NULL column is a real persisted state.
       //
       // Substituting zero is forbidden on a money path, and the reason is concrete rather than
-      // stylistic: a zero percentage would discount nothing, while a zero fixed `amount` target
-      // would discount the entire price. Absence must stay observably absent.
+      // stylistic: a zero percentage would discount nothing.
       expect(() =>
         calculator.getDiscountAmount(
           fixtures.absentAmountReward,
@@ -1345,14 +946,6 @@ describe('DiscountAmountCalculator', () => {
     });
 
     it('does NOT raise when no strategy matched, because the amount is never read', () => {
-      // The reachability contract, asserted rather than assumed. The legacy switch has no
-      // `default:` [model/service/PromotionService.cfc:L1003], so an unrecognised discriminator
-      // never enters a `case` and never reads `reward.getAmount()`. An absent amount is therefore
-      // harmless on the fall-through path, and the silent zero survives.
-      //
-      // This is why the amount must be resolved INSIDE a matched strategy rather than before the
-      // dispatch: hoisting the read above the switch would turn this silent zero into a raise and
-      // change what a misconfigured reward does to an order.
       const bothColumnsAbsent = new PromotionReward({
         promotionRewardID: 'discount-amount-both-columns-absent',
         rewardType: 'merchandise',
@@ -1369,17 +962,10 @@ describe('DiscountAmountCalculator', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // The structural half of the not-applicable statement in this file's header
-  // -------------------------------------------------------------------------
+  // The structural half of the not-applicable statement in this file's header.
   describe('the discount path performs no data access', () => {
     it('never reaches a repository member on any amountType path or either rounding branch', () => {
-      // P5 and P6, enforced rather than asserted in prose. Every member of the repository behind
-      // the collaborator raises, so this sweep - all three amount types plus the fall-through,
-      // each with and without a rounding rule - would fail loudly if the discount path opened a
-      // connection, issued a statement or bound a parameter. It touches no SQL, no network, no
-      // filesystem and no environment variable, which is also why it passes in an empty
-      // environment.
+      // P5 and P6, enforced rather than asserted in prose.
       const price = Money.fromDecimalString('19.99');
       const rule = fixtures.roundingRule;
 
@@ -1454,19 +1040,14 @@ describe('DiscountAmountCalculator', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // The migration's own worked example, end to end
-  // -------------------------------------------------------------------------
+  // The migration's own worked example, end to end.
   describe("the migration's reference calculation", () => {
     it('reproduces every published figure of the worked example without drift', () => {
       // Unit price 19.99 at quantity 3 gives 59.97; 12.5% of that is 7.49625; the net is 52.47375;
-      // presented to two places the net is 52.47 and the discount is 7.50. Reproducing those
-      // figures without IEEE-754 drift is the property the must-preserve discount math depends on.
+      // presented to two places the net is 52.47 and the discount is 7.50.
       //
       // Every expectation is read from the fixture's own published numerals rather than restated
-      // here, so this suite and the factory cannot disagree about the migration's worked example -
-      // and every one of them is a decimal STRING. No floating-point literal appears anywhere in
-      // this file, not even to build an expectation.
+      // here, so this suite and the factory cannot disagree about the migration's worked example.
       const reference = fixtures.referenceCalculation;
 
       const unitPrice = Money.fromDecimalString(reference.unitPrice);
@@ -1494,7 +1075,7 @@ describe('DiscountAmountCalculator', () => {
     it('exposes the unquantized net at full precision through the rounding rule', () => {
       // The same worked example driven through the rounding branch, which is the only way to
       // observe the published unquantized figures: the net 52.47375 and, by difference, the
-      // discount 7.49625. Both are published numerals, and both must appear exactly.
+      // discount 7.49625.
       const reference = fixtures.referenceCalculation;
       const extendedPrice = Money.fromDecimalString(reference.extendedPrice);
 

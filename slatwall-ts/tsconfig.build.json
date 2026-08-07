@@ -24,11 +24,8 @@
 
     // Anchors the emitted tree at `src/`, so `src/domain/entities/skuCurrency.ts`
     // becomes `build/domain/entities/skuCurrency.js` rather than
-    // `build/src/domain/entities/skuCurrency.js`. The example names a module
-    // that exists at this checkpoint deliberately: every path cited in this
-    // config resolves today, so none of them can be mistaken for a claim about
-    // a planned module. It also makes it a compile error for
-    // an input to sit outside `src/`, which is a second and independent guard
+    // `build/src/domain/entities/skuCurrency.js`. It also makes it a compile error
+    // for an input to sit outside `src/`, which is a second and independent guard
     // on the `include` narrowing below.
     "rootDir": "src",
 

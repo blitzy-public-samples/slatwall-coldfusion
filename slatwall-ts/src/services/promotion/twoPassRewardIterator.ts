@@ -1,53 +1,15 @@
 // The two-pass promotion-reward iteration mechanism.
 //
 // Ports the reward fetch and the hand-rolled two-pass traversal inside
-// `updateOrderAmountsWithPromotions` [model/service/PromotionService.cfc:L58]: the DAO call at L165,
-// the pass flag at L166, the traversal at L167 and the loop-counter reset at L458-L461, with the
-// qualification gate at L197 - which closes at L463 - as load-bearing context this module does not
-// own. This is ORDER-DEPENDENCE VECTOR 2, inside must-preserve area #1 (AAP 0.8.1): running pass two
-// when the legacy would not, or skipping it when the legacy would run it, changes the amount charged.
+// `updateOrderAmountsWithPromotions` [model/service/PromotionService.cfc:L58]: the DAO call at
+// L165, the pass flag at L166, the traversal at L167 and the loop-counter reset at L458-L461.
 //
-// THE MECHANISM. The legacy author needed item-level and fulfillment-level rewards processed FIRST
-// and order-level rewards SECOND, and wrote ONE loop whose counter is mutated: on the last element
-// of pass one `pr` is set to `0` and the pass flag flips, so `pr++` lands back on element 1 and the
-// whole collection is traversed again. The target expresses that as two literal sequential
-// traversals gated on a flag that can be set at most once. Reproducing `pr = 0` would be the
-// transliteration the Minimal Change Clause forbids, while a "clean two-pass rewrite" loses one of
-// the two edge outcomes below.
+// LEGACY-NOTE [model/service/PromotionService.cfc:L61]: the two order-type gates are SEQUENTIAL
+// `if` statements rather than an `if`/`else if` pair, and both are facade-owned.
 //
-// THE TWO EDGE OUTCOMES - both load-bearing, and there is no third:
-//
-//   1. AN EMPTY REWARD COLLECTION MEANS PASS TWO NEVER RUNS. `arrayLen(promotionRewards)` is `0`, so
-//      the L167 body never executes, the L458 condition is never evaluated and no reset occurs. An
-//      "always run two passes" rewrite would run an empty second pass.
-//   2. THE LAST REWARD'S PROMOTION PERIOD FAILING QUALIFICATION ALSO MEANS PASS TWO NEVER RUNS. The
-//      reset at L458-L461 sits INSIDE the L197 gate that closes at L463, so a final element whose
-//      period does not qualify never reaches it. The reset below is therefore nested inside the
-//      reported gate outcome, exactly as the source nests it inside the gate.
-//
-// SCOPE AND STATE. This module owns the iteration mechanism only - no branch body, no ledger, no
-// memo, and no monetary value, so `../../domain/valueObjects/money.js` is not imported: the only
-// numbers in range are a collection length and a traversal index. All working state is a
-// per-invocation local, which on a warm container is a correctness requirement rather than a
-// preference, because a module-level binding survives between UNRELATED invocations and reward state
-// held there could answer one customer's order with another customer's discount. The passes are
-// strictly ordered and the ledger the visitor mutates is mutated in place, so the traversals are
-// sequential: no `Promise.all` over rewards, no worker threads, no parallelism of any kind.
-//
-// LEGACY-NOTE [model/service/PromotionService.cfc:L61]: the two order-type gates are SEQUENTIAL `if`
-// statements rather than an `if`/`else if` pair, and both are facade-owned. L61 tests
-// `listFindNoCase("otSalesOrder,otExchangeOrder", ...)` and closes at L539; L542 then opens a
-// SEPARATE `if` testing `listFindNoCase("otReturnOrder,otExchangeOrder", ...)`. `otExchangeOrder`
-// appears in BOTH, so an exchange order first traverses the sales/exchange block and afterwards
-// reaches the second gate, whose body at L542-L544 is the empty `issue #1766` return/exchange no-op
-// that the facade carries forward as a TODO. Folding the pair into `if`/`else` or a `switch` would
-// silently drop one of those two executions. By deliberate contrast the three reward-level arms at
-// L200, L345 and L415 ARE a chained `else if` construct.
-//
-// LEGACY-NOTE [model/service/PromotionService.cfc:L197]: the period-qualification memo is populated
-// at L192-L194 and read at L197, both outside this module's range, so the gate is neither owned nor
-// evaluated here. What this module owns is the gate's CONSEQUENCE - the gate encloses the reset - so
-// the gate outcome is reported back per reward through {@link RewardVisitOutcome} instead.
+// LEGACY-NOTE [model/service/PromotionService.cfc:L197]: the period-qualification memo is
+// populated at L192-L194 and read at L197, both outside this module's range, so the gate is
+// neither owned nor evaluated here.
 
 import type { PromotionReward } from '../../domain/entities/promotionReward.js';
 import type { PromotionRepository } from '../../domain/ports/promotionRepository.js';
@@ -56,42 +18,17 @@ import type { OrderView } from '../../domain/views/orderView.js';
 export interface RewardVisitOutcome {
   /**
    * Whether the reward's promotion period met its general use-count qualification -
-   * [model/service/PromotionService.cfc:L197]. `true` means control entered the gate, so the
-   * facade's reward-level branch bodies ran and the L458-L461 reset is reachable for this reward;
-   * `false` means control skipped straight to L463. Reported, never validated.
+   * [model/service/PromotionService.cfc:L197].
    */
   readonly qualificationsMeet: boolean;
 }
 
-// LEGACY-NOTE [model/service/PromotionService.cfc:L169-L197]: the caller carries three obligations
-// that this module DOCUMENTS and deliberately does NOT ENFORCE. Between the traversal head at L167
-// and the gate at L197 the legacy body initialises the reward-usage ledger entry [L172-L189],
-// lazily populates the period-qualification memo [L192-L194], and evaluates the gate itself [L197],
-// reporting the outcome back per reward through {@link RewardVisitOutcome} so the reset condition
-// can honour EDGE OUTCOME 2. No runtime check, assertion or flag in this file verifies that any of
-// the three happened.
-
 /**
- * The per-reward callback the iterator drives.
- *
- * Everything the legacy loop BODY does lives behind this one parameter. The body's three
- * reward-level branch bodies - the order-item arm [model/service/PromotionService.cfc:L200-L341],
- * the fulfillment arm [L345-L412] and the order arm [L415-L455] - are facade-owned and are not
- * reproduced in this file, so the iterator hands over each reward and the current pass flag and
- * lets the caller dispatch on them exactly as the source does.
- *
- * MAY RETURN A PROMISE, AND THAT IS DELIBERATE. The caller's per-reward work reaches persistence:
- * the memo populate at [L192-L193] resolves period qualification, which itself consumes use-count
- * queries. The return type therefore admits both a promise and a plain value, and the iterator
- * awaits it either way.
- *
  * @param reward One reward from the fetched collection, in the order the collection arrived -
- *   [model/service/PromotionService.cfc:L169] `var reward = promotionRewards[pr];`.
- * @param isOrderRewardsPass The legacy `orderRewards` flag [L166] as the source would see it on
- *   this visit: `false` throughout pass one and `true` throughout pass two. It is what the three
- *   reward-level guards at L200, L345 and L415 test, so the caller must pass it through unchanged -
- *   the item and fulfillment arms guard on `!orderRewards` and the order arm on `orderRewards`,
- *   which is what makes the order arm the only reachable arm in pass two.
+ * [model/service/PromotionService.cfc:L169] `var reward = promotionRewards[pr];`.
+ * @param isOrderRewardsPass The legacy `orderRewards` flag
+ * [model/service/PromotionService.cfc:L166] as the source would see it on this visit: `false`
+ * throughout pass one and `true` throughout pass two.
  * @returns The gate outcome for this reward, awaited by the iterator.
  */
 export type RewardVisitor = (
@@ -99,174 +36,63 @@ export type RewardVisitor = (
   isOrderRewardsPass: boolean,
 ) => Promise<RewardVisitOutcome> | RewardVisitOutcome;
 
-// LEGACY-NOTE [model/service/PromotionService.cfc:L169, L472, L475, L476, L477]: the last-processed
-// reward identifier is surfaced SOLELY so that register entry 9 can be reproduced faithfully -
-// never to repair it. L169's `var reward = promotionRewards[pr];` is bound inside the loop but,
-// CFML function scope having no block scoping, it survives the loop's close at L465, and the
-// over-use stripping block from L468 then reads
-//   `promotionRewardUsageDetails[ reward.getPromotionRewardID() ]`
-// at L472, L475, L476 and L477 - so maximum-use-per-order is enforced against whichever reward
-// happened to be LAST. The target has no leaked function scope, so the identity must travel
-// explicitly: this module owns the loop, so this module surfaces it, and `./overUseStripping.ts`
-// receives it as its required `leakedLastProcessedRewardID` argument. The hand-off is the mechanism
-// of faithful reproduction.
-//
-// LEGACY-NOTE [model/service/PromotionService.cfc:L172-L189]: the ledger initialisation block
-// belongs to `./rewardUsageLedger.ts` and is referenced here for one reason - its POSITION. It sits
-// BEFORE the L197 gate, so it runs for EVERY reward the traversal encounters, qualified or not.
-// That is the safety proof for the identifier above: the ledger is non-empty if and only if at
-// least one reward was processed, which is exactly when the legacy `reward` variable is bound. When
-// the collection is empty the ledger is empty too and the stripping block's loop body never runs,
-// so the identifier is never read. It is therefore typed as a plain `string` with NO undefined
-// branch, NO null check and NO fallback, and the caller must not wrap the stripping call in a new
-// conditional.
+// LEGACY-NOTE [model/service/PromotionService.cfc:L169, L472, L475, L476, L477]: the
+// last-processed reward identifier is surfaced SOLELY so that register entry 9 can be reproduced
+// faithfully - never to repair it.
 
 /**
  * What one full invocation of the iteration reports back.
- *
- * EXACTLY ONE MEMBER, AND THE OMISSIONS ARE DELIBERATE. There is no pass-two-ran flag, no pass
- * count, no visited count and no collection length here. The legacy block publishes none of them,
- * and an assertion that pass two ran is exactly the kind of state that must not be invented.
  */
 export interface TwoPassRewardIterationResult {
   /**
    * The `promotionRewardID` of the LAST reward this invocation processed -
    * [model/service/PromotionService.cfc:L169] made explicit.
    *
-   * A plain `string`, never optional, for the reason proved in the note above. The EMPTY STRING
-   * when the fetched collection was empty, which is precisely the case in which the reward-usage
-   * ledger is also empty and `./overUseStripping.ts` therefore never reads it. Hand it straight to
-   * `stripOverUsedRewardDiscounts` as its `leakedLastProcessedRewardID` argument, unguarded.
-   *
    * Which reward this is after a two-pass invocation: pass two re-traverses the whole collection,
-   * so the value that survives is the final element as seen by pass two - the same element pass one
-   * ended on, which is what the legacy single mutated loop also leaves bound.
+   * so the value that survives is the final element as seen by pass two.
    */
   readonly lastProcessedRewardID: string;
 }
 
-// LEGACY-NOTE [model/service/PromotionService.cfc:L145-L162, L165-L465, L468-L521, L524-L537]: the
-// legacy method runs four blocks in a fixed sequence and the decomposition preserves it: sale-price
-// seeding [L145-L162] in `./salePriceSeeding.ts`, then the two-pass reward iteration [L165-L465] in
-// this module together with the facade-owned branch bodies, then over-use stripping [L468-L521] in
-// `./overUseStripping.ts`, then best-discount application [L524-L537] in
-// `./promotionApplication.ts`. That order is not enforced by this iterator - it exposes one entry
-// point and holds no sequence state - but it IS enforced by composition: `src/services/promotionService.ts`
-// calls the four collaborators in exactly that order inside `updateOrderAmountsWithPromotions`. No
-// runtime check, ordering flag or sequence counter is added here, because the legacy code carries
-// none and inventing one would be added validation.
-
 /**
- * The two-pass promotion-reward iteration mechanism - ORDER-DEPENDENCE VECTOR 2.
+ * The two-pass promotion-reward iteration mechanism - order-dependence vector.
  *
- * Fetches the active reward collection [model/service/PromotionService.cfc:L165] and traverses it
- * TWICE in a fixed order, handing each reward to a caller-supplied visitor along with the pass flag
- * [L166] that the facade's three reward-level guards test. It reproduces the legacy loop-counter
- * reset [L457-L461] without reproducing the loop-counter mutation, and it reproduces both of the
- * mechanism's edge outcomes deliberately. It owns no branch body, no ledger and no memo.
- *
- * THE CROSS-SERVICE ORDERING CONSTRAINT - THE ONE DEPENDENCY THE LEGACY CODE LEAVES IMPLICIT.
- * `PriceGroupService.updateOrderAmountsWithPriceGroups()`
- * [model/service/PriceGroupService.cfc:L364-L375] MUST RUN BEFORE
- * `PromotionService.updateOrderAmountsWithPromotions()` [model/service/PromotionService.cfc:L58].
- * The price-group pass writes each order item's price and applied price group
- * [model/service/PriceGroupService.cfc:L370-L371]; the promotion pass then READS that state when it
- * chooses the base price a discount is computed against [model/service/PromotionService.cfc:L241] -
- * the `if` arm [L241], taken when there is NO applied price group OR the reward has it as an
- * ELIGIBLE one, computes from `getPrice()` [L244] with NO correction term, while the `else` arm
- * [L246], taken when a price group IS present AND the item is INELIGIBLE, computes from
- * `getSkuPrice()` [L249] and applies the L252 correction
- *   `originalDiscountAmount - (getExtendedSkuPrice() - getExtendedPrice())`.
- * That orientation comes from the source and is authoritative; implementing the two arms transposed
- * inverts the discount on every price-group order. In the legacy system the ordering held ONLY
- * because the out-of-scope `OrderService` happened to call the two services in that sequence, so in
- * the target it is an explicit obligation on whichever caller composes the two passes, with the
- * price-group pass running first.
- *
- * THAT CROSS-SERVICE CONSTRAINT IS NOT ENFORCED BY THIS MODULE. It sees one service's rewards and
- * has no view of the price-group pass, so it adds no runtime check and no ordering flag for it.
- *
- * DEPENDENCY INJECTION IS EXPLICIT AND SINGULAR (T1). The one collaborator arrives as a `readonly`
- * constructor parameter typed to a PORT INTERFACE, wired once in a composition root, replacing the
- * legacy bean-factory convention scan over `property name="xService";` declarations -
- * `PromotionService` declares exactly three, `promotionDAO`
- * [model/service/PromotionService.cfc:L51], `addressService` [L53] and `roundingRuleService` [L54].
- *
- * THIS CLASS IS STATELESS BETWEEN INVOCATIONS. It holds the port and nothing else - no fetched
- * collection, no pass flag, no counter, no cache.
+ * That cross-service constraint is not enforced by this module.
  *
  * @see {@link RewardVisitor} for what the caller supplies.
- * @see {@link TwoPassRewardIterationResult} for the leaked-reward hand-off.
  */
 export class TwoPassRewardIterator {
   /**
-   * @param promotionRepository The promotion port, sole collaborator. Only
-   *   `getActivePromotionRewards` is reached; the port's other SIX members are untouched here.
-   *   (This said "other seven". `PromotionRepository` declares seven members IN TOTAL - the
-   *   reward read plus six use-count and query members - so "other seven" implied an eighth that
-   *   does not exist. Corrected against the shipped interface while verifying a count-accuracy
-   *   finding elsewhere; nothing about what this class reaches has changed.)
+   * @param promotionRepository The promotion port, sole collaborator.
    */
   constructor(private readonly promotionRepository: PromotionRepository) {}
 
   /**
    * Fetch the active rewards and traverse them in two ordered passes.
    *
-   * `async` for exactly one reason: L165 reaches persistence through the repository port. Nothing
-   * else here is asynchronous.
+   * `async` for exactly one reason: L165 reaches persistence through the repository port.
    *
-   * THE SEQUENCE, against the source:
+   * Fetch [model/service/PromotionService.cfc:L165] - three arguments, values reproduced exactly,
+   * result order untouched.
    *
-   *   1. Fetch [L165] - three arguments, values reproduced exactly, result order untouched.
-   *   2. PASS ONE - traverse every reward with the pass flag `false` [L166, L167]. The item arm
-   *      [L200] and the fulfillment arm [L345] are the reachable ones.
-   *   3. On the FINAL element only, and only if the caller reported the L197 gate as met, authorise
-   *      pass two [L458-L461]. The flag is set at most once and never cleared.
-   *   4. PASS TWO, if and only if it was authorised - traverse the WHOLE collection again, in the
-   *      same order, with the pass flag `true`. The order arm [L415] is the only reachable arm.
-   *
-   * @param order The read-only order view. Read for exactly one value - its promotion-code list,
-   *   for L165's second argument. NEVER MUTATED.
-   * @param onReward The per-reward visitor. Invoked once per reward per pass, sequentially, and
-   *   awaited before the next reward is visited.
+   * @param order The read-only order view.
+   * @param onReward The per-reward visitor.
    * @returns The last-processed reward identifier, for the register-entry-9 hand-off.
    */
   async iterate(order: OrderView, onReward: RewardVisitor): Promise<TwoPassRewardIterationResult> {
-    // LEGACY-NOTE [model/dao/PromotionDAO.cfc:L51-L132]: `getActivePromotionRewards` applies NO
-    // `ORDER BY`, and THE ABSENCE IS PRESERVED. Verified by census: a case-insensitive search for
-    // "order by" across the whole of `model/dao/PromotionDAO.cfc` returns ZERO OCCURRENCES.
-    // Iteration order is therefore whatever the engine returns, and because the traversal below
-    // threads a mutable usage ledger through it [model/service/PromotionService.cfc:L297], WHICH
-    // reward is allowed depends on WHICH earlier rewards ran: the legacy behaviour is genuinely
-    // non-deterministic at the boundary of a tie, and that non-determinism is Vector 1, owned by
-    // `./rewardUsageLedger.ts`. This module must not sort the collection, must not assume an order,
-    // and must not permit the port method to acquire one.
-
-    // LEGACY-NOTE [model/service/PromotionService.cfc:L165, L1040]: TWO DISTINCT CALL SHAPES REACH
-    // THE SAME DAO METHOD, and they must NOT be normalised into one. L165 - this module's call -
-    // passes all three arguments and states `qualificationRequired=true` explicitly. L1040, inside
-    // the facade's shipping-method-option path, passes only `rewardTypeList="fulfillment"` and a
-    // promotion-code list, relying on the DAO's own `default="false"`
-    // [model/dao/PromotionDAO.cfc:L54]. Both branches of that flag are live, so no shared wrapper
-    // is introduced and no default is added that would make the two shapes identical.
+    // LEGACY-NOTE [model/service/PromotionService.cfc:L165, L1040]: two distinct call shapes reach
+    // the same DAO method, and they must not be normalised into one.
 
     // LEGACY-NOTE [model/service/PromotionService.cfc:L165, L200, L714, L794]: the reward-type
     // comma list appears at three sites in three different forms, and each literal stays exactly
-    // where and as it is written. L165 - here - uses the FIVE-token
-    // `"merchandise,subscription,contentAccess,order,fulfillment"`; L200 and L794 use the
-    // three-token `"merchandise,subscription,contentAccess"`; and L714 uses
-    // `"contentAccess,merchandise,subscription"`, the same three tokens in a DIFFERENT ORDER. No
-    // shared constant is extracted, no token order is normalised, and no literal is built from
-    // another.
+    // where and as it is written.
 
     // [model/service/PromotionService.cfc:L164] Loop over all Potential Discounts that require
     // qualifications.
     //
-    // [L165] The three argument VALUES are reproduced exactly: the five-token reward-type list in
-    // source order, the order's promotion-code list, and `qualificationRequired` explicitly `true`.
-    // The result is typed `readonly PromotionReward[]` because the legacy collection is NEVER
-    // MUTATED anywhere inside the loop - no append, no delete, no reassignment. No sort, no
-    // de-duplication and no ordering assumption is applied to it, here or below.
+    // [model/service/PromotionService.cfc:L165] The three argument VALUES are reproduced exactly:
+    // the five-token reward-type list in source order, the order's promotion-code list, and
+    // `qualificationRequired` explicitly `true`.
     const promotionRewards: readonly PromotionReward[] =
       await this.promotionRepository.getActivePromotionRewards(
         'merchandise,subscription,contentAccess,order,fulfillment',
@@ -275,60 +101,30 @@ export class TwoPassRewardIterator {
       );
 
     // LEGACY-NOTE [model/service/PromotionService.cfc:L167, L458]: `arrayLen(promotionRewards)` is
-    // re-evaluated on every loop-condition check AND again inside the reset condition; the bound is
-    // captured ONCE here instead. The two are equivalent because the collection is never mutated
-    // during iteration, as the `readonly` type above records, so every re-evaluation in the source
-    // returns the same number. Capturing it once names the value the reset condition actually
-    // depends on and lets the final-element test below read as a single comparison.
+    // re-evaluated on every loop-condition check and again inside the reset condition; the bound
+    // is captured once here instead.
     const rewardCount: number = promotionRewards.length;
 
     let lastProcessedRewardID = '';
 
-    // [model/service/PromotionService.cfc:L166] `var orderRewards = false;` - the legacy identifier
-    // carried over verbatim. Per-invocation local.
+    // [model/service/PromotionService.cfc:L166] `var orderRewards = false;` - the legacy
+    // identifier carried over verbatim. Per-invocation local.
     //
-    // LEGACY-NOTE [model/service/PromotionService.cfc:L458-L461]: THE EXACTLY-TWO-PASSES PROOF,
-    // encoded rather than inherited. L458's condition is compound -
-    //   `!orderRewards and pr == arrayLen(promotionRewards)` -
-    // and L460 sets `orderRewards = true` inside the body it guards. After that assignment
-    // `orderRewards` is `true` for the remainder of the invocation, because NOTHING anywhere in the
-    // method ever clears it, so `!orderRewards` is permanently `false` and L458 short-circuits on
-    // every subsequent evaluation. At most ONE reset can therefore ever occur, which yields EXACTLY
-    // TWO passes and never three. Below, that proof is structural: the flag is assigned at exactly
-    // one site, only from `false` to `true`, and pass two contains no reset site at all - so a
-    // third pass is not merely unreached, it is unexpressible.
+    // LEGACY-NOTE [model/service/PromotionService.cfc:L458-L461]: the exactly-two-passes proof,
+    // encoded rather than inherited.
     let orderRewards = false;
-
-    // --- PASS ONE - item-level and fulfillment-level rewards ---
-    //
-    // CFML parity [model/service/PromotionService.cfc:L167]: the legacy
-    //   `for(var pr=1; pr<=arrayLen(promotionRewards); pr++)`
-    // is 1-based over a CFML array; this is an idiomatic 0-based traversal in the same ascending
-    // order, and `entries()` supplies the index the final-element test needs without an indexed
-    // element read - so nothing is asserted, no `!` and no `as` appears, and the reward is a
-    // `PromotionReward` rather than a possibly-absent one.
     for (const [index, reward] of promotionRewards.entries()) {
       lastProcessedRewardID = reward.getPromotionRewardID();
 
       const outcome: RewardVisitOutcome = await onReward(reward, orderRewards);
 
-      // [model/service/PromotionService.cfc:L197] the gate, which closes at L463. Reproduced HERE
-      // as an enclosing condition rather than merged into the reset test, because the source NESTS
-      // the reset inside it and that nesting IS EDGE OUTCOME 2.
+      // [model/service/PromotionService.cfc:L197] the gate, which closes at L463.
       if (outcome.qualificationsMeet) {
         // [model/service/PromotionService.cfc:L457] This forces the loop to repeat looking for
         // "order" discounts.
         //
-        // [L458] `if(!orderRewards and pr == arrayLen(promotionRewards)) {` - the compound
-        // condition reproduced in full. `!orderRewards` is retained deliberately even though pass
-        // one is the only place this site is reached: it carries the exactly-two-passes proof
-        // above.
-        //
-        // CFML parity [model/service/PromotionService.cfc:L459]: `pr = 0` does not skip an element.
-        // It relies on the `pr++` increment firing immediately afterwards, so `pr` becomes `1` -
-        // the FIRST element of a 1-based CFML array - so the reset restarts the traversal rather
-        // than resuming it, which is why pass two below is a fresh traversal and not a
-        // continuation.
+        // CFML parity [model/service/PromotionService.cfc:L459]: `pr = 0` does not skip an
+        // element.
         if (!orderRewards && index === rewardCount - 1) {
           orderRewards = true;
         }
@@ -337,28 +133,11 @@ export class TwoPassRewardIterator {
     // [model/service/PromotionService.cfc:L465] END of PromotionReward Loop.
 
     // LEGACY-NOTE [model/service/PromotionService.cfc:L167, L197, L458-L461]: both EDGE OUTCOMES
-    // from the header are encoded by this guard, and there is no third - an EMPTY collection leaves
-    // `rewardCount` at 0 so the L458 condition is never evaluated, and the LAST reward's period
-    // FAILING qualification leaves the reset unreached inside the L197 gate that closes at L463.
-    // Either way the flag stays `false` and PASS TWO NEVER RUNS.
+    // from the header are encoded by this guard, and there is no third - an EMPTY collection
+    // leaves `rewardCount` at 0 so the L458 condition is never evaluated.
     if (orderRewards) {
-      // --- PASS TWO - order-level rewards ---
-      //
       // LEGACY-NOTE [model/service/PromotionService.cfc:L200, L415, L459]: pass two is a COMPLETE
       // RE-TRAVERSAL of the same collection in the same order, not a continuation of pass one.
-      // Because L459's `pr = 0` plus `pr++` lands on element 1, the legacy loop walks the entire
-      // array again with `orderRewards == true`, which changes which arm can execute rather than
-      // where the walk starts: the item arm at L200 and the fulfillment arm at L345 are blocked by
-      // their own `!orderRewards` guards, leaving the order arm at L415 - guarded on `orderRewards`
-      // - as the only reward-level branch that can run. Blocking is structural, in the caller's
-      // guards, and this module adds no filter of its own.
-      //
-      // LEGACY-NOTE [model/service/PromotionService.cfc:L417]: pass two depends on the output of
-      // BOTH of pass one's arms, because the order arm's first statement sums
-      // `getSubtotalAfterItemDiscounts()` and `getFulfillmentChargeAfterDiscountTotal()` - a value
-      // that only exists once ITEM discounts have been applied and one that only exists once
-      // FULFILLMENT discounts have been applied. That is why pass two must follow the WHOLE of pass
-      // one rather than only its item arm.
       for (const reward of promotionRewards) {
         lastProcessedRewardID = reward.getPromotionRewardID();
 

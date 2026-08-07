@@ -1,99 +1,15 @@
-// ---------------------------------------------------------------------------
 // slatwall-ts - characterization suite pinning `src/domain/entities/priceGroup.ts`
 //
 // `PriceGroup` ports model/entity/PriceGroup.cfc (226 lines; the body closes at L225), the
-// hierarchical grouping whose parent chain, rate collection and global-rate accessor the five-level
-// price-group cascade consumes. The CFC is the SOLE authority below, and every locator was
-// re-verified against it line by line rather than taken from a secondary description.
+// hierarchical grouping whose parent chain.
 //
-// Six behaviours carry this entity's risk, each with its own describe block:
+// Four `LEGACY-DEFECT` MARKERS are SPENT here, each verified against the shipped module before it
+// was spent, and each stated in full at its own site.
 //
-//   1. `getGlobalPriceGroupRate()` TAKES THE FIRST MATCH and answers `undefined` when there is none
-//      [model/entity/PriceGroup.cfc:L82-L90]. The service's own inlined loop over the same
-//      collection takes the LAST match [model/service/PriceGroupService.cfc:L163-L170]. Two paths
-//      over one collection disagree about which global rate wins, and BOTH are preserved.
-//   2. THE MATERIALIZED PATH HAS TWO INDEPENDENT ROUTES. The lazy memoized getter
-//      [model/entity/PriceGroup.cfc:L195-L200] guards on `isNull(...)`, NOT `structKeyExists(...)`;
-//      the two lifecycle methods [model/entity/PriceGroup.cfc:L206-L214] bypass that getter and
-//      overwrite the field outright, so the two can disagree - defect D26.
-//   3. THE `isNew()` DISJUNCT AT [model/entity/PriceGroup.cfc:L112] short-circuits the containment
-//      test, so an unsaved group is appended to its parent's collection twice - defect D25.
-//   4. `removeParentPriceGroup` IS A CORRECT CONTROL. It finds and deletes in the SAME collection
-//      [model/entity/PriceGroup.cfc:L120, L122], and the field clear at :L124 is UNCONDITIONAL.
-//   5. FOUR COLLECTIONS ARE DROPPED because their far side is out of scope, and `appliedOrderItems`
-//      [model/entity/PriceGroup.cfc:L62] is not materialized at all.
-//   6. `activeFlag` HAS NO ORM DEFAULT [model/entity/PriceGroup.cfc:L54], and `PriceGroup` declares
-//      NO `remoteID`.
-//
-// ZERO PORTS, ZERO CLOCK, FULLY SYNCHRONOUS. `model/entity/PriceGroup.cfc` contains ZERO
-// `getService(` call sites, so no collaborator is injected, no method reaches a repository and
-// nothing here returns a promise.
-//
-// COVERAGE IS 100% NET-NEW, never to be presented as parity. `grep -rli pricegroup meta/tests/`
-// returns ZERO hits across all 32 legacy `.cfc` components. The only legacy suites extended
-// anywhere in this port are [meta/tests/unit/entity/BrandTest.cfc] and
-// [meta/tests/unit/entity/ProductTest.cfc], and
-// [meta/tests/functional/admin/entity/ProductTest.cfc] is an empty stub contributing zero coverage.
-// Of the four cases [meta/tests/unit/entity/SlatwallEntityTestBase.cfc] would have supplied,
-// `defaults_are_correct()` [L64-L67] is observable and is pinned as net-new, while three are not
-// available and are NOT fabricated: `has_primary_id_property_name()` [L60-L62] needs a framework
-// accessor this port does not ship; `validate_as_save_for_a_new_instance_doesnt_pass()` [L51-L54]
-// needs a validation runtime, and [model/validation/PriceGroup.json] is enforced at the SERVICE
-// tier; and `simple_representation_exists_and_is_simple()` [L56-L58] calls
-// `getSimpleRepresentation()`, which the CFC does not declare - its absence is asserted and
-// contrasted with the child [model/entity/PriceGroupRate.cfc:L270-L272], which returns the
-// capital-D `"DisplayName"`.
-//
-// THIS FILE SPENDS ZERO DIVERGENCES; the port's three all sit elsewhere, in `src/services/**` and
-// in the entity memo fixes owned by `sku.test.ts` and `product.test.ts`.
-//
-// FOUR `LEGACY-DEFECT` MARKERS ARE SPENT HERE, each verified against the shipped module before it
-// was spent, and each stated in full at its own site. Two are this entity's own - D26 at
-// [model/entity/PriceGroup.cfc:L206-L214] and D25 at [model/entity/PriceGroup.cfc:L112], whose
-// ported body reads `this.isNew() || !parentPriceGroup.hasChildPriceGroup(this)` disjunct for
-// disjunct. Two cite a FAR-SIDE defect - [model/entity/PriceGroupRate.cfc:L183] and
-// [model/entity/PromotionReward.cfc:L159, L162] - and both are asserted ONLY through this entity's
-// delegating helpers `addPriceGroupRate` and `addPromotionReward`, because that is where the
-// duplicate becomes observable on a `PriceGroup` collection. Marking them is the honest alternative
-// to asserting defective output with no label on it; neither is a divergence and neither re-tests
-// the sibling entity's own surface.
-//
-// Everything else preserved here is a `CFML parity` note and NOT a defect: the first-versus-last
+// Everything else preserved here is a `CFML parity` note and not a defect: the first-versus-last
 // global-rate disagreement, the four-site `subsciptionUsageBenefit` argument typo, the capitalised
 // `ChildPriceGroup` singular name, the missing `remoteID`, the missing `priceGroupRates` delete
-// gate, the two lifecycle methods declared under the wrong banner, the misspelled "Implicet" and
-// "invers" comments, the out-of-banner `getGlobalPriceGroupRate()` and the inconsistent
-// `type="array"` attribute.
-//
-// THE MANDATORY "remove-that-ADDs" INVERSION CROSS-CHECK was run against all eight `remove*`
-// bidirectional helpers in the CFC (L116, L131, L139, L147, L155, L163, L171, L179) and against the
-// four that ship. VERDICT: CLEAN - ZERO inversions. Every `remove*` body calls a `remove*`
-// counterpart on the owning side, and `removeParentPriceGroup` searches and splices and never
-// appends. Contrast [model/entity/Option.cfc:L129-L131] and :L145-L147, whose two `remove*` methods
-// both call `addExcludedOption` - genuine inversions, owned by `option.test.ts`.
-//
-// FOUR EXPECTATIONS CORRECTED against the source and the shipped module, both read in full first,
-// because locator and surface drift is systemic in this migration:
-//
-//   (a) `src/domain/valueObjects/materializedIdPath.ts` exports NO symbol named
-//       `MaterializedIdPath`. Its surface is five functions and two accessor types; this suite
-//       imports the four functions it needs. An import of that binding would not compile.
-//   (b) THE BANNER TYPO IS "Implicet", NOT "Implecet". [model/entity/PriceGroup.cfc:L193] and :L202
-//       both read "Overridden Implicet Getters", verified by direct search, and
-//       [model/entity/ProductType.cfc:L248] and :L257 read the same. A comment in the shipped
-//       module states otherwise; the source is authoritative and `src/**` is not ours to edit.
-//   (c) `getActiveFlag()` RETURNS `boolean`, NOT `boolean | undefined`. The COLUMN has no default
-//       [model/entity/PriceGroup.cfc:L54]; the shipped ACCESSOR resolves that absence through the
-//       CFML boolean coercion and answers `false`, which is what the legacy engine gave a flag it
-//       had no value for. What must never be fabricated is a `true` default - and it is not.
-//   (d) THE PROMOTION-REWARD D25 IS ASYMMETRIC. A first draft expected an unsaved group to
-//       duplicate BOTH sides; running it proved otherwise, because
-//       [model/entity/PromotionReward.cfc:L159] guards on `eligiblePriceGroup.isNew()` and :L162 on
-//       `this.isNew()` - two INDEPENDENT tests of two different ends. An unsaved group therefore
-//       duplicates only the reward's own collection and an unsaved reward only this group's. Both
-//       halves are asserted, and the mirror pair proves the guards are independent rather than one
-//       guard read twice.
-// ---------------------------------------------------------------------------
+// gate.
 
 import { describe, expect, it } from 'vitest';
 
@@ -109,41 +25,14 @@ import {
 } from '../../../../src/domain/valueObjects/materializedIdPath.js';
 import { makePriceGroupFixtures } from '../../../fixtures/priceGroupFixtures.js';
 
-// --- Local builders ---------------------------------------------------------
-//
-// FUNCTIONS AND NEVER SHARED INSTANCES. Every test builds its own subject and far-side doubles, so
-// no state crosses a test boundary: `parentPriceGroup`, `priceGroupIDPath` and the option memo are
-// all mutable on the class, and the three collections are handed over by reference rather than
-// copied. There is deliberately no `beforeEach` and no `afterEach` - nothing installs a spy, a fake
-// timer or a stubbed environment value.
-//
-// HAND-WRITTEN IN-MEMORY DOUBLES, NOT `vi.mock`. `PriceGroupRate` and `PromotionReward` are
-// in-scope domain classes with private fields, so a structural stand-in would not be assignable and
-// a mock would prove nothing about the bidirectional contract these helpers delegate into.
-
 /**
  * The overrides a test may supply when building a subject.
  *
- * Every slot is optional HERE and required on the class constructor, deliberately in both places.
- * The constructor requires each nullable column as a present-but-`undefined` slot so a hydrating
- * repository must state "I read that column and found nothing" rather than silently omit it; a test
- * has no such obligation, and spelling out thirteen `undefined`s per case would bury the one or two
- * columns each case is about.
+ * Every slot is optional here and required on the class constructor, deliberately in both places.
  *
- * `activeFlag` accepts the same wide input union the constructor does, modelled structurally rather
- * than by importing the coercion helper's own type: this tier may reach into `src/domain/**` and
- * `tests/fixtures/**` only, and `src/lib/cfml/truthiness.ts` is outside that surface. It still
- * exercises every form a MySQL driver can hand over for an undefaulted `ormtype="boolean"` column
- * [model/entity/PriceGroup.cfc:L54].
- *
- * `parentPriceGroupOptionCandidates` is typed with the two keys the source itself spells at
- * [model/entity/PriceGroup.cfc:L97] - `options[i]['value']` - because the shipped element type is
- * module-local and unexported.
- *
- * EVERY SLOT IS `T | undefined` RATHER THAN A BARE `T?`, which is a requirement here rather than a
- * formality. `exactOptionalPropertyTypes` is enabled, so "absent" and "present-but-undefined" are
- * genuinely different types - and that difference is the very thing the materialized-path block has
- * to distinguish.
+ * `activeFlag` accepts the same wide input union the constructor does, modelled structurally
+ * rather than by importing the coercion helper's own type: this tier may reach into
+ * `src/domain/**` and `tests/fixtures/**` only.
  */
 interface PriceGroupOverrides {
   readonly priceGroupID?: string | undefined;
@@ -167,12 +56,9 @@ interface PriceGroupOverrides {
  * Builds one `PriceGroup`, fresh, from the overrides supplied.
  *
  * `priceGroupID` defaults to a NON-EMPTY value, so the default subject is SAVED and `isNew()`
- * reports `false`. The empty-string primary key at [model/entity/PriceGroup.cfc:L52] is what
- * triggers D25, so a test wanting the unsaved branch must ask for it explicitly.
+ * reports `false`.
  *
- * Each collection defaults to a NEWLY CONSTRUCTED array on every call. The class does not copy what
- * it is handed and its accessors return those very arrays, so a module-level literal would be
- * shared mutable state of exactly the kind this port forbids.
+ * Each collection defaults to a NEWLY CONSTRUCTED array on every call.
  */
 function aPriceGroup(overrides: PriceGroupOverrides = {}): PriceGroup {
   return new PriceGroup({
@@ -197,12 +83,10 @@ function aPriceGroup(overrides: PriceGroupOverrides = {}): PriceGroup {
  * Builds one real `PriceGroupRate`, fresh.
  *
  * `globalFlag` is passed explicitly rather than left to the column's own `default="false"`
- * [model/entity/PriceGroupRate.cfc:L53], because every assertion in the global-rate block is ABOUT
- * that flag and an implicit default would hide the input under test.
+ * [model/entity/PriceGroupRate.cfc:L53].
  *
  * `amount`, when supplied, is built from a DECIMAL STRING through the port's single arithmetic
- * surface. No float literal reaches a monetary field anywhere in this file, and `decimal.js` is
- * never imported here - only `src/domain/valueObjects/money.ts` may import it.
+ * surface.
  */
 function aPriceGroupRate(spec: {
   readonly priceGroupRateID: string;
@@ -217,37 +101,29 @@ function aPriceGroupRate(spec: {
 }
 
 /**
- * Builds one real `PromotionReward`, fresh. Only the primary key is supplied: the two members this
- * entity delegates into - `addEligiblePriceGroup` and `removeEligiblePriceGroup`
- * [model/entity/PromotionReward.cfc:L158-L175] - need nothing else, and populating the reward's
- * twenty other columns would prove nothing this suite is about.
+ * Builds one real `PromotionReward`, fresh.
  */
 function aPromotionReward(promotionRewardID: string): PromotionReward {
   return new PromotionReward({ promotionRewardID });
 }
 
-/** The runtime member names on the shipped class, sorted. */
+/**
+ * The runtime member names on the shipped class, sorted.
+ */
 function shippedMemberNames(): readonly string[] {
   const prototype: object = Object.getPrototypeOf(aPriceGroup()) as object;
 
   return Object.getOwnPropertyNames(prototype).sort();
 }
 
-// --- 1. getGlobalPriceGroupRate - FIRST match wins, `undefined` when there is none -----
-
 describe('PriceGroup.getGlobalPriceGroupRate', () => {
   // CFML parity [model/entity/PriceGroup.cfc:L82-L90]: getGlobalPriceGroupRate returns the FIRST
-  // rate whose globalFlag is set (L86-L87 returns immediately) and falls off the end at L90 with no
-  // return statement, yielding CFML null => undefined. This is the OPPOSITE of the service cascade
-  // at [model/service/PriceGroupService.cfc:L163-L170], which has no break and therefore takes the
-  // LAST match. Re-verified locator: the service's step opens at L163, its loop at L165 and its
-  // unconditional assignment at L167, so the no-break region is L165-L169 inside L163-L170.
+  // rate whose globalFlag is set (L86-L87 returns immediately) and falls off the end at L90 with
+  // no return statement, yielding CFML null => undefined.
   //
   // CFML parity [model/entity/PriceGroup.cfc:L82-L90]: this method sits in an UN-BANNERED region,
   // between the property declarations and the "START: Non-Persistent Property Methods" banner at
-  // L92 - the third such placement wart in this folder, with
-  // [model/entity/PromotionQualifier.cfc:L101-L103] and
-  // [model/entity/PromotionReward.cfc:L106-L108].
+  // L92 - the third such placement wart in this folder.
 
   it('answers undefined when the rate collection is empty', () => {
     // [model/entity/PriceGroup.cfc:L85] ArrayLen(rates) is 0, so the loop body never runs and L90
@@ -273,8 +149,7 @@ describe('PriceGroup.getGlobalPriceGroupRate', () => {
   it('never substitutes a default, a zero or a synthesized rate for an absent global rate', () => {
     // The absence convention belongs to a family of three in this folder whose directions are
     // OPPOSITE and must never be collapsed together: [model/entity/Product.cfc:L598] falls through
-    // to `return 0` and MUST answer 0; [model/entity/Sku.cfc:L269-L273] has no else branch and MUST
-    // answer undefined, because substituting 0 there would silently sell products for free.
+    // to `return 0` and must answer.
     const globalPriceGroupRate: PriceGroupRate | undefined = aPriceGroup({
       priceGroupRates: [aPriceGroupRate({ priceGroupRateID: 'rate-only', globalFlag: false })],
     }).getGlobalPriceGroupRate();
@@ -300,11 +175,6 @@ describe('PriceGroup.getGlobalPriceGroupRate', () => {
   });
 
   it('answers the FIRST global rate in collection order when two carry the flag', () => {
-    // THE CENTREPIECE. [model/entity/PriceGroup.cfc:L86-L87] returns immediately on the first
-    // match, so the second flagged rate is never reached. Nothing in the schema prevents two global
-    // rates on one price group, and the legacy query applies no ORDER BY
-    // [model/dao/PriceGroupDAO.cfc], so "collection order" is whatever the repository materialized,
-    // which is precisely why the tie-break has to be pinned rather than assumed.
     const firstGlobalRate = aPriceGroupRate({
       priceGroupRateID: 'rate-global-1',
       globalFlag: true,
@@ -339,8 +209,8 @@ describe('PriceGroup.getGlobalPriceGroupRate', () => {
   });
 
   it('reads the collection as-is, neither sorting nor filtering it first', () => {
-    // [model/entity/PriceGroup.cfc:L84] `var rates = getPriceGroupRates();` - the accessor's array,
-    // untouched.
+    // [model/entity/PriceGroup.cfc:L84] `var rates = getPriceGroupRates();` - the accessor's
+    // array, untouched.
     const earlyGlobalRate = aPriceGroupRate({ priceGroupRateID: 'rate-aaa', globalFlag: true });
     const lateGlobalRate = aPriceGroupRate({ priceGroupRateID: 'rate-zzz', globalFlag: true });
 
@@ -379,7 +249,7 @@ describe('PriceGroup.getGlobalPriceGroupRate', () => {
 
   it('answers the first of the fixture graph two flagged rates', () => {
     // The fixture graph isolates this tie deliberately: `globalRatePriceGroup` is the one member
-    // built with TWO globalFlag rates, in a documented collection order.
+    // built with two globalFlag rates, in a documented collection order.
     const { globalRatePriceGroup, globalRateFirstMatch, globalRateLastMatch } =
       makePriceGroupFixtures();
 
@@ -391,8 +261,7 @@ describe('PriceGroup.getGlobalPriceGroupRate', () => {
 
   it('answers undefined for the fixture cascade subject, whose four rates are all non-global', () => {
     // `childPriceGroup` is the primary cascade subject and carries membership rates only, so the
-    // global level genuinely misses on it - the state that lets the cascade fall through to the
-    // parent price group at [model/service/PriceGroupService.cfc:L173-L175].
+    // global level genuinely misses on it.
     const { childPriceGroup } = makePriceGroupFixtures();
 
     expect(childPriceGroup.getPriceGroupRates()).toHaveLength(4);
@@ -403,16 +272,9 @@ describe('PriceGroup.getGlobalPriceGroupRate', () => {
   });
 });
 
-// --- 2. The materialized priceGroupIDPath - BOTH routes, and the D26 divergence -----
-
 describe('PriceGroup priceGroupIDPath - route A, the lazy memoized getter', () => {
   // CFML parity [model/entity/PriceGroup.cfc:L196]: the path memo guards on
-  // isNull(variables.priceGroupIDPath), NOT !structKeyExists(...). ProductType.cfc:L251 uses the
-  // same isNull idiom for its path while ProductType.cfc:L123 uses !structKeyExists for its options
-  // memo -- two different idioms in one file. CFML parity [model/entity/PriceGroup.cfc:L193, L202]:
-  // the banner pair delimiting this getter reads "Overridden Implicet Getters" - "Implicet", for
-  // "Implicit". Verified by direct search against the source, which also carries the identical
-  // misspelling at [model/entity/ProductType.cfc:L248] and :L257.
+  // isNull(variables.priceGroupIDPath), not !structKeyExists(...).
 
   it('computes a single-element path for a root price group with no parent', () => {
     // [model/entity/PriceGroup.cfc:L197] buildIDPathList walks from self upward.
@@ -433,14 +295,6 @@ describe('PriceGroup priceGroupIDPath - route A, the lazy memoized getter', () =
   });
 
   it('computes a three-element root-first path for a grandchild', () => {
-    // The hierarchy is built shallow and ACYCLIC on purpose, which keeps this test about ordering and
-    // contents rather than about acyclicity. A cycle is a separate question and is asserted in its own
-    // block below, where production ACCEPTS one: `setParentPriceGroup` assigns whatever it is handed,
-    // exactly as [model/entity/PriceGroup.cfc:L110-L115] does, and the shared walk carries no visited
-    // set because [org/Hibachi/HibachiEntity.cfc:L314-L321] carries none either. This comment once
-    // claimed the opposite - a refusal, described as a documented divergence - and outlived the guard
-    // it described; the reasoning for the removal is on `buildIdPathList` in
-    // src/domain/valueObjects/materializedIdPath.ts.
     const rootPriceGroup = aPriceGroup({ priceGroupID: 'root' });
     const middlePriceGroup = aPriceGroup({
       priceGroupID: 'middle',
@@ -480,10 +334,6 @@ describe('PriceGroup priceGroupIDPath - route A, the lazy memoized getter', () =
   });
 
   it('produces exactly what the value object own walk produces for the same chain', () => {
-    // Equality against `buildIdPathList` proves the entity delegates rather than reimplements. The
-    // accessor pair handed in here is the same pair the private helper supplies: the primary key,
-    // and the parent association the legacy string `"parentPriceGroup"` named at
-    // [model/entity/PriceGroup.cfc:L197].
     const rootPriceGroup = aPriceGroup({ priceGroupID: 'root' });
     const childPriceGroup = aPriceGroup({
       priceGroupID: 'child',
@@ -514,8 +364,8 @@ describe('PriceGroup priceGroupIDPath - route A, the lazy memoized getter', () =
   });
 
   it('treats an explicitly stored EMPTY STRING as present and does NOT recompute it', () => {
-    // THE ISNULL-VERSUS-STRUCTKEYEXISTS DISTINGUISHING TEST. `isNull('')` is false in CFML, so the
-    // empty column is PRESENT and L197 never runs.
+    // The isnull-versus-structkeyexists distinguishing test. `isNull('')` is false in CFML, so the
+    // empty column is present and L197 never runs.
     const rootPriceGroup = aPriceGroup({ priceGroupID: 'root' });
     const childPriceGroup = aPriceGroup({
       priceGroupID: 'child',
@@ -566,8 +416,8 @@ describe('PriceGroup priceGroupIDPath - route A, the lazy memoized getter', () =
   });
 
   it('reads the live parent chain when the parent is wired BEFORE the first read', () => {
-    // The mirror image of the case above, and together they prove the memo is written on first read
-    // rather than at construction.
+    // The mirror image of the case above, and together they prove the memo is written on first
+    // read rather than at construction.
     const priceGroup = aPriceGroup({ priceGroupID: 'child', priceGroupIDPath: undefined });
 
     priceGroup.setParentPriceGroup(aPriceGroup({ priceGroupID: 'root' }));
@@ -576,7 +426,6 @@ describe('PriceGroup priceGroupIDPath - route A, the lazy memoized getter', () =
   });
 
   it('keeps the memo INSTANCE-scoped: a second price group never observes the first answer', () => {
-    // A2.
     const firstPriceGroup = aPriceGroup({ priceGroupID: 'shared-id', priceGroupIDPath: undefined });
 
     expect(firstPriceGroup.getPriceGroupIDPath()).toBe('shared-id');
@@ -609,7 +458,8 @@ describe('PriceGroup priceGroupIDPath - route A, the lazy memoized getter', () =
 
   it('returns the fixture stored paths unchanged for the three chained groups', () => {
     // These three carry a persisted column, so route A returns each unchanged - and the fixture
-    // built those columns with the domain own walk, which is why they are root-first and self-last.
+    // built those columns with the domain own walk, which is why they are root-first and
+    // self-last.
     const { rootPriceGroup, parentPriceGroup, childPriceGroup, priceGroupIDPaths } =
       makePriceGroupFixtures();
 
@@ -644,15 +494,8 @@ describe('PriceGroup priceGroupIDPath - route A, the lazy memoized getter', () =
 });
 
 describe('PriceGroup priceGroupIDPath - route B, repository-invoked maintenance', () => {
-  // The legacy ORM hooks at [model/entity/PriceGroup.cfc:L206-L214] become EXPLICIT MAINTENANCE
-  // METHODS the repository calls on save. CFML parity [model/entity/PriceGroup.cfc:L204, L216,
-  // L218, L220]: both are declared under the "Overridden Methods" banner while the "ORM Event
-  // Hooks" banner immediately below is LITERALLY EMPTY, so they sit under the wrong heading. Both
-  // sibling path entities get this right: [model/entity/Category.cfc:L124-L134] and
-  // [model/entity/ProductType.cfc:L303-L315] declare their equivalents inside the ORM Event Hooks
-  // banner. CFML parity [model/entity/PriceGroup.cfc:L212]: the statement ends in a DOUBLE
-  // SEMICOLON, whose second semicolon is an empty statement and a no-op - the same wart as
-  // [model/entity/ProductType.cfc:L311], the only two occurrences in this folder.
+  // The legacy ORM hooks at [model/entity/PriceGroup.cfc:L206-L214] become explicit maintenance
+  // methods the repository calls on save.
 
   it('exposes both lifecycle methods under their verbatim legacy names', () => {
     expect(shippedMemberNames()).toContain('preInsert');
@@ -687,7 +530,7 @@ describe('PriceGroup priceGroupIDPath - route B, repository-invoked maintenance'
 
   it('accepts the optional oldData bag on preUpdate and ignores it, exactly as the source does', () => {
     // [model/entity/PriceGroup.cfc:L211-L213] declares `struct oldData` with no `required` and
-    // NEVER READS IT - it forwards the whole argument collection to the non-ported base.
+    // never READS it - it forwards the whole argument collection to the non-ported base.
     const rootPriceGroup = aPriceGroup({ priceGroupID: 'root' });
     const withoutOldData = aPriceGroup({
       priceGroupID: 'child',
@@ -717,14 +560,8 @@ describe('PriceGroup priceGroupIDPath - route B, repository-invoked maintenance'
 
   it('carries the path half ONLY - it neither stamps the audit timestamps nor gates on validity', () => {
     // The legacy `super.preInsert()` at [org/Hibachi/HibachiEntity.cfc:L598-L619] did two further
-    // things: it THREW when `!isPersistable()`, and it stamped createdDateTime and modifiedDateTime
-    // from `now()`. That split makes the legacy ORDERING actionable: the source assigns the path
-    // BEFORE delegating [L207 before L208, L212 before L213], so the repository must call the
-    // method below FIRST and run its own validate-and-stamp step AFTER. Contrast
-    // [model/entity/Category.cfc:L126-L134], where `super` runs FIRST and the path is assigned
-    // SECOND - an ordering divergence that must NOT be normalised, and which
-    // [model/entity/ProductType.cfc:L305-L313] matches PriceGroup on. The raw
-    // `writeDump(getErrors())` at [org/Hibachi/HibachiEntity.cfc:L605] is never ported.
+    // things: it THREW when `!isPersistable()`, and it stamped createdDateTime and
+    // modifiedDateTime from `now()`.
     const priceGroup = aPriceGroup({
       priceGroupID: 'child',
       priceGroupIDPath: undefined,
@@ -802,19 +639,17 @@ describe('PriceGroup priceGroupIDPath - route B, repository-invoked maintenance'
 
   it('ships NO public path setter, so the column cannot be written arbitrarily', () => {
     // The generated `setPriceGroupIDPath(...)` has exactly two call sites in the whole repository,
-    // [model/entity/PriceGroup.cfc:L207] and :L212, both inside this component's own hooks, so
-    // encapsulating it removes nothing a caller used.
+    // [model/entity/PriceGroup.cfc:L207] and:L212, both inside this component's own hooks.
     expect(shippedMemberNames()).not.toContain('setPriceGroupIDPath');
   });
 });
 
 describe('PriceGroup priceGroupIDPath - D26, the memo versus the persisted value', () => {
   // LEGACY-DEFECT [model/entity/PriceGroup.cfc:L206-L214]: preInsert and preUpdate both call
-  // setPriceGroupIDPath(buildIDPathList("parentPriceGroup")) BEFORE super.*, bypassing the lazy
-  // getter at L195-L200 -- so the in-memory memo can go stale relative to the persisted value.
+  // setPriceGroupIDPath(buildIDPathList("parentPriceGroup")) before super.*.
   // Preserved deliberately; do not fix without a product decision.
   //
-  // [model/entity/PriceGroup.cfc:L212] also ends in a harmless DOUBLE SEMICOLON, `;;`, the same
+  // [model/entity/PriceGroup.cfc:L212] also ends in a harmless double semicolon, `;;`, the same
   // wart as [model/entity/ProductType.cfc:L311].
 
   it('serves a stored path that contradicts the live chain, until maintenance overwrites it', () => {
@@ -891,27 +726,13 @@ describe('PriceGroup priceGroupIDPath - D26, the memo versus the persisted value
   });
 });
 
-// --- 4. setParentPriceGroup - the D25 guard, verified reproduced ------------
-
 describe('PriceGroup.setParentPriceGroup', () => {
   // CFML parity [model/entity/PriceGroup.cfc:L110-L115]: the body assigns the field at L111 and
-  // then appends this group to `arguments.parentPriceGroup.getChildPriceGroups()` at L113 under the
-  // L112 guard.
+  // then appends this group to `arguments.parentPriceGroup.getChildPriceGroups()` at L113 under
+  // the L112 guard.
 
-  // LEGACY-DEFECT [model/entity/PriceGroup.cfc:L112]: the guard reads
-  //   `isNew() or !parentPriceGroup.hasChildPriceGroup(this)`
-  // so on a NEW instance the isNew() short-circuit skips the containment check entirely and a
-  // second setParentPriceGroup call appends a duplicate.
-  //
-  // Preserved deliberately; do not fix without a product decision.
-  //
   // Verified reproduced first-hand in the shipped module before this marker was spent: the ported
-  // body is `if (this.isNew() || !parentPriceGroup.hasChildPriceGroup(this))`, disjunct for
-  // disjunct. This D25 convention recurs at [model/entity/PriceGroupRate.cfc:L183],
-  // [model/entity/PromotionPeriod.cfc:L100], [model/entity/SkuCurrency.cfc:L91],
-  // [model/entity/PromotionApplied.cfc:L81], [model/entity/PromotionAccount.cfc:L74] and :L92, and
-  // [model/entity/PromotionCode.cfc:L104] - seven further sites, so it is the house idiom rather
-  // than a local slip. That does not make it correct; it makes it load-bearing.
+  // body is `if (this.isNew() || !parentPriceGroup.hasChildPriceGroup(this))`.
 
   it('assigns the parent reference', () => {
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
@@ -923,8 +744,8 @@ describe('PriceGroup.setParentPriceGroup', () => {
   });
 
   it('appends this group to the parent live child collection', () => {
-    // [model/entity/PriceGroup.cfc:L113] arrayAppend onto the array the parent's own accessor hands
-    // back, so the append must be observable through that accessor and not through a copy.
+    // [model/entity/PriceGroup.cfc:L113] arrayAppend onto the array the parent's own accessor
+    // hands back, so the append must be observable through that accessor and not through a copy.
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
     const priceGroup = aPriceGroup({ priceGroupID: 'child' });
 
@@ -990,7 +811,8 @@ describe('PriceGroup.setParentPriceGroup', () => {
 
   it('re-parents by assigning the NEW parent and appending there, without unwinding the old one', () => {
     // CFML parity [model/entity/PriceGroup.cfc:L110-L115]: there is no `removeParentPriceGroup`
-    // call anywhere in this body, so a re-parented group is left in its former parent's collection.
+    // call anywhere in this body, so a re-parented group is left in its former parent's
+    // collection.
     const formerParent = aPriceGroup({ priceGroupID: 'former-parent' });
     const newParent = aPriceGroup({ priceGroupID: 'new-parent' });
     const priceGroup = aPriceGroup({ priceGroupID: 'child' });
@@ -1026,23 +848,14 @@ describe('PriceGroup.setParentPriceGroup', () => {
   });
 });
 
-// --- 5. removeParentPriceGroup - the CLEAN control, and the unconditional clear -----
-
 describe('PriceGroup.removeParentPriceGroup', () => {
   // CFML parity [model/entity/PriceGroup.cfc:L116-L125]: this is a CLEAN control. L120 finds the
-  // index in `arguments.parentPriceGroup.getChildPriceGroups()` and L122 deletes from THAT SAME
-  // collection - one identifier, used twice, correctly. Contrast
-  // [model/entity/PromotionPeriod.cfc:L108-L110], whose L108 searches
-  // `arguments.promotion.getPromotionPeriods()` but whose L110 deletes from
-  // `arguments.account.getPromotionPeriods()` - a genuine, reachable leak owned by
-  // `promotionPeriod.test.ts`.
+  // index in `arguments.parentPriceGroup.getChildPriceGroups()` and L122 deletes from that same
+  // collection - one identifier, used twice, correctly.
   //
   // CFML parity [model/entity/PriceGroup.cfc:L107-L183]: the mandatory remove-that-ADDs inversion
   // cross-check was run across every remove* helper this entity SHIPS - removeParentPriceGroup
-  // (L116-L125), removeChildPriceGroup (L139-L141), removePriceGroupRate (L147-L149) and
-  // removePromotionReward (L179-L181). Contrast [model/entity/Option.cfc:L129-L131] and
-  // [model/entity/Option.cfc:L145-L147], where BOTH remove bodies call `addExcludedOption` - real
-  // H21 inversions, owned by `option.test.ts`.
+  // (L116-L125), removeChildPriceGroup (L139-L141).
 
   it('removes this group from the named parent live child collection', () => {
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
@@ -1065,7 +878,7 @@ describe('PriceGroup.removeParentPriceGroup', () => {
   });
 
   it('finds and deletes in the SAME collection - the clean control, observed on both sides', () => {
-    // The leak this control rules out would show up as a child removed from some OTHER collection
+    // The leak this control rules out would show up as a child removed from some other collection
     // while the named parent kept it.
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
     const unrelatedPriceGroup = aPriceGroup({ priceGroupID: 'unrelated' });
@@ -1082,8 +895,9 @@ describe('PriceGroup.removeParentPriceGroup', () => {
   });
 
   it('defaults the argument from the stored parent when it is omitted', () => {
-    // [model/entity/PriceGroup.cfc:L117-L119] the `!structKeyExists(arguments, "parentPriceGroup")`
-    // fallback, expressed as an explicit `!== undefined` test on an optional parameter.
+    // [model/entity/PriceGroup.cfc:L117-L119] the
+    // `!structKeyExists(arguments, "parentPriceGroup")` fallback, expressed as an explicit
+    // `!== undefined` test on an optional parameter.
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
     const priceGroup = aPriceGroup({ priceGroupID: 'child' });
 
@@ -1114,8 +928,8 @@ describe('PriceGroup.removeParentPriceGroup', () => {
   });
 
   it('removes at most one entry, leaving a D25 duplicate of the same group behind', () => {
-    // The two defects meet here: setParentPriceGroup can append the same unsaved group twice, and a
-    // single remove call deletes only the first index it finds.
+    // The two defects meet here: setParentPriceGroup can append the same unsaved group twice, and
+    // a single remove call deletes only the first index it finds.
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
     const priceGroup = aPriceGroup({ priceGroupID: '' });
 
@@ -1128,16 +942,7 @@ describe('PriceGroup.removeParentPriceGroup', () => {
   });
 
   it('removes ITSELF from the parent, not whichever unsaved sibling happens to be first', () => {
-    // ★★ WHAT `arrayFind(collection, object)` COMPARED, AND WHY THE EMPTY KEY IS NOT ENOUGH.
-    // `unsavedvalue=""` [model/entity/PriceGroup.cfc:L52] gives EVERY transient price group the
-    // same empty primary key, so a search on the key alone reports the first transient child as a
-    // match for any transient needle. CFML compared OBJECTS, and Hibernate's collection-contains
-    // worked on SESSION IDENTITY - the primary key for a persisted row, and, there being no key,
-    // the instance itself for a transient one. The shipped remover therefore falls back to instance
-    // identity exactly when both keys are empty, and this case is what proves it: without the
-    // fallback, `secondUnsaved.removeParentPriceGroup(...)` would splice out `firstUnsaved`.
-    //
-    // Distinct from the D25 case above, which pushes the SAME instance twice - there the two
+    // Distinct from the D25 case above, which pushes the same instance twice - there the two
     // comparisons agree, so it cannot tell them apart.
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
     const firstUnsaved = aPriceGroup({ priceGroupID: '' });
@@ -1161,10 +966,7 @@ describe('PriceGroup.removeParentPriceGroup', () => {
   });
 
   it('still finds a SAVED child by primary key, across two instances of one row', () => {
-    // ★ THE FALLBACK IS SCOPED TO EMPTY KEYS AND NOTHING ELSE. Two instances built from the same
-    // stored row must still match, because that is what session identity meant for a persisted row,
-    // and because a repository read and a caller-held entity are routinely two objects for one row.
-    // Switching the whole comparison to instance identity would break exactly this.
+    // The fallback is scoped to empty keys and nothing else.
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
     const heldInstance = aPriceGroup({ priceGroupID: 'shared-key' });
     const equalKeyOtherInstance = aPriceGroup({ priceGroupID: 'shared-key' });
@@ -1196,12 +998,7 @@ describe('PriceGroup.removeParentPriceGroup', () => {
   it('throws when the argument is omitted AND there is no stored parent', () => {
     // CFML parity [model/entity/PriceGroup.cfc:L116-L122]: with no argument and no stored parent,
     // L118 assigns CFML null and L120 then calls `.getChildPriceGroups()` on it - a method call on
-    // null, which throws under every engine. The shipped module reproduces the failure rather than
-    // returning early, because an early return would ALSO skip the unconditional L124 clear and so
-    // would be different behaviour, not the same behaviour by another route. The same unguarded
-    // shape appears at [model/entity/ProductType.cfc:L155-L160],
-    // [model/entity/Category.cfc:L107-L112] and [model/entity/PriceGroupRate.cfc:L187-L192], which
-    // is why it is a parity note and not a numbered defect.
+    // null, which throws under every engine.
     const priceGroup = aPriceGroup({ priceGroupID: 'orphan', parentPriceGroup: undefined });
 
     expect(() => priceGroup.removeParentPriceGroup()).toThrow(
@@ -1225,14 +1022,10 @@ describe('PriceGroup.removeParentPriceGroup', () => {
   });
 });
 
-// --- 6. Pure far-side delegations - childPriceGroups and priceGroupRates -----
-
 describe('PriceGroup child-collection delegations', () => {
   // CFML parity [model/entity/PriceGroup.cfc:L136-L141]: both bodies are one statement long and
-  // neither touches a near-side array. addChildPriceGroup is
-  //   `childPriceGroup.setParentPriceGroup( this )`
-  // at L137; removeChildPriceGroup is `childPriceGroup.removeParentPriceGroup( this )` at L140.
-  // JUDGMENT CALL: delegation is proven BEHAVIOURALLY rather than with a spy.
+  // neither touches a near-side array. AddChildPriceGroup is
+  // `childPriceGroup.setParentPriceGroup( this )` at L137.
 
   it('addChildPriceGroup sets the CHILD parent field, which a near-side push could not do', () => {
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
@@ -1245,9 +1038,7 @@ describe('PriceGroup child-collection delegations', () => {
   });
 
   it('addChildPriceGroup inherits the D25 duplicate append for an unsaved child', () => {
-    // The decisive delegation proof. A near-side implementation with its own containment check
-    // would append once; because the work happens inside `setParentPriceGroup`, the `isNew()`
-    // disjunct at [model/entity/PriceGroup.cfc:L112] short-circuits and the child lands twice.
+    // The decisive delegation proof.
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
     const childPriceGroup = aPriceGroup({ priceGroupID: '' });
 
@@ -1268,9 +1059,9 @@ describe('PriceGroup child-collection delegations', () => {
   });
 
   it('removeChildPriceGroup clears the CHILD parent field, not merely the near-side entry', () => {
-    // The second decisive delegation proof. A near-side splice would leave the child still pointing
-    // at this parent; the far side's unconditional [model/entity/PriceGroup.cfc:L124] clear does
-    // not.
+    // The second decisive delegation proof. A near-side splice would leave the child still
+    // pointing at this parent; the far side's unconditional [model/entity/PriceGroup.cfc:L124]
+    // clear does not.
     const parentPriceGroup = aPriceGroup({ priceGroupID: 'parent' });
     const childPriceGroup = aPriceGroup({ priceGroupID: 'child' });
 
@@ -1332,9 +1123,7 @@ describe('PriceGroup child-collection delegations', () => {
   it('exposes the collection under the ORM-canonical camelCase binding', () => {
     // CFML parity [model/entity/PriceGroup.cfc:L63]: the property declares
     // `singularname="ChildPriceGroup"` with a CAPITAL C, while the hand-written helpers at
-    // L136/L139 and the implicit predicate at L112 all spell the capital-C form too. Contrast
-    // [model/entity/ProductType.cfc:L65], which declares `singularname="childProductType"`
-    // lowercase - the opposite wart.
+    // L136/L139 and the implicit predicate at L112 all spell the capital-C form too.
     const priceGroup = aPriceGroup();
     const members = shippedMemberNames();
 
@@ -1348,12 +1137,7 @@ describe('PriceGroup child-collection delegations', () => {
 
 describe('PriceGroup rate-collection delegations', () => {
   // CFML parity [model/entity/PriceGroup.cfc:L144-L149]: `priceGroupRate.setPriceGroup( this )` at
-  // L145 and `priceGroupRate.removePriceGroup( this )` at L148. Pure far-side delegation again,
-  // into [model/entity/PriceGroupRate.cfc:L181-L186] and :L187-L196, which carry the same D25 guard
-  // and the same unconditional clear from the other end of the association. CFML parity
-  // [model/entity/PriceGroup.cfc:L64]: `priceGroupRates` is the one collection declared
-  // `cascade="all-delete-orphan"`, and it is also the one collection with NO delete gate in
-  // [model/validation/PriceGroup.json].
+  // L145 and `priceGroupRate.removePriceGroup( this )` at L148.
 
   it('addPriceGroupRate sets the RATE back-reference, which a near-side push could not do', () => {
     const priceGroup = aPriceGroup({ priceGroupRates: [] });
@@ -1377,13 +1161,9 @@ describe('PriceGroup rate-collection delegations', () => {
 
   it('addPriceGroupRate inherits the far side D25 duplicate append for an unsaved rate', () => {
     // LEGACY-DEFECT [model/entity/PriceGroupRate.cfc:L183]: the far side's guard reads
-    //   `isNew() or !priceGroup.hasPriceGroupRate(this)`
-    // so an unsaved rate is appended again on every call.
-    //
+    // `isNew() or !priceGroup.hasPriceGroupRate(this)` so an unsaved rate is appended again on
+    // every call.
     // Preserved deliberately; do not fix without a product decision.
-    //
-    // Reached only THROUGH this entity's delegating helper, which is the point: the duplicate is
-    // observable on `PriceGroup.getPriceGroupRates()` even though PriceGroup contains no append.
     const priceGroup = aPriceGroup({ priceGroupRates: [] });
     const priceGroupRate = aPriceGroupRate({ priceGroupRateID: '', globalFlag: false });
 
@@ -1469,15 +1249,10 @@ describe('PriceGroup rate-collection delegations', () => {
   });
 });
 
-// --- 7. Promotion-reward delegations - the asymmetric member names, both sides -----
-
 describe('PriceGroup promotion-reward delegations', () => {
   // CFML parity [model/entity/PriceGroup.cfc:L176-L181]: the delegation targets are
-  // `addEligiblePriceGroup` and `removeEligiblePriceGroup`, NOT `addPriceGroup`/`removePriceGroup`.
-  // The owning side names its collection `eligiblePriceGroups`
-  // [model/entity/PromotionReward.cfc:L74], so the asymmetry is in the source and is preserved
-  // verbatim. `PriceGroup.promotionRewards` at [model/entity/PriceGroup.cfc:L70] carries
-  // `inverse="true"`; the reward's L74 declaration does not, so the reward is the OWNING side.
+  // `addEligiblePriceGroup` and `removeEligiblePriceGroup`, not
+  // `addPriceGroup`/`removePriceGroup`.
   //
   // CFML parity [model/entity/PriceGroup.cfc:L70] and [model/entity/PromotionReward.cfc:L74]: both
   // ends declare the same abbreviated link table, `SwPromoRewardEligiblePriceGrp`.
@@ -1492,7 +1267,7 @@ describe('PriceGroup promotion-reward delegations', () => {
   });
 
   it('addPromotionReward populates this group own collection as well, through the far side', () => {
-    // [model/entity/PromotionReward.cfc:L158-L165] maintains BOTH ends: it appends to its own
+    // [model/entity/PromotionReward.cfc:L158-L165] maintains both ends: it appends to its own
     // `eligiblePriceGroups` and then appends itself to `eligiblePriceGroup.getPromotionRewards()`.
     const priceGroup = aPriceGroup({ promotionRewards: [] });
     const promotionReward = aPromotionReward('reward-1');
@@ -1515,18 +1290,10 @@ describe('PriceGroup promotion-reward delegations', () => {
   });
 
   it('an unsaved GROUP duplicates on the reward side only, because the two guards test different ends', () => {
-    // LEGACY-DEFECT [model/entity/PromotionReward.cfc:L159, L162]: the owning side carries TWO
+    // LEGACY-DEFECT [model/entity/PromotionReward.cfc:L159, L162]: the owning side carries two
     // independent D25 guards - L159 tests `eligiblePriceGroup.isNew()` before appending to its own
-    // collection, L162 tests `this.isNew()` before appending to the price group's - so an unsaved
-    // end duplicates ONE side of the association and leaves the other consistent.
-    //
+    // collection, L162 tests `this.isNew()` before appending to the price group's.
     // Preserved deliberately; do not fix without a product decision.
-    //
-    // Verified first-hand, and the verification corrected the expectation: an unsaved GROUP
-    // satisfies only the L159 disjunct, so `eligiblePriceGroups` grows to two while
-    // `promotionRewards` stays at one - the L162 guard reaches its containment test and blocks.
-    // Asserting a symmetric duplicate here would have been an invention, and the whole case is
-    // reached through this entity's delegating helper.
     const priceGroup = aPriceGroup({ priceGroupID: '', promotionRewards: [] });
     const promotionReward = aPromotionReward('reward-1');
 
@@ -1538,10 +1305,6 @@ describe('PriceGroup promotion-reward delegations', () => {
   });
 
   it('an unsaved REWARD duplicates on this group side only, the exact mirror of the case above', () => {
-    // The complement, which is what proves the two guards are independent rather than one guard
-    // read twice. Here the L159 disjunct fails and its containment test blocks, while L162's
-    // `this.isNew()` short-circuits - so `promotionRewards` grows to two and `eligiblePriceGroups`
-    // stays at one.
     const priceGroup = aPriceGroup({ priceGroupID: 'saved-group', promotionRewards: [] });
     const promotionReward = aPromotionReward('');
 
@@ -1619,17 +1382,10 @@ describe('PriceGroup promotion-reward delegations', () => {
   });
 });
 
-// --- 8. Collections are LIVE arrays, exactly as Hibernate's were ------------
-
 describe('PriceGroup collection accessors', () => {
   // CFML parity [model/entity/PriceGroup.cfc:L113, L121-L123]: the hand-written helpers mutate the
-  // arrays that `get*` hands back, so the accessors cannot return defensive copies without breaking
-  // the association. CFML parity [model/entity/PriceGroup.cfc:L62, L63, L64, L67, L68, L69, L70]:
-  // `type="array"` is declared INCONSISTENTLY across the seven collections - present on L62, L68,
-  // L69 and L70, absent on L63, L64 and L67. CFML parity [model/entity/PriceGroup.cfc:L66]: the
-  // section comment above the many-to-many block reads
-  //   `// Related Object Properties (many-to-many - invers)`
-  // with "inverse" misspelled as "invers".
+  // arrays that `get*` hands back, so the accessors cannot return defensive copies without
+  // breaking the association.
 
   it('getChildPriceGroups returns the very array handed to the constructor', () => {
     const childPriceGroups: PriceGroup[] = [];
@@ -1674,7 +1430,6 @@ describe('PriceGroup collection accessors', () => {
   });
 
   it('gives two independently built price groups two independent collections', () => {
-    // A2.
     const firstPriceGroup = aPriceGroup({ priceGroupID: 'first' });
     const secondPriceGroup = aPriceGroup({ priceGroupID: 'second' });
 
@@ -1685,31 +1440,19 @@ describe('PriceGroup collection accessors', () => {
   });
 });
 
-// --- 9. The DROP audit - four collections whose far side is out of scope -----
-
 describe('PriceGroup associations dropped because the far side is out of scope', () => {
   // CFML parity [model/entity/PriceGroup.cfc:L62, L67, L68, L69]: four of the seven collections
   // point at entities this migration slice does not port - `appliedOrderItems` at L62 targets
-  // OrderItem, `accounts` at L67 targets Account, `subscriptionBenefits` at L68 and
-  // `subscriptionUsageBenefits` at L69 target the subscription module. Their eight bidirectional
-  // helpers at L128-L133 and L152-L173 are DROPPED rather than stubbed, and no out-of-scope entity
-  // is imported or invented. Three of the seven survive: childPriceGroups (L63), priceGroupRates
-  // (L64) and promotionRewards (L70), plus the parentPriceGroup many-to-one at L59.
+  // OrderItem, `accounts` at L67 targets Account.
   //
   // CFML parity [model/entity/PriceGroup.cfc:L67, L68, L69] and
   // [model/dao/PriceGroupDAO.cfc:L52-L100]: the link tables SwAccountPriceGroup,
   // SwSubsBenefitPriceGroup and SwSubsUsageBenefitPriceGroup are preserved verbatim in the record
-  // of what was dropped, abbreviations intact, because the untouched CFML monolith still reads and
-  // writes them. The one place the target reaches the subscription tables is the account
-  // price-group query at PriceGroupDAO.cfc:L52-L100 - read-only, behind a repository port, owned by
-  // `tests/integration`.
+  // of what was dropped, abbreviations intact.
   //
   // CFML parity [model/entity/PriceGroup.cfc:L168-L173]: addSubscriptionUsageBenefit /
   // removeSubscriptionUsageBenefit take an argument misspelled `subsciptionUsageBenefit`, missing
-  // the first "r", at FOUR sites - L168, L169, L171 and L172 - while the METHOD names are spelled
-  // correctly. Note the sharp contrast: [model/validation/PriceGroup.json] spells
-  // `subscriptionUsageBenefits` CORRECTLY in its delete gate, so one concept is spelled two ways in
-  // two files of the same slice.
+  // the first "r", at four sites - L168, L169, L171 and L172.
 
   it('ships no appliedOrderItems accessor and no applied-order-item helpers', () => {
     const priceGroup = aPriceGroup();
@@ -1809,29 +1552,16 @@ describe('PriceGroup associations dropped because the far side is out of scope',
   });
 });
 
-// --- 10. getParentPriceGroupOptions - self-removal, first match, and no 14th port -----
-
 describe('PriceGroup.getParentPriceGroupOptions', () => {
-  // Verified first-hand before a single assertion was written: this method DID ship. The prompt
-  // left it open, because [model/entity/PriceGroup.cfc:L95] calls
-  //   `getPropertyOptions("parentPriceGroup")`
-  // which is a Hibachi framework member that is not ported, so a non-port would have been
-  // defensible. The shipped module instead relocated the SUPPLY to the repository boundary, as a
-  // constructor-injected candidate list, and kept the FILTER, which is the only logic the source
-  // actually authored here. So the assertions below pin shipped behaviour rather than documenting
-  // an absence.
+  // Verified first-hand before a single assertion was written: this method did ship.
   //
   // CFML parity [model/entity/PriceGroup.cfc:L94-L103]: the loop walks the candidate list, removes
   // the record whose `['value']` equals this group's own primary key, and stops at the first match
-  // via the L99 `break`. The L97 `len(...)` guard comes FIRST and short-circuits, which is what
-  // keeps the prepended blank "none" row - the one `hb_optionsNullRBKey="define.none"` at
-  // [model/entity/PriceGroup.cfc:L59] puts there - from being deleted for an UNSAVED group whose
-  // key is also the empty string.
+  // via the L99 `break`.
   //
   // JUDGMENT CALL: no fourteenth port is introduced to satisfy this method.
-  // `hibachiUtilityService`, `getPropertyOptions` and every smart list stay unported; the candidate
-  // list arrives as inert data on the constructor. The port ledger stays locked at thirteen, and
-  // this entity still injects none of them.
+  // `hibachiUtilityService`, `getPropertyOptions` and every smart list stay unported; the
+  // candidate list arrives as inert data on the constructor.
 
   it('removes the record whose value is this group own primary key', () => {
     const priceGroup = aPriceGroup({
@@ -1936,18 +1666,12 @@ describe('PriceGroup.getParentPriceGroupOptions', () => {
   });
 
   it('compares WITHOUT REGARD TO CASE, exactly as the legacy `==` on two strings does', () => {
-    // ★★ THIS CASE ASSERTED THE OPPOSITE UNTIL THIS REVISION, and its own comment named the
-    // reason it was wrong: "the legacy `==` on two strings is case-INsensitive". It then excused
-    // the divergence on the grounds that `generator="uuid"`
-    // [model/entity/PriceGroup.cfc:L52] yields one canonical casing, so no case difference can
-    // arise. That is an argument about which INPUTS occur, not about what the method does - and
-    // `parentPriceGroupOptionCandidates` is not a uuid column at all: it is the rendered option
-    // list, whose values arrive from `getPropertyOptions` [L95] and travel through form state.
+    // This case asserted the opposite until this revision, and its own comment named the reason it
+    // was wrong: "the legacy `==` on two strings is case-INsensitive".
     //
-    // The consequence of the exact comparison was the single outcome [L96-L101] exists to
-    // prevent: THIS price group left in its own parent-option list, so the admin form offered a
-    // group as its own parent. The first matching row is still the only one removed, so the
-    // duplicate below survives - that half of the legacy contract is unchanged.
+    // The consequence of the exact comparison was the single outcome
+    // [model/entity/PriceGroup.cfc:L96-L101] exists to prevent: this price group left in its own
+    // parent-option list.
     const priceGroup = aPriceGroup({
       priceGroupID: 'abc123',
       parentPriceGroupOptionCandidates: [
@@ -1984,10 +1708,7 @@ describe('PriceGroup.getParentPriceGroupOptions', () => {
     // CFML parity [model/entity/PriceGroup.cfc:L95, L102]: the legacy memo lives in the framework
     // accessor's own cache slot, declared `persistent="false"` at
     // [model/entity/PriceGroup.cfc:L79], so a second legacy call re-runs the loop over an
-    // already-filtered array and finds nothing - the same observable answer, reached differently.
-    // Contrast [model/entity/ProductType.cfc:L123], which guards on `!structKeyExists(...)` in its
-    // OWN body - memoization at a different level in the same folder, and the reason the two idioms
-    // must never be conflated.
+    // already-filtered array and finds nothing - the same observable answer.
     const priceGroup = aPriceGroup({
       priceGroupID: 'self',
       parentPriceGroupOptionCandidates: [
@@ -2000,7 +1721,6 @@ describe('PriceGroup.getParentPriceGroupOptions', () => {
   });
 
   it('keeps the options memo INSTANCE-scoped, never module-scoped', () => {
-    // A2.
     const firstPriceGroup = aPriceGroup({
       priceGroupID: 'first',
       parentPriceGroupOptionCandidates: [
@@ -2028,9 +1748,8 @@ describe('PriceGroup.getParentPriceGroupOptions', () => {
   });
 
   it('leaves the candidate list the constructor was handed unmutated', () => {
-    // The one documented divergence in the shipped module is owned by `src/**` and is NOT a
-    // divergence this suite spends: the legacy splices the framework's own cache array in place,
-    // while the port filters into a new array.
+    // The one documented divergence in the shipped module is owned by `src/**` and is not a
+    // divergence this suite spends: the legacy splices the framework's own cache array in place.
     const candidates = [
       { name: 'None', value: '' },
       { name: 'Self', value: 'self' },
@@ -2058,7 +1777,8 @@ describe('PriceGroup.getParentPriceGroupOptions', () => {
   });
 
   it('ships no getPropertyOptions equivalent, no smart list and no options provider', () => {
-    // The negative half of the "no fourteenth port" decision, asserted rather than merely promised.
+    // The negative half of the "no fourteenth port" decision, asserted rather than merely
+    // promised.
     const members = shippedMemberNames();
 
     expect(members).not.toContain('getPropertyOptions');
@@ -2069,26 +1789,15 @@ describe('PriceGroup.getParentPriceGroupOptions', () => {
   });
 });
 
-// --- 11. The declarative validation contract - and where it is NOT enforced -----
-
 describe('PriceGroup declarative validation contract', () => {
-  // CFML parity [model/validation/PriceGroup.json]: the whole file is twelve lines and carries
-  // exactly two save-context rules - `priceGroupName` required and `priceGroupCode` required - plus
-  // SIX delete-context `maxCollection: 0` gates, on appliedOrderItems, childPriceGroups, accounts,
-  // subscriptionBenefits, subscriptionUsageBenefits and promotionRewards.
+  // CFML parity `model/validation/PriceGroup.json`: the whole file is twelve lines and carries
+  // exactly two save-context rules - `priceGroupName` required and `priceGroupCode` required -
+  // plus six delete-context `maxCollection: 0` gates, on appliedOrderItems, childPriceGroups,
+  // accounts, subscriptionBenefits.
   //
-  // CFML parity [model/entity/PriceGroup.cfc:L56] and [model/validation/PriceGroup.json]:
-  // `priceGroupCode` is REQUIRED BUT NOT UNIQUE - no `unique="true"` on the ORM property and no
-  // uniqueness rule in the JSON. `priceGroupRates` has NO delete gate, and that asymmetry is
-  // deliberate: it is the one collection declared `cascade="all-delete-orphan"`
-  // [model/entity/PriceGroup.cfc:L64], so deleting a price group takes its rates with it rather
-  // than being blocked by them.
-  //
-  // Folder-wide, verified by direct count rather than taken from a summary: fifteen of the
-  // twenty-one in-scope entities and process objects have a validation file and six do not:
-  // Category, PromotionQualifier, PromotionApplied, PromotionAccount, Product_AddOption and
-  // Product_AddOptionGroup. `model/validation/` holds ninety-six .json files in total. The AAP's
-  // figure of twelve is stale; source wins.
+  // CFML parity [model/entity/PriceGroup.cfc:L56] and `model/validation/PriceGroup.json`:
+  // `priceGroupCode` is required but not unique - no `unique="true"` on the ORM property and no
+  // uniqueness rule in the JSON.
 
   it('exposes both required scalars under their verbatim legacy names', () => {
     const priceGroup = aPriceGroup({
@@ -2132,8 +1841,8 @@ describe('PriceGroup declarative validation contract', () => {
   });
 
   it('ships no validation machinery at all - no validate, no errors, no deletable flag', () => {
-    // The delete gates are declarative, evaluated by the framework's validation service against the
-    // collection lengths.
+    // The delete gates are declarative, evaluated by the framework's validation service against
+    // the collection lengths.
     const members = shippedMemberNames();
 
     expect(members).not.toContain('validate');
@@ -2146,10 +1855,9 @@ describe('PriceGroup declarative validation contract', () => {
   });
 
   it('ships none of the five declaratively-invoked entity validators found elsewhere in the slice', () => {
-    // Five entities in this slice DO carry a method a validation file invokes by name -
+    // Five entities in this slice do carry a method a validation file invokes by name -
     // Sku.hasUniqueOptions, Sku.hasOneOptionPerOptionGroup,
-    // RoundingRule.hasExpressionWithListOfNumericValuesOnly,
-    // Promotion.getPromotionCodesDeletableFlag and PromotionCode.hasUniquePromotionCode.
+    // RoundingRule.hasExpressionWithListOfNumericValuesOnly.
     const members = shippedMemberNames();
 
     expect(members).not.toContain('hasUniqueOptions');
@@ -2185,22 +1893,9 @@ describe('PriceGroup declarative validation contract', () => {
   });
 });
 
-// --- 12. Zero ports, zero clock, fully synchronous --------------------------
-
 describe('PriceGroup collaborator surface', () => {
-  // CFML parity [model/entity/PriceGroup.cfc]: PriceGroup contains ZERO getService() call sites, so
-  // every ported method is synchronous and no port is injected. The census that claim rests on was
-  // counted directly across the eighteen in-scope entities and totals forty-five sites: Product 18,
-  // Sku 19, ProductType 6, OptionGroup 1, RoundingRule 1, and ZERO for the other thirteen,
-  // PriceGroup among them.
-  //
-  // Everything that DOES need a collaborator to reach this data is owned by `tests/unit/services`
-  // and is cited here without a word asserted about it: the five-level cascade at
-  // [model/service/PriceGroupService.cfc:L140-L181]; the parent-recursion asymmetry at :L174, where
-  // the SKU-level step recurses into `getRateForProductBasedOnPriceGroup` rather than the SKU
-  // variant; the amount-type asymmetry at :L316-L340, where only `percentageOff` applies the
-  // rounding rule; the snapshot loop in `deletePriceGroup` at :L461-L470; and the no-break,
-  // LAST-match-wins global-rate step at :L163-L170.
+  // CFML parity `model/entity/PriceGroup.cfc`: PriceGroup contains ZERO getService() call sites,
+  // so every ported method is synchronous and no port is injected.
 
   it('takes a single init object, with no port and no clock parameter', () => {
     // A constructor that needed a collaborator could not have arity one over a plain data bag, and
@@ -2290,8 +1985,7 @@ describe('PriceGroup collaborator surface', () => {
 
   it('ships no ambient-scope accessor under either legacy name', () => {
     // The codebase reaches request state through `getHibachiScope()` almost everywhere and through
-    // `getSlatwallScope()` at [model/service/PriceGroupService.cfc:L262-L268] - an inconsistency
-    // the port normalises out by passing an explicit context parameter at the SERVICE tier.
+    // `getSlatwallScope()` at [model/service/PriceGroupService.cfc:L262-L268].
     const members = shippedMemberNames();
 
     expect(members).not.toContain('getHibachiScope');
@@ -2353,21 +2047,9 @@ describe('PriceGroup collaborator surface', () => {
   });
 });
 
-// --- 13. Structural facts - the primary key, the undefaulted flag, the nullable parent -----
-
 describe('PriceGroup structural facts', () => {
-  // CFML parity [model/entity/PriceGroup.cfc:L49]: `entityname="SlatwallPriceGroup"`,
-  // `table="SwPriceGroup"`, `persistent=true`, `output=false`, `accessors=true`,
-  // `extends="HibachiEntity"`, `cacheuse="transactional"`, `hb_serviceName="priceGroupService"` and
-  // `hb_permission="this"`. The physical table name is preserved verbatim under C5, as are the four
-  // many-to-many link tables the source declares - SwAccountPriceGroup [L67],
-  // SwSubsBenefitPriceGroup [L68], SwSubsUsageBenefitPriceGroup [L69] and the abbreviated
-  // SwPromoRewardEligiblePriceGrp [L70].
-
   it('reports isNew() honestly from the empty-string primary key', () => {
-    // [model/entity/PriceGroup.cfc:L52] `unsavedvalue="" default=""`. The framework's own
-    // `getNewFlag` at [org/Hibachi/HibachiEntity.cfc:L571-L576] is literally
-    // `if(getPrimaryIDValue() == "") { return true; } return false;`, so this is the whole test.
+    // [model/entity/PriceGroup.cfc:L52] `unsavedvalue="" default=""`.
     expect(aPriceGroup({ priceGroupID: '' }).isNew()).toBe(true);
     expect(aPriceGroup({ priceGroupID: 'saved' }).isNew()).toBe(false);
   });
@@ -2390,19 +2072,13 @@ describe('PriceGroup structural facts', () => {
 
   it('resolves an ABSENT activeFlag to false rather than fabricating true', () => {
     // CORRECTION, verified first-hand and recorded because it contradicts a secondary description:
-    // the COLUMN at [model/entity/PriceGroup.cfc:L54] carries NO `default=` - that part is right -
-    // but the shipped ACCESSOR is `boolean`, not `boolean | undefined`.
+    // the COLUMN at [model/entity/PriceGroup.cfc:L54] carries no `default=` - that part is right -
+    // but the shipped ACCESSOR is `boolean`.
     expect(aPriceGroup({ activeFlag: undefined }).getActiveFlag()).toBe(false);
     expect(aPriceGroup({ activeFlag: null }).getActiveFlag()).toBe(false);
   });
 
   it('is NOT one of the six boolean columns that DO carry a default in this slice', () => {
-    // Counted directly across the eighteen in-scope entities: `default="1"` twice
-    // ([model/entity/Sku.cfc:L53], [model/entity/Promotion.cfc:L56]), `default="0"` twice as a
-    // boolean ([model/entity/Sku.cfc:L59], [model/entity/OptionGroup.cfc:L57]) and
-    // `default="false"` twice ([model/entity/Product.cfc:L58],
-    // [model/entity/PriceGroupRate.cfc:L53]) - six sites over three literals, and
-    // PriceGroup.activeFlag is none of them.
     const priceGroupRateWithDeclaredDefault = new PriceGroupRate({ priceGroupRateID: 'rate-1' });
 
     expect(priceGroupRateWithDeclaredDefault.getGlobalFlag()).toBe(false);
@@ -2412,9 +2088,6 @@ describe('PriceGroup structural facts', () => {
   it('routes the activeFlag through the CFML coercion boundary for every driver form', () => {
     // BOUNDARY: the full coercion table, covering every literal, numeric string and raising case,
     // is owned by `tests/unit/lib/cfml`, and this file may not import from `src/lib/**` at all.
-    // What is asserted here is this entity's own narrower business: that an undefaulted
-    // `ormtype="boolean"` column is READ THROUGH that boundary rather than compared with `===` to a
-    // hardcoded literal.
     expect(aPriceGroup({ activeFlag: true }).getActiveFlag()).toBe(true);
     expect(aPriceGroup({ activeFlag: false }).getActiveFlag()).toBe(false);
     expect(aPriceGroup({ activeFlag: 1 }).getActiveFlag()).toBe(true);
@@ -2427,8 +2100,8 @@ describe('PriceGroup structural facts', () => {
   });
 
   it('accepts a nullable parentPriceGroup and works end to end as a root', () => {
-    // [model/entity/PriceGroup.cfc:L59] `hb_optionsNullRBKey="define.none"` is the declaration that
-    // makes the parent genuinely optional - the admin form offers a "none" row for it.
+    // [model/entity/PriceGroup.cfc:L59] `hb_optionsNullRBKey="define.none"` is the declaration
+    // that makes the parent genuinely optional - the admin form offers a "none" row for it.
     const rootPriceGroup = aPriceGroup({
       priceGroupID: 'root',
       priceGroupIDPath: undefined,
@@ -2443,10 +2116,7 @@ describe('PriceGroup structural facts', () => {
   });
 
   it('declares NO remoteID at all, unlike nearly every sibling entity', () => {
-    // Verified by direct count: `remoteID` appears ZERO times in [model/entity/PriceGroup.cfc]. Its
-    // own child declares one at [model/entity/PriceGroupRate.cfc:L58], as do
-    // [model/entity/PromotionReward.cfc:L93], [model/entity/PromotionQualifier.cfc:L90] and
-    // [model/entity/Category.cfc:L73] among others.
+    // Verified by direct count: `remoteID` appears ZERO times in `model/entity/PriceGroup.cfc`.
     const priceGroup = aPriceGroup();
 
     expect(shippedMemberNames()).not.toContain('getRemoteID');
@@ -2485,7 +2155,7 @@ describe('PriceGroup structural facts', () => {
 
   it('defaults every shipped collection to an empty array, never to null or undefined', () => {
     // The honest stand-in for the inherited `defaults_are_correct` case, whose Brand form at
-    // [meta/tests/unit/entity/BrandTest.cfc] asserts that `getProducts()` answers an empty array.
+    // `meta/tests/unit/entity/BrandTest.cfc` asserts that `getProducts()` answers an empty array.
     const priceGroup = new PriceGroup({
       priceGroupID: '',
       priceGroupIDPath: undefined,
@@ -2510,30 +2180,16 @@ describe('PriceGroup structural facts', () => {
   });
 });
 
-// --- 14. Framework members deliberately NOT ported, and the empty banner pairs -----
-
 describe('PriceGroup framework surface deliberately not ported', () => {
-  // ANNOTATE, NEVER NORMALISE. Four banner pairs in [model/entity/PriceGroup.cfc] are literally
-  // empty - "Custom Validation Methods" at L185/L187, "Custom Formatting Methods" at L189/L191,
-  // "ORM Event Hooks" at L218/L220 and "Deprecated Methods" at L222/L224 - and the port neither
-  // fills them nor deletes them from the record. THE STRUCTURAL WART THAT MATTERS MOST: the two
-  // lifecycle hooks live under "Overridden Methods" (L204/L216) while the "ORM Event Hooks" banner
-  // (L218/L220) that should hold them is EMPTY. Contrast [model/entity/ProductType.cfc:L303-L315],
-  // whose ORM Event Hooks banner DOES contain its hooks, and [model/entity/Category.cfc:L120-L134],
-  // whose "Overridden Methods" block is empty and whose hooks also sit under the correct banner.
-  // Misfiling a comment is not a behaviour, so nothing is moved.
+  // Annotate, never normalise.
   //
-  // [model/entity/PriceGroup.cfc:L193, L202]: the banner pair around the path getter is misspelled.
-  // Re-verified by grep because the folder carries more than one misspelling of the same word:
-  // PriceGroup.cfc:L193 and :L202 read "Overridden Implicet Getters", and
-  // [model/entity/ProductType.cfc:L248] and :L257 read "Implicet" too.
+  // [model/entity/PriceGroup.cfc:L193, L202]: the banner pair around the path getter is
+  // misspelled.
 
   it('exposes no dynamic getter dispatch, so an unknown accessor simply does not exist', () => {
     // CFML parity [org/Hibachi/HibachiEntity.cfc:L565]: `PriceGroup` does not declare
     // `attributeValues`, so an unknown `getX()` reaches the framework's `onMissingMethod`
-    // dispatcher and THROWS - it is one of the fourteen throwing entities, against the four silent
-    // ones ([model/entity/Sku.cfc:L70], [model/entity/Product.cfc:L75],
-    // [model/entity/ProductType.cfc:L67], [model/entity/Brand.cfc:L60]).
+    // dispatcher and THROWS.
     const priceGroup = aPriceGroup();
 
     expect('getSomeUndeclaredAttribute' in priceGroup).toBe(false);
@@ -2561,8 +2217,6 @@ describe('PriceGroup framework surface deliberately not ported', () => {
   it('declares no simple representation, and none is fabricated to satisfy a legacy base test', () => {
     // [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58] carries a
     // `simple_representation_exists_and_is_simple` case that every legacy entity test inherited.
-    // Contrast its own child [model/entity/PriceGroupRate.cfc:L270-L272], which DOES override the
-    // property-name hook and returns the capital-D `"DisplayName"`.
     const priceGroup = aPriceGroup({ priceGroupName: 'Wholesale' });
     const members = shippedMemberNames();
 
@@ -2572,13 +2226,8 @@ describe('PriceGroup framework surface deliberately not ported', () => {
   });
 
   it('carries no validation gate and no error dump in its lifecycle hooks', () => {
-    // CFML parity [org/Hibachi/HibachiEntity.cfc:L598-L619]: the framework's own `preInsert` throws
-    // when `!isPersistable()` and stamps created/modified from `now()`. Neither half is inherited
-    // here, and the raw `writeDump(getErrors())` at [org/Hibachi/HibachiEntity.cfc:L605] is
-    // emphatically NOT ported - dumping entity errors to the response stream has no place in a
-    // Lambda handler's output. The observable consequence is asserted: the hook runs to completion
-    // on an entity that would have failed every save-context rule in
-    // [model/validation/PriceGroup.json].
+    // CFML parity [org/Hibachi/HibachiEntity.cfc:L598-L619]: the framework's own `preInsert`
+    // throws when `!isPersistable()` and stamps created/modified from `now()`.
     const invalidPriceGroup = aPriceGroup({
       priceGroupID: '',
       priceGroupName: undefined,
@@ -2629,15 +2278,7 @@ describe('PriceGroup framework surface deliberately not ported', () => {
   });
 });
 
-// --- 15. Request-scoped state - freshness, isolation, and no shared memo -----
-
 describe('PriceGroup instance isolation and fixture freshness', () => {
-  // A2. The legacy component-level caches that motivated the rule are elsewhere:
-  // [model/dao/SkuDAO.cfc:L204-L220], whose clear method's condition is inverted so it can never
-  // fire at [model/dao/SkuDAO.cfc:L222-L226], and [model/service/RoundingRuleService.cfc:L67-L77].
-  // The hazard is the same one and it is sharper on a warm Lambda container, where module state
-  // outlives an unrelated request.
-
   it('builds a distinct subject on every call, never handing back a shared instance', () => {
     const firstPriceGroup = aPriceGroup();
     const secondPriceGroup = aPriceGroup();
@@ -2667,7 +2308,7 @@ describe('PriceGroup instance isolation and fixture freshness', () => {
   });
 
   it('never lets a second price group observe the first path memo, even on an identical key', () => {
-    // The sharpest form of the rule: two groups with the SAME primary key and DIFFERENT parents.
+    // The sharpest form of the rule: two groups with the same primary key and DIFFERENT parents.
     const firstPriceGroup = aPriceGroup({
       priceGroupID: 'same-key',
       priceGroupIDPath: undefined,
@@ -2797,9 +2438,6 @@ describe('PriceGroup instance isolation and fixture freshness', () => {
   });
 
   it('keeps every date in this suite timezone-independent, with no clock read anywhere', () => {
-    // Every business-date literal in this file is an explicit UTC ISO-8601 string, and the round
-    // trip is asserted rather than assumed so the audit-column assertions cannot become
-    // host-dependent.
     const createdDateTime = new Date('2024-06-01T00:00:00.000Z');
     const modifiedDateTime = new Date('2024-06-15T12:30:00.000Z');
     const priceGroup = aPriceGroup({ createdDateTime, modifiedDateTime });
@@ -2811,39 +2449,17 @@ describe('PriceGroup instance isolation and fixture freshness', () => {
   });
 });
 
-// ===========================================================================
-// A CYCLIC PARENT CHAIN IS ACCEPTED, EXACTLY AS THE LEGACY SETTER ACCEPTS ONE
+// A cyclic parent chain is accepted, exactly as the legacy setter accepts one.
 //
-// NET-NEW coverage - `meta/tests/` holds no PriceGroup test - pinning legacy PARITY rather than a divergence.
-// The legacy setter at [model/entity/PriceGroup.cfc:L110-L115] validates nothing before assigning, and the
-// legacy walk at [org/Hibachi/HibachiEntity.cfc:L314-L321] carries no visited set
-// and no bound. Both are reproduced: this setter assigns whatever it is handed,
-// and a looping chain climbs forever here exactly as it climbs forever there.
-//
-// ★ THIS BLOCK ONCE ASSERTED THE OPPOSITE, AND THE RECORD BELONGS HERE. It ran
-// under the heading "CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED" and pinned a
-// throw from `setParentPriceGroup` plus a `CyclicIdPathError` from the shared walk. Both
-// guards have been removed: a port reproduces rather than improves, and the
-// project's deliberate-divergence budget is closed at three - the un-`var`'d
-// `discountAmount` [model/service/PromotionService.cfc:L1007], the `amountOff`
-// branch routed through `Money` [model/service/PromotionService.cfc:L998], and the
-// entity memo defects in `sku.ts`/`product.ts`. None is spent in this folder.
-//
-// WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT. Every test below asserts that
-// the ASSIGNMENT is accepted and that both sides of the link are maintained. NONE
-// of them builds a path from a cyclic graph, because that call does not return -
-// asserting non-termination would hang the suite rather than prove anything. The
-// absence of the removed guards is proven where it can be proven safely, in
-// `tests/unit/domain/valueObjects/materializedIdPath.test.ts`, by a counting
-// parent accessor that stops the walk long after either guard would have fired.
-// ===========================================================================
+// NET-NEW coverage - `meta/tests/` holds no PriceGroup test - pinning legacy PARITY rather than a
+// divergence.
 
 describe('PriceGroup - a cyclic parent chain is accepted, per legacy parity', () => {
   it('accepts a price group as its own parent', () => {
     const subject = aPriceGroup({ priceGroupID: 'pg-self' });
 
-    // CFML parity [model/entity/PriceGroup.cfc:L110-L115]: no validation precedes
-    // the assignment, so the self-reference is simply stored.
+    // CFML parity [model/entity/PriceGroup.cfc:L110-L115]: no validation precedes the assignment,
+    // so the self-reference is simply stored.
     subject.setParentPriceGroup(subject);
 
     expect(subject.getParentPriceGroup()).toBe(subject);
@@ -2865,9 +2481,9 @@ describe('PriceGroup - a cyclic parent chain is accepted, per legacy parity', ()
   });
 
   it('maintains the far side when it closes a cycle, just as for any other parent', () => {
-    // The far-side append is the ONLY thing the legacy body guards
-    // [model/entity/PriceGroup.cfc:L112], and it is guarded on membership rather
-    // than on acyclicity - so a cycle-closing assignment appends like any other.
+    // The far-side append is the only thing the legacy body guards
+    // [model/entity/PriceGroup.cfc:L112], and it is guarded on membership rather than on
+    // acyclicity - so a cycle-closing assignment appends like any other.
     const root = aPriceGroup({ priceGroupID: 'pg-far-root' });
     const leaf = aPriceGroup({ priceGroupID: 'pg-far-leaf' });
     leaf.setParentPriceGroup(root);

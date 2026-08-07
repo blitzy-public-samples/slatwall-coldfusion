@@ -1,61 +1,12 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - tests/unit/domain/valueObjects/currencyCode.test.ts
+// slatwall-ts - tests/unit/domain/valueObjects/currencyCode.test.ts.
 //
 // Pins src/domain/valueObjects/currencyCode.ts - the branded three-character currency code for the
-// AWS Lambda `nodejs20.x` port of the Slatwall 3.1.39 catalog + promotions/pricing slice - five
-// runtime exports and one type. The module under test is pure and synchronous over a string or a
-// plain object, holds no state, reads no configuration and touches no clock, so this suite needs no
-// mock, no fixture module, no container, no environment and no server. Every subject below is a
-// literal built inside the test reading it.
+// AWS Lambda `nodejs20.x` port of the Slatwall 3.1.39 catalog + promotions/pricing slice.
 //
-// SCOPE FENCE. This guards a code primitive, not the cascade it feeds. The four-step currency
-// cascade at [model/entity/Sku.cfc:L367-L433] and its eligibility gate at
-// [model/entity/Sku.cfc:L373] belong to the entity tier and are asserted there. The two properties
-// THIS module owns are the two CFML supplied for free and TypeScript does not: case-insensitive
-// comparison, and case-insensitive keyed lookup.
+// Coverage is NET-NEW, with no legacy antecedent to extend: CFML had no branded currency-code
+// type, and of the four legacy files bearing on this slice none touches a value object.
 //
-// Coverage is NET-NEW, with no legacy antecedent to extend: CFML had no branded currency-code type,
-// and of the four legacy files bearing on this slice none touches a value object. The four shared
-// cases every legacy entity suite inherits from
-// [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67] all reach an ORM-managed entity
-// through `variables.entity` - validate(context="save") / hasErrors(), getSimpleRepresentation(),
-// getPrimaryIDPropertyName(), and isNew() / getPrimaryIDValue() - and a value object has none of
-// those, so none of the four is even writable here.
-//
-// THE THREE-CHARACTER AUTHORITY is [model/entity/PromotionApplied.cfc:L55]:
-//     property name="currencyCode" ormtype="string" length="3";
-// on the `SwPromotionApplied` table declared at [model/entity/PromotionApplied.cfc:L49]. That is
-// the one in-scope entity persisting a currency code, and it is what fixes the length.
-//
-// It is NOT [model/entity/SkuCurrency.cfc:L68], which carries no `ormtype` and no `length` at all:
-//     L58  property name="currency" cfc="Currency" fieldtype="many-to-one"
-//            fkcolumn="currencyCode";
-//     L68  property name="currencyCode" insert="false" update="false";
-// L68 is an unconstrained, read-only projection of the foreign-key column named at L58, whose
-// out-of-scope target [model/entity/Currency.cfc:L52] is a bare identity column:
-//     ormtype="string" fieldtype="id" unique="true" generated="never"
-//
-// CENSUS, counted rather than quoted: model/entity/*.cfc declares `currencyCode` NINETEEN times,
-// FIFTEEN of them with
-//     ormtype="string" length="3"
-// The four exceptions each have a reason: [model/entity/Currency.cfc:L52] is the identity column,
-// [model/entity/Product.cfc:L116] and [model/entity/Sku.cfc:L103] are both persistent="false", and
-// [model/entity/SkuCurrency.cfc:L68] is the read-only FK projection. The design argument, not
-// pedantry: where the legacy code READS a currency code it validates nothing and consults no list,
-// so this suite pins length where the schema pins length and pins nothing else.
-//
-// Import depth is FOUR: from tests/unit/domain/valueObjects/, `..` is domain, `../..` is unit,
-// `../../..` is tests and `../../../..` is the slatwall-ts root.
-//
-// Conversion locators, for the record, since nothing here depends on conversion:
-// `getCurrencySmartList()` is called at [model/entity/Sku.cfc:L371] and `convertCurrency` at
-// [model/entity/Sku.cfc:L418], L422 and L425. L379 binds the loop's current currency and L421 is an
-// `isNull` guard on the list price.
-//
-// tests/setup.ts is registered by vitest.config.ts as `setupFiles`, so it is deliberately NOT
-// imported here. It pins the process to UTC and registers a global `afterEach` restoring mocks and
-// real timers; this suite installs no fake timers and reads no date at all.
-// ---------------------------------------------------------------------------
+// CENSUS, counted rather than quoted: model/entity/*.cfc declares `currencyCode` NINETEEN times.
 
 import { describe, expect, it } from 'vitest';
 
@@ -69,39 +20,17 @@ import {
 import type { CurrencyCode } from '../../../../src/domain/valueObjects/currencyCode.js';
 import * as currencyCodeModule from '../../../../src/domain/valueObjects/currencyCode.js';
 
-// JUDGMENT CALL: exactly TWO symbols are imported from outside the module under
-//   test, and each is demanded by a shipped signature rather than convenient.
+// JUDGMENT CALL: exactly two symbols are imported from outside the module under test, and each is
+// demanded by a shipped signature rather than convenient.
 //
-//   `structKeyExists` - `getByCurrencyCode` answers only the VALUE question and
-//   documents that a caller needing the PRESENCE answer asks `structKeyExists`
-//   directly, because this module deliberately does not re-export it. Pinning
-//   "present but holding undefined" therefore requires the presence oracle:
-//   without it the assertion cannot distinguish an absent key from a present
-//   one, which is the whole distinction being pinned.
-//
-//   `CfmlComparisonError` - `currencyCodeEquals` delegates to `cfEquals` and
-//   raises whatever it raises, so the error TYPE is part of this function's
-//   published contract and cannot be asserted from inside this module alone.
-//   Matching on the class rather than on message text is deliberate: a message
-//   assertion would pass for any incidental `TypeError` thrown on the way in.
-//   The message shape is pinned too, but only after the class is established.
-//
-//   Both helpers' general semantics are owned by
-//   tests/unit/lib/cfml/struct.test.ts. src/lib/cfml/** is inward of
-//   src/domain/**, so the layer boundary holds.
+// `structKeyExists` - `getByCurrencyCode` answers only the VALUE question and documents that a
+// caller needing the PRESENCE answer asks `structKeyExists` directly.
 import { CfmlComparisonError, structKeyExists } from '../../../../src/lib/cfml/struct.js';
 
 // Neutral, deliberately unreal three-character codes. Every subject in this file is one of these.
 //
-// CFML parity [model/service/SettingService.cfc:L221]: there is no default
-//   currency code anywhere in this file - not in an assertion, not in a fixture,
-//   not in a comment example. The legacy default is a SETTING,
-//   `skuCurrency = {fieldType="select", defaultValue="..."}` declared once at
-//   that line, and [model/entity/Sku.cfc:L360-L365] merely memoizes
-//   `this.setting('skuCurrency')`. Which currencies are ELIGIBLE is a setting
-//   too, `skuEligibleCurrencies` at [model/service/SettingService.cfc:L222],
-//   gated at [model/entity/Sku.cfc:L373]. Baking a real code into a value-object
-//   test would relocate a configuration decision into the type.
+// CFML parity [model/service/SettingService.cfc:L221]: there is no default currency code anywhere
+// in this file - not in an assertion, not in a fixture, not in a comment example.
 const NEUTRAL_CODE = 'XXX';
 const NEUTRAL_CODE_LOWER = 'xxx';
 const OTHER_NEUTRAL_CODE = 'ZZZ';
@@ -116,10 +45,7 @@ const WRONG_LENGTH_INPUTS: ReadonlyArray<readonly [label: string, value: string]
   ['a longer string', 'XXXXXXXXXXXX'],
 ];
 
-// Values the type guard must answer `false` for without throwing. Its parameter is `unknown`, which
-// lets these be offered directly and without a suppression comment; a hydration boundary genuinely
-// holds values of unknown shape. The instant is an explicit UTC ISO-8601 literal, never an ambient
-// clock read.
+// Values the type guard must answer `false` for without throwing.
 const NON_STRING_INPUTS: ReadonlyArray<readonly [label: string, value: unknown]> = [
   ['null', null],
   ['undefined', undefined],
@@ -141,11 +67,6 @@ describe('the exactly-three-character length contract', () => {
   it.each(WRONG_LENGTH_INPUTS)('throws for %s', (_label, value) => {
     expect(() => toCurrencyCode(value)).toThrow(InvalidCurrencyCodeError);
   });
-
-  // The error class is asserted rather than merely "it throws" because the shipped module documents
-  // the type as part of the constructor's contract: a caller distinguishing a malformed code from
-  // any other failure needs something to test against. Validation is hand-written, so no
-  // third-party error surfaces here.
   it('reports the rejected value verbatim, and its measured length, on the error', () => {
     let caught: unknown;
 
@@ -183,13 +104,8 @@ describe('the exactly-three-character length contract', () => {
     }
   });
 
-  // JUDGMENT CALL: this case pins UTF-16 code-unit counting, the one place
-  //   "three characters" and "three code units" visibly disagree. `length="3"` is
-  //   a CFML-declared length and CFML `len()` counts UTF-16 code units on the JVM,
-  //   so the shipped module measures with the CFML length helper rather than a raw
-  //   `.length` read. An astral-plane symbol occupies two code units, so
-  //   symbol-plus-one-character measures three and is accepted while
-  //   symbol-plus-two measures four and is rejected.
+  // JUDGMENT CALL: this case pins UTF-16 code-unit counting, the one place "three characters" and
+  // "three code units" visibly disagree.
   it('measures length in UTF-16 code units, exactly as CFML len() does', () => {
     expect(toCurrencyCode('\u{1F600}X')).toBe('\u{1F600}X');
     expect(() => toCurrencyCode('\u{1F600}XX')).toThrow(InvalidCurrencyCodeError);
@@ -197,19 +113,12 @@ describe('the exactly-three-character length contract', () => {
 });
 
 describe('the brand exists only in the type system and has zero runtime footprint', () => {
-  // `typeof` settles this outright: a boxed `String` object answers 'object', so answering 'string'
-  // proves the value is a primitive with nothing wrapped around it. The complementary assertion is
-  // written out because the brand being invisible at runtime is the property under test, not a side
-  // note.
   it('leaves a validated code a plain primitive string', () => {
     const code = toCurrencyCode(NEUTRAL_CODE);
 
     expect(typeof code).toBe('string');
     expect(typeof code).not.toBe('object');
   });
-
-  // `toBe` is `Object.is`, so passing on a primitive string proves identity of value with no
-  // wrapper, no boxing and no copy interposed.
   it('returns the very string it was given, not a wrapper around it', () => {
     const input = OTHER_NEUTRAL_CODE;
     const code = toCurrencyCode(input);
@@ -219,10 +128,7 @@ describe('the brand exists only in the type system and has zero runtime footprin
     expect(code.length).toBe(3);
   });
 
-  // Compared against an unbranded string of the same value rather than an empty list. `Object.keys`
-  // boxes a primitive string and so reports its character indices - `['0','1','2']` here - a
-  // property of every string and not of the brand. Equality with the plain string's own-property
-  // structure is what actually means "nothing was attached".
+  // Compared against an unbranded string of the same value rather than an empty list.
   it('attaches no marker property and no marker symbol to the value', () => {
     const code = toCurrencyCode(NEUTRAL_CODE);
     const unbranded: string = NEUTRAL_CODE;
@@ -244,10 +150,8 @@ describe('the brand exists only in the type system and has zero runtime footprin
 
   it('does not let a bare string masquerade as a validated code', () => {
     // @ts-expect-error A plain string is deliberately NOT assignable to the
-    // branded type. The brand is an unexported `unique symbol`, so a consumer cannot name it and
-    // cannot write the type by hand: the only routes in are the validating constructor and the type
-    // guard, and both check first. If this line ever compiles, an unchecked string can reach a
-    // currency-code column.
+    // branded type. The brand is an unexported `unique symbol`, so the only routes in are the
+    // validating constructor and the type guard, and both check first.
     const unvalidated: CurrencyCode = NEUTRAL_CODE;
 
     expect(unvalidated).toBe(NEUTRAL_CODE);
@@ -256,10 +160,11 @@ describe('the brand exists only in the type system and has zero runtime footprin
   it('does not carry the brand onto a value derived from a validated code', () => {
     const code = toCurrencyCode(NEUTRAL_CODE_LOWER);
 
+    // Passed through the constructor, so it is a plain string and must not be assignable to the
+    // branded type.
     // @ts-expect-error An upper-cased copy is a DIFFERENT value that never
     // passed through the constructor, so it is a plain string and must not be assignable to the
-    // branded type. This is what stops a case-folded copy from being treated as validated - and why
-    // folding is a comparison concern here rather than a construction one.
+    // branded type. Folding is therefore a comparison concern here rather than a construction one.
     const folded: CurrencyCode = code.toUpperCase();
 
     expect(folded).toBe(NEUTRAL_CODE);
@@ -278,9 +183,7 @@ describe('the type guard answers without throwing, and narrows', () => {
   });
 
   // The parameter is `unknown`, not `string`, so these need no suppression comment: the guard is
-  // meant to be asked of a value nothing is known about, as at a repository-hydration boundary
-  // where a column arrives untyped. A malformed or absent column is branched on there, never turned
-  // into an exception midway through building an entity.
+  // meant to be asked of a value nothing is known about.
   it.each(NON_STRING_INPUTS)('returns false for %s', (_label, value) => {
     expect(() => isCurrencyCode(value)).not.toThrow();
     expect(isCurrencyCode(value)).toBe(false);
@@ -319,14 +222,11 @@ describe('the type guard answers without throwing, and narrows', () => {
   });
 });
 
-// --- Storage is verbatim. Comparison is insensitive. --------------------------
 // Two separate rules, both load-bearing, and this suite must never conflate them.
 
 describe('casing is stored exactly as supplied and is never folded on the way in', () => {
-  // CFML parity [model/entity/Sku.cfc:L385, L400]: CFML `eq` ignores case but
-  //   stores precisely what it was handed. Upper-casing at construction would be
-  //   invisible in most cases and wrong in the one that matters - a value written
-  //   back in a casing the column never held.
+  // CFML parity [model/entity/Sku.cfc:L385, L400]: CFML `eq` ignores case but stores precisely
+  // what it was handed.
   it.each([
     ['all lower case', 'abc'],
     ['all upper case', 'ABC'],
@@ -359,12 +259,8 @@ describe('casing is stored exactly as supplied and is never folded on the way in
 });
 
 describe('whitespace is significant and is never trimmed away', () => {
-  // JUDGMENT CALL: trimming is the sort of helpful-looking normalisation that
-  //   changes which key a later lookup resolves to, so it is absent by design
-  //   and asserted absent here. The two sibling helpers this module composes
-  //   with settled it identically - the struct helper folds case but states
-  //   that keys are NOT trimmed, and the list helper never trims. A code
-  //   trimmed on the way in but not on the way out stops matching itself.
+  // JUDGMENT CALL: trimming is the sort of helpful-looking normalisation that changes which key a
+  // later lookup resolves to, so it is absent by design and asserted absent here.
   it('rejects a four-character value with a leading space instead of trimming it', () => {
     expect(() => toCurrencyCode(' XXX')).toThrow(InvalidCurrencyCodeError);
     expect(isCurrencyCode(' XXX')).toBe(false);
@@ -376,8 +272,8 @@ describe('whitespace is significant and is never trimmed away', () => {
   });
 
   it('accepts a three-character value containing a space, and keeps the space', () => {
-    // Three code units is three code units. The character class is not constrained, so the space is
-    // simply part of the value.
+    // Three code units is three code units. The character class is not constrained, so the space
+    // is simply part of the value.
     const code = toCurrencyCode(' XX');
 
     expect(code).toBe(' XX');
@@ -391,20 +287,11 @@ describe('whitespace is significant and is never trimmed away', () => {
 });
 
 describe('equality is case-insensitive, reproducing the CFML eq operator', () => {
-  // CFML parity [model/entity/Sku.cfc:L385]: the base-currency step of the
-  //   cascade selects with
-  //     `thisCurrency.getCurrencyCode() eq this.setting('skuCurrency')`
-  //   and CFML `eq` ignores case, so a stored lower-case code matches an
-  //   upper-case configured one.
-  // CFML parity [model/entity/Sku.cfc:L400]: the per-currency override step
-  //   matches the same way, which is what lets an override OVERWRITE the
-  //   base-step entry rather than sit beside it as a second currency.
+  // CFML parity [model/entity/Sku.cfc:L385]: the base-currency step of the cascade selects with
+  // `thisCurrency.getCurrencyCode() eq this.setting('skuCurrency')` and CFML `eq` ignores case, so
+  // a stored lower-case code matches an upper-case configured one.
   //
-  // Each case pairs the helper's answer with the raw `===` answer on the same two operands,
-  // adjacently and deliberately: a raw `===` between two currency codes is a parity bug that would
-  // leave both entries in the map and change which price is read. The operands are held in
-  // `string`-typed bindings so the raw `===` is a genuine runtime comparison; compared as literals
-  // the compiler would reject the expression as having no overlap, proving nothing.
+  // Each case pairs the helper's answer with the raw `===` answer on the same two operands.
   it('matches a lower-case code against an upper-case one where === does not', () => {
     const stored: string = 'abc';
     const configured: string = 'ABC';
@@ -451,9 +338,9 @@ describe('equality is case-insensitive, reproducing the CFML eq operator', () =>
   });
 
   it('accepts a validated code and a raw setting-shaped string as operands', () => {
-    // CFML parity [model/entity/Sku.cfc:L385]: one operand there is a code read
-    //   from the database and the other a raw setting value. Demanding a branded
-    //   operand would force a throwing construction into a comparison.
+    // CFML parity [model/entity/Sku.cfc:L385]: one operand there is a code read from the database
+    // and the other a raw setting value. Demanding a branded operand would force a throwing
+    // construction into a comparison.
     const validated = toCurrencyCode(NEUTRAL_CODE);
     const rawSettingValue: string = NEUTRAL_CODE_LOWER;
 
@@ -471,13 +358,7 @@ describe('a nullish operand refuses the comparison rather than answering it', ()
   // CFML raises when a null reaches `eq`, so the delegated `cfEquals` raises and this function
   // raises with it. No legacy result is being discarded.
   //
-  // Answering `false` for a nullish operand would relocate the harm rather than remove it. This
-  // function returns `boolean`, and on the cascade at [model/entity/Sku.cfc:L385] `false` already
-  // MEANS "these are different currencies", so `false` for "one of these is not a currency code at
-  // all" is indistinguishable from a definite negative: the base-currency step is silently skipped,
-  // the SKU carries no entry for the configured currency, and the fault surfaces later as an
-  // `undefined` out of `getPriceByCurrencyCode`. Raising stops at the comparison that could not be
-  // made.
+  // Answering `false` for a nullish operand would relocate the harm rather than remove it.
   it('raises for two undefined operands where === would report them equal', () => {
     const storedCode: string | undefined = undefined;
     const configuredCode: string | undefined = undefined;
@@ -508,8 +389,7 @@ describe('a nullish operand refuses the comparison rather than answering it', ()
   });
 
   // The raise is not swallowed or re-wrapped on the way through: the delegated error reaches the
-  // caller intact, naming which operand was absent and reporting the survivor, which is the clue to
-  // where the missing code should have come from.
+  // caller intact, naming which operand was absent and reporting the survivor.
   it('propagates the delegated error intact, naming the absent operand', () => {
     expect(() => currencyCodeEquals(undefined, NEUTRAL_CODE)).toThrow(/operand "a"/);
     expect(() => currencyCodeEquals(NEUTRAL_CODE, undefined)).toThrow(/operand "b"/);
@@ -522,9 +402,8 @@ describe('a nullish operand refuses the comparison rather than answering it', ()
     );
   });
 
-  // An empty string is NOT absent - it is an ordinary CFML string value - so it compares normally
-  // and never raises. That is the same line `cfTruthy` draws between `''` and null, and it keeps
-  // the raise narrowly about absence.
+  // An empty string is not absent - it is an ordinary CFML string value - so it compares normally
+  // and never raises.
   it('does not treat an empty string as absent - it compares, and never raises', () => {
     expect(() => currencyCodeEquals('', '')).not.toThrow();
     expect(currencyCodeEquals('', '')).toBe(true);
@@ -536,24 +415,13 @@ describe('a nullish operand refuses the comparison rather than answering it', ()
   });
 });
 
-// --- The one keyed-lookup convenience ----------------------------------------
-//
-// ABSENCE PROPAGATES AS `undefined`. Never 0, never '', never null, never {}, and never a `??`
-// fallback - not in the implementation and not in an expected value anywhere below.
-//
-// CFML parity [model/entity/Sku.cfc:L269-L273]: getPriceByCurrencyCode has ONE
-//   structKeyExists, no `else` branch and no fallback, so an unrecognised
-//   currency yields nothing. L275-L279 and L281-L285 add a SECOND
-//   structKeyExists on the inner "listPrice" / "renewalPrice" sub-key, so those
-//   yield nothing even for a currency the map does hold. Substituting 0 for any
-//   of those absences would silently sell products for free, so the target
-//   contract is `... | undefined`.
+// CFML parity [model/entity/Sku.cfc:L269-L273]: getPriceByCurrencyCode has one structKeyExists, no
+// `else` branch and no fallback, so an unrecognised currency yields nothing.
 
 describe('keyed lookup resolves the code case-insensitively', () => {
-  // CFML parity [model/entity/Sku.cfc:L270, L276, L282]: the currency-details map
-  //   is keyed by currency code, and every legacy read of it is a
-  //   `structKeyExists`-then-index pair on a case-insensitive key. A raw
-  //   `map[code]` property read in TypeScript is a parity bug.
+  // CFML parity [model/entity/Sku.cfc:L270, L276, L282]: the currency-details map is keyed by
+  // currency code, and every legacy read of it is a `structKeyExists`-then-index pair on a
+  // case-insensitive key.
   it('resolves whatever casing the caller asks with', () => {
     const priceDetails = { XXX: { price: '19.99' } };
 
@@ -588,13 +456,8 @@ describe('keyed lookup resolves the code case-insensitively', () => {
     expect(getByCurrencyCode(priceDetails, code)).toEqual({ price: '19.99' });
   });
 
-  // JUDGMENT CALL: the key parameter is a plain `string`, and this suite pins that
-  //   rather than wishing it were branded. Demanding the brand would force the
-  //   ported entity accessor - published as
-  //   `getPriceByCurrencyCode(currencyCode: string)` for signature parity - to
-  //   construct a code first, and construction THROWS, converting the legacy
-  //   yields-nothing contract at [model/entity/Sku.cfc:L269-L273] into an
-  //   exception.
+  // JUDGMENT CALL: the key parameter is a plain `string`, and this suite pins that rather than
+  // wishing it were branded.
   it('answers a wrong-length key with undefined rather than throwing', () => {
     const priceDetails = { XXX: { price: '19.99' } };
 
@@ -616,19 +479,15 @@ describe('keyed lookup reports a miss as undefined and never stands in for it', 
   });
 
   it('yields undefined from a map holding no currencies at all', () => {
-    // CFML parity [model/entity/Sku.cfc:L373]: when the eligibility setting
-    //   resolves empty the legacy memo stays `{}` and every accessor yields
-    //   nothing. The gate is the entity tier's to reproduce; what this case
-    //   pins is that an empty map is answered with undefined here, so the
-    //   gate's consequence survives the lookup unchanged.
+    // CFML parity [model/entity/Sku.cfc:L373]: when the eligibility setting resolves empty the
+    // legacy memo stays `{}` and every accessor yields nothing.
     const emptyDetails: Readonly<Record<string, { price: string }>> = {};
 
     expect(getByCurrencyCode(emptyDetails, NEUTRAL_CODE)).toBeUndefined();
   });
 
   // The `defaultValue` slot is how a 0 reaches a price path - supplied at the one call site nobody
-  // reviews closely, and a missing price quietly becomes a free product. Its absence is contract,
-  // not omission, so the count is asserted.
+  // reviews closely, and a missing price quietly becomes a free product.
   it('declares exactly two parameters, so there is no default-value slot', () => {
     expect(getByCurrencyCode.length).toBe(2);
   });
@@ -652,11 +511,9 @@ describe('keyed lookup reports a miss as undefined and never stands in for it', 
 describe('presence is not value, and this lookup answers only the value question', () => {
   // The distinction is reachable rather than academic.
   //
-  // CFML parity [model/entity/Sku.cfc:L381-L382]: the cascade creates the OUTER entry
-  //   for every eligible currency UNCONDITIONALLY, while the inner price keys are
-  //   written only under `!isNull(...)` guards, so "the currency key exists" does not
-  //   mean "a price exists" - which is why the list and renewal accessors at
-  //   [model/entity/Sku.cfc:L275-L285] carry a second check the price accessor does not.
+  // CFML parity [model/entity/Sku.cfc:L381-L382]: the cascade creates the OUTER entry for every
+  // eligible currency UNCONDITIONALLY, while the inner price keys are written only under
+  // `!isNull(...)` guards, so "the currency key exists" does not mean "a price exists".
   it('reports a key holding undefined as PRESENT while still reading it as undefined', () => {
     const priceDetails: Readonly<Record<string, string | undefined>> = { xxx: undefined };
 
@@ -685,7 +542,6 @@ describe('presence is not value, and this lookup answers only the value question
   });
 });
 
-// --- Validation is STRUCTURAL, not membership in a register -------------------
 // This is the property that keeps configuration out of the value object.
 
 describe('validation is structural, so no register of real currencies is consulted', () => {
@@ -701,18 +557,8 @@ describe('validation is structural, so no register of real currencies is consult
     expect(isCurrencyCode(value)).toBe(true);
   });
 
-  // JUDGMENT CALL: the character class is NOT constrained, and this suite asserts
-  //   what the shipped module implements rather than what a currency code "ought"
-  //   to look like. The schema constrains only length, with
-  //     ormtype="string" length="3"
-  //   at [model/entity/PromotionApplied.cfc:L55], and the other two in-scope
-  //   declarations constrain even less: [model/entity/SkuCurrency.cfc:L68] carries
-  //   no `ormtype` and no `length`, and [model/entity/Currency.cfc:L52] is a bare
-  //   identity column. No declarative validation file offers a stricter rule
-  //   either, and absent validation files are absent by design and not to be
-  //   invented, so an `A-Za-z` test would be a constraint this migration made up.
-  //   Deciding WHICH codes are real belongs to `skuEligibleCurrencies` at
-  //   [model/service/SettingService.cfc:L222], behind the settings port.
+  // JUDGMENT CALL: the character class is not constrained, and this suite asserts what the shipped
+  // module implements rather than what a currency code "ought" to look like.
   it.each([
     ['digits mixed with a letter', '12A'],
     ['digits only', '123'],
@@ -730,8 +576,7 @@ describe('validation is structural, so no register of real currencies is consult
 describe('the module surface is closed, and holds nothing it is prohibited from holding', () => {
   // One assertion, and the strongest available: if the export set is exactly these five names then
   // there is no currency table, no symbol map, no decimals-per-currency map, no `Currency` entity
-  // model, no formatter, no conversion or rate member, no exported schema, no exported length
-  // constant and no exported brand symbol - none of those has a name to hang on.
+  // model, no formatter.
   it('exports exactly five runtime members and nothing else', () => {
     expect(Object.keys(currencyCodeModule).sort()).toEqual([
       'InvalidCurrencyCodeError',
@@ -744,14 +589,14 @@ describe('the module surface is closed, and holds nothing it is prohibited from 
 
   // Every export being callable rules out an exported DATA structure - an ISO register array, a
   // `Set`, a `Map`, a record of symbols, a numeric length constant - and an exported brand symbol
-  // with it. The brand is an unexported `unique symbol`, which makes it unforgeable.
+  // with it.
   it('exports only callables, so no table, constant or marker symbol is reachable', () => {
     for (const [name, exported] of Object.entries(currencyCodeModule)) {
       expect(typeof exported, `export ${name} must be callable`).toBe('function');
     }
 
     // `Symbol.toStringTag` is carried by every ES module namespace object and is not authored by
-    // the module, so it is named explicitly rather than filtered out. Any OTHER symbol here would
+    // the module, so it is named explicitly rather than filtered out. Any other symbol here would
     // be a runtime brand marker.
     expect(Object.getOwnPropertySymbols(currencyCodeModule)).toEqual([Symbol.toStringTag]);
   });
@@ -768,12 +613,7 @@ describe('the module surface is closed, and holds nothing it is prohibited from 
   });
 
   // CFML parity [model/entity/PromotionApplied.cfc:L53, L55]: `discountAmount` is
-  //   `ormtype="big_decimal"` and `currencyCode` is
-  //     ormtype="string" length="3"
-  //   in SEPARATE COLUMNS. The legacy arithmetic carries no currency operand,
-  //   which is why the money value object is currency-agnostic, why it does not
-  //   import this module and why this module does not import it. There is
-  //   deliberately no Money-with-currency type in this target.
+  // `ormtype="big_decimal"` and `currencyCode` is ormtype="string" length="3" in separate columns.
   it('exposes no Money type and no monetary arithmetic of any kind', () => {
     const exportNames = Object.keys(currencyCodeModule);
 
@@ -785,9 +625,7 @@ describe('the module surface is closed, and holds nothing it is prohibited from 
   });
 
   it('models no Currency entity, so no name or symbol accessor is reachable', () => {
-    // [model/entity/Currency.cfc] is out of scope. It carries `currencyName` at L54 and
-    // `currencySymbol` at L55, and neither is modelled anywhere in this target - a symbol map here
-    // would be the runtime currency table this module exists without.
+    // `model/entity/Currency.cfc` is out of scope.
     const exportNames = Object.keys(currencyCodeModule);
 
     expect(exportNames).not.toContain('Currency');

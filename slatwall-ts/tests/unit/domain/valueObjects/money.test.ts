@@ -1,121 +1,30 @@
-// ---------------------------------------------------------------------------
-// Unit suite for the money value object
-//
-// SUBJECT: src/domain/valueObjects/money.ts in isolation. `Money` is the SOLE arithmetic surface of
-// the TypeScript / AWS Lambda `nodejs20.x` port of the Slatwall 3.1.39 catalog and
-// promotions/pricing slice, replacing three CFML mechanisms at once - `precisionEvaluate`,
-// `numberFormat` and the `big_decimal` column type - so it guards the arithmetic half of the
-// promotion-discount must-preserve area. If an assertion below is wrong, the amount a customer is
-// charged is wrong.
-//
-// Every shipped member is exercised - the one construction factory, the `zero` constant, the four
-// arithmetic operations, the four comparisons and the two egress methods - and what is ABSENT is
-// asserted too, because the surface being closed is itself part of the contract. The substrate
-// beneath it, src/lib/cfml/precision.ts and src/lib/cfml/numberFormat.ts, has its own suites; this
-// file asserts only that the surface PROPAGATES their refusals.
-//
-// COVERAGE CLASSIFICATION: NET-NEW, never to be presented as parity. CFML had no money type at all,
-// and searching all 32 `.cfc` files under meta/tests/ for a money, currency-code or
-// materialized-id-path value object, `precisionEvaluate` and `roundValue` returns ZERO hits. The
-// four shared cases every legacy entity suite inherits from
-// [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67] are all inapplicable: a `Money` has
-// no `validate(context)`, no `getSimpleRepresentation()`, no `getPrimaryIDPropertyName()` and no
-// new/persisted state.
-//
-// TWO SEMANTIC FACTS ABOUT THE LEGACY MONEY PATH
-//
-//   1. THE ROUNDING RULE SHAPES THE FINAL PRICE, NOT THE DISCOUNT. The value
-//      handed to `roundValueByRoundingRule` at
-//      [model/service/PromotionService.cfc:L1006] is
-//      `originalAmount - discountAmountPreRounding` - the NET PRICE - and
-//      [model/service/PromotionService.cfc:L1007] derives the discount back out
-//      as a RESIDUAL, `originalAmount - roundedFinalAmount`. `Money` is therefore
-//      no rounding-policy holder: it holds no rounding rule, exposes no rounding
-//      operation, and contributes the subtraction on both lines.
-//
-//   2. CFML'S DECLARED-NUMERIC / RETURNS-STRING DUALITY IS NOT PAPERED OVER.
-//      [model/service/PromotionService.cfc:L1017] is
-//      `return numberFormat(discountAmount, "0.00");` inside a function declared
-//      `private numeric function` at [model/service/PromotionService.cfc:L987];
-//      the same mismatch recurs at [model/service/PriceGroupService.cfc:L339]
-//      inside a `public numeric function` at
-//      [model/service/PriceGroupService.cfc:L316], and again at
-//      [model/service/RoundingRuleService.cfc:L88], where `roundValue` declares
-//      `returntype="string"` while BOTH callers -
-//      [model/service/RoundingRuleService.cfc:L79] and
-//      [model/service/RoundingRuleService.cfc:L84] - declare `numeric`. CFML
-//      coerces silently; this port keeps the two as separate members.
-//
-// LOCATORS. Every locator below was re-verified with `grep -n`; published locators for this slice
-// drift, and each correction is recorded at its point of use. The verified `precisionEvaluate`
-// census is NINE sites in [model/service/PromotionService.cfc] (L150, L252, L299, L486, L990, L995,
-// L1001, L1006, L1007) plus TWO in [model/service/PriceGroupService.cfc] (L323, L331) and ZERO in
-// [model/service/RoundingRuleService.cfc] - eleven in scope. The two-decimal presentation step is
-// on [model/service/PriceGroupService.cfc:L339].
-//
-// No preserved-defect marker appears here: the defect register belongs to the entity and service
-// tiers. This suite SUPPORTS one deliberate divergence without owning it - the raw floating-point
-// gap in the `amountOff` branch at [model/service/PromotionService.cfc:L998], which routing all
-// arithmetic through `Money` closes - by proving decimal arithmetic never drifts, while the
-// un-scoped `discountAmount` assignment at [model/service/PromotionService.cfc:L1007, L1009, L1014] is
-// owned elsewhere. Justification throughout is correctness, never speed: the speed-framed memo
-// rationale at [model/service/RoundingRuleService.cfc:L66] is not carried here and no timing figure
-// appears below.
-//
-// HARNESS: carry the assertions, never the harness. [meta/tests/unit/SlatwallUnitTestBase.cfc]
-// bootstraps the whole `Slatwall.Application`, booting the real ORM and bean factory before every
-// legacy "unit" test; this suite is pure arithmetic over string literals with no database, network,
-// filesystem, environment read or logging. [meta/tests/unit/Helper.cfc:L51-L56] is followed as a
-// SHAPE reference only, and one hygiene defect there is deliberately NOT reproduced:
-// [meta/tests/unit/Helper.cfc:L52] correctly declares `var product = entityNew("SlatwallProduct");`
-// while [meta/tests/unit/Helper.cfc:L53] declares `productData = {` WITHOUT `var`, leaking fixture
-// data into component scope, and [meta/tests/unit/IssuesTest.cfc:L55] repeats the identical slip -
-// harness hygiene in the tier being replaced, not a preserved business-logic defect. Regression
-// suites follow the `issue_<ticket#>` convention from [meta/tests/unit/IssuesTest.cfc]; the
-// carried-forward case, ticket #1766 for the return/exchange no-op at
-// [model/service/PromotionService.cfc:L542-L544], belongs to the promotion engine.
+// Unit suite for the money value object.
 //
 // JUDGMENT CALL: every expectation is a decimal-STRING literal measured against the shipped module
-// under the pinned toolchain, never derived by hand. No floating-point arithmetic and no
-// approximate matching appears anywhere in this file - approximation would mask the very drift
-// `Money` exists to prevent.
+// under the pinned toolchain, never derived by hand.
 //
 // JUDGMENT CALL: the suite imports nothing but its subject. Fixtures build entities and views, a
-// layer ABOVE value objects, so importing one would invert the layering. `tests/setup.ts` is the
-// runner's single setup file, already forcing UTC and restoring mocks and timers, and value objects
-// are date-free.
+// layer ABOVE value objects, so importing one would invert the layering.
 //
 // JUDGMENT CALL: failures are discriminated on the error's stable `name` rather than with
-// `instanceof`. The substrate's zero-divisor and non-integer refusals come from an error class it
-// deliberately does NOT export, and importing the one exported error class purely to discriminate
-// the other half would widen the import surface for no gain.
-// ---------------------------------------------------------------------------
+// `instanceof`.
 
 import { describe, expect, it } from 'vitest';
 
 // Four levels of `..` from `tests/unit/domain/valueObjects/` reach the subtree root, and the `.js`
 // extension is mandatory: `tsconfig.json` sets `module` and `moduleResolution` to `NodeNext` with
-// no `paths`, no `baseUrl` and no `allowImportingTsExtensions`, so an extensionless specifier does
-// not resolve and a `.ts` specifier does not compile.
+// no `paths`, no `baseUrl` and no `allowImportingTsExtensions`.
 //
 // JUDGMENT CALL: a THREE-level example specifier circulates for this folder and is wrong - it
-// resolves to a nonexistent `tests/src/...`. Both a named and a namespace import are deliberate:
-// the named import is the subject, the namespace import is the only way to assert what is NOT
-// exported, and `noUnusedLocals` requires both to be used.
+// resolves to a nonexistent `tests/src/...`.
 import { Money } from '../../../../src/domain/valueObjects/money.js';
 import * as moneyModule from '../../../../src/domain/valueObjects/money.js';
 
-// ---------------------------------------------------------------------------
-// Local helpers
-//
-// JUDGMENT CALL: both are pure local functions holding no state. Four legacy component-level caches
-// become request-scoped in this port because module-level mutable state survives between unrelated
-// invocations on a warm container, so nothing here is mutable at module scope either.
-// ---------------------------------------------------------------------------
+// JUDGMENT CALL: both are pure local functions holding no state.
 
 /**
- * What a rejected request reveals about itself. A caller discriminates on the stable `name`, and so
- * does this suite; the header records why `instanceof` is not used.
+ * What a rejected request reveals about itself. A caller discriminates on the stable `name`, and
+ * so does this suite; the header records why `instanceof` is not used.
  */
 interface CapturedFailure {
   readonly name: string;
@@ -123,7 +32,7 @@ interface CapturedFailure {
 }
 
 /**
- * Runs an operation expected to fail and reports how it failed. If the operation does NOT throw,
+ * Runs an operation expected to fail and reports how it failed. If the operation does not throw,
  * this throws instead, so a silently succeeding subject can never be mistaken for a passing
  * expectation.
  */
@@ -144,52 +53,24 @@ const captureFailure = (operation: () => unknown): CapturedFailure => {
  * assertion.
  *
  * JUDGMENT CALL: this exists for exactly one purpose - proving that the state a `Money` holds is a
- * plain decimal NUMERAL and never a decimal-library instance. TypeScript's `private` is a
- * compile-time modifier, so the field is an ordinary own property at runtime and asserting it
- * "absent" would be false. The double assertion goes through `unknown`, so no `any` enters this
- * file.
+ * plain decimal NUMERAL and never a decimal-library instance.
  */
 const ownState = (subject: Money): Readonly<Record<string, unknown>> =>
   subject as unknown as Record<string, unknown>;
 
-// ---------------------------------------------------------------------------
-// THE VERIFIED REFERENCE CALCULATION
+// The verified reference calculation.
 //
-// The discount pipeline reproduced end to end, closing at the presentation contract this port must
-// honour, [model/service/PromotionService.cfc:L1017]:
-//   `return numberFormat(discountAmount, "0.00");`
-//
-//   unit price                                    19.99
-//   quantity                                          3
-//   extended   = 19.99 x 3                        59.97
-//   discount   = 59.97 x (12.5 / 100)             7.49625
-//   net        = 59.97 - 7.49625                  52.47375
-//   toFixed2() of the net                         '52.47'
-//
-// WHY THE INTERMEDIATE IS PINNED AND NOT JUST THE FINAL STRING. Measured as IEEE-754 doubles rather
-// than assumed: `19.99 * 3` is EXACT (59.97) and `59.97 * 0.125` is EXACT (7.49625), so neither is
-// claimed as drift, but `59.97 - 7.49625` DRIFTS to 52.473749999999995 - and `toFixed(2)` of that
-// drifted double still yields the same two decimals. Only the intermediate distinguishes a correct
-// implementation from a drifting one.
-// ---------------------------------------------------------------------------
+// Unit price 19.99 quantity 3 extended = 19.99 x 3 59.97 discount = 59.97 x (12.5 / 100) 7.49625
+// net = 59.97 - 7.49625 52.47375 toFixed2() of the net '52.47'.
 
 describe('the verified reference calculation', () => {
   // CFML parity [model/service/PromotionService.cfc:L990]:
-  //   `precisionEvaluate('arguments.price * arguments.quantity')` - the extension
-  //   at the head of `getDiscountAmount`.
-  // CFML parity [model/service/PromotionService.cfc:L995]:
-  //   `precisionEvaluate('originalAmount * (reward.getAmount()/100)')` - the
-  //   percentage-off branch, dividing by the literal 100 inside the product.
-  // CFML parity [model/service/PromotionService.cfc:L1006]:
-  //   `precisionEvaluate('originalAmount - discountAmountPreRounding')` - the net
-  //   price. Omitted from the published citation list.
-  // CFML parity [model/service/PromotionService.cfc:L1017]:
-  //   `return numberFormat(discountAmount, "0.00");` - the presentation step this
-  //   chain closes with.
+  // `precisionEvaluate('arguments.price * arguments.quantity')` - the extension at the head of
+  // `getDiscountAmount`.
   //
   // JUDGMENT CALL: every operand here is a decimal-string literal, including the quantity and the
   // divisor, so no numeric literal capable of drift appears in the calculation guarding the
-  // must-preserve area. The safe-integer `number` ingress is pinned in its own block below.
+  // must-preserve area.
 
   it('extends a unit price across a quantity exactly', () => {
     const extended = Money.fromDecimalString('19.99').times('3');
@@ -212,18 +93,13 @@ describe('the verified reference calculation', () => {
     const discount = extended.times(Money.fromDecimalString('12.5').dividedBy('100'));
     const net = extended.minus(discount);
 
-    // 1. The correct decimal result.
+    // The correct decimal result.
     expect(net.equals(Money.fromDecimalString('52.47375'))).toBe(true);
 
-    // 2. NOT the drifted double - the assertion proving decimal fidelity.
-    //    52.473749999999995 is seventeen significant digits, well inside the
-    //    substrate's declared twenty, so the inequality is meaningful.
+    // Not the drifted double - the assertion proving decimal fidelity. 52.473749999999995 is
+    // seventeen significant digits, well inside the substrate's declared twenty, so the inequality
+    // is meaningful.
     expect(net.equals(Money.fromDecimalString('52.473749999999995'))).toBe(false);
-
-    // 3. NOT the two-decimal presentation. This proves no operation rounded to
-    //    two decimals internally, and it is the only discriminator that works:
-    //    had every step been rounded to 2 dp, `59.97 - 7.50` would also be
-    //    52.47, so `toFixed2` could not tell the two implementations apart.
     expect(net.equals(Money.fromDecimalString('52.47'))).toBe(false);
 
     expect(net.compare(Money.fromDecimalString('52.47375'))).toBe(0);
@@ -242,20 +118,17 @@ describe('the verified reference calculation', () => {
     const extended = Money.fromDecimalString('19.99').times('3');
     const discount = extended.times(Money.fromDecimalString('12.5').dividedBy('100'));
 
-    // Presentation and value are separate concerns: the discount PRESENTS as
-    //    '7.50' while the value used in the subtraction remains 7.49625. Had
-    //    `times` rounded, the net would have been 52.47 rather than 52.47375.
+    // Presentation and value are separate concerns: the discount PRESENTS as '7.50' while the
+    // value used in the subtraction remains 7.49625. Had `times` rounded, the net would have been
+    // 52.47 rather than 52.47375.
     expect(discount.toFixed2()).toBe('7.50');
     expect(discount.equals(Money.fromDecimalString('7.49625'))).toBe(true);
     expect(extended.minus(discount).equals(Money.fromDecimalString('52.47375'))).toBe(true);
   });
 
   it('exposes the full-scale value through exactly one named accessor', () => {
-    // The full-precision egress is `toDecimalString()`, the ONE way the held value leaves this
-    // class unrounded. It exists because the `big_decimal` columns enumerated below store every
-    // digit and the `Sw*` schema is preserved unchanged (AAP 0.8.1). The library's own
-    // scale-imposing and precision-imposing renderers stay absent: this is an egress, not a
-    // formatting surface.
+    // The full-precision egress is `toDecimalString()`, the one way the held value leaves this
+    // class unrounded.
     const net = Money.fromDecimalString('52.47375');
 
     expect(net.toDecimalString()).toBe('52.47375');
@@ -267,17 +140,8 @@ describe('the verified reference calculation', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Construction
-//
 // The primary path is a decimal STRING because that is how monetary values arrive: `big_decimal`
-// columns come back from the driver in decimal string form, and four such columns are read and
-// written through `Money` - [model/entity/PromotionApplied.cfc:L53] `discountAmount`, and
-// [model/entity/SkuCurrency.cfc:L53, L54, L55] `price`, `renewalPrice` and `listPrice`, where
-// `price` carries NO default while the other two default to "0". The target equivalent of
-// `roundValue` also returns a decimal string, because [model/service/RoundingRuleService.cfc:L88]
-// declares `returntype="string"`.
-// ---------------------------------------------------------------------------
+// columns come back from the driver in decimal string form.
 
 describe('construction from a decimal string', () => {
   it('builds a value from a plain decimal numeral', () => {
@@ -295,10 +159,10 @@ describe('construction from a decimal string', () => {
   });
 
   it('preserves every significant digit a big_decimal column arrives with', () => {
-    // CFML parity [model/entity/PromotionApplied.cfc:L53]: `property
-    //   name="discountAmount" ormtype="big_decimal";`. A column's string form
-    //   must round-trip with no loss, so a value at more than two-decimal scale
-    //   is held at its own scale and only PRESENTED at two.
+    // CFML parity [model/entity/PromotionApplied.cfc:L53]:
+    // `property name="discountAmount" ormtype="big_decimal";`. A column's string form must
+    // round-trip with no loss, so a value at more than two-decimal scale is held at its own scale
+    // and only PRESENTED at two.
     const persisted = Money.fromDecimalString('7.49625');
 
     expect(persisted.equals(Money.fromDecimalString('7.49625'))).toBe(true);
@@ -308,20 +172,15 @@ describe('construction from a decimal string', () => {
 
   it('is currency-agnostic', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L53, L55]: `discountAmount`
-    //   (`ormtype="big_decimal"`) and `currencyCode` (`ormtype="string"
-    //   length="3"`) are SEPARATE columns and the legacy arithmetic carries no
-    //   currency operand at all. So `Money` takes no currency and holds none: the
-    //   currency a value is denominated in is carried by the surrounding entity,
-    //   and two values are equal on their amount alone.
+    // (`ormtype="big_decimal"`) and `currencyCode` (`ormtype="string" length="3"`) are SEPARATE
+    // columns and the legacy arithmetic carries no currency operand at all.
     expect(Money.fromDecimalString('19.99').equals(Money.fromDecimalString('19.99'))).toBe(true);
   });
 });
 
 describe('rejection at construction', () => {
   // JUDGMENT CALL: silent coercion to zero is the failure mode that would sell products for free,
-  // so every malformed input must fail loudly. The set below is asserted case by case rather than
-  // sampled, because each entry is a shape a real caller could hand over - a blank column, a free
-  // text field, a grouped or currency-prefixed presentation string, or a non-finite spelling.
+  // so every malformed input must fail loudly.
 
   it('rejects the empty string', () => {
     expect(captureFailure(() => Money.fromDecimalString('')).name).toBe('CfmlNumberFormatError');
@@ -330,8 +189,7 @@ describe('rejection at construction', () => {
   it('rejects the non-finite spellings NaN, Infinity and -Infinity', () => {
     // JUDGMENT CALL: these are asserted as STRINGS because the parameter is a `string`, so the
     // numeric `NaN`, `Infinity` and `-Infinity` cannot even be written at the call site - a
-    // stronger guarantee than a runtime throw. The string spellings are the reachable hazard, and
-    // the decimal library accepts them on its own.
+    // stronger guarantee than a runtime throw.
     expect(captureFailure(() => Money.fromDecimalString('NaN')).name).toBe('CfmlNumberFormatError');
     expect(captureFailure(() => Money.fromDecimalString('Infinity')).name).toBe(
       'CfmlNumberFormatError',
@@ -373,8 +231,8 @@ describe('rejection at construction', () => {
   });
 
   it('rejects a malformed operand handed to an operation, not just to the factory', () => {
-    // A malformed numeral must fail AT the operation rather than propagating as a corrupted amount,
-    // so every operand crossing is validated.
+    // A malformed numeral must fail at the operation rather than propagating as a corrupted
+    // amount, so every operand crossing is validated.
     const price = Money.fromDecimalString('19.99');
 
     expect(captureFailure(() => price.minus('abc')).name).toBe('CfmlNumberFormatError');
@@ -391,15 +249,7 @@ describe('rejection at construction', () => {
 
   // JUDGMENT CALL: the `string` parameter is a compile-time guarantee and a real one - the numeric
   // `NaN`, `Infinity` and `-Infinity` genuinely cannot be written at any call site above, which is
-  // why they are asserted in their string spellings. It is not, however, the WHOLE guarantee. The
-  // annotation is erased before anything executes, and this factory is reachable from untyped
-  // JavaScript, from a decoded request body, and from an `as` cast made in another file. The
-  // documented contract on the factory says the value is "never a `number`", and a documented
-  // contract that only the compiler enforces is not enforced on the boundary the port actually runs
-  // on. The widened alias below models that caller so the run-time half is pinned too; it goes
-  // through `unknown` exactly as `ownState` above does, so no `any` and no suppression comment
-  // enters this file. The factory is invoked as a member of its class rather than detached from it,
-  // so the widening is confined to the argument and nothing about the call itself changes.
+  // why they are asserted in their string spellings.
   const fromRuntimeValue = (candidate: unknown): Money =>
     Money.fromDecimalString(candidate as string);
 
@@ -422,8 +272,7 @@ describe('rejection at construction', () => {
   it('rejects every other non-string shape handed over at run time', () => {
     // A single-element array and an object with a numeral-shaped `toString` are the sharp pair:
     // neither carries a usable `length`, both stringify to `'12.5'`, and the validating pattern is
-    // applied with `RegExp.prototype.test`, which coerces its argument. Both therefore satisfied the
-    // pattern and came back as a constructed `Money` wrapping a value that was not a string at all.
+    // applied with `RegExp.prototype.test`.
     expect(captureFailure(() => fromRuntimeValue(['12.5'])).name).toBe('CfmlNumberFormatError');
     expect(captureFailure(() => fromRuntimeValue({ toString: () => '12.5' })).name).toBe(
       'CfmlNumberFormatError',
@@ -443,27 +292,23 @@ describe('rejection at construction', () => {
 
     // JUDGMENT CALL: the refusal belongs to the decimal-string factory alone and must not spill
     // into the operand path, where a non-monetary integer is admitted deliberately and travels a
-    // separate branch that never reaches the string validator. That branch is pinned in full
-    // further down, where `times(3)` succeeds and `times(0.125)` fails loudly.
+    // separate branch that never reaches the string validator.
   });
 });
 
 describe('a negative amount remains representable', () => {
-  // CFML parity [meta/tests/unit/IssuesTest.cfc:L110, L126]: a negative amount is
-  //   rejected by the VALIDATION layer, never by the money primitive.
-  //   `issue_1335` (declared at L110) sets `skuCurrency.setPrice(-20)` and
-  //   `skuCurrency.setListPrice('test')`, then asserts that BOTH produce a
-  //   validation error and that neither is a `_missing` error; `issue_1348`
-  //   (declared at L126) does the same for `sku.setPrice(-20)`. Both are about
-  //   `validate(context="save")` rather than arithmetic, so this file does NOT
-  //   assert that a negative amount throws. Note the asymmetry: a NON-NUMERIC
-  //   string must fail at construction, asserted above, while a NEGATIVE numeral
-  //   must not.
+  // CFML parity [meta/tests/unit/IssuesTest.cfc:L110, L126]: a negative amount is rejected by the
+  // VALIDATION layer, never by the money primitive. `issue_1335`
+  // [meta/tests/unit/IssuesTest.cfc:L110] asserts that `skuCurrency.setPrice(-20)` and
+  // `skuCurrency.setListPrice('test')` both raise a validation error and that neither is a
+  // `_missing` error; `issue_1348` [meta/tests/unit/IssuesTest.cfc:L126] does the same for
+  // `sku.setPrice(-20)`. Hence the asymmetry pinned below: a non-numeric string fails at
+  // construction, a negative numeral does not.
 
   it('constructs and presents a negative intermediate', () => {
     // A negative intermediate is real rather than hypothetical: the rounding search at
     // [model/service/RoundingRuleService.cfc:L123-L130] subtracts and then flips the sign when the
-    // result is negative, and -0.58 arises there.
+    // result is negative.
     const negative = Money.fromDecimalString('-0.58');
 
     expect(negative.toFixed2()).toBe('-0.58');
@@ -485,21 +330,9 @@ describe('a negative amount remains representable', () => {
 
 describe('times', () => {
   // CFML parity [model/service/PromotionService.cfc:L990]:
-  //   `precisionEvaluate('arguments.price * arguments.quantity')` - a x b.
+  // `precisionEvaluate('arguments.price * arguments.quantity')` - a x b.
   // CFML parity [model/service/PromotionService.cfc:L995]:
-  //   `precisionEvaluate('originalAmount * (reward.getAmount()/100)')` -
-  //   a x (b / 100).
-  // CFML parity [model/service/PromotionService.cfc:L1001]: the
-  //   `(arguments.price - reward.getAmount()) * arguments.quantity` product.
-  // CFML parity [model/service/PromotionService.cfc:L150]: the sale-price seed
-  //   multiplies both the sku price and the sale price by
-  //   `orderItem.getQuantity()` - (a x b) - (c x b).
-  // CFML parity [model/service/PromotionService.cfc:L486]: the over-use strip
-  //   scales `discountAmount / thisDiscountQuantity` by
-  //   `(thisDiscountQuantity - needToRemove)` - (a / b) x (b - c).
-  // CFML parity [model/service/PriceGroupService.cfc:L323]: the inner
-  //   `arguments.sku.getPrice() * (arguments.priceGroupRate.getAmount() / 100)`
-  //   term, published as L322 - literally `case "percentageOff" :`.
+  // `precisionEvaluate('originalAmount * (reward.getAmount()/100)')` - a x (b / 100).
 
   it('multiplies a whole amount by a whole count', () => {
     expect(Money.fromDecimalString('19').times('3').equals(Money.fromDecimalString('57'))).toBe(
@@ -543,8 +376,8 @@ describe('times', () => {
   });
 
   it('composes the (a x b) - (c x b) sale-price shape', () => {
-    // CFML parity [model/service/PromotionService.cfc:L150]: 19.99 list against
-    //   17.49 sale over a quantity of 3.
+    // CFML parity [model/service/PromotionService.cfc:L150]: 19.99 list against 17.49 sale over a
+    // quantity of.
     const listExtended = Money.fromDecimalString('19.99').times('3');
     const saleExtended = Money.fromDecimalString('17.49').times('3');
 
@@ -554,14 +387,8 @@ describe('times', () => {
 
 describe('dividedBy', () => {
   // CFML parity [model/service/PromotionService.cfc:L299]:
-  //   `precisionEvaluate('discountAmount / discountQuantity')` - the
-  //   discount-per-use value the reward-usage ledger insert-sorts on.
-  // CFML parity [model/service/PromotionService.cfc:L995]: the
-  //   `(reward.getAmount()/100)` term - division by the literal 100.
-  // CFML parity [model/service/PromotionService.cfc:L486]: the leading
-  //   `discountAmount / thisDiscountQuantity` term.
-  // CFML parity [model/service/PriceGroupService.cfc:L323]: the
-  //   `(arguments.priceGroupRate.getAmount() / 100)` term, published as L322.
+  // `precisionEvaluate('discountAmount / discountQuantity')` - the discount-per-use value the
+  // reward-usage ledger insert-sorts on.
 
   it('divides a percentage by one hundred exactly', () => {
     const rate = Money.fromDecimalString('12.5').dividedBy('100');
@@ -573,16 +400,14 @@ describe('dividedBy', () => {
   });
 
   it('computes a discount-per-use value', () => {
-    // CFML parity [model/service/PromotionService.cfc:L299]: a 7.50 discount
-    //   spread across a quantity of 3 is 2.50 per use.
+    // CFML parity [model/service/PromotionService.cfc:L299]: a 7.50 discount spread across a
+    // quantity of 3 is 2.50 per use.
     expect(Money.fromDecimalString('7.50').dividedBy('3').toFixed2()).toBe('2.50');
   });
 
   it('resolves a non-terminating quotient at the substrate declared scale', () => {
-    // JUDGMENT CALL: the expected value is asserted BY VALUE against the shipped result's own
-    // scale, measured under the pinned toolchain rather than typed by hand. The substrate declares
-    // twenty significant digits, so `1 / 3` resolves at that scale rather than throwing or
-    // truncating.
+    // JUDGMENT CALL: the expected value is asserted by VALUE against the shipped result's own
+    // scale, measured under the pinned toolchain rather than typed by hand.
     const third = Money.fromDecimalString('1').dividedBy('3');
 
     expect(third.equals(Money.fromDecimalString('0.33333333333333333333'))).toBe(true);
@@ -596,24 +421,8 @@ describe('dividedBy', () => {
 });
 
 describe('minus', () => {
-  // CFML parity [model/service/PromotionService.cfc:L150]: the outer subtraction
-  //   of (a x b) - (c x b).
-  // CFML parity [model/service/PromotionService.cfc:L252]:
-  //   `precisionEvaluate('originalDiscountAmount -
-  //   (orderItem.getExtendedSkuPrice() - orderItem.getExtendedPrice())')` -
-  //   a - (b - c). Published as L248, which is a comment; the call is on L252.
-  // CFML parity [model/service/PromotionService.cfc:L1001]: the
-  //   `(arguments.price - reward.getAmount())` term of (a - b) x c.
-  // CFML parity [model/service/PromotionService.cfc:L1006]: the NET PRICE
-  //   `originalAmount - discountAmountPreRounding` handed to the rounding rule.
-  //   Omitted from the published list.
-  // CFML parity [model/service/PromotionService.cfc:L1007]: the discount derived
-  //   back out as the residual `originalAmount - roundedFinalAmount`.
-  // CFML parity [model/service/PriceGroupService.cfc:L323]: the outer subtraction
-  //   of a - (a x (b / 100)).
-  // CFML parity [model/service/PriceGroupService.cfc:L331]: the plain a - b of
-  //   the amount-off rate, `arguments.sku.getPrice() -
-  //   arguments.priceGroupRate.getAmount()`. Published as L328, a closing brace.
+  // CFML parity [model/service/PromotionService.cfc:L150]: the outer subtraction of (a x b) - (c x
+  // b).
 
   it('subtracts to a positive result', () => {
     expect(Money.fromDecimalString('59.97').minus('7.50').toFixed2()).toBe('52.47');
@@ -639,17 +448,16 @@ describe('minus', () => {
   });
 
   it('composes the a - (b - c) price-group adjustment shape', () => {
-    // CFML parity [model/service/PromotionService.cfc:L252]: a 10.00 discount
-    //   less the 7.50 price-group saving the item already receives nets 2.50.
+    // CFML parity [model/service/PromotionService.cfc:L252]: a 10.00 discount less the 7.50
+    // price-group saving the item already receives nets 2.50.
     const alreadySaved = Money.fromDecimalString('59.97').minus('52.47');
 
     expect(Money.fromDecimalString('10.00').minus(alreadySaved).toFixed2()).toBe('2.50');
   });
 
   it('composes the a - (a x (b / 100)) percentage-off rate shape', () => {
-    // CFML parity [model/service/PriceGroupService.cfc:L323]: `19.99 - (19.99 *
-    //   0.125)` as doubles yields 17.491249999999997; measured. The decimal
-    //   result is 17.49125.
+    // CFML parity [model/service/PriceGroupService.cfc:L323]: `19.99 - (19.99 * 0.125)` as doubles
+    // yields 17.491249999999997; measured. The decimal result is 17.49125.
     const price = Money.fromDecimalString('19.99');
     const reduced = price.minus(price.times(Money.fromDecimalString('12.5').dividedBy('100')));
 
@@ -660,16 +468,8 @@ describe('minus', () => {
 });
 
 describe('plus', () => {
-  // CFML parity [model/service/PromotionService.cfc:L417]: `var
-  //   totalDiscountableAmount = arguments.order.getSubtotalAfterItemDiscounts()
-  //   + arguments.order.getFulfillmentChargeAfterDiscountTotal();`
-  //
-  //   THAT LINE IS THE ONLY JUSTIFICATION FOR THIS OPERATION - the single addition
-  //   of two monetary values in the whole in-scope slice, and it carries NO
-  //   `precisionEvaluate` wrapper. Routing it through `Money` applies the single
-  //   arithmetic surface uniformly rather than reproducing that omission. The
-  //   variable is `totalDiscountableAmount`, not the published
-  //   `orderDiscountableAmount`.
+  // CFML parity [model/service/PromotionService.cfc:L417]:
+  // `var totalDiscountableAmount = arguments.order.getSubtotalAfterItemDiscounts() + arguments.order.getFulfillmentChargeAfterDiscountTotal();`
 
   it('adds two monetary values', () => {
     const subtotalAfterItemDiscounts = Money.fromDecimalString('52.47');
@@ -681,8 +481,8 @@ describe('plus', () => {
   });
 
   it('adds without the drift a plain float addition would introduce', () => {
-    // `0.1 + 0.2` as doubles yields 0.30000000000000004 - the exact hazard the unguarded legacy `+`
-    // at L417 carries.
+    // `0.1 + 0.2` as doubles yields 0.30000000000000004 - the exact hazard the unguarded legacy
+    // `+` at L417 carries.
     const sum = Money.fromDecimalString('0.1').plus('0.2');
 
     expect(sum.equals(Money.fromDecimalString('0.3'))).toBe(true);
@@ -697,17 +497,7 @@ describe('plus', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Comparison
-//
-// Every comparison is BY DECIMAL VALUE and applies no rounding, which is load-bearing rather than
-// pedantic: the promotion engine insert-sorts on these results in two OPPOSITE directions at once,
-// so a comparison that quietly rounded to two decimals would collapse distinct values into ties and
-// change which discount a customer receives. `orderItemQulifiedDiscounts` sorts DESCENDING by
-// discount amount [model/service/PromotionService.cfc:L271] and only the largest is applied;
-// `orderItemsUsage` sorts ASCENDING by discount-per-use value
-// [model/service/PromotionService.cfc:L306], so the cheapest-per-use entries are stripped first.
-// ---------------------------------------------------------------------------
+// Every comparison is by DECIMAL VALUE and applies no rounding.
 
 describe('compare', () => {
   it('returns exactly -1, 0 and 1', () => {
@@ -739,17 +529,8 @@ describe('compare', () => {
 });
 
 describe('isGreaterThan and isLessThan', () => {
-  // CFML parity [model/service/PromotionService.cfc:L257]: `if(discountAmount >
-  //   0)` - the gate deciding whether a computed discount is recorded at all.
-  // CFML parity [model/service/PromotionService.cfc:L148]:
-  //   `salePriceDetails.salePrice < orderItem.getSku().getPrice()` - a sale price
-  //   seeds a discount only when STRICTLY below the sku's own price.
-  // CFML parity [model/service/PromotionService.cfc:L1013]:
-  //   `if(discountAmountPreRounding > originalAmount)` - the clamp stopping a
-  //   discount from exceeding the original amount. It compares the PRE-rounding
-  //   value while overwriting the POST-rounding one; reproducing that is owned by
-  //   `src/services` and carries no marker here. It is named because a service
-  //   cannot reproduce a defect faithfully if its comparison normalises operands.
+  // CFML parity [model/service/PromotionService.cfc:L257]: `if(discountAmount > 0)` - the gate
+  // deciding whether a computed discount is recorded at all.
 
   it('is strict in both directions', () => {
     const smaller = Money.fromDecimalString('12.35');
@@ -771,16 +552,16 @@ describe('isGreaterThan and isLessThan', () => {
   });
 
   it('gates a computed discount above zero', () => {
-    // CFML parity [model/service/PromotionService.cfc:L257]: using `zero` as a
-    //   COMPARAND is legitimate; returning it as a fallback is not.
+    // CFML parity [model/service/PromotionService.cfc:L257]: using `zero` as a COMPARAND is
+    // legitimate; returning it as a fallback is not.
     expect(Money.fromDecimalString('7.50').isGreaterThan(Money.zero)).toBe(true);
     expect(Money.zero.isGreaterThan(Money.zero)).toBe(false);
     expect(Money.fromDecimalString('-2.57').isGreaterThan(Money.zero)).toBe(false);
   });
 
   it('seeds a sale price only when strictly below the list price', () => {
-    // CFML parity [model/service/PromotionService.cfc:L148]: at equality the
-    //   legacy gate does NOT fire, so no discount is seeded.
+    // CFML parity [model/service/PromotionService.cfc:L148]: at equality the legacy gate does not
+    // fire, so no discount is seeded.
     const listPrice = Money.fromDecimalString('19.99');
 
     expect(Money.fromDecimalString('17.49').isLessThan(listPrice)).toBe(true);
@@ -801,7 +582,7 @@ describe('equals', () => {
   });
 
   it('ignores trailing-zero scale, which differs between the two strings', () => {
-    // '52.47' and '52.470' are DIFFERENT strings and the SAME value, which is why equality is by
+    // '52.47' and '52.470' are DIFFERENT strings and the same value, which is why equality is by
     // value.
     expect(Money.fromDecimalString('52.47').equals(Money.fromDecimalString('52.470'))).toBe(true);
     expect(Money.fromDecimalString('19.90').equals(Money.fromDecimalString('19.9'))).toBe(true);
@@ -825,26 +606,14 @@ describe('equals', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// toFixed2 - A PRESENTATION STEP, NOT A ROUNDING POLICY
+// ToFixed2 - a presentation step, not a rounding policy.
 //
-// CFML parity [model/service/PromotionService.cfc:L1017]: `return
-//   numberFormat(discountAmount, "0.00");` - the LAST line of
-//   `getDiscountAmount`.
-// CFML parity [model/service/PriceGroupService.cfc:L339]: `return
-//   numberFormat(newPrice, "0.00");` - the LAST line of
-//   `calculateSkuPriceBasedOnPriceGroupRate`. Published as L337.
-// CFML parity [model/service/RoundingRuleService.cfc:L89]: `var inputValue =
-//   numberFormat(arguments.value, "0.00");` - the FIRST line of the rounding
-//   algorithm, normalising the input before the string arithmetic begins.
+// CFML parity [model/service/PromotionService.cfc:L1017]:
+// `return numberFormat(discountAmount, "0.00");` - the last line of `getDiscountAmount`.
 //
-// Both returning call sites sit at the very END of their functions: a caller must ASK for two
-// decimals, and no arithmetic operation applies them.
-//
-// JUDGMENT CALL: the ten measured `roundValue` characterization rows are deliberately NOT
-// duplicated here. They are the acceptance gate for the rounding algorithm, which owns the rounding
-// expression and direction.
-// ---------------------------------------------------------------------------
+// JUDGMENT CALL: the ten measured `roundValue` characterization rows are deliberately not
+// duplicated here. They are the acceptance gate for the rounding algorithm, which owns the
+// rounding expression and direction.
 
 describe('toFixed2', () => {
   it('always presents exactly two decimals, zero-padded', () => {
@@ -899,7 +668,7 @@ describe('toFixed2', () => {
 
   it('rounds a negative half away from zero', () => {
     // JUDGMENT CALL: asserted only after confirming the shipped behaviour - half-up in the pinned
-    // library rounds AWAY FROM ZERO when the value is equidistant.
+    // library rounds AWAY from ZERO when the value is equidistant.
     expect(Money.fromDecimalString('-2.345').toFixed2()).toBe('-2.35');
     expect(Money.fromDecimalString('-0.005').toFixed2()).toBe('-0.01');
   });
@@ -933,18 +702,10 @@ describe('toFixed2', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// PERSISTENCE, WHICH IS NOT PRESENTATION
+// Persistence, which is not presentation.
 //
 // `toFixed2` ROUNDS to two decimals because it reproduces CFML's `"0.00"` mask, while
-// `toDecimalString` imposes NO scale because the columns it feeds are declared `big_decimal`. Four
-// such columns are read and written through `Money`: `SwPromotionApplied.discountAmount`
-// [model/entity/PromotionApplied.cfc:L53], `SwPriceGroupRate.amount`
-// [model/entity/PriceGroupRate.cfc:L54], and `SwSkuCurrency.price` with its list and renewal
-// siblings [model/entity/SkuCurrency.cfc:L53]. The `Sw*` schema is preserved unchanged (AAP 0.8.1)
-// and a `big_decimal` column declines to round, so persisting through the presentation method would
-// NARROW the schema.
-// ---------------------------------------------------------------------------
+// `toDecimalString` imposes no scale because the columns it feeds are declared `big_decimal`.
 
 describe('toDecimalString', () => {
   it('persists every digit the value carries, where presentation would round', () => {
@@ -958,9 +719,7 @@ describe('toDecimalString', () => {
 
   it('round-trips through construction, value-stably', () => {
     // The property that makes a database round trip safe: whatever this method emits,
-    // `fromDecimalString` accepts, and the reconstructed value is EQUAL to the original. Value
-    // stability, not character stability - the numeral is canonicalised, as the next two cases
-    // show.
+    // `fromDecimalString` accepts, and the reconstructed value is EQUAL to the original.
     for (const stored of ['52.47375', '0', '0.00', '19.90', '-0.58', '7.49625', '1234.5', '.42']) {
       const original = Money.fromDecimalString(stored);
       const reloaded = Money.fromDecimalString(original.toDecimalString());
@@ -1047,7 +806,7 @@ describe('toDecimalString', () => {
   });
 
   it('imposes no scale of its own, in either direction', () => {
-    // Canonicalisation is NOT rounding and NOT padding: it normalises the numeral to the value's
+    // Canonicalisation is not rounding and not padding: it normalises the numeral to the value's
     // natural scale and stops there.
     expect(Money.fromDecimalString('52.47375').toDecimalString()).toBe('52.47375');
     expect(Money.fromDecimalString('0.000000000000000001').toDecimalString()).toBe(
@@ -1067,31 +826,22 @@ describe('toDecimalString', () => {
   });
 
   it('is not reachable by implicit coercion', () => {
-    // Persistence must be an explicitly named call, exactly like presentation. None of the three
-    // coercion hooks is declared, so a stray template literal, `+` or `JSON.stringify` cannot
-    // quietly produce an authoritative numeral.
+    // Persistence must be an explicitly named call, exactly like presentation.
     expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'toString')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'valueOf')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'toJSON')).toBe(false);
   });
 });
 
-// ---------------------------------------------------------------------------
-// THE OPERATION SURFACE IS CLOSED
+// The operation surface is closed.
 //
-// Asserting what is ABSENT is part of the contract, not defensive garnish. Every member traces to a
-// live legacy call site; a speculative money operation is how an unreviewed rounding or allocation
-// policy enters a price path.
-// ---------------------------------------------------------------------------
+// Asserting what is ABSENT is part of the contract, not defensive garnish.
 
 describe('the closed operation surface', () => {
   it('publishes exactly the ten instance members that trace to a legacy site', () => {
     // This is the tripwire: widening the surface is a product decision and should fail here first.
-    // Ten members, not nine - seven arithmetic and comparison operations plus TWO DISTINCT EGRESS
-    // METHODS. `toFixed2` presents, and therefore rounds, reproducing
-    // [model/service/PromotionService.cfc:L1017]; `toDecimalString` persists, and therefore imposes
-    // no scale, because the `big_decimal` columns at [model/entity/PromotionApplied.cfc:L53] and
-    // [model/entity/PriceGroupRate.cfc:L54] store every digit.
+    // Ten members, not nine - seven arithmetic and comparison operations plus two distinct egress
+    // methods.
     const published = Object.getOwnPropertyNames(Money.prototype)
       .filter((name) => name !== 'constructor')
       .sort();
@@ -1113,7 +863,7 @@ describe('the closed operation surface', () => {
   it('publishes exactly one construction factory and one constant', () => {
     // `toDecimalOperand` is present at runtime because TypeScript's `private` is a compile-time
     // modifier; it is the operand normaliser the four operations share, is unreachable from a
-    // consumer, and is not a construction path.
+    // consumer.
     const intrinsic = new Set(['length', 'name', 'prototype']);
     const statics = Object.getOwnPropertyNames(Money)
       .filter((name) => !intrinsic.has(name))
@@ -1174,16 +924,16 @@ describe('the closed operation surface', () => {
     expect('currency' in price).toBe(false);
     expect('currencyCode' in price).toBe(false);
 
-    // `toLocaleString` is on `Object.prototype`, so `in` would report it present and prove nothing;
-    // the meaningful assertion is that it is not overridden.
+    // `toLocaleString` is on `Object.prototype`, so `in` would report it present and prove
+    // nothing; the meaningful assertion is that it is not overridden.
     expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'toLocaleString')).toBe(false);
   });
 
   it('offers no numeric or serialisation escape hatch', () => {
     const price = Money.fromDecimalString('19.99');
 
-    // `toJSON` and `toNumber` are NOT on `Object.prototype`, so plain `in` is the correct check for
-    // them.
+    // `toJSON` and `toNumber` are not on `Object.prototype`, so plain `in` is the correct check
+    // for them.
     expect('toJSON' in price).toBe(false);
     expect('toNumber' in price).toBe(false);
     expect('toFloat' in price).toBe(false);
@@ -1191,9 +941,8 @@ describe('the closed operation surface', () => {
   });
 
   it('does not override valueOf or toString', () => {
-    // The precision trap here: `valueOf` and `toString` ARE on `Object.prototype`, so `in` tells
-    // you nothing. The meaningful assertion is that `Money` does not OVERRIDE them - an implicit
-    // `valueOf` would let `moneyA - moneyB` compile into float arithmetic.
+    // The precision trap here: `valueOf` and `toString` are on `Object.prototype`, so `in` tells
+    // you nothing.
     expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'valueOf')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'toString')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'toJSON')).toBe(false);
@@ -1201,8 +950,8 @@ describe('the closed operation surface', () => {
   });
 
   it('does not surface absolute', () => {
-    // JUDGMENT CALL: `absolute` exists on the arithmetic substrate, where the rounding search needs
-    // it to compare candidate deltas by magnitude, and it is intentionally NOT surfaced here
+    // JUDGMENT CALL: `absolute` exists on the arithmetic substrate, where the rounding search
+    // needs it to compare candidate deltas by magnitude, and it is intentionally not surfaced here
     // because no monetary call site asks for the magnitude of a price.
     const price = Money.fromDecimalString('-19.99');
 
@@ -1212,17 +961,11 @@ describe('the closed operation surface', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Money.zero - THE NARROWEST POSSIBLE CONTRACT
+// Money.zero - the narrowest possible contract.
 //
-// CFML parity [model/service/PromotionService.cfc:L988, L989]: `var
-//   discountAmountPreRounding = 0;` and `var roundedFinalAmount = 0;` - the two
-//   accumulators `getDiscountAmount` opens with.
-// CFML parity [model/service/PromotionService.cfc:L993-L1003]: the
-//   `switch(reward.getAmountType())` that follows has NO `default:` case, so an
-//   unrecognised amount type leaves that accumulator at zero. Those two sites,
-//   and only those, are what this constant exists for.
-// ---------------------------------------------------------------------------
+// CFML parity [model/service/PromotionService.cfc:L988, L989]:
+// `var discountAmountPreRounding = 0;` and `var roundedFinalAmount = 0;` - the two accumulators
+// `getDiscountAmount` opens with.
 
 describe('Money.zero', () => {
   it('exists, presents as 0.00 and equals every spelling of zero', () => {
@@ -1261,22 +1004,16 @@ describe('Money.zero', () => {
   });
 
   it('refuses to be a divisor', () => {
-    // Zero is a legitimate VALUE and an illegitimate DIVISOR, which is why the refusal lives in the
-    // operation and not in the constant.
+    // Zero is a legitimate VALUE and an illegitimate DIVISOR, which is why the refusal lives in
+    // the operation and not in the constant.
     const price = Money.fromDecimalString('19.99');
 
     expect(captureFailure(() => price.dividedBy(Money.zero)).name).toBe('PrecisionError');
   });
 
   it('is NOT a substitute for an absent price', () => {
-    // CFML parity [model/entity/Sku.cfc:L269-L273]: `getPriceByCurrencyCode` has
-    //   NO `else` and NO fallback - an unknown currency yields null. And
-    //   [model/entity/Sku.cfc:L275-L279, L281-L285]: `getListPriceByCurrencyCode`
-    //   and `getRenewalPriceByCurrencyCode` each perform a SECOND key-existence
-    //   test on the inner sub-key, so they return null even for a currency that IS
-    //   present. Absence is modelled as `undefined`, and substituting 0 would
-    //   silently sell products for free - the highest-consequence parity check in
-    //   the migration. So no member may hand `zero` back as a fallback.
+    // CFML parity [model/entity/Sku.cfc:L269-L273]: `getPriceByCurrencyCode` has no `else` and no
+    // fallback - an unknown currency yields null.
     expect('orZero' in Money).toBe(false);
     expect('orZero' in Money.zero).toBe(false);
     expect('tryFrom' in Money).toBe(false);
@@ -1292,16 +1029,9 @@ describe('Money.zero', () => {
   });
 
   it('serves the promotion seeds only, because the two defaultless switches differ', () => {
-    // CFML parity [model/service/PromotionService.cfc:L988-L989, L993-L1003]: the
-    //   FIRST defaultless switch seeds its accumulators at 0, so an unrecognised
-    //   amount type falls through to ZERO.
-    // CFML parity [model/service/PriceGroupService.cfc:L319, L321-L336]: the
-    //   SECOND defaultless switch seeds `newPrice` with the PASSTHROUGH
-    //   `arguments.sku.getPrice()` at L319, and its switch - verified to have no
-    //   `default:` branch anywhere in L321-L336 - falls through to the SKU'S OWN
-    //   PRICE instead. The two fall-through values are DIFFERENT, which is why
-    //   this constant is scoped to the promotion seeds: a shared "empty money"
-    //   default would convert the price-group passthrough into a free product.
+    // CFML parity [model/service/PromotionService.cfc:L988-L989, L993-L1003]: the FIRST
+    // defaultless switch seeds its accumulators at 0, so an unrecognised amount type falls through
+    // to ZERO.
     const skuPrice = Money.fromDecimalString('19.99');
     const promotionSeed = Money.zero;
 
@@ -1311,13 +1041,7 @@ describe('Money.zero', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Immutability and encapsulation
-//
-// Immutability is what makes a shared value safe to hold: the read-only order views the promotion
-// engine consumes carry `Money` values and never mutate them, and the engine threads a mutable
-// usage ledger through a 489-line loop.
-// ---------------------------------------------------------------------------
+// Immutability and encapsulation.
 
 describe('immutability', () => {
   it('freezes every instance, not just the shared constant', () => {
@@ -1419,10 +1143,8 @@ describe('encapsulation', () => {
   });
 
   it('holds a plain decimal numeral rather than a library instance', () => {
-    // JUDGMENT CALL: TypeScript's `private` is a compile-time modifier, so the internal field is an
-    // ordinary own property at runtime and asserting it "absent" would be false. The honest and
-    // stronger assertion is that whatever is held is a STRING, so there is no library object to
-    // leak.
+    // JUDGMENT CALL: TypeScript's `private` is a compile-time modifier, so the internal field is
+    // an ordinary own property at runtime and asserting it "absent" would be false.
     const price = Money.fromDecimalString('19.99');
     const state = ownState(price);
 
@@ -1446,6 +1168,7 @@ describe('encapsulation', () => {
   it('does not let a consumer read the internal numeral', () => {
     const price = Money.fromDecimalString('19.99');
 
+    // Is private, and the directive itself is the assertion.
     // @ts-expect-error - reading the internal numeral must not compile: the field
     // is private, and the directive itself is the assertion.
     const internal: unknown = price.amount;
@@ -1455,6 +1178,7 @@ describe('encapsulation', () => {
   });
 
   it('is effectively final, because the constructor is not a public path', () => {
+    // Compile; that is what makes the class effectively final.
     // @ts-expect-error - the constructor is private, so `new Money(...)` must not
     // compile; that is what makes the class effectively final.
     const constructed: unknown = new Money('19.99');
@@ -1468,22 +1192,16 @@ describe('encapsulation', () => {
 
   it('cannot be SUBCLASSED, which is the half of finality nothing else asserts', () => {
     // The private constructor and class finality are two DIFFERENT guarantees, and the test above
-    // establishes only the first. A class can hide its constructor from direct `new` while still
-    // being extensible; it is that constructor's effect on the `extends` clause which closes
-    // subclassing, and only an assertion on `extends` can show it. A subclass could otherwise add a
-    // mutable field the base constructor's freeze never reaches, an operation outside the closed
-    // arithmetic surface, or an override that makes a value typed `Money` stop behaving like one.
-    //
-    // THE DIRECTIVE IS THE ASSERTION. If the constructor were ever widened, `extends Money` would
-    // start compiling and the compiler would report this directive as unused.
+    // establishes only the first.
 
+    // Private, so the class cannot be used as a base.
     // @ts-expect-error - `extends Money` must not compile: the constructor is
     // private, so the class cannot be used as a base.
     class DerivedMoney extends Money {}
 
-    // The class MUST be referenced below. Under `noUnusedLocals` an unreferenced class would raise
-    // a SECOND diagnostic on the same line, keeping the directive satisfied even after finality had
-    // been lost.
+    // The class must be referenced below. Under `noUnusedLocals` an unreferenced class would raise
+    // a SECOND diagnostic on the same line, keeping the directive satisfied even after finality
+    // had been lost.
     expect(typeof DerivedMoney).toBe('function');
 
     // JUDGMENT CALL: `private` is erased at runtime, so this records what a deliberate breach
@@ -1493,23 +1211,13 @@ describe('encapsulation', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The operand rule
-//
-// A non-monetary integer COUNT may SCALE money but may never be ADDED TO or SUBTRACTED FROM it, so
-// `times` and `dividedBy` admit a `number` while `minus`, `plus` and the four comparisons do not.
-// That matches every legacy site: the multipliers and divisors are quantities and the literal 100 -
-// [model/service/PromotionService.cfc:L990] multiplies by `arguments.quantity`, and
-// [model/service/PromotionService.cfc:L995] and [model/service/PriceGroupService.cfc:L323] divide
-// by 100 - while the one legacy COUNT subtraction, `(thisDiscountQuantity - needToRemove)` inside
-// [model/service/PromotionService.cfc:L486], never touches money.
-// ---------------------------------------------------------------------------
+// A non-monetary integer count may scale money but may never be added to or subtracted from it, so
+// `times` and `dividedBy` admit a `number` while `minus`.
 
 describe('the operand rule for a non-monetary integer count', () => {
   it('scales by an integer count, matching the decimal-string path exactly', () => {
     // JUDGMENT CALL: the numeric ingress is asserted here in its own block rather than in the
-    // reference calculation, which deliberately takes the all-string path. It is NEVER for a price,
-    // an amount or a discount: it exists for the quantity operand and the literal 100 divisor.
+    // reference calculation, which deliberately takes the all-string path.
     const price = Money.fromDecimalString('19.99');
 
     expect(price.times(3).equals(price.times('3'))).toBe(true);
@@ -1556,12 +1264,8 @@ describe('the operand rule for a non-monetary integer count', () => {
 
   it('propagates the zero-divisor refusal rather than inventing a value', () => {
     // CFML parity [model/service/PromotionService.cfc:L299]: the legacy division
-    //   `precisionEvaluate('discountAmount / discountQuantity')` applies NO zero
-    //   check to its divisor. The substrate refuses a zero divisor outright and
-    //   `dividedBy` lets that refusal through untouched - returning zero would
-    //   silently invent money, and returning undefined would push a null check
-    //   onto every caller. Whether the CALL SITE at L299 wants a guard is owned
-    //   by `src/services/promotion/rewardUsageLedger.ts`, not by this surface.
+    // `precisionEvaluate('discountAmount / discountQuantity')` applies no zero check to its
+    // divisor.
     const discountAmount = Money.fromDecimalString('7.50');
 
     const fromString = captureFailure(() => discountAmount.dividedBy('0'));
@@ -1578,11 +1282,8 @@ describe('the operand rule for a non-monetary integer count', () => {
   });
 
   it('does not admit a count where money is required', () => {
-    // The COMPILE-TIME half of the operand rule: `minus`, `plus` and the four comparisons declare a
-    // monetary operand only, so handing one a raw count does not compile. The enforcement is the
-    // type system rather than a runtime refusal - the shared operand normaliser would accept a safe
-    // integer if it ever reached it - which is why each case below is never invoked and why the
-    // directive is the assertion.
+    // The COMPILE-TIME half of the operand rule: `minus`, `plus` and the four comparisons declare
+    // a monetary operand only, so handing one a raw count does not compile.
     const price = Money.fromDecimalString('19.99');
 
     // @ts-expect-error - a count may scale money but never be subtracted from it.

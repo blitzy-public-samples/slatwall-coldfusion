@@ -1,86 +1,13 @@
-// ---------------------------------------------------------------------------
 // slatwall-ts - characterization suite pinning `src/domain/entities/option.ts`
 //
-// `model/entity/Option.cfc` is 160 lines of which twelve bidirectional helpers [L92-L147] are the
-// only behaviour; the rest is property metadata. TWO OF THE TWELVE ARE BROKEN IN THE SOURCE the
-// same way - a `remove*` that calls `addExcludedOption` - and they are PRESERVED, not repaired;
-// pinning them is what this file mainly does (see the H21 block). Four further areas are pinned,
-// each in its own block: the `sortOrder` scoping, the near/far split of `setOptionGroup` and
-// `removeOptionGroup` including the unconditional near-side clear, the five many-to-many-inverse
-// collections with their abbreviated link tables, and the four rules of
-// `model/validation/Option.json` as far as an ENTITY can carry them.
+// `model/entity/Option.cfc` is 160 lines of which twelve bidirectional helpers
+// [model/entity/Option.cfc:L92-L147] are the only behaviour; the rest is property metadata.
 //
-// --- 100% net-new coverage, never to be presented as parity ---
+// MEASURED: all 32 `.cfc` files under `meta/tests/` were searched for `Option` as an entity
+// subject and none exists, so no assertion below has a legacy antecedent.
 //
-// MEASURED: all 32 `.cfc` files under `meta/tests/` were searched for `Option` as an entity subject
-// and none exists, so no assertion below has a legacy antecedent. The only legacy suites extended
-// anywhere in this port are [meta/tests/unit/entity/BrandTest.cfc] and
-// [meta/tests/unit/entity/ProductTest.cfc], and
-// [meta/tests/functional/admin/entity/ProductTest.cfc] is an empty stub contributing zero coverage.
-// The four inherited cases of [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67] are not
-// carried over - this port has no shared test base - and
-// `simple_representation_exists_and_is_simple` [L56-L58] is not forced onto an entity declaring no
-// `getSimpleRepresentation`.
-//
-// --- corrections to the upstream specification, each verified first-hand ---
-//
-// SOURCE WINS over any specification number. Three upstream claims about the TARGET module are
-// stale; each was re-verified against the shipped module and is referred back to by number where it
-// matters below.
-//
-//   1. `getImageDirectory()` [model/entity/Option.cfc:L81-L83] was called OMITTED. IT
-//      EXISTS, so an absence assertion would fail; the shipped behaviour is pinned.
-//   2. The `images` one-to-many [L63] was called DROPPED. IT IS MATERIALIZED.
-//   3. The far-side array symmetry and the `isNew() or !hasOption(this)` guard of
-//      [L92-L107] were called NOT reproduced. BOTH ARE.
-//
-// A fourth correction is FRAMING rather than fact, and it changes what must be asserted: calling
-// the two exclusion `remove*` helpers a "double-append hazard" UNDERSTATES them. The fault is an
-// INVERSION - a `remove` that adds - and a duplicate entry is only its secondary symptom, and only
-// for an unsaved row.
-//
-// Three narrower details were checked and CONFIRMED CORRECT, each recorded at its own block: the
-// `hb_permission` path [L49], the absence of `required` and of a default on `sortOrder` [L56], and
-// which two of the five collections carry `type="array"`.
-//
-// --- inversion cross-check verdict, computed rather than assumed ---
-//
-// Every `remove*` member was read and classified. There are SIX, TWO INVERTED / FOUR CLEAN:
-//
-//   [L98-L107]  removeOptionGroup             CLEAN  - arrayFind/arrayDeleteAt
-//   [L113-L115] removeSku                     CLEAN  - far-side removeOption
-//   [L121-L123] removePromotionReward         CLEAN  - far-side removeOption
-//   [L137-L139] removePromotionQualifier      CLEAN  - far-side removeOption
-//   [L129-L131] removePromotionRewardExclusion    INVERTED - addExcludedOption at L130
-//   [L145-L147] removePromotionQualifierExclusion INVERTED - addExcludedOption at L146
-//
-// The four clean cases are asserted alongside the two inverted ones, and that contrast proves the
-// two are defects rather than a house style. Both inversions are OBSERVABLE THROUGH THE PUBLIC
-// CONTRACT, so neither qualifies for the unobservable-memo carve-out that `sku.test.ts` and
-// `product.test.ts` spend on defects 17, 18 and 19 in `sku.ts` and `product.ts`, and no divergence
-// is claimed below.
-//
-// --- import surface ---
-//
-// Permitted: `src/domain/entities/option.ts` plus the siblings `optionGroup.ts`,
-// `promotionReward.ts` and `promotionQualifier.ts`. No repository, no handler, no integration, no
-// `src/lib/**`, no fixture tier, no barrel - this port has none. `src/domain/entities/sku.ts` IS
-// DELIBERATELY NOT AMONG THEM, which costs exactly one assertion: see the `addSku`/`removeSku`
-// block [L110-L115].
-//
-// --- freshness, determinism and isolation ---
-//
-// Every subject and every far side is built by a pure factory invoked INSIDE the test that uses it:
-// no describe-scope subject, no module-level mutable binding, no `beforeEach` and no `afterEach`.
-// That matters acutely because the two preserved inversions MUTATE far-side collections, so a
-// shared reward or qualifier would carry one test's appended entry into the next and could make a
-// broken implementation look correct. `vi` is never imported - the far sides are real sibling
-// entities. Every date literal is an explicit UTC ISO-8601 instant, with no bare `new Date()`, no
-// `Date.now()` and no fake timers, because `tests/setup.ts` pins the process to UTC and hard-fails
-// otherwise.
-//
-// LICENCE. Carried forward at subtree level by `slatwall-ts/NOTICE-GPL.md`.
-// ---------------------------------------------------------------------------
+// The two exclusion `remove*` helpers are more than a double-append hazard, and the cases below
+// assert what they actually do rather than that weaker framing.
 
 import { describe, expect, it } from 'vitest';
 
@@ -93,10 +20,7 @@ import { makeSkuFixture } from '../../../fixtures/skuFixtures.js';
 /**
  * The already-resolved assets image base that `getImageDirectory` concatenates onto.
  *
- * JUDGMENT CALL: an OPAQUE TOKEN rather than a URL or a filesystem path. The entity treats this
- * value as an uninterpreted string - it dials nothing, opens nothing and parses nothing - so a
- * token proves the concatenation with nothing mistakable for an environment coordinate. It also has
- * no separator of its own, which lets the doubled-separator case below vary that one factor alone.
+ * JUDGMENT CALL: an opaque token rather than a url or a filesystem path.
  */
 const RESOLVED_ASSETS_IMAGE_BASE = 'assets-base';
 
@@ -112,10 +36,8 @@ const OPTION_IMAGE_SUBDIRECTORY = 'option';
  * A structural stand-in for one `SwImage` row owned by an option. [model/entity/Option.cfc:L63]
  *
  * JUDGMENT CALL: declared locally because the shipped module's own `OptionImageLink` interface is
- * MODULE-LOCAL AND UN-EXPORTED - deliberately so, to keep that module's runtime export surface at
- * exactly one unit - and therefore cannot be imported. TypeScript matches it structurally, so a
- * local mirror suffices. This is NOT an image-store port double: `imageStore` is a stub for
- * out-of-scope branches only.
+ * MODULE-LOCAL and UN-EXPORTED - deliberately so, to keep that module's runtime export surface at
+ * exactly one unit - and therefore cannot be imported.
  */
 interface ImageLinkDouble {
   getImageID(): string;
@@ -124,8 +46,8 @@ interface ImageLinkDouble {
 }
 
 /**
- * Builds one `ImageLinkDouble` from plain data. A hand-written closure rather than `vi.fn()`: there
- * is no call to record and nothing to intercept.
+ * Builds one `ImageLinkDouble` from plain data. A hand-written closure rather than `vi.fn()`:
+ * there is no call to record and nothing to intercept.
  */
 function anImageLink(init: {
   readonly imageID: string;
@@ -143,14 +65,8 @@ function anImageLink(init: {
  * Builds the `Option` under test with every persisted column and every materializable association
  * controllable.
  *
- * Each slot is written `?: T | undefined` rather than `?: T` because `exactOptionalPropertyTypes`
- * is enabled and a test must be able to say "this column hydrated ABSENT" explicitly rather than by
- * omission.
- *
  * `optionID` defaults to a saved-looking key so a test which does not care about newness does not
- * accidentally exercise the unsaved-row branch; `??` is correct for it because it falls back only
- * on `null`/`undefined`, so an explicit `''` survives, which the `isNew()` suites depend on. `skus`
- * is ABSENT ON PURPOSE: its element type lives outside this suite's permitted import surface.
+ * accidentally exercise the unsaved-row branch.
  */
 function anOption(init: {
   readonly optionID?: string | undefined;
@@ -197,14 +113,8 @@ function anOption(init: {
 /**
  * Builds the owning `OptionGroup` far side.
  *
- * A REAL sibling entity, never a double. `setOptionGroup` calls `optionGroup.hasOption(this)` and
- * `optionGroup.getOptions()`, and what those two really do is the whole point of the near/far
- * suites.
- *
- * `options` is passed in so a test can start the group EMPTY or PRE-POPULATED, which separates "the
- * guard appended" from "the guard declined to append". `optionSortTieBreaker: undefined` selects
- * the entity's own default source. `imageGroupFlag: 0` is a bare literal rather than the
- * `CfBooleanInput` alias, `src/lib/**` being outside this suite's import surface.
+ * `options` is passed in so a test can start the group EMPTY or PRE-POPULATED, which separates
+ * "the guard appended" from "the guard declined to append".
  */
 function aGroup(init: {
   readonly optionGroupID?: string | undefined;
@@ -231,15 +141,16 @@ function aGroup(init: {
 /**
  * Builds the `PromotionReward` far side.
  *
- * Only the primary key is supplied; its two option collections default to FRESH empty arrays, which
- * is what makes a per-test factory genuinely isolating. The key defaults to a saved-looking value
- * because `addExcludedOption` branches on `this.isNew()` for its far-side append.
+ * Only the primary key is supplied; its two option collections default to FRESH empty arrays,
+ * which is what makes a per-test factory genuinely isolating.
  */
 function aReward(promotionRewardID = 'pr-1'): PromotionReward {
   return new PromotionReward({ promotionRewardID });
 }
 
-/** Builds the `PromotionQualifier` far side. Same contract as {@link aReward}. */
+/**
+ * Builds the `PromotionQualifier` far side. Same contract as {@link aReward}.
+ */
 function aQualifier(promotionQualifierID = 'pq-1'): PromotionQualifier {
   return new PromotionQualifier({ promotionQualifierID });
 }
@@ -247,19 +158,23 @@ function aQualifier(promotionQualifierID = 'pq-1'): PromotionQualifier {
 /**
  * The `optionID` of every element, in collection order.
  *
- * Membership is compared BY PRIMARY KEY throughout this suite and never by object identity or deep
+ * Membership is compared by PRIMARY KEY throughout this suite and never by object identity or deep
  * equality, which is what the ported containment predicates themselves do.
  */
 function optionIDsOf(options: readonly Option[]): readonly string[] {
   return options.map((option) => option.getOptionID());
 }
 
-/** The `promotionRewardID` of every element, in collection order. */
+/**
+ * The `promotionRewardID` of every element, in collection order.
+ */
 function rewardIDsOf(rewards: readonly PromotionReward[]): readonly string[] {
   return rewards.map((reward) => reward.getPromotionRewardID());
 }
 
-/** The `promotionQualifierID` of every element, in collection order. */
+/**
+ * The `promotionQualifierID` of every element, in collection order.
+ */
 function qualifierIDsOf(qualifiers: readonly PromotionQualifier[]): readonly string[] {
   return qualifiers.map((qualifier) => qualifier.getPromotionQualifierID());
 }
@@ -267,34 +182,15 @@ function qualifierIDsOf(qualifiers: readonly PromotionQualifier[]): readonly str
 /**
  * Every own member name on the class prototype, for the absence assertions.
  *
- * JUDGMENT CALL: absence is proved by scanning the prototype rather than by writing
+ * JUDGMENT CALL: absence is proved by scanning the prototype rather than by writing keeps its
+ * meaning if someone later adds the member back.
  * `@ts-expect-error` against a call to the missing member. A prototype scan is a RUNTIME proof that
- * keeps its meaning if someone later adds the member back.
  */
 function prototypeMembers(): readonly string[] {
   return Object.getOwnPropertyNames(Option.prototype);
 }
 
 describe('the persisted columns hydrate and read back exactly as declared', () => {
-  // CFML parity [model/entity/Option.cfc:L49], verified verbatim:
-  //
-  //   component displayname="Option" entityname="SlatwallOption" table="SwOption"
-  //   persistent=true output=false accessors=true extends="HibachiEntity"
-  //   cacheuse="transactional" hb_serviceName="optionService"
-  //   hb_permission="optionGroup.options"
-  //
-  // SCHEMA CONTINUITY. The physical table is `SwOption`, preserved verbatim - no migration, no
-  // rename, no new column and no dropped column. The name lives at the repository boundary rather
-  // than on the entity, so it is RECORDED here; what IS assertable is that every declared column
-  // round-trips.
-  //
-  // TWO INERT `hb_*` ATTRIBUTES, NEITHER NORMALISED. `hb_serviceName="optionService"` is correct
-  // and is NOT an `optionGroupService` - no such component exists, Option and OptionGroup CRUD both
-  // being served by model/service/OptionService.cfc. `hb_permission` is the NESTED PATH
-  // `optionGroup.options`, and NOT `"this"`: the sibling [model/entity/OptionGroup.cfc:L49] uses
-  // `"this"`, an Option being permissioned as a member of its group's collection. JavaRB is not
-  // ported and no i18n runtime is introduced, so an `hb_*` identifier or `rbKey` stays an inert
-  // constant.
   it('reads back every persisted column it was hydrated with', () => {
     const created = new Date('2020-06-15T13:45:00.000Z');
     const modified = new Date('2021-11-02T08:30:00.000Z');
@@ -327,7 +223,8 @@ describe('the persisted columns hydrate and read back exactly as declared', () =
 
   it('reports every nullable column as undefined when it hydrated absent', () => {
     // CFML parity [model/entity/Option.cfc:L53-L56, L60, L73, L76-L79]: not one of these
-    // declarations carries `required` or a `default`, so every one of them can hydrate as SQL NULL.
+    // declarations carries `required` or a `default`, so every one of them can hydrate as SQL
+    // NULL.
     const subject = anOption({});
 
     expect(subject.getOptionCode()).toBeUndefined();
@@ -344,9 +241,7 @@ describe('the persisted columns hydrate and read back exactly as declared', () =
 
   it('carries optionDescription as opaque stored text, with no rendering behaviour', () => {
     // CFML parity [model/entity/Option.cfc:L55]: `length="4000" hb_formFieldType="wysiwyg"`. Both
-    // attributes are inert. `length="4000"` is part of the schema contract and is NOT enforced at
-    // runtime, because the legacy entity did not enforce it either - the database column did, and
-    // model/validation/Option.json declares no `maxLength` rule.
+    // attributes are inert.
     const markup = '<h1>Small</h1><script>alert("x")</script>';
     const overlong = 'x'.repeat(4001);
 
@@ -355,14 +250,6 @@ describe('the persisted columns hydrate and read back exactly as declared', () =
   });
 
   it('treats defaultImageID as an inert persisted identifier with no image behaviour', () => {
-    // CFML parity [model/entity/Option.cfc:L60], verified verbatim:
-    //
-    //   property name="defaultImage" cfc="Image" fieldtype="many-to-one" fkcolumn="defaultImageID"
-    //
-    // THE COLUMN SURVIVES; THE ASSOCIATION DOES NOT. `model/entity/Image.cfc` is out of scope, so
-    // there is no `Image` type to name and none is invented. What remains is the raw opaque foreign
-    // key, preserved so a row still round-trips: no accessor resolves it and there is no
-    // `getDefaultImage` returning an entity.
     const subject = anOption({ defaultImageID: 'img-abc' });
 
     expect(subject.getDefaultImageID()).toBe('img-abc');
@@ -372,17 +259,8 @@ describe('the persisted columns hydrate and read back exactly as declared', () =
 });
 
 describe('isNew() keys on the empty optionID, which unsavedvalue="" makes load-bearing', () => {
-  // CFML parity [model/entity/Option.cfc:L52], verified verbatim:
-  //
-  //   property name="optionID" ormtype="string" length="32" fieldtype="id"
-  //   generator="uuid" unsavedvalue="" default=""
-  //
   // `default=""` means the column always holds a string, possibly the empty one, and
-  // `unsavedvalue=""` is what makes that empty string load-bearing - it is what the legacy
-  // framework's `isNew()` keyed on. So the key is `string` and never `string | undefined`.
-  // `isNew()` short-circuits the guard in `setOptionGroup` [L94] and, on the far side, those in
-  // `PromotionReward.addExcludedOption` and `PromotionQualifier.addExcludedOption`, so an unsaved
-  // row takes a different append path in three separate places.
+  // `unsavedvalue=""` is what makes that empty string load-bearing.
   it('reports true for the empty key and false for a populated one', () => {
     expect(anOption({ optionID: '' }).isNew()).toBe(true);
     expect(anOption({ optionID: 'opt-9' }).isNew()).toBe(false);
@@ -401,14 +279,8 @@ describe('isNew() keys on the empty optionID, which unsavedvalue="" makes load-b
 });
 
 describe('the audit timestamps are Date | undefined and never an epoch stand-in', () => {
-  // CFML parity [model/entity/Option.cfc:L76-L79]: the four audit properties, each
-  // `hb_populateEnabled="false"`, two `ormtype="timestamp"` and two many-to-one Account
-  // associations reduced to opaque `createdByAccountID` / `modifiedByAccountID` keys because
-  // `model/entity/Account.cfc` is out of scope.
-  //
-  // AN ABSENT TIMESTAMP IS `undefined`, NEVER `new Date(0)`: the epoch is a real instant that
-  // compares, formats and sorts like data, so substituting it would turn "never modified" into
-  // "modified before everything else".
+  // An absent timestamp is `undefined`, never `new Date(0)`: the epoch is a real instant that
+  // compares, formats and sorts like data.
   it('hands back the exact instant it was hydrated with, unrounded and unshifted', () => {
     const created = new Date('2019-02-28T23:59:59.999Z');
     const subject = anOption({ createdDateTime: created });
@@ -441,25 +313,11 @@ describe('the audit timestamps are Date | undefined and never an epoch stand-in'
 
 describe('sortOrder retains sortContext="optionGroup" and is legitimately absent', () => {
   // CFML parity [model/entity/Option.cfc:L56]: sortOrder carries sortContext="optionGroup" -
-  // ordering is scoped per option group, not globally. Unlike OptionGroup.cfc:L58 it is NOT
-  // required="true" and has no default, so undefined is a legitimate value. The full declaration,
-  // verified verbatim:
-  //
-  //   property name="sortOrder" ormtype="integer" sortContext="optionGroup";
-  //
-  // WHAT THE SCOPING MEANS: two options in DIFFERENT groups may legitimately hold the same
-  // `sortOrder`, so comparing across groups is meaningless. The legacy framework used the attribute
-  // to decide which sibling set to renumber on reorder; that renumbering is a
-  // repository-and-service concern here, so the attribute has no runtime representation - but the
-  // constraint it declares on how the value may be READ is real. [model/entity/OptionGroup.cfc:L70]
-  // is the consumer, declaring `options` with `orderby="sortOrder"`; that ordering belongs to
-  // `optionGroup.test.ts`.
+  // ordering is scoped per option group, not globally. Unlike OptionGroup.cfc:L58 it is not
+  // required="true" and has no default, so undefined is a legitimate value.
   //
   // LEGACY-NOTE [model/dao/SkuDAO.cfc:L192-L197]: the missing `required` has a consequence
-  // invisible from the entity alone. `getSortedProductSkusID` orders by a SUM over
-  // `SwOption.sortOrder`, so a NULL here makes the whole SUM for the affected SKU NULL and REORDERS
-  // the result rather than merely omitting a term. Recorded, not "fixed" by asserting the column is
-  // always present - resolving an absent value is the hydrating repository's decision.
+  // invisible from the entity alone.
   it('is undefined on an option hydrated without the column', () => {
     expect(anOption({}).getSortOrder()).toBeUndefined();
   });
@@ -494,21 +352,8 @@ describe('sortOrder retains sortContext="optionGroup" and is legitimately absent
 });
 
 describe('ENTITY_CODE_PATTERN is the optionCode format constraint', () => {
-  // CFML parity [model/validation/Option.json:L3], verified verbatim:
-  //
-  //   "optionCode": [{"contexts":"save","required":true,"unique":true,
-  //                   "regex":"^[a-zA-Z0-9-_.|:~^]+$"}]
-  //
-  // ONE DECLARATION SITE, THREE CONSUMERS. The identical regex appears in exactly three in-scope
-  // schemas - `optionCode` [model/validation/Option.json:L3], `optionGroupCode`
-  // [model/validation/OptionGroup.json:L4] and `productCode` [model/validation/Product.json:L10] -
-  // byte-identical in all three. It is declared ONCE, in `src/domain/entities/optionGroup.ts`, and
-  // IMPORTED here, never routed through a barrel, this port having none.
-  //
-  // The subject module deliberately does NOT import it either: an entity enforces no validation, so
-  // the import would bind no emitted reference and `noUnusedLocals` would fail the build. ONLY THE
-  // FORMAT HALF OF THE RULE LIVES IN THE CONSTANT - `required` belongs to the ported zod schema at
-  // the SERVICE tier and `unique` needs the database.
+  // The subject module deliberately does not import it either: an entity enforces no validation,
+  // so the import would bind no emitted reference and `noUnusedLocals` would fail the build.
   it('is exactly the schema regex, source and flags alike', () => {
     expect(ENTITY_CODE_PATTERN.source).toBe('^[a-zA-Z0-9-_.|:~^]+$');
     expect(ENTITY_CODE_PATTERN.flags).toBe('');
@@ -526,8 +371,7 @@ describe('ENTITY_CODE_PATTERN is the optionCode format constraint', () => {
 
   it('accepts the alphanumerics and the seven permitted punctuation characters', () => {
     // Reading the character class precisely: after `0-9` the `-` is a LITERAL hyphen and not the
-    // start of a range, and `.`, `|`, `^` and `~` are literal inside a class, so the permitted set
-    // is the ASCII alphanumerics plus `- _ . | : ~ ^`.
+    // start of a range, and `.`, `|`, `^` and `~` are literal inside a class.
     for (const accepted of [
       'small',
       'SMALL',
@@ -582,18 +426,9 @@ describe('ENTITY_CODE_PATTERN is the optionCode format constraint', () => {
 });
 
 describe('the save-context requirements are representable, and the delete gate reads `skus`', () => {
-  // CFML parity [model/validation/Option.json]: the complete file verified verbatim, FOUR
-  // properties and no more:
-  //
-  //   "optionCode":  [{"contexts":"save","required":true,"unique":true,"regex":<shared>}]
-  //   "optionName":  [{"contexts":"save","required":true}]
-  //   "optionGroup": [{"contexts":"save","required":true}]
-  //   "skus":        [{"contexts":"delete","maxCollection":0}]
-  //
   // Every rule is enforced OUTSIDE this class: `required` and the format constraint by the ported
   // zod schema at the service tier, `unique` by the repository because uniqueness needs the
-  // database, and the delete gate likewise at the service tier. This entity hosts no `isDeletable`
-  // member.
+  // database.
   it('represents each of the three save-context properties as present', () => {
     const subject = anOption({
       optionCode: 'small',
@@ -628,23 +463,10 @@ describe('the save-context requirements are representable, and the delete gate r
 });
 
 describe('setOptionGroup assigns the near side and appends to the far side', () => {
-  // CFML parity [model/entity/Option.cfc:L92-L97], verified verbatim:
-  //
-  //   public void function setOptionGroup(required any optionGroup) {
-  //       variables.optionGroup = arguments.optionGroup;                        // L93
-  //       if(isNew() or !arguments.optionGroup.hasOption( this )) {             // L94
-  //           arrayAppend(arguments.optionGroup.getOptions(), this);            // L95
-  //       }
-  //   }
-  //
-  // HEADER CORRECTION 3: the far-side `arrayAppend` symmetry and the guard were called NOT
-  // reproduced, and BOTH ARE - the assignment at L93 and the guarded push at L94-L95 are present in
-  // the shipped module.
+  // The far-side `arrayAppend` symmetry and its guard are both reproduced.
   //
   // The near side is the only MUTABLE field on this entity; every other field is `readonly`,
-  // required because L93 assigns it and L106 clears it. It is also the load-bearing far side of
-  // [model/entity/OptionGroup.cfc:L92], whose `addOption` only delegates here, so the two entities
-  // form one loop.
+  // required because L93 assigns it and L106 clears it.
   it('assigns the near side and appends this option to the group collection', () => {
     const group = aGroup({ options: [] });
     const subject = anOption({ optionID: 'opt-1' });
@@ -668,8 +490,8 @@ describe('setOptionGroup assigns the near side and appends to the far side', () 
   });
 
   it('declines to append a SAVED option twice, because the L94 guard sees it already there', () => {
-    // For a saved row the guard is effective: `isNew()` is false, so `!optionGroup.hasOption(this)`
-    // decides, and `hasOption` compares on `optionID`.
+    // For a saved row the guard is effective: `isNew()` is false, so
+    // `!optionGroup.hasOption(this)` decides, and `hasOption` compares on `optionID`.
     const group = aGroup({ options: [] });
     const subject = anOption({ optionID: 'opt-1' });
 
@@ -694,16 +516,11 @@ describe('setOptionGroup assigns the near side and appends to the far side', () 
     expect(group.getOptions()[0]).toBe(alreadyHeld);
   });
 
-  // LEGACY-NOTE [model/entity/Option.cfc:L94]: the guard is
+  // LEGACY-NOTE [model/entity/Option.cfc:L94]: the guard is.
   //
-  //   isNew() or !arguments.optionGroup.hasOption( this )
-  //
-  // It is a LEGACY-NOTE and not a LEGACY-DEFECT because it is not a member of the
-  // register's thirty numbered entries, and because the source's reasoning is visible: an unsaved
-  // row has the empty key, so a key-based containment test cannot distinguish two
-  // distinct new rows and would wrongly suppress the second append. The source chose
-  // duplication over omission. The consequence is nonetheless real and is pinned so an
-  // "improvement" here fails loudly.
+  // It is a LEGACY-NOTE and not a LEGACY-DEFECT because it is not a member of the register's
+  // thirty numbered entries, and because the source's reasoning is visible: an unsaved row has the
+  // empty key.
   it('appends an UNSAVED option twice, because isNew() short-circuits the guard', () => {
     const group = aGroup({ options: [] });
     const subject = anOption({ optionID: '' });
@@ -718,11 +535,8 @@ describe('setOptionGroup assigns the near side and appends to the far side', () 
   });
 
   it('reassigns the near side when moved to another group, without unlinking the first', () => {
-    // LEGACY-NOTE [model/entity/Option.cfc:L92-L97]: `setOptionGroup` NEVER removes the option from
-    // a previously-assigned group - there is no such statement in the source, so reassignment
-    // leaves the option in BOTH collections while its own field names only the new one.
-    // `removeOptionGroup` [L98-L107] is the only member that unlinks, and a caller that wants a
-    // move must call it first. Reproduced as written.
+    // LEGACY-NOTE [model/entity/Option.cfc:L92-L97]: `setOptionGroup` never removes the option
+    // from a previously-assigned group - there is no such statement in the source.
     const first = aGroup({ optionGroupID: 'og-first', options: [] });
     const second = aGroup({ optionGroupID: 'og-second', options: [] });
     const subject = anOption({ optionID: 'opt-1' });
@@ -737,26 +551,11 @@ describe('setOptionGroup assigns the near side and appends to the far side', () 
 });
 
 describe('removeOptionGroup defaults its argument, and clears the near side UNCONDITIONALLY', () => {
-  // CFML parity [model/entity/Option.cfc:L98-L107], verified verbatim:
-  //
-  //   public void function removeOptionGroup(any optionGroup) {
-  //       if(!structKeyExists(arguments, "optionGroup")) {                      // L99
-  //           arguments.optionGroup = variables.optionGroup;                    // L100
-  //       }
-  //       var index = arrayFind(arguments.optionGroup.getOptions(), this);      // L102
-  //       if(index > 0) {                                                       // L103
-  //           arrayDeleteAt(arguments.optionGroup.getOptions(), index);         // L104
-  //       }
-  //       structDelete(variables, "optionGroup");                              // L106
-  //   }
-  //
-  // The parameter is `any optionGroup` and NOT `required`, which is what makes the L99-L101
+  // The parameter is `any optionGroup` and not `required`, which is what makes the L99-L101
   // defaulting reachable at all.
   //
   // JUDGMENT CALL on the index translation. CFML's `arrayFind` returns 0 when absent, so the L103
-  // test `index > 0` is the correct absent-test THERE. TypeScript's `findIndex` returns -1, so that
-  // same test would skip a legitimate element at index 0. The shipped module uses `index !== -1`,
-  // and the case below removes the FIRST element so a regression fails.
+  // test `index > 0` is the correct absent-test there.
   it('removes an explicitly-named group and clears the near side', () => {
     const group = aGroup({ options: [] });
     const subject = anOption({ optionID: 'opt-1' });
@@ -770,7 +569,7 @@ describe('removeOptionGroup defaults its argument, and clears the near side UNCO
 
   it('falls back to the currently-assigned group when called with no argument', () => {
     // The L99-L101 branch, reproduced in the target as a `!== undefined` test on the optional
-    // parameter rather than as CFML's `structKeyExists(arguments, ...)`.
+    // parameter rather than as CFML's `structKeyExists(arguments,...)`.
     const group = aGroup({ options: [] });
     const subject = anOption({ optionID: 'opt-1' });
 
@@ -827,8 +626,8 @@ describe('removeOptionGroup defaults its argument, and clears the near side UNCO
   });
 
   it('clears the near side when the assigned group holds no options at all', () => {
-    // The same unconditional clear, reached by the other route to `index === -1`: the collection is
-    // empty, so there is nothing to splice and L106 still runs.
+    // The same unconditional clear, reached by the other route to `index === -1`: the collection
+    // is empty, so there is nothing to splice and L106 still runs.
     const group = aGroup({ options: [] });
     const subject = anOption({ optionID: 'opt-1', optionGroup: group });
 
@@ -853,7 +652,7 @@ describe('removeOptionGroup defaults its argument, and clears the near side UNCO
   it('raises when called with no argument on an option that has no group', () => {
     // LEGACY-NOTE [model/entity/Option.cfc:L99-L102]: with the argument omitted and
     // `variables.optionGroup` never set, L100 assigns null and L102 then calls `getOptions()` on
-    // that null BEFORE any index guard runs.
+    // that null before any index guard runs.
     const subject = anOption({ optionID: 'opt-1' });
 
     expect(() => {
@@ -876,30 +675,14 @@ describe('removeOptionGroup defaults its argument, and clears the near side UNCO
 });
 
 describe('the five many-to-many-inverse collections and their abbreviated link tables', () => {
-  // CFML parity [model/entity/Option.cfc:L66-L70], all five verified verbatim. The PHYSICAL
-  // LINK-TABLE NAMES ARE PRESERVED EXACTLY AS THE SOURCE ABBREVIATES THEM and are never expanded -
-  // schema continuity is binding and these are existing tables:
+  // The source abbreviates `Promotion` to `Promo`, `Qualifier` to `Qual` and `Exclusion` to
+  // `Excl`.
   //
-  //   L66 skus                         linktable="SwSkuOption"
-  //   L67 promotionRewards             linktable="SwPromoRewardOption"
-  //   L68 promotionRewardExclusions    linktable="SwPromoRewardExclOption"   type="array"
-  //   L69 promotionQualifiers          linktable="SwPromoQualOption"
-  //   L70 promotionQualifierExclusions linktable="SwPromoQualExclOption"     type="array"
+  // For both `promotionRewards` `AND` `promotionQualifiers` - hence four promotion collections
+  // where its siblings have one or two.
   //
-  // The source abbreviates `Promotion` to `Promo`, `Qualifier` to `Qual` and `Exclusion` to `Excl`.
-  // THE ABBREVIATION IS THE CONTRACT: the long forms are identifiers that do not exist in the
-  // schema, so they are never written here.
-  //
-  // `Option` IS THE ONLY ENTITY IN THIS SLICE CARRYING BOTH THE INCLUSION AND THE EXCLUSION SIDE
-  // FOR BOTH `promotionRewards` AND `promotionQualifiers` - hence FOUR promotion collections where
-  // its siblings have one or two, and hence the one entity that could host this pair of defects at
-  // all: an inverted `remove*` needs an exclusion collection to invert into.
-  //
-  // A SOURCE INCONSISTENCY, ANNOTATED AND DELIBERATELY NOT NORMALISED: only L68 and L70 declare
-  // `type="array"`, though all five are `many-to-many` with `inverse="true"` and all five
-  // materialize as arrays. The attribute is a CFML hint for the ORM-generated accessor and changes
-  // nothing observable. Being `inverse="true"`, the OWNING side is the other entity in every case
-  // and every helper here is a PURE FAR-SIDE DELEGATION. THESE FIVE ARE EXHAUSTIVE.
+  // A source inconsistency, annotated and deliberately not normalised: only L68 and L70 declare
+  // `type="array"`.
   it('exposes all five collection accessors', () => {
     const subject = anOption({});
 
@@ -911,7 +694,7 @@ describe('the five many-to-many-inverse collections and their abbreviated link t
   });
 
   it('materializes every collection as empty when the repository fetched none', () => {
-    // AN EMPTY RESULT IS A FETCH-SHAPE STATEMENT, NOT A DOMAIN CLAIM.
+    // An empty result is a fetch-shape statement, not a domain claim.
     const subject = anOption({});
 
     expect(subject.getSkus()).toHaveLength(0);
@@ -991,17 +774,9 @@ describe('the five many-to-many-inverse collections and their abbreviated link t
   });
 
   it('falls back to object identity when the FAR SIDE is unsaved and has no primary key', () => {
-    // CFML parity [model/entity/Option.cfc:L66-L70]: a key-only probe cannot work on an UNSAVED far
-    // side, because `unsavedvalue=""` means every unsaved reward and every unsaved qualifier
-    // carries the SAME empty primary key - so comparing keys would report any unsaved instance as a
-    // member of any collection holding any other. The legacy sidesteps this the same way,
-    // short-circuiting before it probes:
-    //
-    //   if(isNew() or !arguments.option.hasX(this))
-    //
-    // The shipped predicates mirror that from the near side, switching to reference comparison
-    // exactly when the candidate key is empty. THE PRIMARY-KEY RULE STILL HOLDS EVERYWHERE ELSE IN
-    // THIS SUITE, and this is the mechanism behind the asymmetry recorded in the H21 suite.
+    // CFML parity [model/entity/Option.cfc:L66-L70]: a key-only probe cannot work on an UNSAVED
+    // far side, because `unsavedvalue=""` means every unsaved reward and every unsaved qualifier
+    // carries the same empty primary key.
     const heldReward: PromotionReward = new PromotionReward({ promotionRewardID: '' });
     const heldExcludedReward: PromotionReward = new PromotionReward({ promotionRewardID: '' });
     const heldQualifier: PromotionQualifier = new PromotionQualifier({
@@ -1022,7 +797,7 @@ describe('the five many-to-many-inverse collections and their abbreviated link t
     expect(heldReward.isNew()).toBe(true);
     expect(heldQualifier.isNew()).toBe(true);
 
-    // The SAME instance is located.
+    // The same instance is located.
     expect(subject.hasPromotionReward(heldReward)).toBe(true);
     expect(subject.hasPromotionRewardExclusion(heldExcludedReward)).toBe(true);
     expect(subject.hasPromotionQualifier(heldQualifier)).toBe(true);
@@ -1041,25 +816,6 @@ describe('the five many-to-many-inverse collections and their abbreviated link t
   });
 
   it('declares addSku and removeSku, whose ROUND TRIP is asserted in the block below', () => {
-    // CFML parity [model/entity/Option.cfc:L110-L115], verified verbatim:
-    //
-    //   public void function addSku(required any sku)    { arguments.sku.addOption( this ); }
-    //   public void function removeSku(required any sku) { arguments.sku.removeOption( this ); }
-    //
-    // Both are pure far-side delegations across `SwSkuOption` [L66], and the far side is the OWNING
-    // side: `Sku` declares the `options` many-to-many with `singularname="option"`
-    // [model/entity/Sku.cfc:L76] and hand-writes neither accessor.
-    //
-    // ★★★ THIS CASE USED TO BE THE ONLY COVERAGE, AND ITS STATED REASON WAS WRONG TWICE OVER. It read:
-    // "THE BEHAVIOURAL ASSERTION IS DELIBERATELY NOT MADE HERE ... `src/domain/entities/sku.ts` is
-    // outside this suite's permitted surface ... `sku.test.ts` owns the delegation."
-    //
-    // A code review measured both halves as false. There is no permitted surface: `eslint.config.mjs`
-    // restricts imports for `src/domain/**` only and says nothing about `tests/**`, and this suite
-    // already imports three sibling entity classes. And `sku.test.ts` does NOT own the delegation - it
-    // calls `Sku.addOption` and `Sku.removeOption` directly, which is the far side, so nothing anywhere
-    // called `Option.addSku`. An inverted pair, or a delegation that pushed onto a local array instead
-    // of reaching the owning side, would have passed. `makeSkuFixture` builds the real far side.
     const subject = anOption({});
 
     expect(typeof subject.addSku).toBe('function');
@@ -1078,11 +834,6 @@ describe('the five many-to-many-inverse collections and their abbreviated link t
 });
 
 describe('addSku and removeSku, as round trips through the OWNING side', () => {
-  /**
-   * A group is required, not optional: `getOptionsByOptionGroupIDStruct` reaches
-   * `Sku.requireOptionGroup(option, 'L516')`, so an option with no group cannot be keyed - and it is
-   * that struct which proves the delegation went through `Sku.addOption` rather than past it.
-   */
   const anOptionInAGroup = (optionID: string, optionGroupID = 'og-1'): Option =>
     anOption({
       optionID,
@@ -1098,7 +849,8 @@ describe('addSku and removeSku, as round trips through the OWNING side', () => {
 
     option.addSku(sku);
 
-    // The owning side holds the array [model/entity/Sku.cfc:L76], so this is where the link appears.
+    // The owning side holds the array [model/entity/Sku.cfc:L76], so this is where the link
+    // appears.
     expect(sku.getOptions()).toEqual([option]);
     expect(sku.hasOption(option)).toBe(true);
 
@@ -1109,10 +861,9 @@ describe('addSku and removeSku, as round trips through the OWNING side', () => {
   });
 
   it('★★ and it goes THROUGH Sku.addOption, so the option memos are invalidated with it', () => {
-    // The property that separates a real delegation from an array push: `Sku.addOption` invalidates
-    // the four option-derived memos, so a struct read BEFORE the link and one AFTER it must differ.
-    // A delegation that mutated the array directly would leave the first read cached and the option
-    // invisible to every accessor that reads through it.
+    // The property that separates a real delegation from an array push: `Sku.addOption`
+    // invalidates the four option-derived memos, so a struct read before the link and one after it
+    // must differ.
     const sku = makeSkuFixture({ skuID: 'sku-1', options: [] });
     const option = anOptionInAGroup('option-1', 'og-size');
 
@@ -1134,8 +885,8 @@ describe('addSku and removeSku, as round trips through the OWNING side', () => {
     option.addSku(sku);
     option.addSku(sku);
 
-    // `if(isNew() or !hasOption(option))` on the far side, so a saved SKU cannot acquire a duplicate
-    // `SwSkuOption` row through this path.
+    // `if(isNew() or !hasOption(option))` on the far side, so a saved SKU cannot acquire a
+    // duplicate `SwSkuOption` row through this path.
     expect(sku.getOptions()).toHaveLength(1);
   });
 
@@ -1163,25 +914,6 @@ describe('addSku and removeSku, as round trips through the OWNING side', () => {
 });
 
 describe('the INCLUSION-side helpers delegate correctly - the control cases', () => {
-  // CFML parity [model/entity/Option.cfc:L118-L123] and [L134-L139], verified verbatim:
-  //
-  //   public void function addPromotionReward(required any promotionReward) {
-  //       arguments.promotionReward.addOption( this );                          // L119
-  //   }
-  //   public void function removePromotionReward(required any promotionReward) {
-  //       arguments.promotionReward.removeOption( this );                       // L122
-  //   }
-  //   public void function addPromotionQualifier(required any promotionQualifier) {
-  //       arguments.promotionQualifier.addOption( this );                       // L135
-  //   }
-  //   public void function removePromotionQualifier(required any promotionQualifier) {
-  //       arguments.promotionQualifier.removeOption( this );                    // L138
-  //   }
-  //
-  // THESE FOUR ARE THE CONTROL CASES: each `add*` delegates to the far side's `addOption` and each
-  // `remove*` to its `removeOption`, the pattern as intended. Asserting them proves the two
-  // exclusion helpers in the next block are DEFECTS rather than a house style. INVERSION
-  // CROSS-CHECK VERDICT for this block: CLEAN, all four.
   it('addPromotionReward links both sides through the far-side addOption', () => {
     const subject = anOption({ optionID: 'opt-1' });
     const reward = aReward('pr-1');
@@ -1259,35 +991,13 @@ describe('the INCLUSION-side helpers delegate correctly - the control cases', ()
 });
 
 describe('H21 - the two EXCLUSION `remove*` helpers ADD, so an exclusion cannot be withdrawn', () => {
-  // --- the two preserved defects this file owns -----------------------------------
   // Both verified verbatim in the source, both observable through the public contract, and both
   // reproduced rather than repaired.
   //
-  //   // L129-L131 - L130 should be removeExcludedOption
-  //   public void function removePromotionRewardExclusion(required any promotionReward) {
-  //       arguments.promotionReward.addExcludedOption( this );          // L130
-  //   }
-  //   // L145-L147 - L146 should be removeExcludedOption
-  //   public void function removePromotionQualifierExclusion(required any promotionQualifier) {
-  //       arguments.promotionQualifier.addExcludedOption( this );       // L146
-  //   }
-  //
-  // Their own `add*` partners at [L126-L128] and [L142-L144] call the SAME far-side method: the
-  // `add` and the `remove` of each pair are byte-identical in body and opposite in name.
-  //
-  // WHY THIS IS AN INVERSION AND NOT MERELY A DOUBLE APPEND. A duplicate entry is only the
-  // SECONDARY symptom, and only for an unsaved row - the far-side guard suppresses it for a saved
-  // one. The PRIMARY fault is DIRECTION: asking to remove an exclusion adds one, so the assertions
-  // below pin PRESENCE AFTER REMOVE and pin the duplicate separately.
-  //
-  // CONSEQUENCE: once an option is excluded from a reward or qualifier THIS API CAN NEVER WITHDRAW
-  // THE EXCLUSION, and calling `remove*` on a pair that was never linked CREATES one - so the
-  // promotion applies to fewer items than an operator intends. Repairing it changes which order
-  // items receive a discount, and is a product decision.
-  // --------------------------------------------------------------------------------
+  // Why this is an inversion and not merely a double append.
 
   it('addPromotionRewardExclusion excludes the option on both sides, as intended', () => {
-    // CFML parity [model/entity/Option.cfc:L126-L128]: the `add` side is CORRECT.
+    // CFML parity [model/entity/Option.cfc:L126-L128]: the `add` side is correct.
     const subject = anOption({ optionID: 'opt-1' });
     const reward = aReward('pr-1');
 
@@ -1301,7 +1011,6 @@ describe('H21 - the two EXCLUSION `remove*` helpers ADD, so an exclusion cannot 
 
   // LEGACY-DEFECT [model/entity/Option.cfc:L129-L131]: removePromotionRewardExclusion calls
   // addExcludedOption at L130 instead of removeExcludedOption, so a "remove" ADDS.
-  //
   // Preserved deliberately; do not fix without a product decision.
   it('removePromotionRewardExclusion leaves the exclusion PRESENT - it never withdraws it', () => {
     const subject = anOption({ optionID: 'opt-1' });
@@ -1319,11 +1028,10 @@ describe('H21 - the two EXCLUSION `remove*` helpers ADD, so an exclusion cannot 
 
   // LEGACY-DEFECT [model/entity/Option.cfc:L129-L131]: the same inversion, asserted from the other
   // direction.
-  //
   // Preserved deliberately; do not fix without a product decision.
   it('removePromotionRewardExclusion CREATES an exclusion that did not exist', () => {
     // The sharpest reading of the defect: no `add` first. A single `remove*` call on an unlinked
-    // pair establishes the exclusion, because the body IS the add.
+    // pair establishes the exclusion, because the body is the add.
     const subject = anOption({ optionID: 'opt-1' });
     const reward = aReward('pr-1');
 
@@ -1352,14 +1060,10 @@ describe('H21 - the two EXCLUSION `remove*` helpers ADD, so an exclusion cannot 
 
   // LEGACY-NOTE [model/entity/Option.cfc:L130] with [model/entity/PromotionReward.cfc:L318-L325]:
   // the SECONDARY symptom, and the one the upstream "double-append" framing was reaching for. The
-  // far-side guard is
+  // far-side guard is.
   //
-  //   option.isNew() or !this.hasExcludedOption(option)
-  //
-  // and `or` short-circuits, so for an UNSAVED option the containment test never runs and the
-  // inverted `remove` appends a second copy. The duplication is ASYMMETRIC: the near side is
-  // guarded by `this.isNew()` disjoined with the reciprocal probe, and the reward IS saved, so that
-  // half is suppressed.
+  // And `or` short-circuits, so for an UNSAVED option the containment test never runs and the
+  // inverted `remove` appends a second copy.
   it('appends a DUPLICATE exclusion for an unsaved option, asymmetrically', () => {
     const subject = anOption({ optionID: '' });
     const reward = aReward('pr-1');
@@ -1388,7 +1092,7 @@ describe('H21 - the two EXCLUSION `remove*` helpers ADD, so an exclusion cannot 
   });
 
   it('addPromotionQualifierExclusion excludes the option on both sides, as intended', () => {
-    // CFML parity [model/entity/Option.cfc:L142-L144]: the `add` side is CORRECT here too.
+    // CFML parity [model/entity/Option.cfc:L142-L144]: the `add` side is correct here too.
     const subject = anOption({ optionID: 'opt-1' });
     const qualifier = aQualifier('pq-1');
 
@@ -1402,7 +1106,6 @@ describe('H21 - the two EXCLUSION `remove*` helpers ADD, so an exclusion cannot 
 
   // LEGACY-DEFECT [model/entity/Option.cfc:L145-L147]: removePromotionQualifierExclusion calls
   // addExcludedOption at L146 instead of removeExcludedOption, so a "remove" ADDS.
-  //
   // Preserved deliberately; do not fix without a product decision.
   it('removePromotionQualifierExclusion leaves the exclusion PRESENT - it never withdraws it', () => {
     const subject = anOption({ optionID: 'opt-1' });
@@ -1419,7 +1122,6 @@ describe('H21 - the two EXCLUSION `remove*` helpers ADD, so an exclusion cannot 
 
   // LEGACY-DEFECT [model/entity/Option.cfc:L145-L147]: the same inversion, asserted from the other
   // direction.
-  //
   // Preserved deliberately; do not fix without a product decision.
   it('removePromotionQualifierExclusion CREATES an exclusion that did not exist', () => {
     const subject = anOption({ optionID: 'opt-1' });
@@ -1480,8 +1182,8 @@ describe('H21 - the two EXCLUSION `remove*` helpers ADD, so an exclusion cannot 
 
   it('confines both inversions to the EXCLUSION side, leaving the include side clean', () => {
     // The defects do not bleed across the link tables: `SwPromoRewardExclOption` and
-    // `SwPromoQualExclOption` gain the row, while `SwPromoRewardOption` and `SwPromoQualOption` are
-    // untouched.
+    // `SwPromoQualExclOption` gain the row, while `SwPromoRewardOption` and `SwPromoQualOption`
+    // are untouched.
     const subject = anOption({ optionID: 'opt-1' });
     const reward = aReward('pr-1');
     const qualifier = aQualifier('pq-1');
@@ -1511,27 +1213,11 @@ describe('H21 - the two EXCLUSION `remove*` helpers ADD, so an exclusion cannot 
 });
 
 describe('the images association is materialized through a narrow structural projection', () => {
-  // CFML parity [model/entity/Option.cfc:L63], verified verbatim:
-  //
-  //   property name="images" singularname="image" cfc="Image" type="array"
-  //   fieldtype="one-to-many" fkcolumn="optionID" cascade="all-delete-orphan"
-  //   inverse="true";
-  //
-  // HEADER CORRECTION 2: `images` was called DROPPED and IT IS MATERIALIZED, verified first-hand in
-  // `src/domain/entities/option.ts`, behind a NARROW STRUCTURAL PROJECTION.
-  //
-  // `fkcolumn="optionID"` is why: the join key sits on the far `SwImage` row and points HERE, so
-  // those rows are this option's own data even though `model/entity/Image.cfc` is out of scope.
-  // Contrast `defaultImage` [L60], whose payload is a scalar FK on THIS row and survives as nothing
-  // more than an opaque id.
+  // `images` is materialized in `src/domain/entities/option.ts`, behind a narrow structural
+  // projection.
   //
   // The projection names exactly three accessors - the join key, the stored filename and the
-  // per-row directory column - because that is the reachable set. It is NOT an `imageStore` port
-  // double: that port is a stub for out-of-scope branches only.
-  //
-  // WHERE THE `cascade="all-delete-orphan"` OBLIGATION WENT: to the MySQL repository. Deleting an
-  // Option must still delete its `SwImage` rows, and with no ORM to honour the mapping that duty
-  // belongs at the boundary issuing DELETE.
+  // per-row directory column - because that is the reachable set.
   it('materializes as empty when the repository fetched no image rows', () => {
     expect(anOption({}).getImages()).toHaveLength(0);
   });
@@ -1560,8 +1246,9 @@ describe('the images association is materialized through a narrow structural pro
   });
 
   it('publishes no add/remove pair for images, because the source declares none', () => {
-    // [L63] is `inverse="true"`, so the OWNING side is the many-to-one on `model/entity/Image.cfc`,
-    // and `model/entity/Option.cfc` hand-writes no `addImage`/`removeImage`.
+    // [model/entity/Option.cfc:L63] is `inverse="true"`, so the OWNING side is the many-to-one on
+    // `model/entity/Image.cfc`, and `model/entity/Option.cfc` hand-writes no
+    // `addImage`/`removeImage`.
     expect(prototypeMembers()).not.toContain('addImage');
     expect(prototypeMembers()).not.toContain('removeImage');
     expect(prototypeMembers()).not.toContain('setImages');
@@ -1569,23 +1256,9 @@ describe('the images association is materialized through a narrow structural pro
 });
 
 describe('getImageDirectory concatenates one segment onto a base resolved elsewhere', () => {
-  // CFML parity [model/entity/Option.cfc:L81-L83], verified verbatim:
-  //
-  //   public string function getImageDirectory() {
-  //       return getURLFromPath(setting('globalAssetsImageFolderPath')) & <segment>;
-  //   }
-  //
-  // where `<segment>` stands for the single entity-name segment the source concatenates between
-  // separators. It is held here as OPTION_IMAGE_SUBDIRECTORY and composed at the assertion, so no
-  // asset-path literal is written anywhere.
-  //
-  // HEADER CORRECTION 1: this member was called OMITTED and IT EXISTS. `getURLFromPath` is a
-  // framework helper and `setting('globalAssetsImageFolderPath')` is outside the four in-scope
-  // settings keys - `skuCurrency`, `skuEligibleCurrencies`, `globalURLKeyProduct` and
-  // `globalURLKeyProductType` [model/service/SettingService.cfc:L221, L222, L178, L179] - so this
-  // entity may not RESOLVE the base, and both INPUTS are resolved at the repository boundary. That
-  // says nothing about whether it may CONCATENATE onto a base resolved elsewhere; dropping a public
-  // method because two of its inputs moved outward would invert the anti-corruption boundary.
+  // Where `<segment>` stands for the single entity-name segment the source concatenates between
+  // separators.
+
   it('appends its one segment to the resolved base', () => {
     const subject = anOption({ assetsImageBaseUrl: RESOLVED_ASSETS_IMAGE_BASE });
 
@@ -1606,13 +1279,7 @@ describe('getImageDirectory concatenates one segment onto a base resolved elsewh
   });
 
   it('raises when the base was never materialized, rather than inventing a path', () => {
-    // The second of the two members on this entity that can throw. The declared return type is
-    // `string` and interface parity forbids widening it, so a default would not be a detectable
-    // marker but a WELL-FORMED WRONG PATH - and the legacy consumers perform file existence checks,
-    // deletes and moves against this value [admin/controllers/main.cfc:L118-L131], so handing a
-    // wrong directory to code that deletes files is the one outcome worse than raising. This branch
-    // has NO legacy counterpart - `setting()` always resolved in CFML - so it is the port declining
-    // to answer for a state the legacy could not reach.
+    // The second of the two members on this entity that can throw.
     const subject = anOption({});
 
     expect(() => subject.getImageDirectory()).toThrow(/hydrated without an assets image base/i);
@@ -1620,8 +1287,8 @@ describe('getImageDirectory concatenates one segment onto a base resolved elsewh
 
   it('does not read the base from any setting, so an unrelated option is unaffected', () => {
     // Two options, one hydrated with a base and one without, prove the value is per-row instance
-    // state rather than ambient configuration: there is no module-level default for one row to pick
-    // up from another.
+    // state rather than ambient configuration: there is no module-level default for one row to
+    // pick up from another.
     const withBase = anOption({
       optionID: 'opt-1',
       assetsImageBaseUrl: RESOLVED_ASSETS_IMAGE_BASE,
@@ -1636,16 +1303,10 @@ describe('getImageDirectory concatenates one segment onto a base resolved elsewh
 });
 
 describe('the deliberate absences, each verified rather than assumed', () => {
-  // --- no ORM event hook and no overridden method -----------------------------------
-  // [model/entity/Option.cfc:L151]/[L153] `Overridden Methods` and [L155]/[L157] `ORM Event Hooks`
-  // are BOTH present-but-EMPTY banner pairs, as is [L85]/[L87] `Non-Persistent Property Methods`.
-  // Only the `Bidirectional Helper Methods` pair at [L89]/[L149] contains anything, and the banners
-  // are preserved as source warts.
-  //
-  // The consequences are assertable: no `preInsert`/`preUpdate` maintenance for a repository to
-  // invoke on save, unlike `PriceGroup` with its materialized path; and no non-persistent property
-  // method, so none of the memoized-accessor defects afflicting `Sku` and `Product`.
-  // ---------------------------------------------------------------------------------
+  // [model/entity/Option.cfc:L151]/[model/entity/Option.cfc:L153] `Overridden Methods` and
+  // [model/entity/Option.cfc:L155]/[model/entity/Option.cfc:L157] `ORM Event Hooks` are both
+  // present-but-EMPTY banner pairs, as is
+  // [model/entity/Option.cfc:L85]/[model/entity/Option.cfc:L87] `Non-Persistent Property Methods`.
   it('hosts no ORM lifecycle hook', () => {
     for (const hook of [
       'preInsert',
@@ -1675,9 +1336,6 @@ describe('the deliberate absences, each verified rather than assumed', () => {
   it('declares no getSimpleRepresentation, so the inherited base-class case is not forced', () => {
     // `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58` runs
     // `simple_representation_exists_and_is_simple` against every entity inheriting it.
-    // `model/entity/Option.cfc` declares no `getSimpleRepresentation` and no
-    // `hb_simpleRepresentationProperty`, and the framework base that would have supplied one is not
-    // ported.
     expect(prototypeMembers()).not.toContain('getSimpleRepresentation');
     expect(prototypeMembers()).not.toContain('getSimpleRepresentationPropertyName');
   });
@@ -1693,11 +1351,7 @@ describe('the deliberate absences, each verified rather than assumed', () => {
     // CFML parity [org/Hibachi/HibachiEntity.cfc:L507-L565]: `onMissingMethod` synthesised
     // `hasUniqueOrNullXXX`, `hasUniqueXXX`, `hasAnyXXX`, `getXXXAssignedIDList`, `getXXXID`,
     // `getXXXOptions`, `getXXXOptionsSmartList`, `getXXXSmartList`, `getXXXStruct` and
-    // `getXXXCount`, then THREW at L565 for anything else. The target has NO dynamic dispatch - no
-    // `Proxy`, no index signature, no string dispatch - so only CONCRETELY-CALLED members exist as
-    // explicitly-typed methods, and an unknown accessor is a COMPILE error here instead of a
-    // runtime throw there. `Option` also declares no `attributeValues` collection - only Sku,
-    // Product, ProductType and Brand do.
+    // `getXXXCount`.
     for (const synthesised of [
       'hasAnySkus',
       'hasAnyPromotionRewards',
@@ -1719,8 +1373,6 @@ describe('the deliberate absences, each verified rather than assumed', () => {
   it('injects no collaborator port, because Option has zero legacy getService() sites', () => {
     // A census of `getService(` across the eighteen in-scope entities returns 45 sites, every one
     // belonging to Sku (19), Product (18), ProductType (6), OptionGroup (1) or RoundingRule (1).
-    // `model/entity/Option.cfc` has NONE, so there is no service locator to replace and no port to
-    // inject - and no ambient scope either.
     expect(Option.length).toBe(1);
     expect(prototypeMembers()).not.toContain('getService');
     expect(prototypeMembers()).not.toContain('getHibachiScope');
@@ -1729,8 +1381,7 @@ describe('the deliberate absences, each verified rather than assumed', () => {
 
   it('hosts no image-path helper beyond the ported concatenation', () => {
     // The ported member is `getImageDirectory` and nothing else: no filename builder, no extension
-    // resolver, no URL assembler. Those belong to the out-of-scope image subsystem, reached through
-    // a stub port this suite never constructs.
+    // resolver, no URL assembler.
     expect(prototypeMembers()).not.toContain('getImageExtension');
     expect(prototypeMembers()).not.toContain('getImagePath');
     expect(prototypeMembers()).not.toContain('getResizedImagePath');
@@ -1740,11 +1391,6 @@ describe('the deliberate absences, each verified rather than assumed', () => {
 
 /**
  * The members this entity is intended to expose, in declaration order.
- *
- * Written out rather than derived, so a member disappearing from the module fails here instead of
- * quietly shrinking a derived list to match. Every name is the legacy CFML name VERBATIM in
- * camelCase - including the two inverted `remove*` names, which are NOT renamed - because interface
- * parity is the acceptance contract.
  */
 const INTENDED_PUBLIC_SURFACE = [
   'getOptionID',
@@ -1787,9 +1433,7 @@ const INTENDED_PUBLIC_SURFACE = [
 
 /**
  * The one non-public prototype member, named so the exhaustiveness check below can be an EQUALITY
- * rather than a containment. `isSameRowAs` is the private primary-key comparison that
- * `removeOptionGroup` uses, and TypeScript's `private` is a compile-time visibility rule, so the
- * method is still an own property of the prototype at runtime.
+ * rather than a containment.
  */
 const INTERNAL_PROTOTYPE_MEMBERS = ['constructor', 'isSameRowAs'] as const;
 
@@ -1814,9 +1458,6 @@ describe('the published surface is exactly the ported CFML surface', () => {
   });
 
   it('carries the legacy names verbatim, including the two that promise a removal', () => {
-    // The inverted members keep their misleading legacy names. Renaming either would break
-    // interface parity and hide the defect from a reviewer diffing the two surfaces - the name is
-    // part of the evidence.
     expect(prototypeMembers()).toContain('removePromotionRewardExclusion');
     expect(prototypeMembers()).toContain('removePromotionQualifierExclusion');
   });

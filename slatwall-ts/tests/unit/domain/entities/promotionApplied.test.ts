@@ -1,57 +1,13 @@
-// ---------------------------------------------------------------------------
 // slatwall-ts - unit suite for `src/domain/entities/promotionApplied.ts`
 //
-// `PromotionApplied` is the `SwPromotionApplied` row, and two roles make its contract worth pinning
-// in detail.
+// `PromotionApplied` is the `SwPromotionApplied` row, and two roles make its contract worth
+// pinning in detail.
 //
-//   1. IT IS THE WRITE-SIDE OUTPUT OF THE PROMOTION ENGINE, the only row the pipeline creates, and
-//      the `discountAmount` it carries IS the discount a customer receives.
-//      `updateOrderAmountsWithPromotions` builds one at each of three application points, identical
-//      in shape [model/service/PromotionService.cfc:L400-L406, L446-L452, L529-L535].
-//   2. IT CARRIES THE ANTI-CORRUPTION BOUNDARY AT THE ENTITY LEVEL. Of four foreign keys, THREE
-//      point at the out-of-scope order aggregate - `orderItem`
-//      [model/entity/PromotionApplied.cfc:L59], `orderFulfillment` [L60], `order` [L61] - and
-//      exactly ONE, `promotion` [L58], has an in-scope far side. That ratio is why the port keeps
-//      two of eight bidirectional helpers and why the three order-side keys are opaque strings.
-//
-// --- 100% net-new coverage - never to be presented as parity ----------------
-//
-// MEASURED, not assumed: a case-insensitive search of all 32 `.cfc` files under `meta/tests/` for
-// `PromotionApplied`, `appliedType` and `appliedPromotion` returns ZERO matching files. The only
-// legacy suites extended anywhere in this port are [meta/tests/unit/entity/BrandTest.cfc] and
-// [meta/tests/unit/entity/ProductTest.cfc], neither of which mentions this entity, and
-// [meta/tests/functional/admin/entity/ProductTest.cfc] is an empty stub contributing zero coverage.
-// The four cases [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67] gave every legacy
-// suite free are NOT inherited: three rest on framework members the port does not ship, and only
-// the `isNew()` half of `defaults_are_correct` [L64-L67] survives, authored below net-new.
-//
-// --- hard boundary - the engine behaviour is not tested here ----------------
+// It is the write-side output of the promotion engine, the only row the pipeline creates, and the
+// `discountAmount` it carries is the discount a customer receives.
 //
 // Everything that DECIDES a discount lives in the service tier and is pinned there; this entity is
-// the write TARGET, and no assertion below computes a discount. Out of bounds, with the owning
-// site: the descending insert-sort and `[1]` best-discount selection
-// [model/service/PromotionService.cfc:L529-L534] including the misspelled accumulator key
-// `orderItemQulifiedDiscounts`; the two-pass reward iteration and its empty-collection guard
-// [L458-L461]; the over-use stripping loop [L468-L521]; `getDiscountAmount`'s amount-type
-// arithmetic and rounding [L987-L1018]; and the requirement that the price-group pass precede the
-// promotion pass.
-//
-// --- no defect belongs to this entity, and no divergence is spent -----------
-//
-// All eight legacy bidirectional helpers [model/entity/PromotionApplied.cfc:L79-L148] are SOUND
-// CODE: each `set*` guards on `isNew() or !arguments.x.hasAppliedPromotion( this )` before
-// appending, and each `remove*` finds by index before deleting. That is the opposite of
-// `PromotionAccount.setPromotion`, which reaches for a collection `model/entity/Promotion.cfc`
-// never declares, and of the four throwing `PromotionPeriod` helpers, so a defect marker here would
-// misclassify working code. No divergence is claimed either: the domain layer's only divergences
-// are the entity memo fixes in the `sku` and `product` suites, and this entity declares no
-// non-persistent property for a memo to live in.
-//
-// One runtime failure IS pinned below, in the `removePromotion` block: calling it with no argument
-// on a row holding no promotion throws. Faithful reproduction, not a finding - CFML defaults the
-// omitted argument from `variables.promotion` [model/entity/PromotionApplied.cfc:L86-L88] and then
-// dereferences it at L89.
-// ---------------------------------------------------------------------------
+// the write TARGET, and no assertion below computes a discount.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -62,34 +18,22 @@ import { Money } from '../../../../src/domain/valueObjects/money.js';
 import { toCurrencyCode } from '../../../../src/domain/valueObjects/currencyCode.js';
 import type { CurrencyCode } from '../../../../src/domain/valueObjects/currencyCode.js';
 
-// JUDGMENT CALL: `toCurrencyCode` is imported as a VALUE alongside the `CurrencyCode` type, because
-// `CurrencyCode` is a branded alias with no runtime existence
-// [slatwall-ts/src/domain/valueObjects/currencyCode.ts:L342] and a suite cannot build one without
-// either the module's own validating brander or a cast. A cast would assert the brand without
-// earning it, and would quietly accept a two- or four-character string - precisely the invariant
-// the `length="3"` column relies on.
+// JUDGMENT CALL: `toCurrencyCode` is imported as a value alongside the `CurrencyCode` type.
 
 /**
  * The constructor's parameter object, derived rather than restated.
  *
  * `src/domain/entities/promotionApplied.ts` declares the init shape INLINE and exports only the
- * class and the `appliedType` union, so there is no init type to import. Deriving it with
- * `ConstructorParameters` keeps this suite honest: if a column is added, removed or retyped
- * upstream, the builder below stops compiling instead of silently drifting. Restating the fourteen
- * slots by hand would have hidden exactly that.
+ * class and the `appliedType` union, so there is no init type to import.
  */
 type PromotionAppliedInit = ConstructorParameters<typeof PromotionApplied>[0];
 
 /**
  * The columns of an unsaved row, every one of the fourteen slots explicit.
  *
- * All thirteen nullable columns start `undefined`, which is the state the engine leaves them in:
- * the three construction blocks [model/service/PromotionService.cfc:L400-L406, L446-L452,
- * L529-L535] set only `appliedType`, `promotion`, one order-side foreign key and `discountAmount`.
- *
- * CFML parity [model/entity/PromotionApplied.cfc:L52]: `promotionAppliedID` starts `''` rather than
- * absent, because `unsavedvalue="" default=""` is what makes the empty string the honest answer for
- * a row that has never been saved.
+ * CFML parity [model/entity/PromotionApplied.cfc:L52]: `promotionAppliedID` starts `''` rather
+ * than absent, because `unsavedvalue="" default=""` is what makes the empty string the honest
+ * answer for a row that has never been saved.
  *
  * @returns a fresh init object for an unsaved row.
  */
@@ -115,7 +59,7 @@ function unsavedRowColumns(): PromotionAppliedInit {
 /**
  * Builds one applied-promotion row, overriding only what a test cares about.
  *
- * @param overrides - the columns this test is about; everything else stays at the unsaved default.
+ * @param overrides the columns this test is about; everything else stays at the unsaved default.
  * @returns a fresh `PromotionApplied`.
  */
 function aPromotionApplied(overrides: Partial<PromotionAppliedInit> = {}): PromotionApplied {
@@ -127,7 +71,7 @@ function aPromotionApplied(overrides: Partial<PromotionAppliedInit> = {}): Promo
  * requires; `appliedPromotions` defaults to a fresh empty array, as
  * [model/entity/Promotion.cfc:L64] declares.
  *
- * @param promotionID - the identifier to give it.
+ * @param promotionID the identifier to give it.
  * @returns a fresh `Promotion` holding no applied promotions.
  */
 function aPromotion(promotionID: string): Promotion {
@@ -136,17 +80,6 @@ function aPromotion(promotionID: string): Promotion {
 
 /**
  * The three values `SwPromotionApplied.appliedType` may hold, in the exported union's order.
- *
- * PINNED FROM BOTH SIDES, which is why three literals can be called exhaustive rather than merely
- * observed. WRITE SIDE - the engine writes three string literals and nothing else:
- * `'orderFulfillment'` [model/service/PromotionService.cfc:L402], `'order'` [L448], `'orderItem'`
- * [L531]. READ SIDE - three raw-SQL predicates in the reporting layer, an INDEPENDENT confirmation
- * of the same three: `'order'` [model/report/PromotionUsageReport.cfc:L82], `'orderItem'` [L84],
- * `'orderFulfillment'` [L86].
- *
- * Repo-wide, `appliedType` occurs in exactly five places: the property declaration
- * [model/entity/PromotionApplied.cfc:L54], the unrelated [model/entity/TaxApplied.cfc:L58], and
- * those three predicates. There is no fourth value and no sentinel.
  */
 const ENGINE_APPLIED_TYPES: readonly PromotionAppliedType[] = [
   'order',
@@ -154,20 +87,13 @@ const ENGINE_APPLIED_TYPES: readonly PromotionAppliedType[] = [
   'orderFulfillment',
 ];
 
-// SCHEMA CONTINUITY IS BINDING [model/entity/PromotionApplied.cfc:L49]: the port reads and writes
-// `SwPromotionApplied` unchanged, with no migration, no rename, no new table and no column change.
-// The name is not held in a local constant here, because a constant can only be compared with
-// itself; tests/traceability/legacyTestMap.ts block A20 holds the shipped source to the frozen
-// `table=` attribute instead.
-
 /**
  * The four `fkcolumn` values, verbatim, keyed by the property that declares each.
  *
  * CFML parity [model/entity/PromotionApplied.cfc:L60]: the fulfillment column is spelled
- * `orderfulfillmentID` with a LOWERCASE f, unlike `orderItemID` [L59] and `orderID` [L61], which
- * both capitalise consistently. Preserved verbatim as a schema contract; annotated, not normalised.
- * The accessor is `getOrderFulfillmentID`, camel-cased from the PROPERTY name `orderFulfillment`
- * [L60] rather than from the column: the two genuinely differ, and the test below pins it.
+ * `orderfulfillmentID` with a LOWERCASE f, unlike `orderItemID`
+ * [model/entity/PromotionApplied.cfc:L59] and `orderID` [model/entity/PromotionApplied.cfc:L61],
+ * which both capitalise consistently.
  */
 const LEGACY_FK_COLUMNS = {
   promotion: 'promotionID',
@@ -179,14 +105,6 @@ const LEGACY_FK_COLUMNS = {
 /**
  * Every member the port authors on the prototype, sorted - the interface-parity contract in
  * executable form.
- *
- * Nineteen names. Seventeen are legacy CFML names verbatim: the four persistent-column getters over
- * [model/entity/PromotionApplied.cfc:L52-L55], the four foreign-key accessors over [L58-L61] (three
- * reduced to opaque identifiers, one hydrated), the `promotionID` projection of [L58], the remote
- * getter [L64], the four audit accessors [L67-L70], and the two surviving bidirectional helpers
- * [L79-L84, L85-L94]. Two are the writable columns' setters, which exist because the engine calls
- * them [model/service/PromotionService.cfc:L402, L405]. The nineteenth, `isNew`, is the single
- * framework member this component genuinely calls, at [L81, L99, L117, L135].
  */
 const PORTED_PUBLIC_SURFACE: readonly string[] = [
   'getAppliedType',
@@ -213,10 +131,9 @@ const PORTED_PUBLIC_SURFACE: readonly string[] = [
 /**
  * The six bidirectional helpers the port deliberately drops.
  *
- * CFML parity [model/entity/PromotionApplied.cfc:L97-L112, L115-L130, L133-L148]: all six are sound
- * legacy code, and all six take or return an entity from the out-of-scope order aggregate -
- * `OrderItem`, `OrderFulfillment`, `Order`. Porting any one would require porting that aggregate,
- * so the three keys they maintain become opaque identifiers instead.
+ * CFML parity [model/entity/PromotionApplied.cfc:L97-L112, L115-L130, L133-L148]: all six are
+ * sound legacy code, and all six take or return an entity from the out-of-scope order aggregate -
+ * `OrderItem`, `OrderFulfillment`, `Order`.
  */
 const DROPPED_ORDER_SIDE_HELPERS: readonly string[] = [
   'setOrderItem',
@@ -229,11 +146,6 @@ const DROPPED_ORDER_SIDE_HELPERS: readonly string[] = [
 
 /**
  * Setters the port authors for no column, because nothing writes them.
- *
- * `setCurrencyCode` and `setRemoteID` are absent because a case-insensitive sweep of the whole of
- * [model/service/PromotionService.cfc] returns ZERO hits for either. The three order-side
- * identifier setters and the primary-key setter are absent because those columns are `readonly` on
- * the ported row: the repository supplies them at hydration and nothing may re-point them.
  */
 const UNAUTHORED_SETTERS: readonly string[] = [
   'setCurrencyCode',
@@ -249,10 +161,7 @@ const UNAUTHORED_SETTERS: readonly string[] = [
  * Members the legacy framework base and its dispatcher supplied, none of them ported.
  *
  * [org/Hibachi/HibachiEntity.cfc:L507-L565] is an `onMissingMethod` dispatcher matching eleven
- * method-name patterns and TERMINATING IN A THROW AT L565. The EAV fallback at [L559] is doubly
- * unreachable from this entity, because it guards on `hasProperty("attributeValues")` and
- * [model/entity/PromotionApplied.cfc:L52-L70] declares no `attributeValues` collection, so in CFML
- * an unknown `getX()` here throws directly at L565.
+ * method-name patterns and terminating in a throw at L565.
  */
 const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
   'getNewFlag',
@@ -283,17 +192,13 @@ function prototypeMembers(): string[] {
 }
 
 afterEach(() => {
-  // A2: the two far-side spies below must not outlive their test.
   vi.restoreAllMocks();
 });
 
 describe('the ported surface, and the six helpers deliberately dropped', () => {
   it('installs exactly the nineteen authored members, plus one private identity helper', () => {
     // `isSameRowAs` is `private` in TypeScript, a compile-time visibility rule and not a runtime
-    // one, so it is present on the prototype and has to be accounted for here. Listed separately
-    // rather than folded into the public surface precisely because it is not part of the
-    // interface-parity contract - it is the port's own primary-key comparison, standing in for the
-    // CFML `arrayFind` object-reference search at [model/entity/PromotionApplied.cfc:L89].
+    // one, so it is present on the prototype and has to be accounted for here.
     expect(prototypeMembers()).toEqual([...PORTED_PUBLIC_SURFACE, 'isSameRowAs'].sort());
     expect(PORTED_PUBLIC_SURFACE).toHaveLength(19);
   });
@@ -313,8 +218,8 @@ describe('the ported surface, and the six helpers deliberately dropped', () => {
   it('keeps exactly the two helpers whose far side is in scope', () => {
     const members = prototypeMembers();
 
-    // [model/entity/PromotionApplied.cfc:L58] is the one foreign key with an in-scope far side, and
-    // [model/entity/Promotion.cfc:L64] is the collection that makes the pair resolvable.
+    // [model/entity/PromotionApplied.cfc:L58] is the one foreign key with an in-scope far side,
+    // and [model/entity/Promotion.cfc:L64] is the collection that makes the pair resolvable.
     expect(members).toContain('setPromotion');
     expect(members).toContain('removePromotion');
 
@@ -335,8 +240,6 @@ describe('the ported surface, and the six helpers deliberately dropped', () => {
 
     // Removing the dispatcher is what makes this a TYPE error rather than a runtime surprise: in
     // CFML the call would reach [org/Hibachi/HibachiEntity.cfc:L565] and throw only when executed.
-    // The far side is the out-of-scope OrderItem aggregate
-    // [model/entity/PromotionApplied.cfc:L97-L102].
     // @ts-expect-error PromotionApplied authors no setOrderItem.
     const absentHelper: unknown = subject.setOrderItem;
 
@@ -369,19 +272,9 @@ describe('the ported surface, and the six helpers deliberately dropped', () => {
     }
   });
 
-  // C5 schema continuity - the physical name is `SwPromotionApplied` and the entity name
-  // `SlatwallPromotionApplied` [model/entity/PromotionApplied.cfc:L49] - is checked against the
-  // shipped source in tests/traceability/legacyTestMap.ts block A20, which derives both from the
-  // frozen `table=` / `entityname=` attributes for all 18 entities. Restating them here as a
-  // constant and asserting it back proved only that this file can hold its own literals; the
-  // `getTableName` half is already covered by the metadata case above.
-
   it('carries no hb_permission-derived member, because the component declares none', () => {
-    // CFML parity [model/entity/PromotionApplied.cfc:L49]: this component declares NO
-    // `hb_permission` attribute at all - unusual in this codebase, where
-    // [model/entity/PriceGroupRate.cfc:L49] carries the dotted
-    // `hb_permission="priceGroup.priceGroupRates"` and [model/entity/PriceGroup.cfc:L49] carries a
-    // self-reference.
+    // CFML parity [model/entity/PromotionApplied.cfc:L49]: this component declares no
+    // `hb_permission` attribute at all - unusual in this codebase.
     const members = prototypeMembers();
 
     for (const invented of ['getPermission', 'getHibachiPermission', 'checkPermission']) {
@@ -391,12 +284,10 @@ describe('the ported surface, and the six helpers deliberately dropped', () => {
 });
 
 describe('appliedType is a closed union of exactly the three values the engine writes', () => {
-  // CFML parity [model/entity/PromotionApplied.cfc:L54, model/service/PromotionService.cfc:L402,
-  // L448, L531]: the legacy column is an UNCONSTRAINED `ormtype="string"` with no
-  // `hb_formFieldType="select"` and no options method, so the vocabulary is not discoverable from
-  // the declaration. The target narrows it to a closed union over the only three values the engine
-  // writes, independently confirmed at [model/report/PromotionUsageReport.cfc:L82, L84, L86]. That
-  // is TYPE-LEVEL ONLY: no runtime check is added and any string already in the column round-trips.
+  // CFML parity
+  // [model/entity/PromotionApplied.cfc:L54, model/service/PromotionService.cfc:L402, L448, L531]:
+  // the legacy column is an UNCONSTRAINED `ormtype="string"` with no `hb_formFieldType="select"`
+  // and no options method.
 
   it('round-trips each of the three literals through the setter', () => {
     for (const appliedType of ENGINE_APPLIED_TYPES) {
@@ -448,9 +339,6 @@ describe('appliedType is a closed union of exactly the three values the engine w
     const subject = aPromotionApplied();
 
     // The union is CLOSED, so this is the one deliberately-asserted type failure in the suite.
-    // `'orderShipment'` is a plausible-looking fourth value and there is no such applied type: the
-    // engine never writes one [model/service/PromotionService.cfc:L402, L448, L531] and the
-    // reporting layer never reads one [model/report/PromotionUsageReport.cfc:L82, L84, L86].
     // @ts-expect-error 'orderShipment' is not a PromotionAppliedType: the union is closed over the only three values the engine writes.
     subject.setAppliedType('orderShipment');
 
@@ -485,7 +373,7 @@ describe('appliedType is a closed union of exactly the three values the engine w
   });
 
   it('leaves the applied type independent of which foreign key is populated', () => {
-    // A faithful absence rather than an oversight: nothing in [model/entity/PromotionApplied.cfc]
+    // A faithful absence rather than an oversight: nothing in `model/entity/PromotionApplied.cfc`
     // ties `appliedType` to the matching foreign key, and no database constraint does either.
     const subject = aPromotionApplied({ appliedType: 'order', orderItemID: 'oi-1' });
 
@@ -498,10 +386,7 @@ describe('appliedType is a closed union of exactly the three values the engine w
 describe('discountAmount is Money or undefined, and absence is never zero', () => {
   // CFML parity [model/entity/PromotionApplied.cfc:L53]: one of exactly four no-default money
   // columns in the slice, with SkuCurrency.price L53, PriceGroupRate.amount L54 and
-  // PromotionReward.amount L61 - all four re-verified against source. Contrast
-  // Sku.listPrice/price/renewalPrice L55-L57, which all declare default="0". The ORM schema encodes
-  // the asymmetry, so substituting 0 for a missing discount would silently alter money. This column
-  // also carries NO `hb_formatType` where all four siblings do, so no formatted accessor exists.
+  // PromotionReward.amount L61 - all four re-verified against source.
 
   it('reports undefined when the column was NULL', () => {
     expect(aPromotionApplied().getDiscountAmount()).toBeUndefined();
@@ -547,9 +432,7 @@ describe('discountAmount is Money or undefined, and absence is never zero', () =
 
   it('round-trips an arbitrary-precision amount unchanged', () => {
     // Seventeen significant decimal places survive intact, which they could not do through an
-    // IEEE-754 double - proof that nothing coerces the amount through a JavaScript number. This is
-    // what `precisionEvaluate` [model/service/PromotionService.cfc:L990, L995, L1001, L1007]
-    // protected in the source.
+    // IEEE-754 double - proof that nothing coerces the amount through a JavaScript number.
     const highPrecision = Money.fromDecimalString('12.34567890123456789');
     const subject = aPromotionApplied({ discountAmount: highPrecision });
 
@@ -558,7 +441,6 @@ describe('discountAmount is Money or undefined, and absence is never zero', () =
   });
 
   it('hands back the very instance it was given, computing nothing', () => {
-    // A pure carrier.
     const amount = Money.fromDecimalString('19.99');
     const subject = aPromotionApplied({ discountAmount: amount });
 
@@ -568,9 +450,8 @@ describe('discountAmount is Money or undefined, and absence is never zero', () =
 
   it('updates in place, mirroring the engine greater-discount replacement', () => {
     // CFML parity [model/service/PromotionService.cfc:L389, L435]: when a fulfillment or an order
-    // already carries an applied promotion FROM THE SAME PROMOTION and a larger discount is found,
-    // the engine does not build a second row - it calls
-    // `getAppliedPromotions()[1].setDiscountAmount(discountAmount)` on the existing one.
+    // already carries an applied promotion from the same PROMOTION and a larger discount is found,
+    // the engine does not build a second row.
     const original = Money.fromDecimalString('5.00');
     const larger = Money.fromDecimalString('7.50');
     const subject = aPromotionApplied({
@@ -587,12 +468,9 @@ describe('discountAmount is Money or undefined, and absence is never zero', () =
   });
 
   it('accepts a negative amount, because the carrier constrains no sign', () => {
-    // No negative discount is produced TODAY: the only path that would create one is the return and
-    // exchange branch [model/service/PromotionService.cfc:L542-L544], an empty block carrying the
-    // legacy `TODO [issue #1766]` and doing nothing. That TODO is carried forward as a TODO by the
-    // service tier and is NOT completed here. What this row can be asked to do is carry whatever
-    // the column holds - and `big_decimal` is signed [model/entity/PromotionApplied.cfc:L53], so a
-    // sign check would be an invention.
+    // No path in the ported engine produces a negative discount: the only one that would is the
+    // return and exchange branch [model/service/PromotionService.cfc:L542-L544], an empty block carrying
+    // the legacy `TODO [issue #1766]` and doing nothing.
     const credit = Money.fromDecimalString('-2.50');
 
     expect(aPromotionApplied({ discountAmount: credit }).getDiscountAmount()?.toFixed2()).toBe(
@@ -610,18 +488,12 @@ describe('discountAmount is Money or undefined, and absence is never zero', () =
 
 describe('currencyCode is the three-character authority, and the engine never sets it', () => {
   // CFML parity [model/entity/PromotionApplied.cfc:L55]: this is the in-scope 3-character
-  // authority, re-verified rather than repeated. [model/entity/SkuCurrency.cfc:L68] reads
-  //
-  //   property name="currencyCode" insert="false" update="false";
-  //
-  // and nothing else, so it is a read-only projection of the foreign key at [L58] carrying NO
-  // ormtype and NO length - any claim of a length constraint there is false. The only in-scope
-  // property that DECLARES a 3-character string column is this one.
+  // authority, re-verified rather than repeated. [model/entity/SkuCurrency.cfc:L68] reads.
 
   it('is undefined on a freshly-built engine row, because the engine never writes it', () => {
     // CFML parity [model/service/PromotionService.cfc:L400-L406, L446-L452, L529-L535]: all three
-    // construction blocks set exactly four things - the applied type, the promotion, one order-side
-    // foreign key and the discount amount.
+    // construction blocks set exactly four things - the applied type, the promotion, one
+    // order-side foreign key and the discount amount.
     const engineBuiltRow = aPromotionApplied({
       appliedType: 'orderItem',
       orderItemID: 'oi-1',
@@ -651,11 +523,8 @@ describe('currencyCode is the three-character authority, and the engine never se
   });
 
   it('preserves casing exactly, folding nothing', () => {
-    // [slatwall-ts/src/domain/valueObjects/currencyCode.ts:L416] validates LENGTH ONLY - no
-    // trimming, no case folding - so a lowercase column value stays lowercase all the way through.
-    // CFML would have compared it case-insensitively with `eq`; the port keeps the stored bytes
-    // intact and leaves case-insensitive comparison to the value object's own equality helper
-    // rather than silently normalising at the entity boundary.
+    // `slatwall-ts/src/domain/valueObjects/currencyCode.ts` validates LENGTH only - no trimming,
+    // no case folding - so a lowercase column value stays lowercase all the way through.
     const lowercase: CurrencyCode = toCurrencyCode('usd');
 
     expect(aPromotionApplied({ currencyCode: lowercase }).getCurrencyCode()).toBe('usd');
@@ -673,8 +542,8 @@ describe('currencyCode is the three-character authority, and the engine never se
   it('is read-only on the row: the repository supplies it and nothing re-points it', () => {
     const subject = aPromotionApplied({ currencyCode: toCurrencyCode('CAD') });
 
-    // The engine never writes the column [model/service/PromotionService.cfc:L400-L406, L446-L452,
-    // L529-L535].
+    // The engine never writes the column
+    // [model/service/PromotionService.cfc:L400-L406, L446-L452, L529-L535].
     // @ts-expect-error PromotionApplied authors no setCurrencyCode.
     const absentSetter: unknown = subject.setCurrencyCode;
 
@@ -686,9 +555,7 @@ describe('currencyCode is the three-character authority, and the engine never se
 describe('the three order-side foreign keys are opaque identifiers with getters only', () => {
   // CFML parity [model/entity/PromotionApplied.cfc:L59-L61]: `orderItem`, `orderFulfillment` and
   // `order` are `many-to-one` onto `OrderItem`, `OrderFulfillment` and `Order`, every one
-  // EXPLICITLY OUT OF SCOPE with the whole order, checkout, cart, payment, shipping and fulfillment
-  // pipeline. The port reduces all three to opaque `string | undefined` identifiers with getters
-  // only:
+  // EXPLICITLY out of SCOPE with the whole order, checkout, cart, payment.
 
   it('returns opaque strings for all three, constructing no out-of-scope entity', () => {
     const subject = aPromotionApplied({
@@ -708,7 +575,7 @@ describe('the three order-side foreign keys are opaque identifiers with getters 
   });
 
   it('returns undefined for each key the row does not carry', () => {
-    // Each engine block populates exactly ONE of the three
+    // Each engine block populates exactly one of the three
     // [model/service/PromotionService.cfc:L404, L450, L533], so two are always NULL on a
     // freshly-built row and `undefined` is the only honest answer for them.
     const itemLevel = aPromotionApplied({ appliedType: 'orderItem', orderItemID: 'oi-1' });
@@ -736,13 +603,7 @@ describe('the three order-side foreign keys are opaque identifiers with getters 
   it('keeps the lowercase-f orderfulfillmentID column spelling distinct from the accessor', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L60]: the fkcolumn is spelled
     // `orderfulfillmentID` with a LOWERCASE f, unlike orderItemID (L59) and orderID (L61).
-    // Preserved verbatim as a schema contract. The COLUMN spellings are not restated here and
-    // compared with themselves - `LEGACY_FK_COLUMNS` is authored in this file, so that loop could
-    // not notice a target module mis-casing the join. Both halves are read from the frozen
-    // component and from the emitted SQL in tests/traceability/legacyTestMap.ts block A20, which
-    // also shows the lowercase-f owning column and the capitalised far-side column meeting in the
-    // same live join. What IS checkable from here is the accessor this class publishes, which is
-    // camel-cased from the PROPERTY name `orderFulfillment` rather than from the column:
+    // Preserved verbatim as a schema contract.
     expect(prototypeMembers()).toContain('getOrderFulfillmentID');
     expect(prototypeMembers()).not.toContain('getOrderfulfillmentID');
 
@@ -754,9 +615,7 @@ describe('the three order-side foreign keys are opaque identifiers with getters 
 
   it('records the hb_cascadeCalculate asymmetry without shipping a calculated property', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L59]: `orderItem` alone carries
-    // `hb_cascadeCalculate="true"` and [L58, L60, L61] do not. The hint cascaded recalculation of
-    // `calculated*` properties, and this component declares NO calculated property anywhere in
-    // L52-L70, so it is INERT here.
+    // `hb_cascadeCalculate="true"` and [model/entity/PromotionApplied.cfc:L58, L60, L61] do not.
     const subject = aPromotionApplied({ orderItemID: 'oi-1' });
     const members = prototypeMembers();
 
@@ -771,9 +630,9 @@ describe('the three order-side foreign keys are opaque identifiers with getters 
   });
 
   it('holds all three identifiers at once, because the row enforces no exclusivity', () => {
-    // Faithful, and deliberately so. Nothing in [model/entity/PromotionApplied.cfc] and no database
-    // constraint restricts a row to a single order-side key; the engine simply never writes more
-    // than one.
+    // Faithful, and deliberately so. Nothing in `model/entity/PromotionApplied.cfc` and no
+    // database constraint restricts a row to a single order-side key; the engine simply never
+    // writes more than one.
     const subject = aPromotionApplied({
       appliedType: 'order',
       orderItemID: 'oi-1',
@@ -800,23 +659,7 @@ describe('the three order-side foreign keys are opaque identifiers with getters 
 });
 
 describe('setPromotion is guarded, functional, and polarised on THIS row', () => {
-  // CFML parity [model/entity/PromotionApplied.cfc:L79-L84]:
-  //
-  //   if(isNew() or !arguments.promotion.hasAppliedPromotion( this )) {
-  //
-  // THIS IS CORRECT CODE AND IS NOT A DEFECT. Both `setPromotion` and `setOrderItem`
-  // [model/entity/PromotionApplied.cfc:L97-L102] - and the other six with them - are guarded and
-  // functional. The contrast is worth naming: `PromotionAccount.setPromotion` is genuinely broken
-  // because [model/entity/Promotion.cfc] declares no `promotionAccounts` collection for its
-  // containment probe, and the four `PromotionPeriod` helpers throw for the same reason. Here the
-  // far side really does declare it - `appliedPromotions` at [model/entity/Promotion.cfc:L64], with
-  // the `addAppliedPromotion`/`removeAppliedPromotion` pair at [L157-L164].
-  //
-  // THE GUARD POLARITY IS LOAD-BEARING, AND IT IS THE OPPOSITE OF `PriceGroupRate.setPriceGroup`.
-  // `isNew()` at [model/entity/PromotionApplied.cfc:L81] is called on `this`, the row BEING
-  // ATTACHED, never on the promotion, so for an unsaved row the containment probe is never
-  // consulted. Swapping the subject would change which rows get appended twice, so the polarity is
-  // pinned in both directions below.
+  // The guard polarity is load-bearing, and it is the opposite of `PriceGroupRate.setPriceGroup`.
 
   it('assigns the near-side reference and appends to the far-side collection', () => {
     const promotion = aPromotion('p-1');
@@ -832,8 +675,7 @@ describe('setPromotion is guarded, functional, and polarised on THIS row', () =>
   it('appends to the very array the far side hands out, never to a copy', () => {
     // [model/entity/Promotion.cfc:L64] is mutated in place by `arrayAppend`
     // [model/entity/PromotionApplied.cfc:L82], and `Promotion.isDeletable()`
-    // [model/entity/Promotion.cfc:L170-L171] reads that same collection's length, so a defensive
-    // copy here would make a promotion look deletable while applications still exist.
+    // [model/entity/Promotion.cfc:L170-L171] reads that same collection's length.
     const promotion = aPromotion('p-1');
     const collectionBefore = promotion.getAppliedPromotions();
     const subject = aPromotionApplied({ promotionAppliedID: 'pa-1' });
@@ -856,9 +698,7 @@ describe('setPromotion is guarded, functional, and polarised on THIS row', () =>
   });
 
   it('recognises presence by primary key, not by object identity', () => {
-    // Two hydrations of the SAME persisted row. CFML `arrayFind`
-    // [model/entity/PromotionApplied.cfc:L89] compared object references, which the ORM's identity
-    // map made safe because one row produced one object per session.
+    // Two hydrations of the same persisted row.
     const promotion = aPromotion('p-1');
     const firstHydration = aPromotionApplied({ promotionAppliedID: 'pa-1' });
     const secondHydration = aPromotionApplied({ promotionAppliedID: 'pa-1' });
@@ -872,7 +712,7 @@ describe('setPromotion is guarded, functional, and polarised on THIS row', () =>
   });
 
   it('short-circuits the containment probe entirely for an unsaved row', () => {
-    // THE GUARD-POLARITY TEST.
+    // The guard-polarity test.
     const promotion = aPromotion('p-1');
     const probe = vi.spyOn(promotion, 'hasAppliedPromotion');
     const unsavedRow = aPromotionApplied();
@@ -909,8 +749,8 @@ describe('setPromotion is guarded, functional, and polarised on THIS row', () =>
   });
 
   it('tests the newness of the row being attached, not of the promotion', () => {
-    // The polarity stated as directly as it can be: an UNSAVED promotion holding a SAVED row is the
-    // case that separates the two readings.
+    // The polarity stated as directly as it can be: an UNSAVED promotion holding a SAVED row is
+    // the case that separates the two readings.
     const unsavedPromotion = aPromotion('');
     const savedRow = aPromotionApplied({ promotionAppliedID: 'pa-1' });
 
@@ -921,11 +761,8 @@ describe('setPromotion is guarded, functional, and polarised on THIS row', () =>
   });
 
   it('re-points the near side on a second set without unlinking the first promotion', () => {
-    // Faithful to [model/entity/PromotionApplied.cfc:L79-L84], which contains NO removal: the
-    // legacy `setPromotion` overwrites `variables.promotion` and appends to the new far side,
-    // leaving the previous collection holding a row that no longer points back. The engine never
-    // hits this because it calls `removeOrder`/`removeOrderFulfillment` first
-    // [model/service/PromotionService.cfc:L393, L439].
+    // Faithful to [model/entity/PromotionApplied.cfc:L79-L84], which contains no removal: the
+    // legacy `setPromotion` overwrites `variables.promotion` and appends to the new far side.
     const first = aPromotion('p-1');
     const second = aPromotion('p-2');
     const subject = aPromotionApplied({ promotionAppliedID: 'pa-1' });
@@ -955,9 +792,7 @@ describe('setPromotion is guarded, functional, and polarised on THIS row', () =>
 
 describe('removePromotion deletes by index and clears the near side unconditionally', () => {
   // CFML parity [model/entity/PromotionApplied.cfc:L85-L94]: three properties matter and all three
-  // are pinned below. The argument DEFAULTS FROM THE FIELD when omitted [L86-L88]; the deletion is
-  // BY INDEX after an `arrayFind` [L89-L90]; and the `structDelete` at [L93] sits OUTSIDE the `if`
-  // so the near side is cleared whether or not the far side held the row.
+  // are pinned below.
 
   it('removes the row from the live far-side collection and clears the near side', () => {
     const promotion = aPromotion('p-1');
@@ -972,10 +807,7 @@ describe('removePromotion deletes by index and clears the near side unconditiona
 
   it('removes a first-element match, which a mistranslated one-based guard would skip', () => {
     // CFML `arrayFind` is ONE-based and the guard is `if(index > 0)`
-    // [model/entity/PromotionApplied.cfc:L90]. A JavaScript `findIndex` is ZERO-based, so carrying
-    // `>0` across unchanged would silently refuse to remove the FIRST element - and the first
-    // element is exactly the one the engine reaches for, at `getAppliedPromotions()[1]`
-    // [model/service/PromotionService.cfc:L393, L439].
+    // [model/entity/PromotionApplied.cfc:L90].
     const promotion = aPromotion('p-1');
     const firstRow = aPromotionApplied({ promotionAppliedID: 'pa-1' });
     const secondRow = aPromotionApplied({ promotionAppliedID: 'pa-2' });
@@ -1009,10 +841,6 @@ describe('removePromotion deletes by index and clears the near side unconditiona
   });
 
   it('falls back to the currently assigned promotion when the argument is omitted', () => {
-    // REAL production usage, not a theoretical branch: the engine calls the no-argument form at
-    // [model/service/PromotionService.cfc:L393] `removeOrderFulfillment()` and
-    // [model/service/PromotionService.cfc:L439] `removeOrder()` when it swaps one promotion's
-    // discount for a larger one from a different promotion.
     const promotion = aPromotion('p-1');
     const subject = aPromotionApplied({ promotionAppliedID: 'pa-1' });
 
@@ -1025,7 +853,7 @@ describe('removePromotion deletes by index and clears the near side unconditiona
 
   it('treats an explicitly passed undefined exactly as an omitted argument', () => {
     // The CFML idiom is `structKeyExists(arguments, "promotion")`
-    // [model/entity/PromotionApplied.cfc:L86], which tests PRESENCE.
+    // [model/entity/PromotionApplied.cfc:L86], which tests presence.
     const promotion = aPromotion('p-1');
     const subject = aPromotionApplied({ promotionAppliedID: 'pa-1' });
 
@@ -1037,9 +865,6 @@ describe('removePromotion deletes by index and clears the near side unconditiona
   });
 
   it('throws when no argument is supplied and no promotion is set', () => {
-    // Faithful reproduction of a legacy runtime failure, not a finding of this suite. CFML defaults
-    // the omitted argument from `variables.promotion` [model/entity/PromotionApplied.cfc:L86-L88]
-    // and then dereferences it at L89, so a row holding no promotion fails there too.
     const subject = aPromotionApplied({ promotionAppliedID: 'pa-1' });
 
     expect(subject.getPromotion()).toBeUndefined();
@@ -1091,14 +916,8 @@ describe('removePromotion deletes by index and clears the near side unconditiona
   });
 
   it('removes the correct instance when two unsaved rows share the empty key', () => {
-    // The reference-identity fallback. Both rows have `promotionAppliedID === ''`, so a primary-key
-    // comparison alone would conflate them and remove whichever came first. Unsaved rows are what
-    // the engine produces: `newPromotionApplied()` has not been saved when `setPromotion` runs
-    // [model/service/PromotionService.cfc:L401-L403].
-    //
-    // JUDGMENT CALL: every assertion here compares by IDENTITY (`toBe`), never by deep equality
-    // (`toEqual`) - the two rows are STRUCTURALLY INDISTINGUISHABLE, which the guard below proves,
-    // so a deep-equality assertion would pass even if the wrong row had been removed.
+    // The reference-identity fallback. Both rows have `promotionAppliedID === ''`, so a
+    // primary-key comparison alone would conflate them and remove whichever came first.
     const promotion = aPromotion('p-1');
     const firstUnsaved = aPromotionApplied();
     const secondUnsaved = aPromotionApplied();
@@ -1143,12 +962,7 @@ describe('the structural facts the row carries', () => {
   it('is new when the primary key is the empty string', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L52]: `unsavedvalue="" default=""` is what
     // makes the empty string LOAD-BEARING, and the framework chain resolved to exactly this test -
-    // `isNew()` returns `getNewFlag()`, which is `getPrimaryIDValue() == ""`
-    // [org/Hibachi/HibachiEntity.cfc:L571-L576].
-    //
-    // The one assertion whose shape is borrowed from the legacy tier: the `isNew()` half of
-    // `defaults_are_correct` [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67]. Authored
-    // NET-NEW all the same - that base class was extended only by the Brand and Product suites.
+    // `isNew()` returns `getNewFlag()`.
     expect(aPromotionApplied().isNew()).toBe(true);
     expect(aPromotionApplied({ promotionAppliedID: '' }).isNew()).toBe(true);
   });
@@ -1177,11 +991,9 @@ describe('the structural facts the row carries', () => {
   });
 
   it('declares remoteID, which the engine nonetheless never writes', () => {
-    // CFML parity [model/entity/PromotionApplied.cfc:L64]: a `remoteID` string column IS declared
-    // here, unlike [model/entity/RoundingRule.cfc], which declares none - so the column is real and
-    // must round-trip. A case-insensitive sweep of [model/service/PromotionService.cfc] for
-    // `setRemoteID` returns ZERO hits, so it stays NULL on an engine-built row and is populated
-    // only by an integration through a repository.
+    // CFML parity [model/entity/PromotionApplied.cfc:L64]: a `remoteID` string column is declared
+    // here, unlike `model/entity/RoundingRule.cfc`, which declares none - so the column is real
+    // and must round-trip.
     expect(prototypeMembers()).toContain('getRemoteID');
     expect(aPromotionApplied().getRemoteID()).toBeUndefined();
     expect(aPromotionApplied({ remoteID: 'ext-9001' }).getRemoteID()).toBe('ext-9001');
@@ -1189,8 +1001,8 @@ describe('the structural facts the row carries', () => {
 
   it('reports audit timestamps as Date or undefined, never an epoch and never zero', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L67, L69]: both are
-    // `hb_populateEnabled="false" ormtype="timestamp"`, so nothing user-supplied ever sets them and
-    // an unsaved row genuinely has neither.
+    // `hb_populateEnabled="false" ormtype="timestamp"`, so nothing user-supplied ever sets them
+    // and an unsaved row genuinely has neither.
     const created = new Date('2024-06-01T00:00:00.000Z');
     const modified = new Date('2024-06-02T12:30:45.000Z');
 
@@ -1262,15 +1074,7 @@ describe('the structural facts the row carries', () => {
 
   it('has no dynamic dispatch, so an unknown accessor cannot even be written', () => {
     // CFML parity [org/Hibachi/HibachiEntity.cfc:L507-L565]: the legacy `onMissingMethod`
-    // dispatcher matched eleven method-name patterns and then THREW at L565, reporting a method
-    //
-    //   which does not exists
-    //
-    // Its one remaining fallback, the attribute lookup at [L559], guards on
-    // `hasProperty("attributeValues")`, and [model/entity/PromotionApplied.cfc:L52-L70] declares no
-    // such collection, so every unmatched `getX()` reached the throw directly. DOCUMENTED, NOT
-    // REPRODUCED: the port has no `Proxy`, no index signature, no `evaluate` and no `variables.`
-    // scope object, so the failure moves from run time to compile time.
+    // dispatcher matched eleven method-name patterns and then THREW at L565, reporting a method.
     const subject = aPromotionApplied();
 
     // An unmatched accessor is a compile error here, where CFML threw at
@@ -1285,9 +1089,7 @@ describe('the structural facts the row carries', () => {
 
   it('declares no collection, so no containment probe belongs on this row', () => {
     // A census of [model/entity/PromotionApplied.cfc:L52-L70] finds ZERO `one-to-many` and ZERO
-    // `many-to-many` properties, so nothing here is an array for a `has*` predicate to search. The
-    // direction runs the other way: it is the FAR side, `Promotion`, that must expose
-    // `hasAppliedPromotion` [model/entity/Promotion.cfc:L64].
+    // `many-to-many` properties, so nothing here is an array for a `has*` predicate to search.
     const subject = aPromotionApplied();
     const members = prototypeMembers();
 
@@ -1297,9 +1099,6 @@ describe('the structural facts the row carries', () => {
   });
 
   it('declares no non-persistent property, so no memoized accessor can drift', () => {
-    // CFML parity [model/entity/PromotionApplied.cfc:L72-L74]: the non-persistent block is an EMPTY
-    // BANNER PAIR - START at L72, END at L74, nothing between. A source wart, annotated rather than
-    // normalised away, and the reason this suite spends no divergence:
     const promotion = aPromotion('p-1');
     const subject = aPromotionApplied({
       promotionAppliedID: 'pa-1',
@@ -1319,9 +1118,7 @@ describe('the structural facts the row carries', () => {
 
   it('ships neither ORM lifecycle hook, matching the second empty banner pair', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L152-L154]: the ORM Event Hooks block is the
-    // second EMPTY BANNER PAIR - START at L152, END at L154, nothing between. Contrast
-    // [model/entity/PriceGroup.cfc:L206, L211], which declares a real `preInsert`/`preUpdate` pair
-    // to maintain a materialized path.
+    // second empty banner pair - start at L152, end at L154, nothing between.
     const members = prototypeMembers();
 
     for (const hook of ['preInsert', 'preUpdate', 'preDelete', 'postInsert', 'postUpdate']) {
@@ -1330,11 +1127,6 @@ describe('the structural facts the row carries', () => {
   });
 
   it('reaches outward for nothing, so every member is synchronous', () => {
-    // [model/entity/PromotionApplied.cfc] contains ZERO `getService(` sites - the only in-scope
-    // entity family that does - so there is no collaborator port and nothing to await. Every
-    // accessor returns a value directly, which keeps `getDiscountAmount()` and `getCurrencyCode()`
-    // usable from the engine's synchronous inner loops, and is why this suite imports no
-    // `src/lib/cfml` helper:
     const promotion = aPromotion('p-1');
     const subject = aPromotionApplied({
       promotionAppliedID: 'pa-1',
@@ -1350,13 +1142,7 @@ describe('the structural facts the row carries', () => {
 });
 
 describe('there is no validation surface, and none is invented', () => {
-  // CFML parity: `model/validation/PromotionApplied.json` DOES NOT EXIST. Verified by direct
-  // enumeration - `model/validation/` holds 96 `.json` schemas and this is not one - and it is one
-  // of exactly SIX deliberate absences, with `Category`, `PromotionQualifier`, `PromotionAccount`,
-  // `Product_AddOption` and `Product_AddOptionGroup`. Ported as-is: inventing a schema would add
-  // enforcement the source never had. Absent by consequence: no zod schema, no declaratively
-  // invoked validator, no `maxCollection:0` delete gate, and no conditional requiredness of the
-  // kind [model/validation/Product_UpdateSkus.json] carries.
+  // CFML parity: `model/validation/PromotionApplied.json` does not exist.
 
   it('ships no validator method, no error accumulator and no delete gate', () => {
     const subject = aPromotionApplied();
@@ -1376,10 +1162,6 @@ describe('there is no validation surface, and none is invented', () => {
   });
 
   it('accepts a row with every nullable column empty, refusing nothing', () => {
-    // The direct, testable consequence of there being no schema: a row with nothing but its empty
-    // primary key is constructible and readable. A required-field check on `discountAmount`, on
-    // `appliedType` or on `currencyCode` would be the invented validation this project forbids, and
-    // would reject rows the `SwPromotionApplied` table accepts today.
     const subject = aPromotionApplied();
 
     expect(subject.getPromotionAppliedID()).toBe('');
@@ -1399,9 +1181,9 @@ describe('there is no validation surface, and none is invented', () => {
   });
 
   it('constructs the row the engine builds, and nothing more', () => {
-    // The end-to-end shape of an engine write, assembled in the order the three construction blocks
-    // use [model/service/PromotionService.cfc:L401-L405, L447-L451, L530-L534]: build, type, attach
-    // the promotion, attach one order-side key, set the amount.
+    // The end-to-end shape of an engine write, assembled in the order the three construction
+    // blocks use [model/service/PromotionService.cfc:L401-L405, L447-L451, L530-L534]: build,
+    // type, attach the promotion, attach one order-side key.
     const promotion = aPromotion('p-1');
     const subject = aPromotionApplied({ orderItemID: 'oi-1' });
 

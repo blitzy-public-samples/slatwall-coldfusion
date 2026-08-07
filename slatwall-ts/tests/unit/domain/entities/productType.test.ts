@@ -1,140 +1,15 @@
-// ---------------------------------------------------------------------------
 // slatwall-ts - characterization suite pinning `src/domain/entities/productType.ts`
 //
-// TRACEABILITY: THIS COVERAGE IS **NET-NEW**, AND IS NOT PARITY (C8).
-// No legacy test anywhere under `meta/tests/` touches `ProductType`. Only
-// `meta/tests/unit/entity/BrandTest.cfc` and `meta/tests/unit/entity/ProductTest.cfc`
-// reach this folder at all, and `meta/tests/functional/admin/entity/ProductTest.cfc` is an
-// empty stub contributing zero coverage. Every assertion below is therefore authored from
-// the CFC itself rather than carried forward from an antecedent, and
-// `tests/traceability/legacyTestMap.ts` must label this module NET-NEW. Presenting any of
-// it as parity would fail the traceability gate.
+// The materialized `productTypeIDPath` [model/entity/ProductType.cfc:L53], the 4000-character
+// comma list the promotion engine walks.
 //
-// The one exception is documentary rather than inherited: the four cases on
-// `meta/tests/unit/entity/SlatwallEntityTestBase.cfc` [L51, L56-L58, L60, L64-L67] -
-// `validate_as_save_for_a_new_instance_doesnt_pass`,
-// `simple_representation_exists_and_is_simple`, `has_primary_id_property_name` and
-// `defaults_are_correct` - would have applied to any entity extending that base. ProductType
-// never had a subclass of it, so those cases were never actually run against this component.
-// Where a shipped member makes one of them meaningful it is asserted here against the SHIPPED
-// REALITY and is called out as such; it is never presented as a test that used to exist.
+// CFML parity [model/entity/ProductType.cfc:L94, L112, L118, L129, L263, L283]: the six locator
+// strings are spelled with four different casings, and two of them name the same service twice
+// over - `"ProductService"` at L112 versus `"productService"` at L129 and L263.
 //
-// ---------------------------------------------------------------------------
-// WHAT THIS SUITE OWNS THAT NOTHING ELSE DOES
-//
-//   1. THE MATERIALIZED `productTypeIDPath` [model/entity/ProductType.cfc:L53], the
-//      4000-character comma list the PROMOTION ENGINE walks. Qualifier membership at
-//      [model/service/PromotionService.cfc:L864-L869] iterates it with
-//      `listLen` / `listGetAt` / `listFindNoCase`, and the price-group cascade's
-//      product-type level climbs the same chain. Root-first ordering is therefore not
-//      cosmetic - getting it wrong changes which promotions apply, which changes money.
-//      That engine is SIBLING-OWNED: it is cited here as the reason the ordering matters and
-//      nothing about it is asserted in this file.
-//   2. THE ALWAYS-THROWING `getAppliedPriceGroupRateByPriceGroup`
-//      [model/entity/ProductType.cfc:L117-L119] - the named-argument defect, and the only
-//      `LEGACY-DEFECT` marker this file carries.
-//   3. THE TODO CARRY-FORWARD at [model/entity/ProductType.cfc:L93], preserved verbatim and
-//      deliberately not completed.
-//   4. THE PARTIAL CACHE-INVALIDATION RESIDUAL at
-//      [model/entity/HibachiEntity.cfc:L246-L253], characterized here as the legacy contract
-//      and deliberately NOT reproduced.
-//
-// ---------------------------------------------------------------------------
-// VERIFY BEFORE YOU QUOTE - CORRECTIONS ESTABLISHED FOR THIS FILE
-//
-// Every locator below was re-read against the source in this session rather than taken from
-// a secondary description, and where a secondary description disagreed, THE SOURCE WON. The
-// corrections are recorded because a silent fix teaches a later reader nothing:
-//
-//   * `getBaseProductType` [L112] calls `listFirst( getProductTypeIDPath() )`, which is
-//     element **ONE** - the ROOT of the root-first path. An upstream note claimed it takes
-//     the SECOND element; the source disproves that. See the `describe` block for B2.
-//   * `src/domain/valueObjects/materializedIdPath.ts` exports NO `MaterializedIdPath` class.
-//     It exports the free functions `buildIdPathList`, `resolveIdPath`, `getRootIdFromIdPath`,
-//     `idPathContainsId` and `idPathContainsAnyId`. The imports below name what exists.
-//   * `src/lib/cfml/list.ts` has no `listFirst` and no `listFind`. Its positional read is
-//     `listGetAt`, 1-based, and it THROWS on an out-of-range position rather than answering
-//     `''`. The `''`-for-an-empty-path behaviour that CFML `listFirst('')` has lives in
-//     `getRootIdFromIdPath`, which is what the entity calls.
-//   * `preInsert()` and `preUpdate()` DO exist on the shipped class. They are not ORM
-//     callbacks - there is no Hibernate to fire them - but they are public methods the
-//     repository invokes, so both path routes are reachable and both are exercised below.
-//   * `getActiveFlag()` and `getPublishedFlag()` return `boolean`, NOT `boolean | undefined`:
-//     the shipped accessors resolve the raw column through `cfBoolean()`. The undefaultedness
-//     of [L54] and [L55] lives in the FIELD, not in the accessor's return type.
-//   * The banner at [L248]/[L257] reads "Overridden **Implicet** Getters". It is framework
-//     boilerplate that recurs across the wider `model/entity/` tree - `Access.cfc:L101`,
-//     `AccountPayment.cfc:L387`, `AttributeValue.cfc:L348`, `MeasurementUnit.cfc:L100` and
-//     `Order.cfc:L861` among others - so it is the fourth occurrence among the IN-SCOPE
-//     entities only, alongside `PromotionCode.cfc:L165`, `PromotionQualifier.cfc:L349` and
-//     `PriceGroup.cfc:L193`. Stated precisely rather than overstated.
-//   * The orphaned `physicalCounts` delete gate appears in FIVE validation files, not four:
-//     `Product.json:L7`, `Brand.json:L7`, `ProductType.json:L8`, `Sku.json:L13` and
-//     `Location.json:L6`. The first four are the in-scope entities that declare
-//     `attributeValues`; `Location` is out of scope and is named only so the count is honest.
-//
-// ---------------------------------------------------------------------------
-// THE SIX LEGACY `getService(` SITES, ENUMERATED - AND NONE SURVIVES
-//
-// ProductType carries six service-locator calls, third-highest among the eighteen in-scope
-// entities after `Sku` and `Product`. Every one is gone from the target: replaced by an
-// injected constructor port, or dropped with the member that contained it.
-//
-//   | site | locator string        | fate in the target                                   |
-//   |------|-----------------------|------------------------------------------------------|
-//   | L94  | `"AttributeService"`  | member OMITTED - attribute path not ported           |
-//   | L112 | `"ProductService"`    | -> injected `productTypeRepository` port             |
-//   | L118 | `"priceGroupService"` | NO port - the call never reaches the service (B3)    |
-//   | L129 | `"productService"`    | member OMITTED - smart list                          |
-//   | L263 | `"productService"`    | member OMITTED - smart list                          |
-//   | L283 | `"attributeService"`  | member OMITTED - smart list on the attribute path    |
-//
-// CFML parity [model/entity/ProductType.cfc:L94, L112, L118, L129, L263, L283]: the six
-// locator strings are spelled with FOUR different casings, and two of them name the SAME
-// service twice over - `"ProductService"` at L112 versus `"productService"` at L129 and L263,
-// and `"AttributeService"` at L94 versus `"attributeService"` at L283. CFML component-name
-// resolution is case-insensitive, so all four spellings dispatched identically and the
-// capitalization carried no meaning whatsoever. Annotated because it is evidence of how these
-// lines were written, and NEVER normalised into a claim the source does not make. In the
-// target the question disappears with the locator: a port is a typed constructor parameter
-// with exactly one name.
-//
-// THE PORT LEDGER STAYS AT THIRTEEN. `productTypeRepository` is one of the thirteen ports
-// already in `src/domain/ports/`. No fourteenth port is introduced by this suite - no
-// attribute service, no attribute-set port, no smart list and no query builder is invented
-// here, because inventing one would manufacture a capability the legacy slice does not have.
-//
-// ---------------------------------------------------------------------------
-// BUDGETS AND MARKERS, STATED SO THEY ARE AUDITABLE
-//
-// DIVERGENCE BUDGET: **ZERO**. This suite claims no deliberate divergence. The three that
-// exist project-wide are all sibling-owned - the un-`var`'d `discountAmount` and the
-// `amountOff` raw-float gap in `src/services/**`, and the entity memo fixes owned by
-// `sku.test.ts` and `product.test.ts`. A fourth is forbidden, and none is taken.
-//
-// `LEGACY-DEFECT` MARKERS: exactly **ONE**, on the [L117-L119] named-argument throw. Every
-// other finding recorded here is a `CFML parity` note or a `JUDGMENT CALL`, including the
-// `listFirst` index, the L93 TODO, the L95-L97 no-op guard, the `Products`/`products` casing
-// hazard, the orphaned `physicalCounts` gate, the partial-clear residual, the misspelled
-// banner, the four out-of-banner methods and the `type="array"` inconsistency.
-//
-// D45 - the three-argument `Replace` at [model/entity/PriceGroupRate.cfc:L132] and [:L158] -
-// belongs to `priceGroupRate.test.ts`. The explicit FOUR-argument
-// `replace(getProductTypeIDPath(), ",", "','", "all")` at [model/entity/ProductType.cfc:L292]
-// is cited here as the CONTROL that proves the three-argument form is a defect and not a
-// house convention. It is cited only; it is not re-asserted.
-//
-// NO USER RULES WERE PROVIDED for this project - the rules source returns exactly "No user
-// rules provided.", read to completion. No rule governs this file, no file enters scope by
-// rule mandate, and no rule is invented to fill the gap. The absence is not licence to lower
+// `LEGACY-DEFECT` MARKERS: exactly **one**, on the [model/entity/ProductType.cfc:L117-L119]
+// named-argument throw.
 // the bar: maximal strictness applies, with no `any`, no `@ts-ignore`, no non-null assertion,
-// no `.only`, no `.skip` and no default export anywhere below.
-//
-// NOTHING HERE ASSERTS A NON-FUNCTIONAL REQUIREMENT (C7). There is no timing, latency,
-// throughput or benchmark assertion, and no choice below is justified by speed. In
-// particular the two memos are pinned as STALENESS contracts and the `lazy="extra"` fetch
-// shape as an explicit CORRECTNESS decision - never as optimisations.
-// ---------------------------------------------------------------------------
 
 import { describe, expect, it } from 'vitest';
 
@@ -145,13 +20,7 @@ import {
 } from '../../../../src/domain/valueObjects/materializedIdPath.js';
 import { listGetAt } from '../../../../src/lib/cfml/list.js';
 import { PriceGroup } from '../../../../src/domain/entities/priceGroup.js';
-// JUDGMENT CALL - `PriceGroupRate` is imported as a VALUE, not `import type`. B9 constructs two
-// real rates to assert that the include side [L74] and the exclude side [L75] are kept apart, and
-// this is the only in-scope entity holding both, so the assertion cannot be made with a structural
-// double: the constructor parameter is a nominal class type. `consistent-type-imports` requires the
-// type-only form only for symbols used SOLELY as types, so a plain import is the correct spelling
-// once the class is used as a value. `Product` stays type-only because `makeProductFixture` builds
-// every product this suite needs.
+// JUDGMENT CALL - `PriceGroupRate` is imported as a value, not `import type`.
 import { PriceGroupRate } from '../../../../src/domain/entities/priceGroupRate.js';
 import type { Product } from '../../../../src/domain/entities/product.js';
 import { makeProductFixture } from '../../../fixtures/productFixtures.js';
@@ -160,67 +29,42 @@ import { makeProductFixture } from '../../../fixtures/productFixtures.js';
 import { PromotionReward } from '../../../../src/domain/entities/promotionReward.js';
 import { PromotionQualifier } from '../../../../src/domain/entities/promotionQualifier.js';
 
-// ---------------------------------------------------------------------------
-// Local test vocabulary
-//
-// JUDGMENT CALL - NO SHARED MUTABLE STATE, AND THEREFORE NO `beforeEach` AT ALL.
-// A2 requires a fresh subject and fresh far-side doubles for every test. The strongest way to
-// get that is not to reset shared state between tests but to have none: every subject, every
-// parent chain and every repository double below is constructed INSIDE the `it` that uses it.
-// Nothing is hoisted to module scope except pure `const` literals and pure factory functions,
-// so there is no cache, no spy and no counter that could leak from one test into the next -
-// which is the whole point, because the four legacy caches this port refuses to reproduce as
-// module state are exactly this hazard:
-//   * `SkuDAO.variables.nextOptionGroupSortOrder`, never cleared because the clear method's
-//     condition is INVERTED at [model/dao/SkuDAO.cfc:L222-L226] - it deletes the key only
-//     when the key does not exist, so it can never fire;
-//   * `RoundingRuleService.variables.roundingRuleDetails`;
-//   * the un-`var`'d `discountAmount` (sibling-owned divergence);
-//   * and EVERY entity memo, including `variables.productTypeIDPath` here.
-// On a warm Lambda container a module-level cache persists between unrelated requests, so
-// all of them are request-scoped in the target. This suite is built the same way.
-//
-// `vi` is deliberately unused: the repository double is HAND-WRITTEN with an explicit call
-// ledger, which is both the required approach and more legible than a mock about which
-// invocation happened. An unused import would also fail `noUnusedLocals`.
-// ---------------------------------------------------------------------------
+// Local test vocabulary.
 
 /**
  * The exact separator [model/entity/ProductType.cfc:L275] concatenates, byte for byte.
  *
- * A RAW HTML ENTITY with one leading and one trailing space. Not `»`, not `&#187;`, not
- * `&amp;raquo;`, not trimmed. Held in a named constant so every assertion below compares
- * against one literal rather than re-typing something that is easy to "improve" by accident.
+ * A raw html entity with one leading and one trailing space.
  */
 const RAQUO_SEPARATOR = ' &raquo; ';
 
-/** CFML's `,` list delimiter, which is what a materialized ID path is built from. */
+/**
+ * CFML's `,` list delimiter, which is what a materialized ID path is built from.
+ */
 const PATH_DELIMITER = ',';
 
 /**
  * The boolean column shape the shipped constructor accepts for `activeFlag` / `publishedFlag`.
  *
- * Structurally identical to `CfBooleanInput` from `src/lib/cfml/truthiness.ts`, restated
- * locally rather than imported: that module is not among this suite's declared dependencies,
- * and TypeScript's structural typing makes the restatement exact rather than approximate. It
- * enumerates precisely the states [L54] and [L55] can arrive in, neither of which declares a
- * `default=`, so SQL NULL is an expected value and not an error.
+ * Structurally identical to `CfBooleanInput` from `src/lib/cfml/truthiness.ts`, restated locally
+ * rather than imported: that module is not among this suite's declared dependencies.
  */
 type CfmlBooleanColumn = string | number | boolean | null | undefined;
 
 /**
  * A hand-written, in-memory stand-in for the `productTypeRepository` port.
  *
- * Structurally typed and never imported from `src/domain/ports/**`, so this suite's imports
- * stay inside its declared dependency set while the object still satisfies the constructor
- * parameter exactly - TypeScript checks it structurally at the call site.
+ * Structurally typed and never imported from `src/domain/ports/**`, so this suite's imports stay
+ * inside its declared dependency set while the object still satisfies the constructor parameter
+ * exactly.
  *
- * `calls` is the whole reason it is hand-written rather than mocked: several assertions below
- * turn on WHICH repository method ran and WITH WHAT, and one of the most important turns on
- * NOTHING having run at all.
+ * `calls` is the whole reason it is hand-written rather than mocked: several assertions below turn
+ * on which repository method ran and with what.
  */
 interface ProductTypeRepositoryDouble {
-  /** Every method invocation, in order, as `'<method>:<argument>'`. */
+  /**
+   * Every method invocation, in order, as `'<method>:<argument>'`.
+   */
   readonly calls: string[];
   getProductTypeQuery(): Promise<readonly never[]>;
   getProductTypeByProductTypeID(productTypeID: string): Promise<ProductType | undefined>;
@@ -231,9 +75,8 @@ interface ProductTypeRepositoryDouble {
 /**
  * Build a repository double backed by an explicit identifier-to-row map.
  *
- * An identifier absent from `rows` resolves to `undefined`, which is exactly what a MySQL
- * lookup that matched no row produces - and the state the preserved [L112] dereference
- * failure depends on.
+ * An identifier absent from `rows` resolves to `undefined`, which is exactly what a MySQL lookup
+ * that matched no row produces.
  */
 function makeProductTypeRepositoryDouble(
   rows: ReadonlyMap<string, ProductType>,
@@ -268,25 +111,12 @@ function makeProductTypeRepositoryDouble(
 /**
  * Wire an ACYCLIC, SHALLOW ancestor chain and hand back its nodes root-first.
  *
- * ACYCLIC BY CONSTRUCTION, and that is a property of this helper rather than a limitation of
- * the subject. It only ever links each node to the one before it, so every hierarchy it
- * produces is a short, strictly-ascending line - which keeps the path, base-product-type and
- * rate-cascade blocks below focused on ordering and contents without any of them having to
- * establish acyclicity first.
+ * ACYCLIC by CONSTRUCTION, and that is a property of this helper rather than a limitation of the
+ * subject.
  *
- * CYCLES ARE BUILT ONLY IN THEIR OWN BLOCK near the end of this file, and never with this
- * helper. That separation is load-bearing rather than tidy: the production code DOES follow a
- * cyclic parent chain forever, because [org/Hibachi/HibachiEntity.cfc:L314-L321] does and the
- * port reproduces it. So the block that builds a cycle asserts only that the ASSIGNMENT is
- * accepted, and never asks for a path from the resulting graph - a call that would not return.
- * Keeping every hierarchy here acyclic is what lets the path, base-product-type and
- * rate-cascade blocks call the path builder freely.
+ * Cycles are built only in their own block near the end of this file, and never with this helper.
  *
- * Wiring goes through the shipped `setParentProductType`, not through the constructor, so the
- * bidirectional bookkeeping under test is the bookkeeping the chains are built with.
- *
- * @param productTypeIDs identifiers ROOT FIRST. `['a', 'b', 'c']` makes `a` the root, `b` its
- *   child and `c` the leaf.
+ * @param productTypeIDs identifiers ROOT FIRST.
  * @returns the constructed nodes in the same root-first order as the input.
  */
 function makeAncestorChain(productTypeIDs: readonly string[]): readonly ProductType[] {
@@ -307,9 +137,8 @@ function makeAncestorChain(productTypeIDs: readonly string[]): readonly ProductT
 /**
  * The leaf of a chain - the node every path assertion is made from.
  *
- * Written as a guarded read rather than an indexed one because `noUncheckedIndexedAccess` is
- * on and no non-null assertion is permitted anywhere in this suite. Throwing on an empty
- * chain keeps a mis-built fixture from silently degrading into a passing test.
+ * Written as a guarded read rather than an indexed one because `noUncheckedIndexedAccess` is on
+ * and no non-null assertion is permitted anywhere in this suite.
  */
 function leafOf(chain: readonly ProductType[]): ProductType {
   const leaf = chain.at(-1);
@@ -320,12 +149,11 @@ function leafOf(chain: readonly ProductType[]): ProductType {
 }
 
 /**
- * A minimal `PriceGroup`, needed only as the argument to the always-throwing [L118] stub.
+ * A minimal `PriceGroup`, needed only as the argument to the always-throwing
+ * [model/entity/ProductType.cfc:L118] stub.
  *
- * Every constructor key is supplied explicitly: `exactOptionalPropertyTypes` is on and the
- * shipped signature declares these keys as REQUIRED-but-nullable rather than optional, so an
- * omitted key is a compile error while an explicit `undefined` is the honest absent state.
- * The values are inert - the method under test throws before it can read any of them.
+ * Every constructor key is supplied explicitly: `exactOptionalPropertyTypes` is on and the shipped
+ * signature declares these keys as REQUIRED-but-nullable rather than optional.
  */
 function makeInertPriceGroup(priceGroupID: string): PriceGroup {
   return new PriceGroup({
@@ -345,27 +173,20 @@ function makeInertPriceGroup(priceGroupID: string): PriceGroup {
   });
 }
 
-/** The names declared on the shipped class, which is what the omission audit reads. */
+/**
+ * The names declared on the shipped class, which is what the omission audit reads.
+ */
 const PRODUCT_TYPE_PROTOTYPE_MEMBERS: readonly string[] = Object.getOwnPropertyNames(
   ProductType.prototype,
 );
 
-// ===========================================================================
-// B1. THE MATERIALIZED `productTypeIDPath` - BOTH ROUTES
+// B1. The materialized `productTypeIDPath` - both routes.
 //
-// [model/entity/ProductType.cfc:L53] declares `productTypeIDPath ormtype="string"
-// length="4000"`, and TWO independent code paths write it:
+// Route 1 - the lazy memoizing read at [model/entity/ProductType.cfc:L250-L255], guarded on
+// `isNull(...)`.
 //
-//   ROUTE 1 - the LAZY MEMOIZING READ at [L250-L255], guarded on `isNull(...)`.
-//   ROUTE 2 - the EAGER WRITE at [L306] and [L311], which bypasses the getter entirely.
-//
-// They are different operations with different triggers, so they are tested separately and
-// then tested against each other. The path's shape is the contract the promotion engine
-// depends on: COMMA-DELIMITED, ROOT-FIRST, SELF-LAST, INCLUDING SELF, never empty for a saved
-// row. [model/service/PromotionService.cfc:L864-L869] walks it with `listLen` / `listGetAt` /
-// `listFindNoCase` to decide product-type membership - cited as the reason the ordering is
-// load-bearing, and asserted nowhere here, because that engine is sibling-owned.
-// ===========================================================================
+// They are different operations with different triggers, so they are tested separately and then
+// tested against each other.
 
 describe('ProductType - the materialized productTypeIDPath (B1)', () => {
   describe('the path contract: comma-delimited, root-first, self-last, including self', () => {
@@ -392,7 +213,6 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
 
       // Spelled out positionally as well as literally, because the ORDER is the contract and a
       // whole-string comparison alone would let a reversed delimiter join pass unnoticed.
-      // `listGetAt` is 1-BASED, matching CFML: position 1 is the root and the last is self.
       expect(listGetAt(path, 1)).toBe('pt-root');
       expect(listGetAt(path, 2)).toBe('pt-mid');
       expect(listGetAt(path, 3)).toBe('pt-leaf');
@@ -405,8 +225,7 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
 
       // The entity must not re-derive comma-list construction locally: `buildIdPathList` is the
       // single implementation shared by `productTypeIDPath`, `priceGroupIDPath` and
-      // `categoryIDPath`, so the two results have to agree exactly. Asserting the agreement is
-      // what stops a hand-rolled walk being reintroduced at this call site later.
+      // `categoryIDPath`.
       const fromValueObject = buildIdPathList<ProductType>(
         leaf,
         (node) => node.getProductTypeID(),
@@ -417,11 +236,7 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
     });
 
     it('returns a stored 4000-character path intact, applying no truncation of its own', () => {
-      // [model/entity/ProductType.cfc:L53] declares `length="4000"`. That is a COLUMN
-      // constraint belonging to the `SwProductType` schema and enforced by the database and the
-      // repository - the entity neither truncates nor validates against it, and pinning that
-      // keeps a well-meaning `slice(0, 4000)` from appearing here later. C7: this is a
-      // correctness boundary, not a size optimisation.
+      // [model/entity/ProductType.cfc:L53] declares `length="4000"`.
       const storedPath = 'x'.repeat(4000);
       const subject = new ProductType({
         productTypeID: 'pt-deep',
@@ -434,15 +249,8 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
   });
 
   describe('route 1 - the lazy memoizing getter [L250-L255]', () => {
-    // CFML parity [model/entity/ProductType.cfc:L251, L123]: TWO DIFFERENT MEMO IDIOMS IN ONE
-    // FILE. The path memo at L251 guards on `isNull(variables.productTypeIDPath)`, so an
-    // explicitly-set EMPTY STRING counts as PRESENT and is NOT recomputed, while an absent or
-    // SQL-NULL value is. The options memo at L123 guards on
-    // `!structKeyExists(variables, "parentProductTypeOptions")` instead, which treats a stored
-    // null as present. Both are preserved verbatim and NEITHER is normalised.
-    // [model/entity/PriceGroup.cfc:L196] uses the same `isNull` idiom for its own path, and
-    // [model/entity/Sku.cfc:L368] uses the `structKeyExists` idiom for `currencyDetails`.
-    // Do not conflate them.
+    // CFML parity [model/entity/ProductType.cfc:L251, L123]: two different memo idioms in one
+    // file.
 
     it('rebuilds from the parent chain when the stored path is absent', () => {
       const chain = makeAncestorChain(['pt-root', 'pt-leaf']);
@@ -455,8 +263,8 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
       const subject = new ProductType({ productTypeID: 'pt-leaf', productTypeIDPath: null });
       subject.setParentProductType(root);
 
-      // `isNull()` reaches a persisted-but-NULL column exactly as it reaches an absent one, so
-      // a hydrated `null` rebuilds. A `structKeyExists`-shaped guard would have returned null.
+      // `isNull()` reaches a persisted-but-NULL column exactly as it reaches an absent one, so a
+      // hydrated `null` rebuilds. A `structKeyExists`-shaped guard would have returned null.
       expect(subject.getProductTypeIDPath()).toBe('pt-root,pt-leaf');
     });
 
@@ -469,8 +277,6 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
       subject.setParentProductType(root);
 
       // The stored path DISAGREES with the in-memory parent chain, and the stored path wins.
-      // That is not a quirk to be smoothed over: [L112] resolves the base product type out of
-      // the STORED path, so "stored wins" is precisely the behaviour that method depends on.
       expect(subject.getProductTypeIDPath()).toBe('pt-stale-root,pt-leaf');
       expect(subject.getProductTypeIDPath()).not.toBe('pt-actual-root,pt-leaf');
     });
@@ -480,12 +286,7 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
       const subject = new ProductType({ productTypeID: 'pt-leaf', productTypeIDPath: '' });
       subject.setParentProductType(root);
 
-      // THE ASYMMETRY THAT MATTERS, and the one a length-based guard would destroy. `isNull('')`
-      // is FALSE in CFML, so the empty string is present and the getter returns it unchanged
-      // even though a whole parent chain is sitting right there. Rebuilding here would look
-      // like a helpful correction and would change which product types a promotion reward
-      // matches - the empty path is also exactly what [L112] then hands to the root-identifier
-      // read, which is why the next block pins that consequence too.
+      // The asymmetry that matters, and the one a length-based guard would destroy.
       expect(subject.getProductTypeIDPath()).toBe('');
       expect(subject.getProductTypeIDPath()).not.toBe('pt-root,pt-leaf');
     });
@@ -508,28 +309,21 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
       const subject = new ProductType({ productTypeID: 'pt-leaf' });
       subject.setParentProductType(original);
 
-      // First read: absent, so it rebuilds AND writes the field.
+      // First read: absent, so it rebuilds and writes the field.
       expect(subject.getProductTypeIDPath()).toBe('pt-original-root,pt-leaf');
 
-      // Re-parent after the memo is warm. [L251] now sees a present value and returns it.
+      // Re-parent after the memo is warm. [model/entity/ProductType.cfc:L251] now sees a present
+      // value and returns it.
       subject.removeParentProductType(original);
       subject.setParentProductType(new ProductType({ productTypeID: 'pt-new-root' }));
-
-      // STALE ON PURPOSE. This is a staleness contract, not a speed decision (C7): the legacy
-      // getter memoizes, so the target memoizes, and the correction arrives through ROUTE 2 on
-      // the next insert or update rather than through this getter.
       expect(subject.getProductTypeIDPath()).toBe('pt-original-root,pt-leaf');
       expect(subject.getParentProductType()?.getProductTypeID()).toBe('pt-new-root');
     });
   });
 
   describe('route 2 - explicit repository-invoked maintenance [L306, L311]', () => {
-    // TRANSFORMATION RULE T3, AND THE POINT WORTH BEING PRECISE ABOUT: `preInsert` and
-    // `preUpdate` exist on the shipped class, but they are NOT ORM lifecycle callbacks - there
-    // is no Hibernate in the target to fire them. They are explicit maintenance methods that
-    // `src/repositories/mysql/**` calls immediately before the corresponding write. NO ORM
-    // hook, event emitter or lifecycle registry is invented by this suite, and the tests below
-    // prove the methods are inert until something calls them.
+    // Transformation rule T3, and the point worth being precise about: `preInsert` and `preUpdate`
+    // exist on the shipped class, but they are not ORM lifecycle callbacks.
 
     it('does not compute or overwrite the path at construction time', () => {
       const root = new ProductType({ productTypeID: 'pt-actual-root' });
@@ -539,8 +333,8 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
       });
       subject.setParentProductType(root);
 
-      // If the constructor fired the maintenance, a persisted path would be silently replaced
-      // by one derived from a possibly partially-hydrated parent chain. It must not.
+      // If the constructor fired the maintenance, a persisted path would be silently replaced by
+      // one derived from a possibly partially-hydrated parent chain. It must not.
       expect(subject.getProductTypeIDPath()).toBe('pt-persisted-root,pt-leaf');
     });
 
@@ -572,9 +366,8 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
       subject.setParentProductType(new ProductType({ productTypeID: 'pt-new-root' }));
       expect(subject.getProductTypeIDPath()).toBe('pt-original-root,pt-leaf');
 
-      // ROUTE 2 assigns UNCONDITIONALLY - it calls the SETTER and so bypasses the [L251] guard
-      // entirely. This is how the legacy corrects a stale path: on every insert and every
-      // update, whether or not the getter had already memoized one.
+      // Route 2 assigns unconditionally - it calls the setter and so bypasses the
+      // [model/entity/ProductType.cfc:L251] guard entirely.
       subject.preInsert();
 
       expect(subject.getProductTypeIDPath()).toBe('pt-new-root,pt-leaf');
@@ -596,10 +389,9 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
     it('accepts and ignores the oldData argument on preUpdate, matching [L310-L312]', () => {
       const subject = new ProductType({ productTypeID: 'pt-root' });
 
-      // `struct oldData` is declared WITHOUT `required` at [L310] and the legacy body never
-      // reads it - it forwards the whole argument collection to `super` at [L312], and the
-      // framework audit stamping the repository now owns is what consumed it. The parameter is
-      // carried forward for signature parity, so both call shapes must behave identically.
+      // `struct oldData` is declared without `required` at [model/entity/ProductType.cfc:L310] and
+      // the legacy body never reads it - it forwards the whole argument collection to `super` at
+      // [model/entity/ProductType.cfc:L312].
       subject.preUpdate({ productTypeIDPath: 'whatever-the-prior-row-held' });
       expect(subject.getProductTypeIDPath()).toBe('pt-root');
 
@@ -616,8 +408,7 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
       expect(subject.getProductTypeIDPath()).toBe('pt-frozen');
 
       // Writing an absent value is how a repository asks for the path to be recomputed on next
-      // READ rather than now - the inverse of the eager hooks, and the reason `undefined` and
-      // `null` are both accepted by the setter.
+      // READ rather than now - the inverse of the eager hooks.
       subject.setProductTypeIDPath(undefined);
       expect(subject.getProductTypeIDPath()).toBe('pt-root,pt-leaf');
 
@@ -626,19 +417,10 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
     });
 
     it('makes the path assignment the ONLY effect of either hook', () => {
-      // CFML parity [model/entity/ProductType.cfc:L305-L313]: THE PATH IS ASSIGNED BEFORE THE
-      // `super` CALL - [L306] precedes [L307], and [L311] precedes [L312]. That matches
-      // [model/entity/PriceGroup.cfc:L207-L208] and is the OPPOSITE of
-      // [model/entity/Category.cfc:L126-L129], which calls `super` FIRST. The ordering is
-      // reproduced per entity and deliberately NOT normalised, because it is observable
-      // wherever the framework's own pre-write work reads entity state.
-      //
-      // In the target the `super` half is the REPOSITORY's audit stamping - all four audit
-      // columns carry `hb_populateEnabled="false"` at [L83-L86] precisely because the
-      // framework, not request data, owned them. Path-first is therefore expressed as: the
-      // assignment is this method's only effect, and the repository's stamping runs after it
-      // returns. Re-implementing audit stamping on the entity would put persistence concerns
-      // back inside the domain, so these assertions pin that it was not.
+      // CFML parity [model/entity/ProductType.cfc:L305-L313]: the path is assigned before the
+      // `super` call - [model/entity/ProductType.cfc:L306] precedes
+      // [model/entity/ProductType.cfc:L307], and [model/entity/ProductType.cfc:L311] precedes
+      // [model/entity/ProductType.cfc:L312].
       const subject = new ProductType({ productTypeID: 'pt-leaf' });
       subject.setParentProductType(new ProductType({ productTypeID: 'pt-root' }));
 
@@ -655,24 +437,11 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
     });
 
     it('places both hooks correctly inside the ORM Event Hooks banner, unlike PriceGroup', () => {
-      // CFML parity [model/entity/ProductType.cfc:L303-L315]: this component's banner
-      // bookkeeping is CORRECT - `preInsert` [L305-L308] and `preUpdate` [L310-L313] both sit
-      // inside the "ORM Event Hooks" run that opens at [L303] and closes at [L315].
-      // [model/entity/PriceGroup.cfc] gets the identical pair WRONG: its hooks sit under
-      // "Overridden Methods" ([L204]-[L216]) while its own ORM Event Hooks banner opens at
-      // [L218] with nothing in it. [model/entity/Category.cfc] differs a third way again - its
-      // "Overridden Methods" block at [L120-L122] is EMPTY, it has no lazy path getter at all,
-      // and its hooks at [L126-L134] run `super` FIRST.
-      //
-      // Secondary register item [model/entity/ProductType.cfc:L311]: the statement ends in a
-      // DOUBLE SEMICOLON - `setProductTypeIDPath( buildIDPathList( "parentProductType" ) );;` -
-      // the second occurrence of that wart in the folder after
-      // [model/entity/PriceGroup.cfc:L212]. An empty statement has no behaviour, so there is
-      // nothing to reproduce and no divergence is spent; it is recorded, not enacted.
-      //
-      // Banner placement is a comment fact and cannot be asserted at runtime. What CAN be
-      // asserted, and is, is that both members are really on the shipped class - so the
-      // documentation above describes something that exists.
+      // CFML parity [model/entity/ProductType.cfc:L303-L315]: this component's banner bookkeeping
+      // is CORRECT - `preInsert` [model/entity/ProductType.cfc:L305-L308] and `preUpdate`
+      // [model/entity/ProductType.cfc:L310-L313] both sit inside the "ORM Event Hooks" run that
+      // opens at [model/entity/ProductType.cfc:L303] and closes at
+      // [model/entity/ProductType.cfc:L315].
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('preInsert');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('preUpdate');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('setProductTypeIDPath');
@@ -681,36 +450,18 @@ describe('ProductType - the materialized productTypeIDPath (B1)', () => {
   });
 });
 
-// ===========================================================================
-// B2. `getBaseProductType()` - THE ROOT ELEMENT, AND THE ONE ASYNC MEMBER
-//
-//   109: 	//get merchandisetype
-//   110: 	public any function getBaseProductType() {
-//   111: 		if(isNull(getSystemCode()) || getSystemCode() == ""){
-//   112: 			return getService("ProductService").getProductType(listFirst(getProductTypeIDPath())).getSystemCode();
-//   113: 		}
-//   114: 		return getSystemCode();
-//   115: 	}
+// B2. `getBaseProductType()` - the root element, and the one async member.
 //
 // CFML parity [model/entity/ProductType.cfc:L112]: getBaseProductType resolves through
-// `listFirst(getProductTypeIDPath())` -- the FIRST, i.e. ROOT, element of the comma-delimited
-// path -- expressed here as `listGetAt(path, 1)` because `src/lib/cfml/list.ts` exports
-// `listGetAt` (1-based) and does NOT export `listFirst`. An upstream note claimed the SECOND
-// element; the source disproves it, and the assertions below prove element ONE by making the
-// root, the parent and the node itself each carry a DIFFERENT system code.
-//
-// The entity reaches `listGetAt` through `getRootIdFromIdPath()` rather than directly, because
-// a bare `listGetAt('', 1)` raises out of range where CFML `listFirst('')` answers `''`. The
-// value object is where that single boundary is reconciled, and both halves are pinned below.
-// ===========================================================================
+// `listFirst(getProductTypeIDPath())` -- the FIRST, i.e.
 
 describe('ProductType - getBaseProductType() (B2)', () => {
   describe('the root-element contract', () => {
     it('reads element ONE of the path, which is the root and not the second element', () => {
       const path = 'pt-root,pt-mid,pt-leaf';
 
-      // The correction, asserted rather than merely asserted-about. `getRootIdFromIdPath` is
-      // the shipped `listFirst` emulation and it must agree with a 1-based positional read.
+      // The correction, asserted rather than merely asserted-about. `getRootIdFromIdPath` is the
+      // shipped `listFirst` emulation and it must agree with a 1-based positional read.
       expect(getRootIdFromIdPath(path)).toBe('pt-root');
       expect(getRootIdFromIdPath(path)).toBe(listGetAt(path, 1));
       expect(getRootIdFromIdPath(path)).not.toBe(listGetAt(path, 2));
@@ -718,8 +469,7 @@ describe('ProductType - getBaseProductType() (B2)', () => {
 
     it('answers the empty string for an empty path, as CFML listFirst(str) does', () => {
       // The one place the emulation deliberately differs from a bare positional read: CFML
-      // `listFirst('')` is `''`, while `listGetAt('', 1)` raises. Both behaviours are correct
-      // for their own contract, and the entity calls the one that matches the legacy.
+      // `listFirst('')` is `''`, while `listGetAt('', 1)` raises.
       expect(getRootIdFromIdPath('')).toBe('');
       expect(() => listGetAt('', 1)).toThrow();
     });
@@ -735,11 +485,8 @@ describe('ProductType - getBaseProductType() (B2)', () => {
         productTypeRepository: repository,
       });
 
-      // THE ASYNC BOUNDARY RULE: a ported method becomes `async` IF AND ONLY IF its legacy body
-      // genuinely reaches the DAO or the ORM. [L112] performs a product-type load BY IDENTIFIER,
-      // which is unambiguously a repository round-trip, so this is the ONE asynchronous member
-      // on the class - everything else traverses already-materialized associations or does pure
-      // string work and stays synchronous.
+      // The async boundary rule: a ported method becomes `async` if and only if its legacy body
+      // genuinely reaches the DAO or the ORM.
       const pending = subject.getBaseProductType();
       expect(pending).toBeInstanceOf(Promise);
       await expect(pending).resolves.toBe('merchandise');
@@ -757,9 +504,8 @@ describe('ProductType - getBaseProductType() (B2)', () => {
 
       await expect(subject.getBaseProductType()).resolves.toBe('subscription');
 
-      // [L114] returns before [L112] can run. Proving the double was NEVER called is the only
-      // way to show the short-circuit is real rather than incidentally producing the same
-      // answer - and here it could not, because the root carries a different code.
+      // [model/entity/ProductType.cfc:L114] returns before [model/entity/ProductType.cfc:L112] can
+      // run.
       expect(repository.calls).toStrictEqual([]);
     });
 
@@ -786,11 +532,6 @@ describe('ProductType - getBaseProductType() (B2)', () => {
         systemCode: '',
         productTypeRepository: repository,
       });
-
-      // BOTH fall-through cases are asserted because [L111] is TWO tests joined by `or`:
-      // `isNull(getSystemCode())` and `getSystemCode() == ""`. Collapsing them into one
-      // truthiness check would look equivalent and would not be - it is the SHAPE of the guard
-      // that is the ported contract, not merely its outcome on today's data.
       expect(subject.getSystemCode()).toBe('');
       await expect(subject.getBaseProductType()).resolves.toBe('merchandise');
       expect(repository.calls).toStrictEqual(['getProductTypeByProductTypeID:pt-root']);
@@ -818,11 +559,9 @@ describe('ProductType - getBaseProductType() (B2)', () => {
     });
 
     it('resolves through the STORED path, not by climbing the in-memory parent chain', async () => {
-      // Climbing `parentProductType` to the root would look like the same answer and is NOT
-      // equivalent: [L112] takes the root IDENTIFIER out of the STORED path and loads that row
-      // fresh. A stored path that disagrees with the in-memory chain - stale, truncated at 4000
-      // characters, or hydrated without its parents - gives a different result, and the stored
-      // path is what the legacy consults. Making the two disagree pins which one wins.
+      // Climbing `parentProductType` to the root would look like the same answer and is not
+      // equivalent: [model/entity/ProductType.cfc:L112] takes the root IDENTIFIER out of the
+      // STORED path and loads that row fresh.
       const storedRoot = new ProductType({ productTypeID: 'pt-stored-root', systemCode: 'stored' });
       const chainRoot = new ProductType({ productTypeID: 'pt-chain-root', systemCode: 'chain' });
       const repository = makeProductTypeRepositoryDouble(
@@ -843,10 +582,9 @@ describe('ProductType - getBaseProductType() (B2)', () => {
     });
 
     it('terminates in exactly one hop when the product type IS its own root', async () => {
-      // NOT infinite recursion, and recorded so nobody "fixes" a problem that does not exist:
-      // the path's first element is then this node's own identifier, the repository returns this
-      // same row, and `getSystemCode()` is a plain column accessor that does not re-enter the
-      // method. One hop, then done.
+      // Not infinite recursion, and recorded so nobody "fixes" a problem that does not exist: the
+      // path's first element is then this node's own identifier, the repository returns this same
+      // row.
       const selfRooted = new ProductType({
         productTypeID: 'pt-root',
         productTypeIDPath: 'pt-root',
@@ -876,11 +614,8 @@ describe('ProductType - getBaseProductType() (B2)', () => {
         productTypeRepository: repository,
       });
 
-      // AN ABSENT ANSWER IS LEGITIMATE AND LOAD-BEARING. The root may carry no system code, in
-      // which case CFML returns null and this returns `undefined`. That emptiness is what the
-      // `baseProductType` gate in `model/validation/Product.json` tests against
-      // (`inList "merchandise" | "subscription"`), so coercing it to `''` or to a fabricated
-      // default would turn a hard failure into a WRONG ANSWER.
+      // An absent answer is legitimate and load-bearing. The root may carry no system code, in
+      // which case CFML returns null and this returns `undefined`.
       await expect(subject.getBaseProductType()).resolves.toBeUndefined();
     });
 
@@ -892,10 +627,9 @@ describe('ProductType - getBaseProductType() (B2)', () => {
         productTypeRepository: repository,
       });
 
-      // THE UNGUARDED DEREFERENCE IS PRESERVED, NOT PAPERED OVER. In CFML `.getSystemCode()` is
-      // invoked directly on whatever `getProductType(...)` returns, so a missing root row fails
-      // at runtime. The port reproduces the failure by raising instead of inventing a fallback,
-      // and the message names the locator so the failure is diagnosable.
+      // The unguarded dereference is preserved, not papered over. In CFML `.getSystemCode()` is
+      // invoked directly on whatever `getProductType(...)` returns, so a missing root row fails at
+      // runtime.
       await expect(subject.getBaseProductType()).rejects.toThrow(
         /could not load the root product type/,
       );
@@ -905,7 +639,7 @@ describe('ProductType - getBaseProductType() (B2)', () => {
     it('rejects when the stored path is empty, because the root identifier is then empty too', async () => {
       // The consequence of the B1 empty-string asymmetry, followed all the way through: a stored
       // `''` is PRESENT so the getter returns `''`, `getRootIdFromIdPath('')` is `''`, and the
-      // lookup of `''` matches no row - so this fails exactly as the legacy would.
+      // lookup of `''` matches no row.
       const repository = makeProductTypeRepositoryDouble(new Map<string, ProductType>());
       const subject = new ProductType({
         productTypeID: 'pt-leaf',
@@ -926,9 +660,7 @@ describe('ProductType - getBaseProductType() (B2)', () => {
       });
 
       // The port is OPTIONAL on the constructor because the overwhelming majority of read paths
-      // never ask for a base product type. An absent port is reported at the one method that
-      // needs it rather than defaulted, because this method's return type has no spare value
-      // meaning "cannot answer" - `undefined` already means "the root has no system code".
+      // never ask for a base product type.
       await expect(subject.getBaseProductType()).rejects.toThrow(
         /requires a productTypeRepository/,
       );
@@ -937,45 +669,19 @@ describe('ProductType - getBaseProductType() (B2)', () => {
     it('still short-circuits without a repository when its own system code is present', async () => {
       const subject = new ProductType({ productTypeID: 'pt-leaf', systemCode: 'merchandise' });
 
-      // Proof that the unwired-port failure belongs to the [L112] branch alone and is not a
-      // precondition of the method as a whole.
+      // Proof that the unwired-port failure belongs to the [model/entity/ProductType.cfc:L112]
+      // branch alone and is not a precondition of the method as a whole.
       await expect(subject.getBaseProductType()).resolves.toBe('merchandise');
     });
   });
 });
 
-// ===========================================================================
-// B3. `getAppliedPriceGroupRateByPriceGroup()` - THE NAMED-ARGUMENT DEFECT THAT THROWS
-//
-//   117:     public any function getAppliedPriceGroupRateByPriceGroup( required any priceGroup) {
-//   118: 		return getService("priceGroupService").getRateForProductTypeBasedOnPriceGroup(product=this, priceGroup=arguments.priceGroup);
-//   119: 	}
+// B3. `getAppliedPriceGroupRateByPriceGroup()` - the named-argument defect that throws.
 //
 // LEGACY-DEFECT [model/entity/ProductType.cfc:L117-L119]: getAppliedPriceGroupRateByPriceGroup
 // passes product=this to getRateForProductTypeBasedOnPriceGroup, whose signature at
-// [model/service/PriceGroupService.cfc:L57] declares `required any productType`. The required
-// argument is never supplied, so the call throws at runtime. Shipped as a throwing stub
-// returning never. Sku.cfc:L265-L268 passes sku=this CORRECTLY -- that is the control proving
-// this is a defect, not a convention.
+// [model/service/PriceGroupService.cfc:L57] declares `required any productType`.
 // Preserved deliberately; do not fix without a product decision.
-//
-// THE CONTROL, VERIFIED FIRST-HAND AND CITED RATHER THAN RE-ASSERTED. The twin method on the
-// SKU entity is byte-for-byte the same shape and gets it right:
-//
-//   265: 	public any function getAppliedPriceGroupRateByPriceGroup( required any priceGroup) {
-//   266: 		return getService("priceGroupService").getRateForSkuBasedOnPriceGroup(sku=this,
-//   267: 			priceGroup=arguments.priceGroup);
-//   268: 	}
-//
-// Two entities, the same method name, the same service, the same call shape - and only one of
-// them names its argument to match the callee. That asymmetry is what makes this a DEFECT and
-// not a house convention, and its assertion belongs to `sku.test.ts`. Cited here, not repeated.
-//
-// NOT A DIVERGENCE, AND NOT A NUMBERED-BUDGET SPEND. This suite spends ZERO divergences. The
-// three that exist project-wide are (a) the un-`var`'d `discountAmount` and (b) the `amountOff`
-// raw-float gap, both owned by `src/services`, and (c) the entity memo fixes owned by
-// `sku.test.ts` and `product.test.ts`. Preserving a throw is preservation, not divergence.
-// ===========================================================================
 
 describe('ProductType - getAppliedPriceGroupRateByPriceGroup() (B3)', () => {
   it('always throws, because the legacy call never satisfies the callee signature', () => {
@@ -998,10 +704,8 @@ describe('ProductType - getAppliedPriceGroupRateByPriceGroup() (B3)', () => {
       message = error instanceof Error ? error.message : String(error);
     }
 
-    // A preserved defect that fails opaquely is a trap; a preserved defect that explains itself
-    // is documentation. The message must carry the four facts an engineer meeting this failure
-    // needs: the argument actually passed, the argument actually required, the locator of the
-    // signature it violates, and where the working form lives.
+    // A preserved defect that fails opaquely is a trap; a preserved defect that explains itself is
+    // documentation.
     expect(message).toContain("'product'");
     expect(message).toContain("'productType'");
     expect(message).toContain('model/service/PriceGroupService.cfc:L57');
@@ -1012,8 +716,7 @@ describe('ProductType - getAppliedPriceGroupRateByPriceGroup() (B3)', () => {
     const subject = new ProductType({ productTypeID: 'pt-1' });
 
     // The parameter is retained unused for interface parity [C4] and is genuinely inert: the
-    // failure happens at the CFML argument-binding boundary, BEFORE the service body runs, so
-    // nothing about the price group can influence it. Two different price groups, one behaviour.
+    // failure happens at the CFML argument-binding boundary, before the service body runs.
     expect(() => subject.getAppliedPriceGroupRateByPriceGroup(makeInertPriceGroup('pg-a'))).toThrow(
       Error,
     );
@@ -1032,9 +735,7 @@ describe('ProductType - getAppliedPriceGroupRateByPriceGroup() (B3)', () => {
     });
     const priceGroup = makeInertPriceGroup('pg-1');
 
-    // Persistence state, a populated path and a resolvable system code are all irrelevant. Were
-    // the failure conditional on any of them, someone would eventually find the "working" case
-    // and treat the throw as a bug in the port rather than a preserved defect in the source.
+    // Persistence state, a populated path and a resolvable system code are all irrelevant.
     expect(unsaved.isNew()).toBe(true);
     expect(() => unsaved.getAppliedPriceGroupRateByPriceGroup(priceGroup)).toThrow(Error);
     expect(saved.isNew()).toBe(false);
@@ -1045,72 +746,35 @@ describe('ProductType - getAppliedPriceGroupRateByPriceGroup() (B3)', () => {
     const subject = new ProductType({ productTypeID: 'pt-1' });
     const priceGroup = makeInertPriceGroup('pg-1');
 
-    // The async boundary rule cuts the other way here. The legacy body never reaches the service,
-    // so it never reaches a DAO either, so the port stays synchronous and `getBaseProductType`
-    // remains the single asynchronous member on the class. Were this method `async` the throw
-    // would arrive as an unhandled rejection - a materially worse failure mode, and one that
-    // `no-floating-promises` could not protect a caller from at a `never`-returning call site.
+    // The async boundary rule cuts the other way here.
     expect(() => subject.getAppliedPriceGroupRateByPriceGroup(priceGroup)).toThrow(Error);
     expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('getAppliedPriceGroupRateByPriceGroup');
   });
 
   it('exposes no repaired alternative alongside the broken method', () => {
-    // NO WORKING IMPLEMENTATION IS INVENTED, and the absence is asserted rather than merely
-    // promised. Shipping a correctly-named sibling would hand callers the repaired behaviour
-    // through a side door and quietly defeat the preservation this method exists to record.
-    // Product-type rates are resolved where the cascade actually lives - in the price-group
-    // service, through getRateForProductTypeBasedOnPriceGroup(productType, priceGroup).
     expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getRateForProductTypeBasedOnPriceGroup');
     expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getPriceGroupRateByPriceGroup');
     expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getAppliedPriceGroupRate');
   });
 });
 
-// ===========================================================================
-// B4. THE C3 TODO CARRY-FORWARD, AND THE DEAD NO-OP GUARD
-//
-//    92: 	public array function getInheritedAttributeSetAssignments() {
-//    93: 		// Todo get by all the parent productTypeIDs
-//    94: 		var attributeSetAssignments = getService("AttributeService").getAttributeSetAssignmentSmartList().getRecords();
-//    95: 		if(!arrayLen(attributeSetAssignments)){
-//    96: 			attributeSetAssignments = [];
-//    97: 		}
-//    98: 		return attributeSetAssignments;
-//    99: 	}
+// B4. The C3 TODO carry-forward, and the dead no-op guard.
 //
 // CFML parity [model/entity/ProductType.cfc:L92-L99]: the legacy TODO at L93 -- "Todo get by all
-// the parent productTypeIDs" -- is carried forward verbatim per C3 and is NOT completed. The
-// L95-L97 guard is a NO-OP: it reassigns an empty array to an empty array. Attribute-set
-// behaviour is NOT ported, so this method's smart-list body has no target equivalent; the TODO
-// is preserved as documentation of the gap.
+// the parent productTypeIDs" -- is carried forward verbatim per C3 and is not completed. The
+// L95-L97 guard is a NO-OP: it reassigns an empty array to an empty array.
 //
-// THE TODO, REPRODUCED CHARACTER-FOR-CHARACTER FROM THE SOURCE LINE, LOWERCASE `odo` AND ALL:
+// TODO [model/entity/ProductType.cfc:L93]: Todo get by all the parent productTypeIDs.
 //
-// TODO [model/entity/ProductType.cfc:L93]: Todo get by all the parent productTypeIDs
-//
-// WHAT THE TODO IS ACTUALLY ADMITTING, because it matters for anyone who later resolves it: the
-// method is named `getInheritedAttributeSetAssignments`, but [L94] fetches EVERY attribute-set
-// assignment in the installation with no filter whatsoever. It inherits nothing. The TODO is the
-// original author recording that the parent-productTypeID filter was never written. Completing
-// it is a product decision about which assignments a child product type should see - not a
-// translation decision - so it travels forward untouched, exactly as the TODO directive requires.
-//
-// WHY NOTHING HERE IS PORTED, two independent reasons either of which suffices. It is a SMART
-// LIST (`getAttributeSetAssignmentSmartList()`), and smart lists are replaced project-wide by
-// explicit typed repository queries owned by the service and repository tiers - never by an
-// entity. And it reaches the entity-attribute-value subsystem, which is out of scope in its
-// entirety, so there is no in-scope type for the method to return.
-//
-// THE PORT LEDGER STAYS AT THIRTEEN. `AttributeService`, `hibachiUtilityService` and every smart
-// list are NOT ported. No fourteenth port is added to carry an out-of-scope subsystem into an
-// in-scope entity, and the compile-time assertion below proves the constructor refuses one.
-// ===========================================================================
+// What the TODO is ACTUALLY ADMITTING, because it matters for anyone who later resolves it: the
+// method is named `getInheritedAttributeSetAssignments`, but [model/entity/ProductType.cfc:L94]
+// fetches every attribute-set assignment in the installation with no filter whatsoever.
 
 describe('ProductType - the attribute-set TODO and its deliberate non-port (B4)', () => {
   it('does not ship getInheritedAttributeSetAssignments at all', () => {
     const subject = new ProductType({ productTypeID: 'pt-1' });
 
-    // ASSERT THE SHIPPED REALITY, not an assumption about it. The method was verified absent
+    // ASSERT the SHIPPED REALITY, not an assumption about it. The method was verified absent
     // first-hand before this assertion was written; it is pinned so that a later well-meaning
     // "completion" of the TODO cannot land silently inside the domain layer.
     expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getInheritedAttributeSetAssignments');
@@ -1119,8 +783,7 @@ describe('ProductType - the attribute-set TODO and its deliberate non-port (B4)'
 
   it('ships no attribute-set, attribute-value or EAV surface of any kind', () => {
     // The whole out-of-scope subsystem, enumerated so the boundary is checkable rather than
-    // asserted. `attributeValues` is declared at [L67] and `attributeSets` at [L76]; neither is
-    // materialized, so none of the accessors the framework would otherwise synthesise exist.
+    // asserted.
     for (const absent of [
       'getAttributeValues',
       'getAttributeSets',
@@ -1137,13 +800,11 @@ describe('ProductType - the attribute-set TODO and its deliberate non-port (B4)'
   it('accepts no attribute-service port, keeping the ledger at thirteen', () => {
     const subject = new ProductType({
       productTypeID: 'pt-1',
+      // This deliberate compile error is the assertion: the type system, not a runtime check,
+      // refuses to let an out-of-scope subsystem be wired into an in-scope entity.
       // @ts-expect-error - NO FOURTEENTH PORT. `attributeService` is not a constructor key, and
       // this deliberate compile error is the assertion: the type system, not a runtime check,
-      // refuses to let an out-of-scope subsystem be wired into an in-scope entity. The thirteen
-      // ports are productRepository, skuRepository, optionRepository, productTypeRepository,
-      // promotionRepository, priceGroupRepository, settingsProvider, currencyConverter,
-      // addressZoneEvaluator, urlTitleGenerator, imageStore, subscriptionTermProvider and
-      // productFeedPort. `ProductType` consumes exactly ONE of them - productTypeRepository.
+      // refuses to let an out-of-scope subsystem be wired into an in-scope entity.
       attributeService: { getAttributeSetAssignmentSmartList: () => [] },
     });
 
@@ -1154,10 +815,8 @@ describe('ProductType - the attribute-set TODO and its deliberate non-port (B4)'
 
   it('characterizes the [L95-L97] guard as a dead no-op that cannot change the outcome', () => {
     // The guard reproduced in the smallest honest form, purely to demonstrate why it is dead.
-    // This is CHARACTERIZATION of a legacy branch, not a port: nothing in `src/**` contains it,
-    // because the method that housed it is not ported.
     const legacyGuard = (records: readonly unknown[]): readonly unknown[] => {
-      // if(!arrayLen(attributeSetAssignments)){ attributeSetAssignments = []; }
+      // If(!arrayLen(attributeSetAssignments)){ attributeSetAssignments = []; }.
       if (records.length === 0) {
         return [];
       }
@@ -1165,15 +824,9 @@ describe('ProductType - the attribute-set TODO and its deliberate non-port (B4)'
     };
 
     // On the only branch that fires - an already-empty array - it substitutes an empty array for
-    // an empty array. The VALUE the caller receives is unchanged, which is the only thing [L98]
-    // exposes, so the branch is observationally inert. And `getRecords()` at [L94] returns an
-    // array unconditionally, so the guard cannot even be defending against a null.
+    // an empty array.
     expect(legacyGuard([])).toStrictEqual([]);
     expect(legacyGuard(['a', 'b'])).toStrictEqual(['a', 'b']);
-
-    // The one thing it does change is IDENTITY, and only on the empty branch - which no caller
-    // can observe, because the array is function-local and freshly returned either way. Recorded
-    // for completeness so nobody later argues the branch had a purpose.
     const empty: readonly unknown[] = [];
     expect(legacyGuard(empty)).not.toBe(empty);
     const populated: readonly unknown[] = ['a'];
@@ -1181,11 +834,10 @@ describe('ProductType - the attribute-set TODO and its deliberate non-port (B4)'
   });
 
   it('leaves the productTypeIDPath the TODO would have needed fully available', () => {
-    // A closing observation with real value for whoever resolves the TODO: the parent-filtered
-    // query it asks for needs the ancestor identifiers, and those are already exactly what the
-    // materialized path carries - root-first, self-last, self included [B1]. So the missing
-    // filter has its input sitting right here; what is missing is the attribute subsystem, which
-    // is out of scope. This is why the TODO is preserved rather than resolved.
+    // A closing observation with real value for whoever resolves the
+    // TODO: the parent-filtered query it asks for needs the ancestor identifiers, and those are
+    // already exactly what the materialized path carries - root-first, self-last, self included
+    // [B1].
     const chain = makeAncestorChain(['pt-root', 'pt-mid', 'pt-leaf']);
     const leaf = leafOf(chain);
 
@@ -1194,56 +846,10 @@ describe('ProductType - the attribute-set TODO and its deliberate non-port (B4)'
   });
 });
 
-// ===========================================================================
-// B5. A2 - REQUEST-SCOPED STATE, AND THE PARTIAL CACHE-INVALIDATION RESIDUAL
-//
 // This suite is the designated home for the partial-clear characterization.
 //
-//   246: 	public void function clearAttributeCache() {
-//   247: 		if(structKeyExists(variables, "attributeValuesByAttributeIDStruct")) {
-//   248: 			structDelete(variables, "attributeValuesByAttributeIDStruct");
-//   249: 		}
-//   250: 		if(structKeyExists(variables, "attributeValuesByAttributeCodeStruct")) {
-//   251: 			structDelete(variables, "attributeValuesByAttributeCodeStruct");
-//   252: 		}
-//   253: 	}
-//
-// CFML parity [model/entity/HibachiEntity.cfc:L246-L253]: clearAttributeCache() clears ONLY
-// attributeValuesByAttributeIDStruct and attributeValuesByAttributeCodeStruct, leaving
-// attributeValuesForEntity and assignedAttributeSetSmartList STALE -- a PARTIAL invalidation.
-// None of the four memos, and no clearAttributeCache, is ported: all entity caches are
-// request-scoped instead. Characterized here as the legacy contract; deliberately NOT reproduced.
-//
-// WHY A PARTIAL CLEAR IS WORSE THAN NO CLEAR. A cache with no invalidation is at least uniformly
-// stale and reasons about consistently. This one clears two of four, so after a write the two
-// struct memos re-read from the database while `attributeValuesForEntity` and
-// `assignedAttributeSetSmartList` keep answering from before the write - and the same entity then
-// reports two different versions of itself depending on which accessor you happen to call.
-//
-// AND UNDER LAMBDA IT WOULD BE UNSAFE, NOT MERELY WRONG. A warm container reuses module state
-// across unrelated invocations, so a memo that survives the request would carry one caller's
-// resolved data into another caller's response. The target therefore keeps EVERY entity cache
-// instance-scoped and every instance request-scoped. That is a structural decision about
-// CORRECTNESS and isolation - not an optimisation, and never justified by speed.
-//
-// THE FOUR LEGACY CACHES THAT MUST NEVER BECOME MODULE STATE, recorded so the boundary is
-// explicit: `SkuDAO.variables.nextOptionGroupSortOrder` (never cleared at all - the clear
-// method's condition is INVERTED at model/dao/SkuDAO.cfc:L222-L226, testing
-// `not structKeyExists` before deleting the key, so it can never fire);
-// `RoundingRuleService.variables.roundingRuleDetails`; the un-`var`'d `discountAmount` at
-// model/service/PromotionService.cfc:L1007/L1009 (divergence (a), sibling-owned); and EVERY
-// entity memo, including this component's `productTypeIDPath` and `parentProductTypeOptions`.
-//
-// THE FOUR `getAssignedAttributeSetSmartList` SHADOW SITES, all omitted in the target and
-// therefore documentary only: the base at model/entity/HibachiEntity.cfc:L205, then
-// model/entity/Sku.cfc:L813, model/entity/ProductType.cfc:L280, and - verified first-hand, and
-// omitted by the upstream inventory - model/entity/Product.cfc:L795.
-//
-// THE DEAD RETRY AT model/entity/HibachiEntity.cfc:L180-L183: [L182] re-calls
-// `getAttributeByAttributeCode(arguments.attribute)` with IDENTICAL arguments after the first
-// call missed, so the retry cannot produce a different result. Present-but-unexercised; recorded
-// here, and no test path is invented for it.
-// ===========================================================================
+// CFML parity [model/entity/HibachiEntity.cfc:L246-L253]: clearAttributeCache() clears only
+// attributeValuesByAttributeIDStruct and attributeValuesByAttributeCodeStruct.
 
 describe('ProductType - request-scoped state and cache residuals (B5)', () => {
   describe('memo isolation between independent instances', () => {
@@ -1254,9 +860,7 @@ describe('ProductType - request-scoped state and cache residuals (B5)', () => {
       first.setParentProductType(sharedRoot);
       expect(first.getProductTypeIDPath()).toBe('pt-root,pt-same');
 
-      // A SECOND, INDEPENDENT INSTANCE CARRYING THE SAME IDENTIFIER. If the memo were module
-      // state keyed by product-type ID - the shape a warm-container cache naturally takes - this
-      // parentless instance would answer the first instance's two-element path.
+      // A second, independent instance carrying the same identifier.
       const second = new ProductType({ productTypeID: 'pt-same' });
       expect(second.getProductTypeIDPath()).toBe('pt-same');
       expect(first.getProductTypeIDPath()).toBe('pt-root,pt-same');
@@ -1324,8 +928,7 @@ describe('ProductType - request-scoped state and cache residuals (B5)', () => {
       });
 
       // The port is per-instance constructor state, never a module singleton or an ambient
-      // default. Wiring one instance must not silently satisfy another - that would be exactly
-      // the ambient-collaborator pattern the composition root exists to eliminate (rule T1).
+      // default.
       return Promise.all([
         expect(wired.getBaseProductType()).resolves.toBe('merchandise'),
         expect(unwired.getBaseProductType()).rejects.toThrow(/requires a productTypeRepository/),
@@ -1337,9 +940,7 @@ describe('ProductType - request-scoped state and cache residuals (B5)', () => {
     it('ships none of the four memos the partial clear operated on', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // THE SHIPPED REALITY FIRST. The residual cannot exist in the target because none of the
-      // four caches it governs exists here: two were cleared by [L246-L253] and two were left
-      // stale by it, and all four belong to the unported EAV subsystem.
+      // The shipped reality first.
       for (const absent of [
         'clearAttributeCache',
         'getAttributeValuesByAttributeIDStruct',
@@ -1367,7 +968,7 @@ describe('ProductType - request-scoped state and cache residuals (B5)', () => {
       ];
       const leftStaleByLegacy = memoKeys.filter((key) => !clearedByLegacy.includes(key));
 
-      // TWO of FOUR. That is the whole defect: the clear is named as though it invalidated the
+      // Two of four. That is the whole defect: the clear is named as though it invalidated the
       // attribute cache, and it invalidates half of it.
       expect(clearedByLegacy).toHaveLength(2);
       expect(leftStaleByLegacy).toStrictEqual([
@@ -1378,10 +979,6 @@ describe('ProductType - request-scoped state and cache residuals (B5)', () => {
     });
 
     it('exposes no cache-clearing surface at all, partial or complete', () => {
-      // NOT "fixed" into a complete clear either - that would be a fourth divergence, and the
-      // budget is zero. The residual is designed out rather than corrected: with every cache
-      // instance-scoped and every instance request-scoped, there is nothing left to invalidate,
-      // so no clear method is needed in any form.
       for (const member of PRODUCT_TYPE_PROTOTYPE_MEMBERS) {
         expect(member).not.toMatch(/^clear/);
         expect(member).not.toMatch(/[Cc]ache/);
@@ -1389,9 +986,8 @@ describe('ProductType - request-scoped state and cache residuals (B5)', () => {
     });
 
     it('leaves the one memo it does keep observable only through its own accessor', () => {
-      // The single cache this entity keeps is the [L250-L255] path memo asserted in B1. Its full
-      // observable surface is one getter and one setter - no clear, no flush, no invalidate, no
-      // template array, no `getNewFlag`, none of which is invented here.
+      // The single cache this entity keeps is the [model/entity/ProductType.cfc:L250-L255] path
+      // memo asserted in B1.
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('getProductTypeIDPath');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('setProductTypeIDPath');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getNewFlag');
@@ -1401,50 +997,17 @@ describe('ProductType - request-scoped state and cache residuals (B5)', () => {
   });
 });
 
-// ===========================================================================
-// B6. THE UNKNOWN-GETTER SILENT BRANCH, AND THE ORPHANED `physicalCounts` GATE
-//
-//   559: 			} else if (structKeyExists(variables, "getAttributeValue") && hasProperty("attributeValues")) {
-//   560: 				return getAttributeValue(listRest(arguments.missingMethodName, "get"));
-//   561: 			}
-//   ...
-//   565: 		throw("You have attempted to call the method #arguments.missingMethodName# ...");
+// B6. The unknown-getter silent branch, and the orphaned `physicalCounts` gate.
 //
 // CFML parity [org/Hibachi/HibachiEntity.cfc:L559-L565, model/entity/HibachiEntity.cfc:L202]:
-// because `ProductType` DECLARES `attributeValues` at [L67], the [L559] guard succeeds, so an
-// unknown `getX()` is silently rerouted to `getAttributeValue('X')`, which returns `''` on a miss
-// [L202] - it never reaches the throw at [L565]. Exactly FOUR in-scope entities declare
-// `attributeValues` and therefore fail SILENTLY - Sku.cfc:L70, Product.cfc:L75, Brand.cfc:L60 and
-// ProductType.cfc:L67 - while the remaining FOURTEEN throw. The split is documented here, NOT
-// behaviourally reproduced: the target has no dynamic dispatch of any kind, so there is no
-// `Proxy`, no index signature, no string-keyed method resolution and no `evaluate()` anywhere.
+// because `ProductType` DECLARES `attributeValues` at [model/entity/ProductType.cfc:L67], the
+// `model/entity/ProductType.cfc` guard succeeds, so an unknown `getX()` is silently rerouted to
+// `getAttributeValue('X')`, which returns `''` on a miss [model/entity/ProductType.cfc:L202].
 //
-// WHY THE SILENT HALF IS THE DANGEROUS HALF. `getProductTypeNaem()` on one of the fourteen is a
-// loud runtime failure caught the first time the line executes. The same typo on one of the four
-// returns the empty string, and `''` is a plausible-looking value for a name, a code or a URL
-// title - so it flows into a comparison, a concatenation or a rendered page and is never
-// diagnosed. TypeScript removes the entire class of failure at compile time, which is why the
-// contract is recorded rather than emulated.
-//
-// THE ORPHANED VALIDATION GATE:
-//
-// CFML parity [model/validation/ProductType.json, model/entity/ProductType.cfc:L77,
-// model/entity/Physical.cfc:L59]: the physicalCounts delete gate is ORPHANED -- ProductType
-// declares `physicals` at L77, and physicalCounts is a property ONLY on Physical.cfc:L59. The
-// same orphan appears in Brand.json, Product.json and Sku.json -- exactly the four entities that
-// declare attributeValues, so a nonexistent getPhysicalCounts() routes silently to the EAV miss
-// '' at [org/Hibachi/HibachiEntity.cfc:L559-L561] and the gate passes vacuously instead of
-// throwing at L565. Pinned as a documented dead declaration, like PriceGroupRate.json's orphaned
-// conditions.isNotGlobal. NO physicalCounts collection or accessor is invented, and the six-file
-// validation-absence inventory is NOT expanded.
-//
-// The two findings are ONE finding, and that is why they share this block: the orphan survived
-// precisely BECAUSE this entity declares `attributeValues`. On any of the fourteen throwing
-// entities the same gate would have raised on its first delete attempt and been fixed years ago.
-// Verified first-hand, correcting the upstream count: the gate appears in FIVE validation files -
-// Product.json:L7, Brand.json:L7, ProductType.json:L8, Sku.json:L13 and Location.json:L6 - of
-// which `Location` is out of scope, leaving the four in-scope files named above.
-// ===========================================================================
+// CFML parity
+// [model/validation/ProductType.json, model/entity/ProductType.cfc:L77, model/entity/Physical.cfc:L59]:
+// the physicalCounts delete gate is ORPHANED -- ProductType declares `physicals` at L77, and
+// physicalCounts is a property only on Physical.cfc:L59.
 
 describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)', () => {
   describe('no dynamic dispatch is emulated', () => {
@@ -1453,8 +1016,7 @@ describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)
 
       // `Reflect.get` reads an absent key without a cast and without a non-null assertion, so the
       // absence is asserted honestly rather than asserted-around. Plain JavaScript semantics:
-      // absent means `undefined`. The legacy would have answered `''` here, and the difference is
-      // the whole point - `undefined` is unmistakably "no such thing", `''` is a plausible value.
+      // absent means `undefined`.
       expect(Reflect.get(subject, 'getProductTypeNaem')).toBeUndefined();
       expect(Reflect.get(subject, 'getSomeCustomAttribute')).toBeUndefined();
       expect(Reflect.get(subject, 'getAnythingAtAll')).toBeUndefined();
@@ -1463,9 +1025,9 @@ describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)
     it('resolves no method by name, so the [L559] reroute has no target', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // The two members the [L559] guard itself depends on. Neither exists, so even a
-      // hand-written emulation would have nothing to call - the branch is unreachable by
-      // construction rather than by convention.
+      // The two members the `model/entity/ProductType.cfc` guard itself depends on. Neither
+      // exists, so even a hand-written emulation would have nothing to call - the branch is
+      // unreachable by construction rather than by convention.
       expect(Reflect.get(subject, 'getAttributeValue')).toBeUndefined();
       expect(Reflect.get(subject, 'onMissingMethod')).toBeUndefined();
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('onMissingMethod');
@@ -1476,17 +1038,13 @@ describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)
 
       // A `Proxy` with a `get` trap is the one construct that could reintroduce the silent branch
       // in TypeScript, so its absence is asserted structurally: the instance's prototype is
-      // exactly `ProductType.prototype`, and `Object.keys` over the prototype's own names is a
-      // fixed, finite, enumerable list rather than an open-ended handler.
+      // exactly `ProductType.prototype`.
       expect(Object.getPrototypeOf(subject)).toBe(ProductType.prototype);
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('constructor');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS.length).toBeGreaterThan(0);
     });
 
     it('characterizes the four-silent / fourteen-throw split as a documented record', () => {
-      // The census, written out so the boundary is checkable. `attributeValues` is what selects a
-      // component into the silent group, and it is declared on exactly four of the eighteen
-      // in-scope entities.
       const silentlyFailing = [
         'model/entity/Sku.cfc:L70',
         'model/entity/Product.cfc:L75',
@@ -1505,9 +1063,7 @@ describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)
     it('ships no physicalCounts accessor, because no such property has ever existed here', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // The gate names `physicalCounts`; the entity declares `physicals`. NOTHING is invented to
-      // make the gate meaningful - inventing a collection to satisfy a dead rule would fabricate
-      // a relationship the schema does not have.
+      // The gate names `physicalCounts`; the entity declares `physicals`.
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getPhysicalCounts');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('addPhysicalCount');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('removePhysicalCount');
@@ -1515,11 +1071,7 @@ describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)
     });
 
     it('ships no physicals accessor either, since the collection is not materialized', () => {
-      // ASSERTING THE SHIPPED REALITY RATHER THAN THE UPSTREAM EXPECTATION. `physicals` IS the
-      // real declaration - [L77], `type="array"`, link table `SwPhysicalProductType` - but
-      // `Physical` is an inventory-side entity outside this slice, so the association is not
-      // materialized at the repository boundary and no accessor is authored. Verified first-hand
-      // before this assertion was written.
+      // Asserting the shipped reality rather than the upstream expectation.
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getPhysicals');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('addPhysical');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('removePhysical');
@@ -1528,10 +1080,9 @@ describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)
     it('accepts neither physicals nor physicalCounts as constructor state', () => {
       const subject = new ProductType({
         productTypeID: 'pt-1',
-        // @ts-expect-error - neither the real `physicals` association [L77] nor the orphaned
-        // `physicalCounts` the validation file names is part of this entity's hydration contract.
-        // The compile error IS the assertion: the boundary is enforced by the type system, so no
-        // repository can quietly start populating an out-of-scope association.
+        // @ts-expect-error - neither the real `physicals` association
+        // [model/entity/ProductType.cfc:L77] nor the orphaned `physicalCounts` the validation file
+        // names is part of this entity's hydration contract. The compile error IS the assertion.
         physicals: [],
       });
 
@@ -1540,8 +1091,8 @@ describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)
     });
 
     it('records the orphan as a dead declaration with its sole real home named', () => {
-      // The evidence trail, as data: the four in-scope validation files carrying the gate, and
-      // the single property declaration anywhere in the repository that would satisfy it.
+      // The evidence trail, as data: the four in-scope validation files carrying the gate, and the
+      // single property declaration anywhere in the repository that would satisfy it.
       const inScopeFilesCarryingTheGate = [
         'model/validation/Product.json:L7',
         'model/validation/Brand.json:L7',
@@ -1549,9 +1100,6 @@ describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)
         'model/validation/Sku.json:L13',
       ];
       const soleRealDeclaration = 'model/entity/Physical.cfc:L59';
-
-      // Four files, four silent-branch entities - the same four. That correspondence is what
-      // explains the orphan's survival, and it is the reason B6 keeps both findings together.
       expect(inScopeFilesCarryingTheGate).toHaveLength(4);
       expect(soleRealDeclaration).toBe('model/entity/Physical.cfc:L59');
       // Not expanded into the six-file validation-ABSENCE inventory, which is a different list.
@@ -1560,41 +1108,23 @@ describe('ProductType - the EAV silent branch and the physicalCounts orphan (B6)
   });
 });
 
-// ===========================================================================
-// B7. `getSimpleRepresentation()`, THE `&raquo;` LITERAL, AND `setProducts` CASING
-//
-//   273: 	public string function getSimpleRepresentation() {
-//   274: 		if(!isNull(getParentProductType())) {
-//   275: 			return getParentProductType().getSimpleRepresentation() & " &raquo; " & getProductTypeName();
-//   276: 		}
-//   277: 		return getProductTypeName();
-//   278: 	}
-//
-// GUARDED, AND THAT IS WHY THE INHERITED TEST CASE IS MEANINGFUL HERE. Most entities in this
-// folder override the representation unconditionally; this one branches on whether a parent
-// exists, so `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58`
-// (`simple_representation_exists_and_is_simple`) actually exercises two distinct code paths.
+// B7. `getSimpleRepresentation()`, the `&raquo;` literal, and `setProducts` casing.
 //
 // CFML parity [model/entity/ProductType.cfc:L275]: the separator is the literal HTML entity
-// `" &raquo; "` with a space on BOTH sides, written as five characters `&`,`r`,`a`,`q`,`u`,`o`,`;`
-// inside the source string. It is NOT the rendered glyph and NOT an escaped entity: never `'»'`,
-// never `'&amp;raquo;'`. The value is a display string consumed by an HTML surface that does no
-// further escaping, so double-escaping it would print the entity text to the user and
-// substituting the glyph would change the bytes a downstream template compares against.
+// `" &raquo; "` with a space on both sides, written as five characters `&`,`r`,`a`,`q`,`u`,`o`,`;`
+// inside the source string.
 //
 // CFML parity [model/entity/ProductType.cfc:L101-L105, L66]: setProducts takes a capital-P
 // `Products` parameter and clears `variables.Products` at L103, while the property is declared
-// lowercase `products` at L66. CFML struct keys are case-insensitive, so these are ONE binding.
-// Normalised to a single TypeScript binding WITHOUT changing behaviour -- a porting hazard, NOT
-// an authorized divergence.
-// ===========================================================================
+// lowercase `products` at L66.
 
 describe('ProductType - getSimpleRepresentation() (B7)', () => {
   describe('the guarded recursion at [L273-L278]', () => {
     it('returns the bare product-type name when there is no parent', () => {
       const subject = new ProductType({ productTypeID: 'pt-1', productTypeName: 'Merchandise' });
 
-      // [L277], the terminal branch. No separator, no prefix, no decoration.
+      // [model/entity/ProductType.cfc:L277], the terminal branch. No separator, no prefix, no
+      // decoration.
       expect(subject.getParentProductType()).toBeUndefined();
       expect(subject.getSimpleRepresentation()).toBe('Merchandise');
     });
@@ -1614,9 +1144,8 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
       mid.setParentProductType(root);
       leaf.setParentProductType(mid);
 
-      // [L275] calls the PARENT'S OWN `getSimpleRepresentation()`, not `getProductTypeName()`, so
-      // the whole ancestor breadcrumb accumulates. Counting the separators is the assertion that
-      // distinguishes genuine recursion from a one-level join.
+      // [model/entity/ProductType.cfc:L275] calls the PARENT'S own `getSimpleRepresentation()`,
+      // not `getProductTypeName()`, so the whole ancestor breadcrumb accumulates.
       const representation = leaf.getSimpleRepresentation() ?? '';
       expect(representation).toBe('Merchandise &raquo; Apparel &raquo; Shirts');
       expect(representation.split(RAQUO_SEPARATOR)).toHaveLength(3);
@@ -1624,17 +1153,14 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
 
     it('reads root-first, matching the direction of the materialized path', () => {
       // Named explicitly rather than through `makeAncestorChain`, which supplies identifiers only:
-      // a nameless chain renders as bare separators and would make this assertion vacuous. Naming
-      // each node after its identifier lets the breadcrumb and the path be compared directly.
+      // a nameless chain renders as bare separators and would make this assertion vacuous.
       const root = new ProductType({ productTypeID: 'pt-root', productTypeName: 'pt-root' });
       const mid = new ProductType({ productTypeID: 'pt-mid', productTypeName: 'pt-mid' });
       const leaf = new ProductType({ productTypeID: 'pt-leaf', productTypeName: 'pt-leaf' });
       mid.setParentProductType(root);
       leaf.setParentProductType(mid);
 
-      // Both the breadcrumb and the path read ancestor-first. Worth pinning together: they are
-      // derived from the same parent chain, so a reversal in either would be a real inconsistency
-      // - and the path direction is the thing the promotion engine's membership test depends on.
+      // Both the breadcrumb and the path read ancestor-first.
       const representation = leaf.getSimpleRepresentation() ?? '';
       expect(representation.startsWith('pt-root')).toBe(true);
       expect(representation.endsWith('pt-leaf')).toBe(true);
@@ -1650,9 +1176,8 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
       child.setParentProductType(first);
       expect(child.getSimpleRepresentation()).toBe('Merchandise &raquo; Apparel');
 
-      // NOT MEMOIZED - and deliberately contrasted with the path memo asserted in B1, which DOES
-      // go stale after exactly this operation. The source memoizes the path at [L251] and does not
-      // memoize the representation, so one accessor tracks a re-parent and the other does not.
+      // Not MEMOIZED - and deliberately contrasted with the path memo asserted in B1, which does
+      // go stale after exactly this operation.
       child.removeParentProductType();
       child.setParentProductType(second);
       expect(child.getSimpleRepresentation()).toBe('Subscription &raquo; Apparel');
@@ -1669,10 +1194,6 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
       expect(RAQUO_SEPARATOR).toBe(' &raquo; ');
       expect(RAQUO_SEPARATOR).toHaveLength(9);
       expect(representation).toContain(RAQUO_SEPARATOR);
-
-      // The three wrong answers, each excluded explicitly, because each is a plausible mistake a
-      // reviewer would not catch by reading: the rendered glyph, the double-escaped entity, and
-      // the entity stripped of its surrounding spaces.
       expect(representation).not.toContain('»');
       expect(representation).not.toContain('&amp;raquo;');
       expect(representation).not.toContain('Merchandise&raquo;');
@@ -1684,9 +1205,7 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
       child.setParentProductType(parent);
       const representation = child.getSimpleRepresentation() ?? '';
 
-      // `&#187;` and `&#xBB;` are the numeric forms of the same character. The source wrote the
-      // NAMED entity, so the named entity is what ships - HTML-equivalent is not byte-equivalent,
-      // and a downstream template comparing strings would notice.
+      // `&#187;` and `&#xBB;` are the numeric forms of the same character.
       expect(representation).not.toContain('&#187;');
       expect(representation).not.toContain('&#xBB;');
       expect(representation).toBe('A &raquo; B');
@@ -1697,11 +1216,9 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
     it('returns undefined for an unnamed product type with no parent', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // [L277] returns `getProductTypeName()` UNGUARDED, and the column is nullable - there is no
-      // validation rule making `productTypeName` non-null on read, only on save. So `undefined` is
-      // the honest answer, and it is what the inherited
-      // `simple_representation_exists_and_is_simple` case would meet on a freshly-built instance.
-      // Substituting `''` would be a fabricated value dressed as data.
+      // [model/entity/ProductType.cfc:L277] returns `getProductTypeName()` UNGUARDED, and the
+      // column is nullable - there is no validation rule making `productTypeName` non-null on
+      // read, only on save.
       expect(subject.getProductTypeName()).toBeUndefined();
       expect(subject.getSimpleRepresentation()).toBeUndefined();
     });
@@ -1712,8 +1229,7 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
       child.setParentProductType(parent);
 
       // CFML `&` concatenation treats a null as the empty string, so the legacy renders the same
-      // dangling breadcrumb. Ugly, and preserved - repairing it would mean choosing a placeholder
-      // name, which is a product decision this port has no mandate to make.
+      // dangling breadcrumb.
       expect(child.getSimpleRepresentation()).toBe('Merchandise &raquo; ');
     });
 
@@ -1729,10 +1245,7 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
 
     it('satisfies the inherited simple_representation case for a named instance', () => {
       // meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58 -
-      // `simple_representation_exists_and_is_simple`. Carried forward as an ASSERTION ABOUT THE
-      // SHIPPED REALITY: a named instance yields a non-empty single-line string with no leading
-      // or trailing whitespace. "Simple" in the legacy sense means a flat display label, not a
-      // structure - so a value containing a newline or a tab would fail the spirit of the case.
+      // `simple_representation_exists_and_is_simple`.
       const subject = new ProductType({ productTypeID: 'pt-1', productTypeName: 'Merchandise' });
       const representation = subject.getSimpleRepresentation();
 
@@ -1747,10 +1260,7 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
     it('exposes one lower-case binding for the capital-P legacy parameter', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // The hazard resolved IN THE SUITE, exactly as required, and never by weakening a lint rule.
-      // CFML's `Products` / `products` / `PRODUCTS` are one slot; TypeScript is case-sensitive, so
-      // the port picks the lower-case form for the field and the parameter while keeping the
-      // PUBLIC method name `setProducts` verbatim, which was already correct.
+      // The hazard resolved in the SUITE, exactly as required, and never by weakening a lint rule.
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('setProducts');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('getProducts');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('setProduct');
@@ -1763,8 +1273,9 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
       const subject = new ProductType({ productTypeID: 'pt-1', products: [alpha] });
       expect(subject.getProducts()).toHaveLength(1);
 
-      // [L103] then [L104-L106], in that order. The clear is unconditional and happens before the
-      // loop, so an empty argument is not a no-op - it is a wholesale removal.
+      // [model/entity/ProductType.cfc:L103] then [model/entity/ProductType.cfc:L104-L106], in that
+      // order. The clear is unconditional and happens before the loop, so an empty argument is not
+      // a no-op - it is a wholesale removal.
       subject.setProducts([]);
       expect(subject.getProducts()).toStrictEqual([]);
     });
@@ -1785,11 +1296,6 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
     it('adds through addProduct, so a duplicated argument yields one entry', () => {
       const alpha = makeProductFixture({ productID: 'prod-alpha' });
       const subject = new ProductType({ productTypeID: 'pt-1' });
-
-      // [L105] routes every element through `addProduct`, which is the ORM-generated set-semantics
-      // adder derived from `singularname="product"` [L66] - append-if-absent by primary key, not
-      // an unconditional push. So the de-duplication is inherited from the adder rather than
-      // implemented by `setProducts` itself, and passing the same product twice proves it.
       subject.setProducts([alpha, alpha]);
       expect(subject.getProducts()).toHaveLength(1);
     });
@@ -1799,7 +1305,7 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
       const second = makeProductFixture({ productID: 'prod-same' });
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // Two distinct hydrations of the SAME database row. A reference comparison would admit both
+      // Two distinct hydrations of the same database row. A reference comparison would admit both
       // and silently double-count the row; the primary-key comparison is what the ORM collection
       // actually did.
       expect(first).not.toBe(second);
@@ -1815,10 +1321,8 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
       const capturedBefore = subject.getProducts();
       subject.setProducts([beta]);
 
-      // [L103] ASSIGNS a new array (`variables.Products = []`) rather than emptying the existing
-      // one, so a caller holding the earlier array still sees `alpha`. Reproduced faithfully,
-      // which is why `products` is the one non-`readonly` collection field on the class and the
-      // one collection whose getter is not live.
+      // [model/entity/ProductType.cfc:L103] ASSIGNS a new array (`variables.Products = []`) rather
+      // than emptying the existing one, so a caller holding the earlier array still sees `alpha`.
       expect(capturedBefore).toHaveLength(1);
       expect(capturedBefore[0]).toBe(alpha);
       expect(subject.getProducts()).not.toBe(capturedBefore);
@@ -1832,12 +1336,8 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
 
       subject.setProducts([alpha]);
 
-      // `products` is `inverse="true"` [L66], so the ORM-generated adder mutates only the
-      // in-memory array; the `SwProduct.productTypeID` column is owned by the product side and
-      // persistence belongs to the repository tier. Asserting the near side changed while the far
-      // side did NOT is what keeps this from being mistaken for a bidirectional helper - and the
-      // far side is compared against its own prior value rather than against `undefined`, because
-      // the fixture legitimately arrives already associated with a product type of its own.
+      // `products` is `inverse="true"` [model/entity/ProductType.cfc:L66], so the ORM-generated
+      // adder mutates only the in-memory array.
       expect(subject.getProducts()).toHaveLength(1);
       expect(alpha.getProductType()).toBe(productTypeBefore);
       expect(alpha.getProductType()).not.toBe(subject);
@@ -1845,50 +1345,13 @@ describe('ProductType - getSimpleRepresentation() (B7)', () => {
   });
 });
 
-// ===========================================================================
-// B8. THE DECLARATIVE VALIDATION CONTRACT - SIX RULES, ONE OF THEM ORPHANED
+// B8. The declarative validation contract - six rules, one of them orphaned.
 //
-// model/validation/ProductType.json, verified verbatim and complete at ten lines:
-//
-//   {
-//     "properties":{
-//       "productTypeName":		[{"contexts":"save","required":true}],
-//       "urlTitle":				[{"contexts":"save","required":true,"unique":true}],
-//       "products":				[{"contexts":"delete","maxCollection":0}],
-//       "childProductTypes":	[{"contexts":"delete","maxCollection":0}],
-//       "systemCode":			[{"contexts":"delete","maxLength":0}],
-//       "physicalCounts":		[{"contexts":"delete","maxCollection":0}]
-//     }
-//   }
-//
-// WHERE ENFORCEMENT LIVES, AND WHY IT IS NOT ASSERTED HERE. Declarative rules become typed
-// schemas at the SERVICE tier, not on the entity: an entity that validated itself would need the
-// uniqueness query, and a domain object reaching a repository is exactly what the layer boundary
-// forbids. So this block asserts (a) the rule set as a documented contract and (b) that the
-// entity ships no validation surface at all. No schema library is asserted from this tier.
-//
-// THE `systemCode` GATE IS THE ODD ONE, and getting it wrong would be a silent category error:
-// it is `maxLength: 0`, a STRING-LENGTH gate, where the other three delete gates are
-// `maxCollection: 0`, COLLECTION-SIZE gates. It is the only length-based delete gate in the
-// folder. Its practical effect is a real business rule: a product type carrying ANY system code
-// is undeletable, because system codes mark the rows the application itself depends on.
-//
-// ZERO DECLARATIVELY-INVOKED VALIDATORS. The file has no `"method"` key anywhere, so `ProductType`
-// contributes none of the five entity-method validators that exist project-wide:
-// `Sku.hasUniqueOptions`, `Sku.hasOneOptionPerOptionGroup`,
-// `RoundingRule.hasExpressionWithListOfNumericValuesOnly`,
-// `Promotion.getPromotionCodesDeletableFlag` and `PromotionCode.hasUniquePromotionCode`.
-//
-// Folder-wide, verified first-hand: the in-scope validation split is 15 PRESENT / 6 ABSENT. The
-// AAP's figure of 12 present is STALE - source wins - and the six absences are Category,
-// PromotionQualifier, PromotionApplied, PromotionAccount, Product_AddOption and
-// Product_AddOptionGroup. `model/validation/` holds 96 `.json` files in total.
-// ===========================================================================
+// The `systemCode` GATE is the ODD one, and getting it wrong would be a silent category error: it
+// is `maxLength: 0`, a STRING-LENGTH gate, where the other three delete gates are
+// `maxCollection: 0`.
 
 describe('ProductType - the declarative validation contract (B8)', () => {
-  // The rule set as data, transcribed from the ten-line source file. Characterization only: this
-  // is the contract the service tier implements, recorded where a reviewer can check it against
-  // the entity surface it constrains.
   const SAVE_REQUIRED = ['productTypeName', 'urlTitle'] as const;
   const SAVE_UNIQUE = ['urlTitle'] as const;
   const DELETE_MAX_COLLECTION = ['products', 'childProductTypes', 'physicalCounts'] as const;
@@ -1902,11 +1365,11 @@ describe('ProductType - the declarative validation contract (B8)', () => {
 
     it('marks urlTitle unique, matching unique="true" on the property at [L56]', () => {
       // The declarative rule and the ORM column constraint agree, which is worth pinning because
-      // they are declared in two different files and could drift: [L56] carries `unique="true"`
-      // on the persistent property, and the validation file independently asserts `"unique":true`.
+      // they are declared in two different files and could drift:
+      // [model/entity/ProductType.cfc:L56] carries `unique="true"` on the persistent property.
       expect(SAVE_UNIQUE).toStrictEqual(['urlTitle']);
       expect(SAVE_REQUIRED).toContain('urlTitle');
-      // Uniqueness applies to `urlTitle` alone. `systemCode` is NOT declared unique anywhere,
+      // Uniqueness applies to `urlTitle` alone. `systemCode` is not declared unique anywhere,
       // despite being the identifier the application keys behaviour off.
       expect(SAVE_UNIQUE).not.toContain('systemCode');
       expect(SAVE_UNIQUE).not.toContain('productTypeName');
@@ -1915,28 +1378,14 @@ describe('ProductType - the declarative validation contract (B8)', () => {
     it('leaves both nullable-on-read even though they are required on save', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // REQUIRED-ON-SAVE IS NOT NON-NULL-ON-READ, and conflating them would have produced a
-      // dishonest type. Rows predating the rule, partially-hydrated projections and freshly
-      // constructed instances all legitimately carry neither value - which is exactly why
-      // `getSimpleRepresentation()` can return `undefined` (B7).
+      // required-on-save is not non-null-on-read, and conflating them would have produced a
+      // dishonest type.
       expect(subject.getProductTypeName()).toBeUndefined();
       expect(subject.getUrlTitle()).toBeUndefined();
     });
 
     it('★ publishes setUrlTitle, so the resolved title is on the column BEFORE the save context reads it', () => {
-      // ★★ THE SETTER EXISTS BECAUSE THE SAVE ORDER REQUIRES IT, NOT FOR SYMMETRY WITH THE GETTER.
-      // `model/validation/ProductType.json` declares `urlTitle` `{"contexts":"save","required":true,
-      // "unique":true}`, and `super.save(productType, data)`
-      // [model/service/ProductService.cfc:L303] runs populate FIRST
-      // [org/Hibachi/HibachiService.cfc:L145], validate SECOND [L150] and persists only on a clean
-      // entity [L153-L155]. So the title `saveProductType` resolves at [L297]/[L299] has to reach
-      // this column before validation looks - and with no setter the resolved value had nowhere to
-      // land, which made the required rule unsatisfiable for every product type whose title was
-      // generated rather than submitted.
-      //
-      // §0.6 budgets this file at ZERO widenings, reshapings and divergences, and none is spent
-      // here: §2 and §6.3 positively MANDATE authoring the ORM-implicit members the ported slice
-      // concretely reaches, exactly as `setProductTypeIDPath` and `addProduct` already are.
+      // §0.6 budgets this file at ZERO widenings, reshapings and divergences.
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('setUrlTitle');
@@ -1952,11 +1401,7 @@ describe('ProductType - the declarative validation contract (B8)', () => {
 
       expect(subject.getUrlTitle()).toBe('branded-apparel-2');
 
-      // ⚠ AND IT PERFORMS NO UNIQUENESS PROBE, because the source performs none either. `unique`
-      // [model/entity/ProductType.cfc:L56] is a database guarantee, and the de-duplicating work
-      // belonged to `createUniqueURLTitle` behind the URL-title generator port at the service tier.
-      // Two instances may therefore hold the same title in memory, and asserting that here keeps a
-      // later revision from quietly adding an in-entity probe the legacy never had.
+      // And it performs no uniqueness probe, because the source performs none either.
       const other = new ProductType({ productTypeID: 'pt-2' });
       other.setUrlTitle('branded-apparel-2');
 
@@ -1987,16 +1432,15 @@ describe('ProductType - the declarative validation contract (B8)', () => {
       const withoutCode = new ProductType({ productTypeID: 'pt-2' });
       const withEmptyCode = new ProductType({ productTypeID: 'pt-3', systemCode: '' });
 
-      // THE DISTINCTION, ASSERTED STRUCTURALLY. `systemCode` is a STRING, so a collection-size
-      // gate would be a category error - there is no collection to count. The two rule sets are
-      // disjoint, and `systemCode` belongs only to the length-based one.
+      // The distinction, asserted structurally. `systemCode` is a string, so a collection-size
+      // gate would be a category error - there is no collection to count.
       expect(DELETE_MAX_LENGTH).toStrictEqual(['systemCode']);
       expect(DELETE_MAX_COLLECTION).not.toContain('systemCode');
       expect(Array.isArray(withCode.getSystemCode())).toBe(false);
 
       // The business consequence: a system-coded product type is undeletable, an uncoded one is
       // not blocked by this gate, and an empty-string code has length zero so it does not block
-      // either - the same empty-versus-absent nuance that runs through this whole component.
+      // either.
       expect(withCode.getSystemCode()).toBe('merchandise');
       expect((withCode.getSystemCode() ?? '').length > 0).toBe(true);
       expect((withoutCode.getSystemCode() ?? '').length).toBe(0);
@@ -2005,8 +1449,7 @@ describe('ProductType - the declarative validation contract (B8)', () => {
 
     it('carries the orphaned physicalCounts gate alongside the three real ones', () => {
       // Cross-referenced with B6 rather than re-argued: the gate is real in the file and dead in
-      // effect, because no `physicalCounts` property exists on this entity. It is listed in the
-      // rule set because the rule set is transcribed faithfully, not curated.
+      // effect, because no `physicalCounts` property exists on this entity.
       expect(DELETE_MAX_COLLECTION).toContain('physicalCounts');
       expect(DELETE_MAX_COLLECTION).not.toContain('physicals');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getPhysicalCounts');
@@ -2026,10 +1469,9 @@ describe('ProductType - the declarative validation contract (B8)', () => {
     it('declares no rule for the boolean flags or the materialized path', () => {
       const allGatedProperties = [...SAVE_REQUIRED, ...DELETE_MAX_COLLECTION, ...DELETE_MAX_LENGTH];
 
-      // `activeFlag` [L54] and `publishedFlag` [L55] carry no ORM default AND no validation rule -
-      // the pair of absences that makes their hydration behaviour a real question, settled in B9.
-      // `productTypeIDPath` [L53] is unvalidated too, including its 4000-character bound, which is
-      // why B1 asserts the entity performs no truncation of its own.
+      // `activeFlag` [model/entity/ProductType.cfc:L54] and `publishedFlag`
+      // [model/entity/ProductType.cfc:L55] carry no ORM default and no validation rule - the pair
+      // of absences that makes their hydration behaviour a real question, settled in B9.
       for (const ungated of ['activeFlag', 'publishedFlag', 'productTypeIDPath']) {
         expect(allGatedProperties).not.toContain(ungated);
       }
@@ -2038,10 +1480,10 @@ describe('ProductType - the declarative validation contract (B8)', () => {
     it('declares no gate for the attribute or price-group-rate collections', () => {
       const allGatedProperties = [...SAVE_REQUIRED, ...DELETE_MAX_COLLECTION, ...DELETE_MAX_LENGTH];
 
-      // Notably ungated despite `cascade="all-delete-orphan"` on `attributeValues` [L67], and
-      // despite this being the only in-scope entity holding BOTH sides of the price-group-rate
-      // relation [L74 include, L75 exclude]. Deleting a product type therefore silently detaches
-      // its rate links. Recorded as an absence, NOT filled in.
+      // Notably ungated despite `cascade="all-delete-orphan"` on `attributeValues`
+      // [model/entity/ProductType.cfc:L67], and despite this being the only in-scope entity holding
+      // both sides of the price-group-rate relation - [model/entity/ProductType.cfc:L74] includes and
+      // [model/entity/ProductType.cfc:L75] excludes.
       for (const ungated of [
         'attributeValues',
         'attributeSets',
@@ -2057,22 +1499,11 @@ describe('ProductType - the declarative validation contract (B8)', () => {
     it('ships no validation ENFORCEMENT on the entity, but does carry the error REGISTER', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // ENFORCEMENT belongs to the service tier, and that part is unchanged. An entity that validated
-      // itself would need the uniqueness query for `urlTitle`, and a domain object reaching a
-      // repository is precisely what the ESLint layer boundary makes impossible.
+      // ENFORCEMENT belongs to the service tier, and that part is unchanged.
       for (const absent of ['validate', 'setErrors', 'getValidations', 'getValidationProperties']) {
         expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain(absent);
       }
       expect(Reflect.get(subject, 'validate')).toBeUndefined();
-
-      // ★★★ THE REGISTER IS A DIFFERENT THING FROM ENFORCEMENT, AND THIS CASE USED TO CONFLATE THEM.
-      // `hasErrors` and `getErrors` were in the list above. They are not validators - they are the
-      // five-member channel [org/Hibachi/HibachiTransient.cfc:L30-L64] through which
-      // `HibachiService.save` DELIVERS a refusal: it validates, skips the flush when `hasErrors()`,
-      // and returns THE SAME ENTITY either way [org/Hibachi/HibachiService.cfc:L151-L167]. With no
-      // register the ported `saveProductType` had nowhere to put a refused rule and threw instead,
-      // which is the divergence code review recorded. The service still decides WHICH rules fail; the
-      // entity only carries the answer.
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('getErrors');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('hasErrors');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('hasError');
@@ -2086,8 +1517,7 @@ describe('ProductType - the declarative validation contract (B8)', () => {
 
     it('contributes none of the five declaratively-invoked entity validators', () => {
       // The source file has no `"method"` key at all, so there is nothing on this entity for a
-      // rule to invoke. Each of the five is named and excluded individually, because inventing any
-      // of them here would fabricate a validation capability the schema never asked for.
+      // rule to invoke.
       for (const validator of [
         'hasUniqueOptions',
         'hasOneOptionPerOptionGroup',
@@ -2119,58 +1549,11 @@ describe('ProductType - the declarative validation contract (B8)', () => {
   });
 });
 
-// ===========================================================================
-// B9. STRUCTURAL FACTS, THE FOUR-ARGUMENT `replace` CONTROL, AND THE OMISSIONS
+// B9. Structural facts, the four-argument `replace` control, and the omissions.
 //
-// SCHEMA CONTINUITY [C5]. Table `SwProductType` [L49] and all EIGHT many-to-many link tables
-// travel forward verbatim, abbreviations intact - no name is expanded, "corrected" or migrated:
-//
-//   L70 promotionRewards            -> SwPromoRewardProductType
-//   L71 promotionRewardExclusions   -> SwPromoRewardExclProductType      (type="array")
-//   L72 promotionQualifiers         -> SwPromoQualProductType
-//   L73 promotionQualifierExclusions-> SwPromoQualExclProductType        (type="array")
-//   L74 priceGroupRates             -> SwPriceGroupRateProductType
-//   L75 priceGroupRateExclusions    -> SwPriceGrpRateExclProductType     <- ABBREVIATED
-//   L76 attributeSets               -> SwAttributeSetProductType         (type="array")
-//   L77 physicals                   -> SwPhysicalProductType             (type="array")
-//
-// `SwPriceGrpRateExclProductType` reads like a typo and is not: `SwPriceGroupRateExclProductType`
-// would be 31 characters, and the abbreviation is how the name fits. Expanding it would point the
-// port at a table that does not exist. THIS IS THE ONLY IN-SCOPE ENTITY HOLDING BOTH SIDES of the
-// price-group-rate relation - the include at [L74] and the exclude at [L75].
-//
-// CFML parity, annotated and NEVER normalised:
-//   - [L49] declares NEITHER `output=false` NOR `accessors=true`, and quotes `persistent="true"`
-//     where siblings leave it bare. Every other in-scope entity sets both attributes.
-//   - `type="array"` appears on FOUR of the eight link collections only - L71, L73, L76, L77 -
-//     with L70, L72, L74 and L75 omitting it. The inconsistency is cosmetic in CFML and is
-//     recorded rather than harmonised.
-//   - [L248]/[L257] spell the banner "Overridden Implecet Getters" - "Implecet" for "Implicit".
-//     Framework boilerplate that recurs repository-wide; the FOURTH instance within this
-//     in-scope subset, alongside PromotionCode.cfc:L165, PromotionQualifier.cfc:L349 and
-//     PriceGroup.cfc:L193.
-//   - [L259]/[L269] carry "Overridden Smart List Getters", a banner name unique to this file.
-//   - FOUR METHODS SIT OUTSIDE EVERY BANNER at [L92-L119] - getInheritedAttributeSetAssignments,
-//     setProducts, getBaseProductType and getAppliedPriceGroupRateByPriceGroup - because the
-//     first banner does not open until [L121].
-//
-// THE FOUR-ARGUMENT `replace` AT [L292], cited as a CONTROL and not re-asserted here:
-//   L292:  ... #replace(getProductTypeIDPath(), ",", "','", "all")# ...
-// The fourth argument `"all"` is what makes it replace EVERY delimiter. CFML `replace()` defaults
-// to `"one"`, so the three-argument form at model/entity/PriceGroupRate.cfc:L132 and L158 rewrites
-// only the FIRST comma - defect D45. This file having got it right, in the same folder, is the
-// evidence that the three-argument sites are a mistake rather than a convention. D45 belongs to
-// `priceGroupRate.test.ts`; the control is cited here, and nothing about D45 is asserted.
-//
-// THE SIX `getService()` SITES - L94 "AttributeService", L112 "ProductService",
-// L118 "priceGroupService", L129 "productService", L263 "productService", L283 "attributeService".
-// FOUR DIFFERENT CASINGS across the six, and two of them name the same service twice with
-// different capitalization - stronger than the "three casings" the upstream note claims, because
-// CFML component lookup is case-insensitive so nothing ever forced consistency. Third-highest
-// count of the eighteen in-scope entities, behind Sku (19) and Product (18); the folder census is
-// 45. NOT ONE survives: each becomes an injected port, a documented omission or a preserved
-// failure, and the port ledger stays at THIRTEEN.
-// ===========================================================================
+// CFML parity, annotated and never normalised: - [model/entity/ProductType.cfc:L49] declares
+// neither `output=false` NOR `accessors=true`, and quotes `persistent="true"` where siblings leave
+// it bare.
 
 describe('ProductType - structural facts and documented omissions (B9)', () => {
   describe('identity and the honest isNew()', () => {
@@ -2178,9 +1561,8 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       const fresh = new ProductType({ productTypeID: '' });
       const persisted = new ProductType({ productTypeID: '444df2f7ea9c87e60051f3cd87b435a1' });
 
-      // [L52] declares `unsavedvalue="" default=""`, so an unsaved row genuinely carries `''` -
-      // not null, not a placeholder UUID. That is what makes `isNew()` honest rather than a guess,
-      // and it is the same `''` the primary-key probes fall back to reference comparison for.
+      // [model/entity/ProductType.cfc:L52] declares `unsavedvalue="" default=""`, so an unsaved
+      // row genuinely carries `''` - not null, not a placeholder UUID.
       expect(fresh.getProductTypeID()).toBe('');
       expect(fresh.isNew()).toBe(true);
       expect(persisted.isNew()).toBe(false);
@@ -2190,20 +1572,14 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       const withRemote = new ProductType({ productTypeID: 'pt-1', remoteID: 'legacy-erp-4471' });
       const withoutRemote = new ProductType({ productTypeID: 'pt-2' });
 
-      // [L80] `remoteID` is the external-system correlation column. Persisted, read-only from this
-      // entity's perspective, and never defaulted - an absent one is `undefined`.
+      // [model/entity/ProductType.cfc:L80] `remoteID` is the external-system correlation column.
+      // Persisted, read-only from this entity's perspective, and never defaulted - an absent one
+      // is `undefined`.
       expect(withRemote.getRemoteID()).toBe('legacy-erp-4471');
       expect(withoutRemote.getRemoteID()).toBeUndefined();
     });
 
     it('exposes productTypeDescription the same way, carrying a value of the full declared width', () => {
-      // ★★★ THIS COLUMN HAD NO BEHAVIOURAL COVERAGE AT ALL, which a code review measured: nothing in
-      // this suite named it and the repository suite hydrated it as `null` in every row, so a
-      // hydration that dropped it or an accessor wired to the wrong field would have passed
-      // everywhere. It is a real persisted column [model/entity/ProductType.cfc:L58] declared
-      // `length="4000"`, and the Google feed reads it - `len(productType.getProductTypeDescription())`
-      // decides whether the feed emits a description at all - so an accessor that answered
-      // `undefined` for a populated row would silently strip descriptions from the product feed.
       const described = new ProductType({
         productTypeID: 'pt-1',
         productTypeDescription: 'Screen-printed apparel, decorated to order.',
@@ -2215,8 +1591,9 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       );
       expect(undescribed.getProductTypeDescription()).toBeUndefined();
 
-      // AT THE DECLARED WIDTH, because 4,000 characters is what the column accepts and nothing here
-      // truncates: the entity is a faithful carrier, and any length policy belongs to the schema.
+      // At the DECLARED WIDTH, because 4,000 characters is what the column accepts and nothing
+      // here truncates: the entity is a faithful carrier, and any length policy belongs to the
+      // schema.
       const atDeclaredWidth = 'D'.repeat(4000);
       const wide = new ProductType({
         productTypeID: 'pt-3',
@@ -2226,9 +1603,8 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       expect(wide.getProductTypeDescription()).toBe(atDeclaredWidth);
       expect(wide.getProductTypeDescription()).toHaveLength(4000);
 
-      // The EMPTY STRING is a third, distinct state - a persisted-but-blank description - and it is
-      // preserved rather than folded into absence, because `len(...)` in the feed reader
-      // distinguishes them and so must this accessor.
+      // The EMPTY STRING is a third, distinct state - a persisted-but-blank description - and it
+      // is preserved rather than folded into absence.
       const blank = new ProductType({ productTypeID: 'pt-4', productTypeDescription: '' });
 
       expect(blank.getProductTypeDescription()).toBe('');
@@ -2240,12 +1616,9 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
     it('resolves an absent flag to false, matching the ORM default the column lacks', () => {
       const absent = new ProductType({ productTypeID: 'pt-1' });
 
-      // [L54] and [L55] are `ormtype="boolean"` with NO `default` attribute and no validation rule,
-      // so SQL NULL is an EXPECTED hydration value rather than a data error. The persisted-flag
-      // boundary resolves it to false - "this product type is not active" - which is the answer the
-      // legacy produced too, and the reason the accessors return `boolean` rather than
-      // `boolean | undefined`. ASSERTING THE SHIPPED REALITY, which corrects the upstream
-      // expectation of an optional return.
+      // [model/entity/ProductType.cfc:L54] and [model/entity/ProductType.cfc:L55] are
+      // `ormtype="boolean"` with no `default` attribute and no validation rule, so SQL NULL is an
+      // EXPECTED hydration value rather than a data error.
       expect(absent.getActiveFlag()).toBe(false);
       expect(absent.getPublishedFlag()).toBe(false);
       expect(typeof absent.getActiveFlag()).toBe('boolean');
@@ -2259,15 +1632,14 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       });
 
       // Absent-versus-null is a distinction that matters for the PATH memo [B1] and deliberately
-      // does NOT matter here: both are "no flag stored", and both resolve to false.
+      // does not matter here: both are "no flag stored", and both resolve to false.
       expect(nulled.getActiveFlag()).toBe(false);
       expect(nulled.getPublishedFlag()).toBe(false);
     });
 
     it('resolves the numeric and string forms a MySQL boolean column can hydrate as', () => {
       // The driver may hand back `0`/`1` for a TINYINT, or `'0'`/`'1'` for a string-typed column,
-      // and CFML accepted `'true'`/`'false'` as boolean literals. Every form is pinned, because a
-      // flag misread here silently unpublishes a product type or activates a retired one.
+      // and CFML accepted `'true'`/`'false'` as boolean literals.
       const cases: readonly { readonly stored: CfmlBooleanColumn; readonly expected: boolean }[] = [
         { stored: true, expected: true },
         { stored: false, expected: false },
@@ -2311,10 +1683,8 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       const child = new ProductType({ productTypeID: 'pt-child', parentProductType: root });
       const orphan = new ProductType({ productTypeID: 'pt-orphan' });
 
-      // [L62] is nullable - a root product type has no parent - and carries NO `hb_optionsNullRBKey`,
-      // unlike model/entity/PriceGroup.cfc:L59. That attribute only ever fed an admin select box's
-      // empty-choice label, so its absence changes no domain behaviour and NO placeholder option is
-      // fabricated to stand in for it.
+      // [model/entity/ProductType.cfc:L62] is nullable - a root product type has no parent - and
+      // carries no `hb_optionsNullRBKey`, unlike model/entity/PriceGroup.cfc:L59.
       expect(child.getParentProductType()).toBe(root);
       expect(orphan.getParentProductType()).toBeUndefined();
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getParentProductTypeOptionsNullLabel');
@@ -2330,8 +1700,7 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       const unaudited = new ProductType({ productTypeID: 'pt-2' });
 
       // Every business-date literal in this suite is an explicit UTC ISO-8601 string, and an
-      // ABSENT timestamp stays `undefined`. `new Date(0)` would render as 1 January 1970 and read
-      // as a real audit trail - a fabricated value that looks like data.
+      // ABSENT timestamp stays `undefined`.
       expect(audited.getCreatedDateTime()).toStrictEqual(created);
       expect(audited.getCreatedDateTime()?.toISOString()).toBe('2014-03-11T17:42:05.000Z');
       expect(audited.getCreatedByAccountID()).toBe('acct-7');
@@ -2343,10 +1712,8 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
     it('reduces the audit account associations to opaque identifier strings', () => {
       const subject = new ProductType({ productTypeID: 'pt-1', modifiedByAccountID: 'acct-9' });
 
-      // [L84] and [L86] declare `cfc="Account"` many-to-one associations. `Account` is out of
-      // scope in its entirety, so the port keeps the foreign KEY and drops the association - the
-      // same anti-corruption move the promotion engine makes for order identifiers. Preserving the
-      // column preserves schema continuity without dragging an out-of-scope aggregate inward.
+      // [model/entity/ProductType.cfc:L84] and [model/entity/ProductType.cfc:L86] declare
+      // `cfc="Account"` many-to-one associations.
       expect(subject.getModifiedByAccountID()).toBe('acct-9');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getModifiedByAccount');
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getCreatedByAccount');
@@ -2363,10 +1730,9 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
         priceGroupRateExclusions: [excluded],
       });
 
-      // [L74] `SwPriceGroupRateProductType` and [L75] `SwPriceGrpRateExclProductType` are two
-      // distinct link tables, and this is the only in-scope entity that carries both. Conflating
-      // them would invert an exclusion into an inclusion and change which rate applies - it would
-      // change price.
+      // [model/entity/ProductType.cfc:L74] `SwPriceGroupRateProductType` and
+      // [model/entity/ProductType.cfc:L75] `SwPriceGrpRateExclProductType` are two distinct link
+      // tables, and this is the only in-scope entity that carries both.
       expect(subject.getPriceGroupRates()).toStrictEqual([included]);
       expect(subject.getPriceGroupRateExclusions()).toStrictEqual([excluded]);
       expect(subject.getPriceGroupRates()).not.toContain(excluded);
@@ -2376,10 +1742,9 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
     it('defaults every materialized link collection to an empty array', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // Six of the eight link collections are materialized; `attributeSets` [L76] and `physicals`
-      // [L77] are not, per B4 and B6. An absent collection is EMPTY, never `undefined` - the
-      // legacy ORM handed back an empty array too, and `defaults_are_correct` in
-      // meta/tests/unit/entity/SlatwallEntityTestBase.cfc rests on exactly that.
+      // Six of the eight link collections are materialized; `attributeSets`
+      // [model/entity/ProductType.cfc:L76] and `physicals` [model/entity/ProductType.cfc:L77] are
+      // not, per B4 and B6.
       expect(subject.getPromotionRewards()).toStrictEqual([]);
       expect(subject.getPromotionRewardExclusions()).toStrictEqual([]);
       expect(subject.getPromotionQualifiers()).toStrictEqual([]);
@@ -2394,12 +1759,9 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       const alpha = makeProductFixture({ productID: 'prod-alpha' });
       const subject = new ProductType({ productTypeID: 'pt-1', products: [alpha] });
 
-      // [L66] carries `lazy="extra"`, Hibernate's count-without-loading optimisation, while
-      // Product.cfc's `brand`/`productType`/`defaultSku` are eager `fetch="join"`. NEITHER hint
-      // survives: with no ORM there is no laziness to configure, so fetch shape becomes an
-      // explicit CORRECTNESS decision made once per repository method and documented there. What
-      // the entity receives is an already-resolved array - which is also what removes the implicit
-      // N+1 that unbounded graph walking created.
+      // [model/entity/ProductType.cfc:L66] carries `lazy="extra"`, Hibernate's
+      // count-without-loading optimisation, while Product.cfc's `brand`/`productType`/`defaultSku`
+      // are eager `fetch="join"`.
       const products: readonly Product[] = subject.getProducts();
       expect(Array.isArray(products)).toBe(true);
       expect(products).toHaveLength(1);
@@ -2407,36 +1769,14 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
     });
   });
 
-  // ★ THE EXCLUSION PAIR - THE ONE HELPER PAIR IN THIS ENTITY THAT MAINTAINS ITS OWN SIDE
-  //
-  //   215: 	public void function addPriceGroupRateExclusion(required any priceGroupRate) {
-  //   216: 		arguments.priceGroupRate.addExcludedProductType( this );
-  //   217: 	}
-  //   218: 	public void function removePriceGroupRateExclusion(required any priceGroupRate) {
-  //   219: 		arguments.priceGroupRate.removeExcludedProductType( this );
-  //   220: 	}
+  // The exclusion pair - the one helper pair in this entity that maintains its own side.
   //
   // CFML parity [model/entity/ProductType.cfc:L215-L220, model/entity/PriceGroupRate.cfc:L75]: the
   // legacy bodies delegate to `addExcludedProductType` / `removeExcludedProductType`, and
-  // model/entity/PriceGroupRate.cfc hand-writes helpers for its three INCLUDED collections ONLY -
-  // `addProductType` / `removeProductType` at L199 / L207 among them - and NONE for its three
-  // `excluded*` collections. So both legacy calls resolve to the ORM-GENERATED accessors for
-  // `excludedProductTypes singularname="excludedProductType"` [model/entity/PriceGroupRate.cfc:L75],
-  // which is `inverse="true"`, and a generated accessor on an inverse collection mutates only the
-  // in-memory array on the side it was called against. The port therefore maintains THIS entity's
-  // own `priceGroupRateExclusions` array and invents no member on `PriceGroupRate`, whose ported
-  // surface exposes `getExcludedProductTypes()` as a readonly view with no adder.
+  // model/entity/PriceGroupRate.cfc hand-writes helpers for its three INCLUDED collections only -
+  // `addProductType` / `removeProductType` at L199 / L207 among them.
   //
-  // This pair is the CONTRAST to the include pair asserted above: `addPriceGroupRate` [L207-L209]
-  // and `removePriceGroupRate` [L210-L212] delegate to a real far-side helper that maintains BOTH
-  // sides, while these two maintain one. Both are faithful; the difference is a property of the
-  // legacy far side, not a choice made here.
-  //
-  // NO `LEGACY-DEFECT` MARKER IS WARRANTED. Neither body is inverted - L216 calls an `add*` and L219
-  // calls a `remove*` - so the inversion cross-check verdict for this pair is CLEAN, unlike
-  // [model/entity/Option.cfc:L129-L131], whose `removePromotionRewardExclusion` calls
-  // `addExcludedOption`. The canonical register (see the index in
-  // `tests/unit/domain/entities/promotionReward.test.ts`) carries no entry against either helper.
+  // No `LEGACY-DEFECT` marker is warranted.
   describe('the price-group-rate exclusion helpers', () => {
     it('adds the first exclusion onto this entity own array, leaving the include side empty', () => {
       const rate: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-excluded' });
@@ -2444,9 +1784,9 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
 
       subject.addPriceGroupRateExclusion(rate);
 
-      // The near side gains the reference; the include collection [L74] is untouched, because
-      // conflating the two link tables would invert an exclusion into an inclusion and change
-      // which rate applies - it would change price.
+      // The near side gains the reference; the include collection
+      // [model/entity/ProductType.cfc:L74] is untouched, because conflating the two link tables
+      // would invert an exclusion into an inclusion and change which rate applies.
       expect(subject.getPriceGroupRateExclusions()).toStrictEqual([rate]);
       expect(subject.getPriceGroupRates()).toStrictEqual([]);
     });
@@ -2469,12 +1809,6 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
       subject.addPriceGroupRateExclusion(rate);
-
-      // The anti-contract, asserted rather than assumed: `addExcludedProductType` and
-      // `removeExcludedProductType` are ABSENT from the ported `PriceGroupRate` surface, and its
-      // excluded-product-type view stays empty. Reproducing the legacy delegation literally would
-      // have required inventing those two members on a sibling entity - which is why the
-      // maintenance sits here instead.
       const rateMembers: readonly string[] = Object.getOwnPropertyNames(
         Object.getPrototypeOf(rate) as object,
       );
@@ -2504,11 +1838,9 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
 
       subject.removePriceGroupRateExclusion(stranger);
 
-      // The guard is `!== -1`, NOT the `> 0` the legacy `arrayFind` convention would suggest:
+      // The guard is `!== -1`, not the `> 0` the legacy `arrayFind` convention would suggest:
       // `arrayFind` is 1-based and answers 0 for "not found", while `indexOf` is 0-based and
-      // answers -1, so carrying `> 0` across would silently skip element 0 - the first exclusion on
-      // the entity. Removing an unheld rate changes nothing and raises nothing, exactly as the
-      // legacy no-op did.
+      // answers -1, so carrying `> 0` across would silently skip element.
       expect(subject.getPriceGroupRateExclusions()).toStrictEqual([held]);
       expect(() => subject.removePriceGroupRateExclusion(stranger)).not.toThrow();
     });
@@ -2519,12 +1851,7 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
       // JUDGMENT CALL: this pins the SHIPPED matching rule rather than the rule the sibling
-      // primary-key comparisons use. `addPriceGroupRateExclusion` guards with `includes` and
-      // `removePriceGroupRateExclusion` locates with `indexOf`, both reference comparisons, which is
-      // what the ORM-generated accessor on the far side did when handed the same object twice
-      // within one request. It is recorded as a `CFML parity` fact and NOT as a defect: no register
-      // entry exists for it, and manufacturing a marker where the port made a documented choice
-      // would corrupt the register the same way a stale count does.
+      // primary-key comparisons use.
       expect(first).not.toBe(second);
       subject.addPriceGroupRateExclusion(first);
       subject.addPriceGroupRateExclusion(second);
@@ -2539,13 +1866,10 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
     it('omits all three smart-list members', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // `getParentProductTypeOptions` [L122+, via getPropertyOptionsSmartList],
-      // `getProductsSmartList` [L261-L267] and `getAssignedAttributeSetSmartList` [L280-L299].
-      // All three build a `HibachiSmartList` - a generic string-keyed dynamically-filtered query
-      // builder from the framework. Porting one would mean reimplementing a small ORM query
-      // language inside a domain entity: untypeable under the strict profile, and a reintroduction
-      // of exactly the framework coupling this refactor removes. Replaced project-wide by explicit
-      // typed repository queries owned by the service and repository tiers.
+      // `getParentProductTypeOptions` [model/entity/ProductType.cfc:L122], which reaches the
+      // framework's property-options smart list,
+      // `getProductsSmartList` [model/entity/ProductType.cfc:L261-L267] and
+      // `getAssignedAttributeSetSmartList` [model/entity/ProductType.cfc:L280-L299].
       for (const omitted of [
         'getParentProductTypeOptions',
         'getProductsSmartList',
@@ -2558,9 +1882,7 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
     });
 
     it('invents no query-builder or filter surface in their place', () => {
-      // The omission is an omission, not a substitution. A "small" filter helper on the entity
-      // would be the first step back toward a smart list, and it would sit on the wrong side of
-      // the layer boundary the moment it needed to reach data.
+      // The omission is an omission, not a substitution.
       for (const member of PRODUCT_TYPE_PROTOTYPE_MEMBERS) {
         expect(member).not.toMatch(/SmartList$/);
         expect(member).not.toMatch(/^addLikeFilter|^addFilter|^addOrder/);
@@ -2570,11 +1892,9 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
     it('retains no service-locator call site of any kind', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
-      // All SIX legacy `getService()` sites are gone - L94 and L283 with the omitted attribute
+      // All six legacy `getService()` sites are gone - L94 and L283 with the omitted attribute
       // members, L129 and L263 with the omitted smart lists, L112 replaced by the injected
-      // `productTypeRepository`, and L118 preserved as a throw that never reaches a service. An
-      // entity resolving a collaborator by string name is transformation rule T2's target, and its
-      // absence is what the ESLint layer boundary makes permanent.
+      // `productTypeRepository`.
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('getService');
       expect(Reflect.get(subject, 'getService')).toBeUndefined();
       expect(Reflect.get(subject, 'getHibachiScope')).toBeUndefined();
@@ -2589,10 +1909,6 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
         productTypeIDPath: 'pt-root,pt-leaf',
         productTypeRepository: repository,
       });
-
-      // `productTypeRepository`, and nothing else. The one method that needs it is
-      // `getBaseProductType()`; every other reach-out was omitted or preserved as a failure. The
-      // ledger does not grow to accommodate this entity.
       return expect(subject.getBaseProductType()).resolves.toBe('merchandise');
     });
 
@@ -2600,10 +1916,7 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
 
       // org/Hibachi/HibachiEntity.cfc:L605 calls `writeDump(getErrors())` inside `preInsert`,
-      // writing raw entity errors to the response stream. It is NOT ported in any form - not as a
-      // logger call, not behind a debug flag. Under Lambda that output would land in a customer
-      // response body or a shared log stream, and `getErrors()` on a partially-populated entity is
-      // exactly the kind of payload that should never leave the process.
+      // writing raw entity errors to the response stream.
       for (const absent of ['writeDump', 'dump', 'debug', 'logErrors']) {
         expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain(absent);
       }
@@ -2613,35 +1926,11 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
 });
 
 describe('ProductType - the bidirectional helpers and the unsaved-row identity fallback (B10)', () => {
-  // WHY THIS BLOCK EXISTS.
-  //
-  // The blocks above assert the materialized path, the base-type walk, the rate lookup, the
-  // attribute-set non-port, request scoping, the EAV branch, the representation, validation and
-  // the structural census. None of them calls a single one of the fourteen link-collection
-  // helpers [model/entity/ProductType.cfc:L157-L220], and none reaches the unsaved-row branch of
-  // {@link ProductType.isSameRowAs} that every containment probe on this class routes through.
-  //
-  // Both matter for behaviour rather than for tidiness:
-  //
-  //   1. THE UNSAVED-ROW FALLBACK IS THE SAME RULE `priceGroupRate.remove*` AND
-  //      `priceGroup.removeParentPriceGroup` CARRY. Two distinct unsaved product types both hold
-  //      `''` as their identifier, so a probe that keyed on the identifier alone would report the
-  //      second one as already present. Hibernate compared session identity and never made that
-  //      mistake. Asserting it here means all three entities are pinned to ONE rule rather than
-  //      each being spot-checked in isolation.
-  //
-  //   2. TEN OF THE TWELVE HELPERS DELEGATE TO THE OWNING SIDE, AND A DELEGATION CAN BE INVERTED
-  //      WITHOUT FAILING TO COMPILE. `addPromotionReward` must call `addProductType` and
-  //      `removePromotionReward` must call `removeProductType`; swapping them type-checks
-  //      perfectly and silently reverses the link. The source's own sibling
-  //      `PriceGroupRate.removePromotionRewardExclusion` is the cautionary case, and each helper
-  //      here carries a "Verified NOT inverted" note. A note is a claim; the assertions below are
-  //      the check.
+  // Why this block exists.
 
   it('falls back to reference identity when either side of a containment probe is unsaved', () => {
-    // `hasChildProductType` [L802] is one of the two members that route through
-    // `isSameRowAs`. With BOTH sides unsaved, key comparison would answer `true` for any
-    // unsaved candidate; reference identity answers the real question.
+    // `hasChildProductType` `model/entity/ProductType.cfc` is one of the two members that route
+    // through `isSameRowAs`.
     const held: ProductType = new ProductType({ productTypeID: '' });
     const stranger: ProductType = new ProductType({ productTypeID: '' });
     const parent: ProductType = new ProductType({
@@ -2653,12 +1942,12 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
     expect(stranger.getProductTypeID()).toBe('');
 
     expect(parent.hasChildProductType(held)).toBe(true);
-    // ★ The assertion the branch exists for: an identical empty key is NOT the same row.
+    // The assertion the branch exists for: an identical empty key is not the same row.
     expect(parent.hasChildProductType(stranger)).toBe(false);
   });
 
   it('still answers a containment probe by primary key when both sides are saved', () => {
-    // The fallback is reached ONLY when a key is empty. A re-hydrated child - a different
+    // The fallback is reached only when a key is empty. A re-hydrated child - a different
     // JavaScript object carrying the same `SwProductType` key - must still answer `true`.
     const held: ProductType = new ProductType({ productTypeID: 'pt-child' });
     const parent: ProductType = new ProductType({
@@ -2672,8 +1961,7 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
 
   it('links and unlinks a product with set semantics, and leaves the inverse column alone', () => {
     // [model/entity/ProductType.cfc:L66] declares `products` with `singularname="product"`, and
-    // `Product.productType` is the owning side. So these helpers maintain THIS array only and
-    // must not write `product.productTypeID` - the inverse side owns that column.
+    // `Product.productType` is the owning side.
     const subject: ProductType = new ProductType({ productTypeID: 'pt-with-products' });
     const product: Product = makeProductFixture({ productID: 'product-linked' });
 
@@ -2687,17 +1975,17 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
     subject.removeProduct(product);
     expect(subject.getProducts()).toStrictEqual([]);
 
-    // A remove for a row that was never linked is a no-op, not a splice at index -1 - which
-    // would silently remove the LAST element.
+    // A remove for a row that was never linked is a no-op, not a splice at index -1 - which would
+    // silently remove the LAST element.
     subject.addProduct(product);
     subject.removeProduct(makeProductFixture({ productID: 'product-never-linked' }));
     expect(subject.getProducts()).toStrictEqual([product]);
   });
 
   it('separates two UNSAVED products, because the product helpers carry the same fallback', () => {
-    // `addProduct` [L964-L970] and `removeProduct` [L987-L993] each inline the same
-    // empty-key reference fallback rather than delegating to `isSameRowAs`, which compares
-    // product types. The rule is the same and is asserted the same way.
+    // `addProduct` `model/entity/ProductType.cfc` and `removeProduct`
+    // `model/entity/ProductType.cfc` each inline the same empty-key reference fallback rather than
+    // delegating to `isSameRowAs`, which compares product types.
     const subject: ProductType = new ProductType({ productTypeID: 'pt-unsaved-products' });
     const first: Product = makeProductFixture({ productID: '' });
     const second: Product = makeProductFixture({ productID: '' });
@@ -2714,9 +2002,6 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
 
   it('THROWS when removeParentProductType is called with no argument on a parentless type', () => {
     // A PRESERVED null dereference, not a target invention.
-    // [model/entity/ProductType.cfc:L159] resolves the parent and then dereferences it with no
-    // guard, so a parentless product type is a CFML null-reference error there too. The port
-    // throws rather than answering as though it had detached something.
     const orphan: ProductType = new ProductType({ productTypeID: 'pt-no-parent' });
 
     expect(orphan.getParentProductType()).toBeUndefined();
@@ -2726,13 +2011,8 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
   });
 
   it('detaches a child by delegating to the child, which owns the pointer', () => {
-    // `removeChildProductType` [L1346] calls `childProductType.removeParentProductType(this)`.
-    // The delegation is the whole implementation, so the assertion is that the CHILD's parent
-    // pointer clears - not merely that the call returned.
-    // Built through `makeAncestorChain` so the parent pointer is established the same way every
-    // other block in this file establishes it. `leafOf` is the suite's guarded last-element read;
-    // the parent is reached through the child rather than by indexing the chain, which keeps
-    // `noUncheckedIndexedAccess` satisfied without a non-null assertion.
+    // `removeChildProductType` `model/entity/ProductType.cfc` calls
+    // `childProductType.removeParentProductType(this)`.
     const chain: readonly ProductType[] = makeAncestorChain(['pt-root', 'pt-leaf']);
     const child: ProductType = leafOf(chain);
     const parent: ProductType | undefined = child.getParentProductType();
@@ -2765,7 +2045,8 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
 
     subject.removePromotionReward(reward);
     expect(reward.getProductTypes()).not.toContain(subject);
-    // The exclude side is a DISTINCT link table [L71] and is untouched by the include-side remove.
+    // The exclude side is a DISTINCT link table [model/entity/ProductType.cfc:L71] and is
+    // untouched by the include-side remove.
     expect(reward.getExcludedProductTypes()).toContain(subject);
 
     subject.removePromotionRewardExclusion(reward);
@@ -2795,7 +2076,7 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
 
   it('routes the INCLUDED price-group-rate helpers to the rate, which owns that link table', () => {
     // [model/entity/ProductType.cfc:L207-L212] delegates both directions to `PriceGroupRate`,
-    // which writes `SwPriceGroupRateProductType` [L74].
+    // which writes `SwPriceGroupRateProductType` [model/entity/ProductType.cfc:L74].
     const subject: ProductType = new ProductType({ productTypeID: 'pt-rate-linked' });
     const rate: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-b10' });
 
@@ -2807,11 +2088,7 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
   });
 
   it('maintains the EXCLUDED price-group-rate link on THIS side, inventing no member on the rate', () => {
-    // The one asymmetry in the twelve. `PriceGroupRate`'s ported surface exposes
-    // `getExcludedProductTypes()` as a readonly view with NO adder, so
-    // [model/entity/ProductType.cfc:L215-L220] is honoured by maintaining this entity's own
-    // `priceGroupRateExclusions` array - which is what the legacy call achieved on the one side
-    // it touched - rather than by inventing `addExcludedProductType` on the rate.
+    // The one asymmetry in the twelve.
     const subject: ProductType = new ProductType({ productTypeID: 'pt-rate-excluded' });
     const rate: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-excl-b10' });
 
@@ -2822,7 +2099,8 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
     subject.addPriceGroupRateExclusion(rate);
     expect(subject.getPriceGroupRateExclusions()).toHaveLength(1);
 
-    // The INCLUDED collection is a distinct link table [L74 versus L75] and stays empty.
+    // The INCLUDED collection is a distinct link table - [model/entity/ProductType.cfc:L74] against
+    // [model/entity/ProductType.cfc:L75] - and stays empty.
     expect(subject.getPriceGroupRates()).toStrictEqual([]);
 
     subject.removePriceGroupRateExclusion(rate);
@@ -2836,38 +2114,10 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
   });
 });
 
-// ===========================================================================
-// A CYCLIC PARENT CHAIN IS ACCEPTED, EXACTLY AS THE LEGACY SETTER ACCEPTS ONE
+// A cyclic parent chain is accepted, exactly as the legacy setter accepts one.
 //
-// NET-NEW coverage - `meta/tests/` contains no ProductType test at all - pinning legacy PARITY rather than a divergence.
-// The legacy setter at [model/entity/ProductType.cfc:L149-L153] validates nothing before assigning, and the
-// legacy walk at [org/Hibachi/HibachiEntity.cfc:L314-L321] carries no visited set
-// and no bound. Both are reproduced: this setter assigns whatever it is handed,
-// and a looping chain climbs forever here exactly as it climbs forever there.
-//
-// ★ THIS BLOCK ONCE ASSERTED THE OPPOSITE, AND THE RECORD BELONGS HERE. It ran
-// under the heading "CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED" and pinned a
-// throw from `setParentProductType` plus a `CyclicIdPathError` from the shared walk. Both
-// guards have been removed: a port reproduces rather than improves, and the
-// project's deliberate-divergence budget is closed at three - the un-`var`'d
-// `discountAmount` [model/service/PromotionService.cfc:L1007], the `amountOff`
-// branch routed through `Money` [model/service/PromotionService.cfc:L998], and the
-// entity memo defects in `sku.ts`/`product.ts`. None is spent in this folder.
-//
-// WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT. Every test below asserts that
-// the ASSIGNMENT is accepted and that both sides of the link are maintained. NONE
-// of them builds a path from a cyclic graph, because that call does not return -
-// asserting non-termination would hang the suite rather than prove anything. The
-// absence of the removed guards is proven where it can be proven safely, in
-// `tests/unit/domain/valueObjects/materializedIdPath.test.ts`, by a counting
-// parent accessor that stops the walk long after either guard would have fired.
-//
-// WHERE A TERMINATION DECISION DOES LIVE FOR THIS ENTITY: `hydrateWithAncestry`
-// in `mysqlProductTypeRepository.ts`, a hand-written recursive read with no legacy
-// antecedent, still raises `ProductTypeCycleError`. That guard is a fetch-shape
-// decision under transformation rule T3 and is asserted in that adapter's own
-// integration suite, not here.
-// ===========================================================================
+// NET-NEW coverage - `meta/tests/` contains no ProductType test at all - pinning legacy PARITY
+// rather than a divergence.
 
 describe('ProductType - a cyclic parent chain is accepted, per legacy parity (B10)', () => {
   it('accepts a product type as its own parent', () => {
@@ -2903,8 +2153,8 @@ describe('ProductType - a cyclic parent chain is accepted, per legacy parity (B1
   });
 
   it('maintains the far side when it closes a cycle, just as for any other parent', () => {
-    // The legacy guard at [model/entity/ProductType.cfc:L151] is a MEMBERSHIP test,
-    // not an acyclicity test, so a cycle-closing assignment appends like any other.
+    // The legacy guard at [model/entity/ProductType.cfc:L151] is a MEMBERSHIP test, not an
+    // acyclicity test, so a cycle-closing assignment appends like any other.
     const root = new ProductType({ productTypeID: 'pt-far-root' });
     const leaf = new ProductType({ productTypeID: 'pt-far-leaf' });
     leaf.setParentProductType(root);
@@ -2936,18 +2186,7 @@ describe('ProductType - a cyclic parent chain is accepted, per legacy parity (B1
     expect(reparented.getParentProductType()).toBe(newRoot);
     expect(reparented.getProductTypeIDPath()).toBe('pt-new-root,pt-movable-probe');
   });
-  // =========================================================================
-  // THE SAVE-REFUSAL CHANNEL - addError / hasErrors / getErrors
-  //
-  // NET-NEW COVERAGE (AAP 0.6.6), and the sibling of the block on
-  // `tests/unit/domain/entities/product.test.ts`. The members reproduce the framework base class this
-  // port does not carry [org/Hibachi/HibachiEntity.cfc:L134, L151 over
-  // org/Hibachi/HibachiErrors.cfc:L14-L60], because `ProductService.saveProductType` answers a REFUSED
-  // save by returning this entity with its failed rules on it - the protocol
-  // [org/Hibachi/HibachiService.cfc:L153-L167] states and a code review required restored - and because
-  // [model/service/ProductService.cfc:L306] reads `hasErrors()` off it before inheriting a parent's
-  // products.
-  // =========================================================================
+  // The save-refusal channel - addError / hasErrors / getErrors.
 
   it('reports NO errors on a freshly constructed product type', () => {
     const productType = new ProductType({ productTypeID: 'pt-clean-probe' });
@@ -2980,10 +2219,7 @@ describe('ProductType - a cyclic parent chain is accepted, per legacy parity (B1
 
     const messages = productType.getErrors()['urlTitle'];
 
-    // ★ FROZEN, SO THE WRITE IS REFUSED RATHER THAN ABSORBED. `getErrors()` freezes the projection
-    // and each message array, which is strictly stronger than handing back a mutable copy: this case
-    // asserts the write throws AND that the register is unchanged, where pushing onto a throwaway
-    // array would have proved only the second half.
+    // Frozen, so the write is refused rather than absorbed.
     expect(() => {
       (messages as string[]).push('injected by a caller');
     }).toThrow(TypeError);
@@ -3006,25 +2242,12 @@ describe('ProductType - a cyclic parent chain is accepted, per legacy parity (B1
   });
 });
 
-// ---------------------------------------------------------------------------
-// B11. The EXACT SOURCE SPELLINGS of the child-product-type helpers (F43)
-// ---------------------------------------------------------------------------
-
 describe('ProductType - the source-spelled child helpers, lowercase c (B11)', () => {
-  // ★★★ WHY THESE TWO NAMES EXIST AND WHY A TEST IS OWED THEM.
-  // [model/entity/ProductType.cfc:L167] declares `addchildProductType` and [L170]
-  // `removechildProductType`, both with a LOWERCASE `c` and both with a capital-C
-  // `ChildProductType` argument. CFML dispatches method names case-insensitively, so those were ONE
-  // member each there and a caller could write either casing. TypeScript members are
-  // CASE-SENSITIVE, so publishing only the normalised camelCase form silently withdraws a name the
-  // source publishes: `productType.addchildProductType(child)` would stop compiling. AAP 0.9.2
-  // requires legacy method names to be carried verbatim, and a name that cannot be called has not
-  // been carried - so both spellings ship, the camelCase one carrying the implementation.
+  // [model/entity/ProductType.cfc:L167] declares `addchildProductType` and
+  // [model/entity/ProductType.cfc:L170] `removechildProductType`, both with a LOWERCASE `c` and
+  // both with a capital-C `ChildProductType` argument.
   //
-  // WHAT THESE CASES MUST PROVE, and it is more than presence: that the alias is an ALIAS. Two
-  // independent implementations of the same delegation would be a real hazard - they could drift
-  // under a later edit and a caller's choice of casing would start to matter. Every case below
-  // therefore asserts the OBSERVABLE EFFECT rather than the name.
+  // What these cases must prove, and it is more than presence: that the alias is an alias.
 
   it('publishes BOTH spellings of each helper, all four callable', () => {
     expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('addChildProductType');
@@ -3045,10 +2268,6 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
   });
 
   it('★★ the source-spelled add reaches the SAME single implementation as the camelCase one', () => {
-    // CFML parity [model/entity/ProductType.cfc:L167-L169]: the whole body is
-    // `arguments.ChildProductType.setParentProductType( this )`, so the observable effect is the
-    // child's parent assignment plus the guarded append onto the parent's LIVE children array
-    // [L150, L152]. Both spellings must produce exactly that, and produce it once.
     const viaSourceSpelling = new ProductType({ productTypeID: 'pt-parent-lowercase' });
     const childA = new ProductType({ productTypeID: 'pt-child-lowercase' });
 
@@ -3056,7 +2275,7 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
 
     expect(childA.getParentProductType()).toBe(viaSourceSpelling);
     expect(viaSourceSpelling.getChildProductTypes()).toEqual([childA]);
-    // APPENDED ONCE, not twice: a second implementation delegating in parallel would double it.
+    // APPENDED once, not twice: a second implementation delegating in parallel would double it.
     expect(viaSourceSpelling.getChildProductTypes()).toHaveLength(1);
 
     // The camelCase spelling on a separate graph, so the two are compared rather than shared.
@@ -3068,9 +2287,9 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
     expect(childB.getParentProductType()).toBe(viaCanonical);
     expect(viaCanonical.getChildProductTypes()).toEqual([childB]);
 
-    // ★ THE MATERIALIZED PATH AGREES, which is the strongest single statement available here: the
-    // path is rebuilt from the live parent chain, so an alias that assigned a different parent - or
-    // none - would show up as a different string rather than as a missing member.
+    // The materialized path agrees, which is the strongest single statement available here: the
+    // path is rebuilt from the live parent chain, so an alias that assigned a different parent -
+    // or none.
     expect(childA.getProductTypeIDPath()).toBe('pt-parent-lowercase,pt-child-lowercase');
     expect(childB.getProductTypeIDPath()).toBe('pt-parent-camelcase,pt-child-camelcase');
   });
@@ -3078,7 +2297,8 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
   it('★★ the source-spelled remove reaches the SAME single implementation as the camelCase one', () => {
     // CFML parity [model/entity/ProductType.cfc:L170-L172]: the body is
     // `arguments.ChildProductType.removeParentProductType( this )`, which splices the child out of
-    // the parent's live array [L159-L161] and then clears the child's own `parentProductType` [L162].
+    // the parent's live array [model/entity/ProductType.cfc:L159-L161] and then clears the child's
+    // own `parentProductType` [model/entity/ProductType.cfc:L162].
     const parent = new ProductType({ productTypeID: 'pt-remove-parent' });
     const first = new ProductType({ productTypeID: 'pt-remove-first' });
     const second = new ProductType({ productTypeID: 'pt-remove-second' });
@@ -3087,14 +2307,14 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
     parent.addChildProductType(second);
     expect(parent.getChildProductTypes()).toEqual([first, second]);
 
-    // Source spelling removes the first child and NOTHING else.
+    // Source spelling removes the first child and nothing else.
     parent.removechildProductType(first);
 
     expect(parent.getChildProductTypes()).toEqual([second]);
     expect(first.getParentProductType()).toBeUndefined();
     expect(second.getParentProductType()).toBe(parent);
 
-    // camelCase spelling removes the remaining one, leaving the collection empty.
+    // CamelCase spelling removes the remaining one, leaving the collection empty.
     parent.removeChildProductType(second);
 
     expect(parent.getChildProductTypes()).toEqual([]);
@@ -3102,9 +2322,8 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
   });
 
   it('★ the two spellings are interchangeable in either order, add with one and remove with the other', () => {
-    // The property that matters to a source-spelled caller mixing the two: CFML could not tell them
-    // apart, so neither may the target. Adding through one name and removing through the other must
-    // work, in both directions.
+    // The property that matters to a source-spelled caller mixing the two: CFML could not tell
+    // them apart, so neither may the target.
     const parent = new ProductType({ productTypeID: 'pt-mixed-parent' });
     const child = new ProductType({ productTypeID: 'pt-mixed-child' });
 
@@ -3123,12 +2342,8 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
 
   it('★ carries the source-spelled ADD guard, so re-adding a held child does not duplicate it', () => {
     // CFML parity [model/entity/ProductType.cfc:L151]: the append is guarded by
-    // `isNew() or !arguments.parentProductType.hasChildProductType( this )`, and the alias inherits
-    // that guard because it inherits the implementation. A SAVED child - one carrying an identifier,
-    // so `isNew()` is false - therefore takes the containment branch.
-    //
-    // The unsaved short-circuit is NOT re-asserted here; it belongs to the B10 setter cases, and
-    // duplicating it would state the same legacy behaviour twice under a different name.
+    // `isNew() or !arguments.parentProductType.hasChildProductType( this )`, and the alias
+    // inherits that guard because it inherits the implementation.
     const parent = new ProductType({ productTypeID: 'pt-guard-parent' });
     const child = new ProductType({ productTypeID: 'pt-guard-child' });
 
@@ -3140,11 +2355,6 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
   });
 
   it('★ publishes NO source-spelled variant for any other helper, because no other one needs it', () => {
-    // The lowercase-`c` inconsistency is the source's own and is confined to these two declarations:
-    // every other helper in [model/entity/ProductType.cfc] is already camelCase, including
-    // `setParentProductType` [L149], `removeParentProductType` [L155], `addPromotionReward` [L175]
-    // and `removePromotionReward` [L178]. Inventing lowercase aliases for them would publish names
-    // the source never had, which is the opposite failure to the one F43 records.
     for (const invented of [
       'setparentProductType',
       'removeparentProductType',
@@ -3158,8 +2368,8 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
       expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain(invented);
     }
 
-    // And exactly TWO members in the whole prototype carry a lowercase letter immediately after the
-    // `add`/`remove` prefix, so no third has crept in.
+    // And exactly two members in the whole prototype carry a lowercase letter immediately after
+    // the `add`/`remove` prefix, so no third has crept in.
     const sourceSpelledHelpers = PRODUCT_TYPE_PROTOTYPE_MEMBERS.filter((member) =>
       /^(?:add|remove)[a-z]/.test(member),
     );
@@ -3168,21 +2378,12 @@ describe('ProductType - the source-spelled child helpers, lowercase c (B11)', ()
   });
 });
 
-// ===========================================================================
-// The description column that carried no case of its own
-// ===========================================================================
-//
-// ★★★ ADDED BECAUSE A MECHANICAL METHOD INVENTORY FOUND IT UNNAMED. A code review reported that the
-// traceability map "proves module-to-suite presence, not every public method"; deriving the inventory
-// from source rather than curating it reduced the real gap on this entity to exactly one name,
-// `getProductTypeDescription`. It is a persisted column this port reads, so it owes an assertion.
-// Gate `A24` now fails if any public method of a ported entity goes unnamed again.
+// The description column that carried no case of its own.
 
 describe('ProductType: the description column', () => {
   it('reads productTypeDescription, and reports absence as undefined rather than as an empty string', () => {
     // [model/entity/ProductType.cfc:L58] declares `length="4000"` and the column is nullable, so
-    // `undefined` is the honest absent value. Coercing it to `''` would make an unset description
-    // indistinguishable from one an operator deliberately cleared.
+    // `undefined` is the honest absent value.
     expect(
       new ProductType({
         productTypeID: 'pt-described',
@@ -3209,26 +2410,19 @@ describe('ProductType: the description column', () => {
   });
 });
 
-// ===========================================================================
-// The error register, invoked directly on this entity
-// ===========================================================================
+// The error register, invoked directly on this entity.
 //
-// ★★★ ADDED BECAUSE A MECHANICAL INVENTORY FOUND THESE MEMBERS NAMED BUT NEVER CALLED HERE. A code
-// review reported that "nine public methods have no invocation in any test AST", which is a sharper
-// question than whether a name appears somewhere: a method mentioned only in a comment is a method
-// nothing exercises. The register's behaviour WAS covered - through the service suites, where a refused
-// save is observed - but not at the entity that declares it, so the per-entity contract rested on
-// another tier's assertions. Gate `A24` now requires an actual invocation.
+// Review reported that "nine public methods have no invocation in any test AST".
 //
-// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees and
-// that the save-refusal semantics depend on: a MISS yields an empty array rather than undefined,
-// messages ACCUMULATE under one name rather than replacing, and lookup is CASE-INSENSITIVE while the
-// key remembers the case it was FIRST written with.
+// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees
+// and that the save-refusal semantics depend on: a MISS yields an empty array rather than
+// undefined.
 
 describe('ProductType: the inherited error register', () => {
   it('returns an empty array for a name that was never recorded, never undefined', () => {
-    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent name
-    // has to be safe to iterate - `undefined` here would turn a clean validation pass into a crash.
+    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent
+    // name has to be safe to iterate - `undefined` here would turn a clean validation pass into a
+    // crash.
     const subject = new ProductType({ productTypeID: 'pt-errors-1' });
 
     expect(subject.getError('noSuchRule')).toStrictEqual([]);
@@ -3237,8 +2431,8 @@ describe('ProductType: the inherited error register', () => {
   });
 
   it('★★ accumulates messages under one name instead of replacing them', () => {
-    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after the
-    // first, which is how a partially invalid entity comes to look like a singly invalid one.
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after
+    // the first, which is how a partially invalid entity comes to look like a singly invalid one.
     const subject = new ProductType({ productTypeID: 'pt-errors-1' });
 
     subject.addError('urlTitle', 'is required');
@@ -3251,7 +2445,7 @@ describe('ProductType: the inherited error register', () => {
   it('★★ looks a name up case-insensitively, and keeps the case it was first written with', () => {
     // CFML struct keys are case-insensitive, so `getError('URLTITLE')` must find what `addError`
     // recorded as `urlTitle` - while [org/Hibachi/HibachiErrors.cfc:L14-L31] REMEMBERS the first
-    // spelling, so the published key is the one the first write used.
+    // spelling.
     const subject = new ProductType({ productTypeID: 'pt-errors-1' });
 
     subject.addError('urlTitle', 'first');

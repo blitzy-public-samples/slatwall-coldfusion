@@ -1,55 +1,3 @@
-// ---------------------------------------------------------------------------
-// tests/unit/handlers/router.test.ts
-//
-// WHY THIS FILE EXISTS. `src/handlers/router.ts` was the last module in the
-// subtree carrying a declared coverage DEBT: it sat in
-// `tests/traceability/legacyTestMap.ts`'s `pendingModules` with this exact path
-// named as its planned suite, on the stated reason that the module "carries no
-// business logic, but it does carry dispatch decisions, and dispatch decisions
-// are behaviour". A documentation review then recorded the debt as the one place
-// the README's exhaustive-coverage claim was not true. This suite discharges it,
-// and the ledger entry moves with it - authoring the suite WITHOUT promoting the
-// module fails the traceability gates, which is the coupling that keeps coverage
-// from being added without being declared.
-//
-// WHAT IS ASSERTED, AND WHY EACH ITEM IS BEHAVIOUR RATHER THAN SHAPE. Routing is
-// the whole of what replaces FW/1's subsystem convention
-// [Application.cfc:L126-L137], so the decisions below are the ones that decide
-// whether a request reaches a capability at all:
-//
-//   1. THE URL SURFACE ITSELF. Five capabilities, one route each, with the
-//      method, path and action every deployed bundle agrees on. A silently
-//      changed path is an outage; a silently changed action is a handler that
-//      dispatches on a name nothing sends.
-//   2. CFML CASE-INSENSITIVITY, PRESERVED DELIBERATELY. `Application.cfc:L130`
-//      compares with CFML `eq` and `Application.cfc:L133` with
-//      `listFindNoCase`, both of which fold case. TypeScript does not, so the
-//      module routes through the shared parity helpers - and that means
-//      `/CATALOG/PRODUCTS` and `get` must resolve exactly as their lower-case
-//      spellings do. This is legacy semantics, not convenience.
-//   3. PATH CANONICALIZATION. A leading, trailing or doubled separator
-//      contributes no segment, so five spellings of one path reach one route.
-//   4. A METHOD MISMATCH IS A NOT-FOUND, never a 405 and never an `Allow`
-//      header: FW/1 had no method dispatch at all, so there is no
-//      method-not-allowed concept in the source to port.
-//   5. ONE CAPABILITY CANNOT ANSWER FOR ANOTHER, and a request for a sibling
-//      capability is reported as an ordinary miss - inventing a distinguishable
-//      outcome would leak the existence of the other four routes.
-//   6. EXACTLY ONE LOG EMISSION PER UNMATCHED REQUEST, through the caller's
-//      logger, with the canonical route on the log line and NEVER in the
-//      response body.
-//   7. NOTHING BUT METHOD AND PATH IS READ FROM THE EVENT. No header, body,
-//      query string or authorizer context can influence routing.
-//
-// SCOPE FENCES. This suite drives no capability handler, opens no pool, reads no
-// environment variable and asserts nothing about SQL: the module imports none of
-// those and a suite that reached for them would be testing its own scaffolding.
-// The response envelope, its status table and its redaction rules belong to
-// `tests/unit/handlers/errorMapper.test.ts`; what is asserted here is that the
-// router DELEGATES to that module rather than building a response of its own,
-// which is checked by observing the delegated status and the single emission.
-// ---------------------------------------------------------------------------
-
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -62,26 +10,28 @@ import type { RoutedCapability, RouteDescriptor } from '../../../src/handlers/ro
 import type { ErrorMappingContext, ErrorResponseBody } from '../../../src/handlers/errorMapper.js';
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import type { LogContext, LogLevel, Logger, LogSink } from '../../../src/lib/logger.js';
-// The subject's own list primitive, so a declared method list is parsed here exactly as the matcher
-// parses it. Re-splitting on a comma by hand would be a second implementation of one rule.
+// The subject's own list primitive, so a declared method list is parsed here exactly as the
+// matcher parses it. Re-splitting on a comma by hand would be a second implementation of one rule.
 import { listToArray } from '../../../src/lib/cfml/list.js';
 
-// ---------------------------------------------------------------------------
-// Test doubles and planted data
-// ---------------------------------------------------------------------------
+// Test doubles and planted data.
 
-/** A correlation identifier, shaped like the one API Gateway supplies. */
+/**
+ * A correlation identifier, shaped like the one API Gateway supplies.
+ */
 const REQUEST_ID = 'ba5eba11-0000-4000-8000-0000cafe0001';
 
 /**
  * A value planted in every event member routing must not read.
  *
- * Long, unique and free of regular-expression metacharacters, so a substring
- * search over the projection cannot produce a false result either way.
+ * Long, unique and free of regular-expression metacharacters, so a substring search over the
+ * projection cannot produce a false result either way.
  */
 const PLANTED_UNREAD = 'PLANTED-NOT-READ-BY-ROUTING-7f3c19';
 
-/** One captured emission, in the form the subject handed to the logger. */
+/**
+ * One captured emission, in the form the subject handed to the logger.
+ */
 interface CapturedEmission {
   readonly level: LogLevel;
   readonly message: string;
@@ -91,14 +41,11 @@ interface CapturedEmission {
 /**
  * A logger that records rather than emits.
  *
- * Hand-written rather than a mock: the pinned package set carries no mocking
- * library, and a fresh recorder inside each case is what keeps one case from
- * observing another's emissions - the same warm-container hazard this port
- * re-scopes four legacy component-level caches to avoid.
+ * Hand-written rather than a mock: the pinned package set carries no mocking library, and a fresh
+ * recorder inside each case is what keeps one case from observing another's emissions.
  *
- * `withLevel` and `withSink` return the same recorder because neither is
- * exercised through this path; returning a different object would let the double
- * misreport what the subject did.
+ * `withLevel` and `withSink` return the same recorder because neither is exercised through this
+ * path; returning a different object would let the double misreport what the subject did.
  */
 function createRecordingLogger(): {
   readonly logger: Logger;
@@ -122,12 +69,16 @@ function createRecordingLogger(): {
   return { logger: recorder, emissions };
 }
 
-/** The context a handler passes in, carrying the recording logger. */
+/**
+ * The context a handler passes in, carrying the recording logger.
+ */
 function contextWith(logger: Logger): ErrorMappingContext {
   return { requestId: REQUEST_ID, logger };
 }
 
-/** Parse a response body, narrowing rather than casting blindly. */
+/**
+ * Parse a response body, narrowing rather than casting blindly.
+ */
 function bodyOf(body: string | undefined): ErrorResponseBody['error'] {
   if (body === undefined) {
     throw new Error('the response carried no body');
@@ -145,9 +96,8 @@ function bodyOf(body: string | undefined): ErrorResponseBody['error'] {
 /**
  * A proxy event whose method and path are the only members worth reading.
  *
- * Every other member carries the planted value, so the projection assertion can
- * prove a negative: routing reads two members, and anything else reaching it
- * would surface the planted string.
+ * Every other member carries the planted value, so the projection assertion can prove a negative:
+ * routing reads two members, and anything else reaching it would surface the planted string.
  */
 function eventFor(method: string, path: string): APIGatewayProxyEvent {
   return {
@@ -195,7 +145,9 @@ function eventFor(method: string, path: string): APIGatewayProxyEvent {
   };
 }
 
-/** Every capability key, in table order, so a loop cannot silently skip one. */
+/**
+ * Every capability key, in table order, so a loop cannot silently skip one.
+ */
 const CAPABILITIES: readonly RoutedCapability[] = [
   'catalogQuery',
   'skuResolution',
@@ -204,7 +156,9 @@ const CAPABILITIES: readonly RoutedCapability[] = [
   'productFeed',
 ];
 
-/** The row a capability owns, read through the closed key set. */
+/**
+ * The row a capability owns, read through the closed key set.
+ */
 function routeFor(capability: RoutedCapability): RouteDescriptor {
   return ROUTE_TABLE[capability];
 }
@@ -212,16 +166,10 @@ function routeFor(capability: RoutedCapability): RouteDescriptor {
 /**
  * One method a row declares, taken as a request method would be received.
  *
- * ★★★ `route.methods` IS A COMMA LIST AND MUST NOT BE SENT AS A METHOD. Four cases below drove the
- * matcher with `route.methods` verbatim, which worked only while every row declared exactly one method:
- * `catalogQuery` now declares `'GET,POST'`, and `listFindNoCase('GET,POST', 'GET,POST')` answers 0
- * because the whole list is not an ELEMENT of itself. Those cases would have started asserting that
- * every route fails to match - a green suite turning silently vacuous - so the list is parsed here with
- * the same primitive the subject parses it with.
+ * `route.methods` is a comma list and must not be sent as a method.
  *
- * THE FIRST DECLARED METHOD, deliberately: it is the one every row has, so a loop over all five stays a
- * loop over all five. The multi-method row's SECOND method is exercised separately, where the pairing it
- * exists for can actually be asserted.
+ * The first declared method, deliberately: it is the one every row has, so a loop over all five
+ * stays a loop over all five.
  */
 function firstDeclaredMethod(route: RouteDescriptor): string {
   const declared = listToArray(route.methods)[0];
@@ -233,30 +181,21 @@ function firstDeclaredMethod(route: RouteDescriptor): string {
   return declared;
 }
 
-// ---------------------------------------------------------------------------
-// A. The URL surface itself
-// ---------------------------------------------------------------------------
+// A. The URL surface itself.
 
 describe('ROUTE_TABLE declares the whole URL surface, once', () => {
   it('carries exactly five capabilities and no sixth', () => {
-    // The five the AAP resolves handler granularity into. A sixth is a product
-    // decision, so its arrival must fail here rather than ship.
+    // The five the AAP resolves handler granularity into. A sixth is a product decision, so its
+    // arrival must fail here rather than ship.
     expect(Object.keys(ROUTE_TABLE).sort()).toEqual([...CAPABILITIES].sort());
   });
 
   it('publishes the method, path and action every deployed bundle agrees on', () => {
-    // Pinned as literals, because these five strings are the deployment contract:
-    // a path edited by one bundle and not the others is an outage that no type
-    // checks, and an action rename silently orphans the handler's own dispatch.
+    // Pinned as literals, because these five strings are the deployment contract: a path edited by
+    // one bundle and not the others is an outage that no type checks.
     expect(routeFor('catalogQuery')).toStrictEqual({
       capability: 'catalogQuery',
       action: 'queryCatalog',
-      // ★★★ TWO METHODS, AND THE PIN IS THE POINT. This row read `'GET'` while the catalog capability
-      // published three reads; a code review recorded (CRITICAL) that eleven mapped Product/Brand/Option
-      // actions - nine of them WRITES - had no transport at all. A write cannot be served on a method
-      // HTTP defines as safe, so the row admits `POST` as well. It is the ONLY row with more than one,
-      // which is why the comma list is asserted verbatim rather than parsed: the list FORM has always
-      // been the declaration - `listFindNoCase` is the matcher - and this is the first row to use it.
       methods: 'GET,POST',
       path: '/catalog/products',
     });
@@ -287,19 +226,16 @@ describe('ROUTE_TABLE declares the whole URL surface, once', () => {
   });
 
   it('keys every row by the capability the row itself names', () => {
-    // The table is indexed by capability AND each row repeats it, so the two can
-    // disagree. `resolveRouteForCapability` compares against the ROW's member, so
-    // a mismatch would route a request into the wrong handler while every path
-    // assertion above still passed.
+    // The table is indexed by capability and each row repeats it, so the two can disagree.
     for (const capability of CAPABILITIES) {
       expect(routeFor(capability).capability).toBe(capability);
     }
   });
 
   it('writes every path in the canonical form the matcher reduces requests to', () => {
-    // One leading separator, no trailing separator, no empty segment. A row
-    // written otherwise could never be matched, because a request is canonicalized
-    // before comparison and the table is not.
+    // One leading separator, no trailing separator, no empty segment. A row written otherwise
+    // could never be matched, because a request is canonicalized before comparison and the table
+    // is not.
     for (const capability of CAPABILITIES) {
       const { path } = routeFor(capability);
 
@@ -311,8 +247,8 @@ describe('ROUTE_TABLE declares the whole URL surface, once', () => {
   });
 
   it('names no scheme, host, stage or account prefix in any row', () => {
-    // Deployment facts, deliberately absent: hard-coding one would both invent
-    // configuration and break the environment-driven configuration standard.
+    // Deployment facts, deliberately absent: hard-coding one would both invent configuration and
+    // break the environment-driven configuration standard.
     for (const capability of CAPABILITIES) {
       const { path } = routeFor(capability);
 
@@ -326,17 +262,14 @@ describe('ROUTE_TABLE declares the whole URL surface, once', () => {
   it('does NOT echo the legacy integrationServices directory convention', () => {
     // The feed is the one capability with a legacy antecedent, reached through
     // `getSubsystemDirPrefix()`'s `integrationServices/<subsystem>/` prefix
-    // [Application.cfc:L133-L135]. Reproducing that prefix in a URL would
-    // reproduce the directory-building convention this module exists to replace.
+    // [Application.cfc:L133-L135].
     for (const capability of CAPABILITIES) {
       expect(routeFor(capability).path).not.toContain('integrationServices');
     }
   });
 
   it('is frozen at the table and at every row, so a warm container cannot be re-routed', () => {
-    // `readonly` is compile-time only. This module is evaluated once per container
-    // and shared across every invocation it serves, so a caller able to mutate the
-    // exported reference could re-route the requests that follow.
+    // `readonly` is compile-time only.
     expect(Object.isFrozen(ROUTE_TABLE)).toBe(true);
 
     for (const capability of CAPABILITIES) {
@@ -356,9 +289,9 @@ describe('ROUTE_TABLE declares the whole URL surface, once', () => {
   });
 
   it('exports no Lambda handler, because it is a shared internal and not an entry point', () => {
-    // `esbuild.config.mjs` enumerates exactly the five capability handlers as
-    // entry points. Bundling this module as a sixth would emit an artifact with no
-    // `handler` for the runtime to call.
+    // `esbuild.config.mjs` enumerates exactly the five capability handlers as entry points.
+    // Bundling this module as a sixth would emit an artifact with no `handler` for the runtime to
+    // call.
     const surface: Record<string, unknown> = {
       ROUTE_TABLE,
       resolveRoute,
@@ -370,9 +303,7 @@ describe('ROUTE_TABLE declares the whole URL surface, once', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// B. Resolution - the dispatch decision
-// ---------------------------------------------------------------------------
+// B. Resolution - the dispatch decision.
 
 describe('resolveRoute resolves each declared route on its own method and path', () => {
   it('matches every row of the table', () => {
@@ -390,18 +321,16 @@ describe('resolveRoute resolves each declared route on its own method and path',
         expect(resolution.route).toStrictEqual(route);
       }
 
-      // A match is silent: nothing is logged on the success path, so an
-      // unmatched request's single line stays findable in a real log stream.
+      // A match is silent: nothing is logged on the success path, so an unmatched request's single
+      // line stays findable in a real log stream.
       expect(emissions).toEqual([]);
     }
   });
 
   it('★★ folds case in the PATH, reproducing CFML `eq` at [Application.cfc:L130]', () => {
     // CFML string comparison is case-insensitive, so the legacy would have routed
-    // `/CATALOG/PRODUCTS`. TypeScript compares case-sensitively, which is why the
-    // module goes through `cfEquals` rather than `===`. This is preserved legacy
-    // semantics rather than a convenience, and it is the assertion that fails if a
-    // future edit "simplifies" the comparison.
+    // `/CATALOG/PRODUCTS`. TypeScript compares case-sensitively, which is why the module goes
+    // through `cfEquals` rather than `===`.
     for (const path of ['/CATALOG/PRODUCTS', '/Catalog/Products', '/cAtAlOg/pRoDuCtS']) {
       const { logger } = createRecordingLogger();
       const resolution = resolveRoute({ method: 'GET', path }, contextWith(logger));
@@ -423,9 +352,8 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 
   it('canonicalizes the path, so five spellings reach one route', () => {
-    // `listToArray` drops empty elements, so a leading, trailing or doubled
-    // separator contributes no segment. A caller that appends a trailing slash is
-    // not a caller that gets a 404.
+    // `listToArray` drops empty elements, so a leading, trailing or doubled separator contributes
+    // no segment. A caller that appends a trailing slash is not a caller that gets a 404.
     for (const path of [
       '/catalog/products',
       'catalog/products',
@@ -444,10 +372,9 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 
   it('resolves the empty and separator-only paths to no route at all', () => {
-    // The counterpart of the legacy hook returning no prefix for an empty
-    // subsystem [Application.cfc:L130-L132]: the root falls out of the table
-    // rather than needing a branch of its own, because every row names at least
-    // one segment.
+    // The counterpart of the legacy hook returning no prefix for an empty subsystem
+    // [Application.cfc:L130-L132]: the root falls out of the table rather than needing a branch of
+    // its own.
     for (const path of ['', '/', '//', '///']) {
       const { logger } = createRecordingLogger();
       const resolution = resolveRoute({ method: 'GET', path }, contextWith(logger));
@@ -457,15 +384,9 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 
   it('★★ answers a METHOD MISMATCH with not-found, never 405 and never an Allow header', () => {
-    // FW/1 dispatched an action by ANY method, so there is no method-not-allowed
-    // concept in the source to port. A 405 would also confirm the path exists,
-    // which is one bit more than an unmatched request should learn.
-    //
-    // ★★ THE EXAMPLE USED TO BE `POST /catalog/products`, WHICH IS NOW A MATCH. That row declares
-    // `'GET,POST'` so the catalog capability can serve its nine mutations, and this case would have
-    // asserted a mismatch that no longer occurs. `DELETE` is declared by NO row - the whole table is
-    // `GET` and `POST` - so it is a mismatch against every path, including the one that admits two
-    // methods, which makes it a strictly better example than the one it replaces.
+    // FW/1 dispatched an action by any method, so there is no method-not-allowed concept in the
+    // source to port. A 405 would also confirm the path exists, which is one bit more than an
+    // unmatched request should learn.
     const { logger, emissions } = createRecordingLogger();
     const resolution = resolveRoute(
       { method: 'DELETE', path: '/catalog/products' },
@@ -484,9 +405,9 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 
   it('answers an unknown path with the delegated not-found response, and one log line', () => {
-    // The response is BUILT BY `./errorMapper.js`, which is what keeps status,
-    // envelope and redaction decisions in one module. What is asserted here is the
-    // delegation and its single side effect.
+    // The response is BUILT by `./errorMapper.js`, which is what keeps status, envelope and
+    // redaction decisions in one module. What is asserted here is the delegation and its single
+    // side effect.
     const { logger, emissions } = createRecordingLogger();
     const resolution = resolveRoute({ method: 'GET', path: '/no/such/route' }, contextWith(logger));
 
@@ -498,8 +419,8 @@ describe('resolveRoute resolves each declared route on its own method and path',
 
       expect(published.category).toBe('routeNotFound');
       expect(published.requestId).toBe(REQUEST_ID);
-      // The caller's path is LOGGED, never published: reflecting a caller-supplied
-      // path back serves no diagnostic purpose the correlation id does not serve.
+      // The caller's path is LOGGED, never published: reflecting a caller-supplied path back
+      // serves no diagnostic purpose the correlation id does not serve.
       expect(resolution.response.body).not.toContain('/no/such/route');
     }
 
@@ -509,9 +430,8 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 
   it('reports the CANONICAL path on the log line, not the spelling received', () => {
-    // The label is built from the same canonical path the match was attempted
-    // with, so an operator comparing a log line against the table is comparing
-    // like with like.
+    // The label is built from the same canonical path the match was attempted with, so an operator
+    // comparing a log line against the table is comparing like with like.
     const { logger, emissions } = createRecordingLogger();
 
     resolveRoute({ method: 'GET', path: '//no//such//route//' }, contextWith(logger));
@@ -520,8 +440,8 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 
   it('overrides any route the caller had already put on the context', () => {
-    // This module always knows the method and path it failed to match, so a stale
-    // value from an earlier stage must not survive onto the emission.
+    // This module always knows the method and path it failed to match, so a stale value from an
+    // earlier stage must not survive onto the emission.
     const { logger, emissions } = createRecordingLogger();
 
     resolveRoute(
@@ -533,9 +453,8 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 
   it('leaves a percent-encoded path unmatched rather than decoding it', () => {
-    // Decoding would introduce behaviour the source never had. Every row is a
-    // fixed literal with no character requiring an escape, so an encoded path
-    // simply matches nothing.
+    // Decoding would introduce behaviour the source never had. Every row is a fixed literal with
+    // no character requiring an escape, so an encoded path simply matches nothing.
     const { logger } = createRecordingLogger();
     const resolution = resolveRoute(
       { method: 'GET', path: '/catalog%2Fproducts' },
@@ -546,9 +465,9 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 
   it('preserves dot segments verbatim, which match nothing and reach no file system', () => {
-    // No value this module produces is ever concatenated into a path, so a
-    // traversal attempt is inert here - and it must stay visible in the log rather
-    // than be normalized into a route that does exist.
+    // No value this module produces is ever concatenated into a path, so a traversal attempt is
+    // inert here - and it must stay visible in the log rather than be normalized into a route that
+    // does exist.
     const { logger, emissions } = createRecordingLogger();
     const resolution = resolveRoute(
       { method: 'GET', path: '/catalog/products/../../etc/passwd' },
@@ -560,9 +479,8 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 
   it('never throws, for any method and path a caller can send', () => {
-    // Canonicalization is total, the struct helpers answer absence as `undefined`,
-    // and `listFindNoCase` answers a position. An empty method, an empty path and
-    // a very long path are all ordinary misses rather than raised errors.
+    // Canonicalization is total, the struct helpers answer absence as `undefined`, and
+    // `listFindNoCase` answers a position.
     for (const request of [
       { method: '', path: '' },
       { method: '   ', path: '   ' },
@@ -578,9 +496,7 @@ describe('resolveRoute resolves each declared route on its own method and path',
   });
 });
 
-// ---------------------------------------------------------------------------
-// C. Capability isolation - five bundles, one table
-// ---------------------------------------------------------------------------
+// C. Capability isolation - five bundles, one table.
 
 describe('resolveRouteForCapability keeps five bundles from answering for each other', () => {
   it('accepts a request that belongs to the calling capability', () => {
@@ -600,10 +516,8 @@ describe('resolveRouteForCapability keeps five bundles from answering for each o
   });
 
   it("★★ reports a SIBLING capability's route exactly as an unmatched route", () => {
-    // Folding both misses into one arm is deliberate: a distinguishable outcome
-    // would leak the existence of the other four capabilities to a caller that
-    // guessed a path. It also makes "one log line per unmatched request" a
-    // structural property rather than a discipline.
+    // Folding both misses into one arm is deliberate: a distinguishable outcome would leak the
+    // existence of the other four capabilities to a caller that guessed a path.
     const foreign = routeFor('productFeed');
     const { logger, emissions } = createRecordingLogger();
 
@@ -656,9 +570,7 @@ describe('resolveRouteForCapability keeps five bundles from answering for each o
   });
 });
 
-// ---------------------------------------------------------------------------
-// D. The event projection - two members, and no more
-// ---------------------------------------------------------------------------
+// D. The event projection - two members, and no more.
 
 describe('routeRequestFromEvent reads the method and the path, and nothing else', () => {
   it('projects exactly two members', () => {
@@ -669,18 +581,18 @@ describe('routeRequestFromEvent reads the method and the path, and nothing else'
   });
 
   it('★★ carries NOTHING from a header, body, query string, stage or authorizer context', () => {
-    // The negative that matters: nothing a caller sent can influence routing
-    // beyond the method and the path, so a planted value in every other member
-    // must not appear anywhere in the projection.
+    // The negative that matters: nothing a caller sent can influence routing beyond the method and
+    // the path, so a planted value in every other member must not appear anywhere in the
+    // projection.
     const request = routeRequestFromEvent(eventFor('POST', '/promotions/application'));
 
     expect(JSON.stringify(request)).not.toContain(PLANTED_UNREAD);
   });
 
   it('reads the RESOURCE path, not the stage-prefixed one on the request context', () => {
-    // The stage-prefixed form lives on `requestContext.path`. Reading it would
-    // make every row of the table wrong for every deployment that names a stage,
-    // which is why the table holds relative paths only.
+    // The stage-prefixed form lives on `requestContext.path`. Reading it would make every row of
+    // the table wrong for every deployment that names a stage, which is why the table holds
+    // relative paths only.
     const event = eventFor('GET', '/feeds/google/products');
 
     expect(routeRequestFromEvent(event).path).toBe('/feeds/google/products');
@@ -688,17 +600,17 @@ describe('routeRequestFromEvent reads the method and the path, and nothing else'
   });
 
   it('passes the method and path through unmodified, leaving normalization to resolution', () => {
-    // The projection performs no canonicalization and no case folding of its own:
-    // one owner for those decisions, so the label a failure is reported under
-    // cannot disagree with the comparison that produced it.
+    // The projection performs no canonicalization and no case folding of its own: one owner for
+    // those decisions, so the label a failure is reported under cannot disagree with the
+    // comparison that produced it.
     const request = routeRequestFromEvent(eventFor('gEt', '//CATALOG//products//'));
 
     expect(request).toStrictEqual({ method: 'gEt', path: '//CATALOG//products//' });
   });
 
   it('composes with resolution end to end, for every declared route', () => {
-    // The pairing a handler actually performs. Asserted for all five so no route
-    // is reachable only through a hand-built `RouteRequest`.
+    // The pairing a handler actually performs. Asserted for all five so no route is reachable only
+    // through a hand-built `RouteRequest`.
     for (const capability of CAPABILITIES) {
       const route = routeFor(capability);
       const { logger } = createRecordingLogger();

@@ -1,332 +1,21 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - PromotionService: the THIN FAÇADE over the promotion engine
+// slatwall-ts - PromotionService: the thin facade over the ported promotion engine, and the surface
+// AAP 0.4.2 holds to interface parity. Port of model/service/PromotionService.cfc (1,125 lines).
+
+// Two of the three divergences AAP 0.6.7 permits are spent in `./promotion/discountAmount.ts` and
+// recorded here so the budget is auditable from the service surface.
 //
-// WHAT THIS FILE IS
-// A 1:1 logic extraction of `model/service/PromotionService.cfc` (1,125 source lines) into
-// strict-mode TypeScript. It is the SEVENTH and final service in `src/services/`, and it is a
-// FAÇADE: the 489-line `updateOrderAmountsWithPromotions` [model/service/PromotionService.cfc:L58]
-// is ORCHESTRATED here and IMPLEMENTED across the nine sibling modules under `./promotion/`. The
-// twelve public methods below are the twelve the component declares, carrying their legacy CFML
-// camelCase names VERBATIM, because method-for-method interface parity is the acceptance contract.
+// LEGACY-DEFECT [model/service/PromotionService.cfc:L998]: the `amountOff` branch multiplies in raw
+// floating point while both sibling branches use `precisionEvaluate`.
+// DELIBERATE DIVERGENCE [model/service/PromotionService.cfc:L998]: closed, because all money
+// arithmetic passes through `Money`.
 //
-// NO USER RULES EXIST FOR THIS PROJECT. The rules source was read to completion - a default read
-// and an explicit full-document read both returned the identical single-line sentinel
-// "No user rules provided." - so there is no project rule to cite and none has been invented. The
-// absence is NOT treated as permission to lower the bar: the enterprise-standard substitutes
-// (maximal strictness, layer boundaries, exact dependency pinning, a single arithmetic surface,
-// parameterised SQL, environment-driven configuration, one exported unit per file, in-code
-// annotation of every judgment call, license continuity) are the standard this file is held to.
-//
-// TEST COVERAGE FOR THIS FILE IS ENTIRELY NET-NEW, AND IS NOT PARITY.
-// `meta/tests/unit/service/` contains exactly four suites - AccountServiceTest, HibachiServiceTest,
-// PaymentServiceTest and UtilityRBServiceTest - and NONE of them is in scope. There is no legacy
-// `PromotionServiceTest` to trace to, so every test that will cover this file is net-new coverage
-// and must be reported as such rather than presented as legacy parity. This file authors no test of
-// its own; `slatwall-ts/tests` is owned elsewhere. What this file owes the test tier instead is
-// TESTABILITY: pure where the source is pure, every collaborator injected, no ambient state, and no
-// module-level mutable cache. The five visibility widenings recorded below exist for that reason.
-//
-// PARAMETERISED SQL IS NOT APPLICABLE HERE, AND THE OMISSION IS DELIBERATE.
-// The project standard that every query use prepared statements has no site in this file: this
-// service builds and executes NO SQL. That obligation rests wholly with `src/repositories/mysql/**`.
-// In particular the six-branch UNION and the three query-of-queries reduction steps behind
-// `getSalePriceDetailsForProductSkus` [model/dao/PromotionDAO.cfc:L298-L591] are the repository's
-// concern; this file reaches them only through `PromotionRepository.getSalePricePromotionRewardsQuery`
-// and never composes a fragment of SQL, a table name or a bind parameter.
-//
-// ===========================================================================================
-// MUST-PRESERVE AREA #1 LIVES HERE: PROMOTION DISCOUNT MATH **AND** USE-LIMIT ENFORCEMENT
-// ===========================================================================================
-// This is the area the requirements name first and guard hardest, and it is the reason every
-// structural decision in this subtree is documented rather than merely made. The discount
-// arithmetic itself is `./promotion/discountAmount.ts`; the use-limit semantics are
-// `./promotion/rewardUsageLedger.ts` and `./promotion/overUseStripping.ts`; the order in which all
-// of them run is THIS file. Behaviour is preserved to the point of preserving defects - a discount
-// limit enforced against the wrong key continues to be enforced against the wrong key.
-//
-// This file participates in must-preserve area #2 (the price-group and currency resolution cascade)
-// ONLY indirectly, through the ordering constraint below; the cascade itself belongs to
-// `./priceGroupService.ts`. It has no relationship at all to must-preserve area #3
-// (option-to-SKU resolution).
-//
-// ===========================================================================================
-// ★ THE CROSS-SERVICE ORDERING CONSTRAINT - THE SECOND HALF OF A CONTRACT DECLARED ELSEWHERE
-// ===========================================================================================
-// `PriceGroupService.updateOrderAmountsWithPriceGroups()` MUST RUN BEFORE
-// `PromotionService.updateOrderAmountsWithPromotions()`. It is NON-OPTIONAL and it decides how much
-// money a customer is charged. `./priceGroupService.ts` declares this constraint first, in its own
-// header, in these same terms; this file is the second half of that same contract.
-//
-// THE MECHANISM, verified at [model/service/PromotionService.cfc:L241-L252]: the order-item
-// discount base is chosen by reading `getAppliedPriceGroup()`, and the two arms then read
-// `getPrice()`, `getSkuPrice()`, `getExtendedSkuPrice()` and `getExtendedPrice()`. Every one of
-// those five values is written by the price-group pass. In the legacy system the ordering held ONLY
-// because out-of-scope `model/service/OrderService.cfc` happened to call the two in that sequence -
-// it injects `priceGroupService` and `promotionService` as adjacent properties and invokes them in
-// order. Nothing in the CFML enforced it.
-//
-// THE CONSTRAINT IS DOCUMENTED HERE, NOT ENFORCED HERE. This file carries no sequencing helper, no
-// run-once latch, no phase parameter, no ordered-pipeline type and no assertion that the price-group
-// pass has run, and none may be added. An `OrderView` cannot report whether it did, and inventing a
-// flag would add state the legacy lacks. Sequencing is a composition-root obligation:
-// `src/handlers/promotionApplicationHandler.ts` is where the two passes are physically ordered, and
-// the `OrderView` handed to `updateOrderAmountsWithPromotions` must ALREADY reflect the intents the
-// price-group pass produced. A test asserts that reversing the two passes changes the computed
-// discount; this file authors no test.
-//
-// LEGACY-NOTE [model/service/PromotionService.cfc:L241-L252]: the ELIGIBLE / no-applied-price-group
-// case uses `getPrice()` with NO correction term; the INELIGIBLE case computes
-// `originalDiscountAmount` from `getSkuPrice()` and subtracts
-// `(extendedSkuPrice - extendedPrice)`. Read the guard
-// literally: the `if` is taken when there is no applied price group OR the reward DOES list the
-// applied group as eligible, and that arm is the uncorrected one. Prose in the specification - and
-// in `./priceGroupService.ts`'s own header - has these two branches TRANSPOSED. The source governs,
-// and implementing the transposed wording would invert the discount on every price-group order.
-//
-// ===========================================================================================
-// ★ THE SIX ORDER-DEPENDENCE VECTORS - each can change the money a customer is charged
-// ===========================================================================================
-// VECTOR 1 - A MUTABLE USAGE LEDGER THREADED THROUGH THE WHOLE LOOP.
-//   `promotionRewardUsageDetails[rewardID].usedInOrder` is incremented IN PLACE
-//   [model/service/PromotionService.cfc:L297], so whether a later reward is allowed depends on
-//   which earlier rewards ran. The reward collection arrives from
-//   `PromotionDAO.getActivePromotionRewards` [model/dao/PromotionDAO.cfc:L51-L132], whose HQL is
-//   assembled across L64-L114 and executed at L131 with NO `ORDER BY` CLAUSE ANYWHERE - verified by
-//   reading the whole assembly. Iteration order is therefore whatever the driver returns, and the
-//   legacy behaviour is genuinely non-deterministic at the boundary of a tie. The absence of the
-//   ordering is preserved, not repaired. Owner: `./promotion/rewardUsageLedger.ts`.
-//
-// VECTOR 2 - A HAND-ROLLED TWO-PASS LOOP IMPLEMENTED BY MUTATING THE LOOP COUNTER.
-//   `var orderRewards = false;` [L166], then at the end of the collection [L458-L461]
-//   `if(!orderRewards and pr == arrayLen(promotionRewards)) { pr = 0; orderRewards = true; }`.
-//   Pass two must follow pass one because the order arm reads BOTH
-//   `getSubtotalAfterItemDiscounts()` AND `getFulfillmentChargeAfterDiscountTotal()` [L417] -
-//   values that exist only once the item arm AND the fulfillment arm of pass one have run, so pass
-//   two depends on both arms of pass one, not merely on the item arm. TWO CONSEQUENCES: the reset
-//   sits INSIDE the loop body and inside the L197 gate, so pass two NEVER RUNS AT ALL when the
-//   reward collection is empty; and any naive split into two clean passes changes behaviour in that
-//   empty case. Owner: `./promotion/twoPassRewardIterator.ts`, which reproduces the empty-collection
-//   outcome deliberately.
-//
-// VECTOR 3 - THE OVER-USE STRIPPING LOOP READS A LEAKED VARIABLE (register entry 9).
-//   L469 iterates `for(var prID in promotionRewardUsageDetails)` and L471's guard correctly uses
-//   `prID` on both sides, but the BODY indexes by the `reward` variable left bound by the previous
-//   loop at FOUR sites - L472, L475, L476 and L477. The precise characterisation: THE DECISION TO
-//   STRIP IS CORRECT PER-REWARD; WHAT GETS STRIPPED, AND BY HOW MUCH, COMES FROM WHICHEVER REWARD
-//   THE PREVIOUS LOOP LEFT BEHIND. Ported as written - repairing it changes the amount charged.
-//   Owner: `./promotion/overUseStripping.ts`, which receives the leaked identity explicitly.
-//
-// VECTOR 4 - TWO INSERTION SORTS RUNNING IN OPPOSITE DIRECTIONS.
-//   The qualified-discount accumulator is insert-sorted DESCENDING by discount amount [L259-L294]
-//   and only index `[1]` - the single largest - is ever applied [L523-L536]. The reward's
-//   `orderItemsUsage` is insert-sorted ASCENDING by `discountPerUseValue` [L301-L329], so the
-//   cheapest-per-use discounts are stripped first. Both orderings are load-bearing. Owners: THIS
-//   FILE for the descending sort (see the ownership split below) and
-//   `./promotion/rewardUsageLedger.ts` for the ascending one.
-//
-// VECTOR 5 - AN UNGUARDED DIVISION.
-//   `discountPerUseValue = precisionEvaluate('discountAmount / discountQuantity')` [L299] applies no
-//   zero check to the divisor. The absence of the guard is reproduced: `Money.dividedBy` refuses a
-//   zero divisor and throws, which is the faithful outcome because CFML also errors.
-//   Owner: `./promotion/rewardUsageLedger.ts`.
-//
-// VECTOR 6 - THE LEDGER RATCHET AT [L223-L224]. (Not among the five vectors the specification
-//   publishes; surfaced during folder analysis and attributed as such. Range re-verified in situ at
-//   exactly L223-L224.) The reward's `maximumUsePerOrder` is ratcheted DOWN against
-//   `qualificationQuantity * maximumUsePerQualification` before the discount quantity is derived
-//   from it, and the ratchet persists on the shared ledger entry - so the quantity a later order
-//   item is granted depends on how much earlier items already consumed.
-//   Owner: `./promotion/rewardUsageLedger.ts` in concert with `./promotion/twoPassRewardIterator.ts`.
-//
-// ===========================================================================================
-// THE OWNERSHIP SPLIT - what this file implements, and what it delegates
-// ===========================================================================================
-// DELEGATED, one module per concern, each mapped to its source range:
-//   ./promotion/salePriceSeeding.ts             L145-L162
-//   ./promotion/promotionPeriodQualification.ts L549-L627, plus L752-L781 and L783-L849
-//   ./promotion/qualifierQualification.ts       L629-L750
-//   ./promotion/orderItemMembership.ts          L852-L919 and L921-L985
-//   ./promotion/discountAmount.ts               L987-L1018
-//   ./promotion/rewardUsageLedger.ts            L172-L189, L223-L224, L296-L329
-//   ./promotion/overUseStripping.ts             L468-L521
-//   ./promotion/promotionApplication.ts         L523-L536
-//   ./promotion/twoPassRewardIterator.ts        L165-L171, L458-L461, L465
-//
-// IMPLEMENTED HERE - the four bodies that sit outside the 489-line method and outside every module
-// range: `getSalePriceDetailsForProductSkus` [L1022-L1030],
-// `getShippingMethodOptionsDiscountAmountDetails` [L1032-L1086], and the two DAO pass-throughs
-// [L1094-L1096, L1098-L1100].
-//
-// IMPLEMENTED HERE ALSO - the parts of the 489-line method that no module claims, and that the
-// modules explicitly disclaim in their own headers: the ledger-seed CALL and the period-qualification
-// memo populate [L172-L194], the gate evaluation [L197] whose outcome the iterator requires back per
-// reward, the THREE reward-level arm bodies (order-item [L200-L341], fulfillment [L345-L412], order
-// [L415-L454]), and the DESCENDING insertion sort [L259-L294].
-//
-// JUDGMENT CALL: L752-L781 and L783-L849 fall outside every cited module range. They are private
-// helpers of the L549-L627 period-qualification path and are hosted in
-// `./promotion/promotionPeriodQualification.ts` rather than in a tenth module, because the module
-// layout is locked at nine. This façade re-exports them as methods per the visibility-widening
-// budget below.
-//
-// ===========================================================================================
-// COLLABORATORS
-// ===========================================================================================
-// The component declares THREE, all of them live, at [model/service/PromotionService.cfc:L51, L53,
-// L54] - `promotionDAO`, `addressService`, `roundingRuleService`. Calibration across the slice:
-// Brand 1 · Option 2 declared / 1 real · PriceGroup 3 (all live) · PROMOTION 3 (ALL LIVE) ·
-// RoundingRule 1 · Sku 5 declared / 4 real · Product 8 declared / 6 real · out-of-scope
-// `OrderService` 16. The specification's "16+" figure is a property of `OrderService`, not of this
-// slice - the heaviest in-scope service takes 8, and the two most behaviourally critical take 3
-// each. So the real work was never untangling a sixteen-way graph; it was inverting two call
-// directions, which is what the anti-corruption reshaping below does.
-//
-// ★ THIS COMPONENT HAS ZERO DEAD INJECTIONS AND ZERO `getService()` SITES. Verified by full sweep:
-// all three declared properties are genuinely reached, and `model/service/SkuService.cfc:L212` is
-// the one and only service-layer `getService()` locator site in the whole in-scope slice. That
-// makes this the cleanest dependency surface of the seven, unlike `ProductService` (two dead
-// injections) and `OptionService` (one). Nothing here needed a locator removal.
-//
-// Dependency injection replaces a DI/1 0.4.2 convention scan - which carried a first-scan lock -
-// with explicit constructor arguments assembled once in `src/handlers/bootstrap.ts`. There is no
-// runtime scan, no service locator and no container package.
-//
-// ===========================================================================================
-// THE BUDGET LEDGERS - four distinct ledgers, never conflated
-// ===========================================================================================
-// VISIBILITY WIDENINGS: exactly FIVE project-wide, and ALL FIVE ARE SPENT HERE.
-//   getPromotionPeriodQualificationDetails [L549], getQualifierQualificationDetails [L629],
-//   getPromotionPeriodQualifiedFulfillmentIDList [L752],
-//   getPromotionPeriodOrderItemQualificationCount [L783], getDiscountAmount [L987].
-//   All five are `private` in the legacy source and are exported here so they are directly
-//   testable. This is a deliberate visibility widening that DOES NOT ALTER BEHAVIOUR. No sixth
-//   private method is promoted, here or anywhere in the project.
-//
-// SIGNATURE RESHAPINGS: three project-wide; ONE is spent here - `updateOrderAmountsWithPromotions`
-//   returns `PromotionAppliedIntent[]` where the legacy returns `void` and mutates the order
-//   aggregate in place. It is the single most consequential signature change in the migration and
-//   the anti-corruption seam that makes this slice independently deployable. Its mirror is
-//   `updateOrderAmountsWithPriceGroups` in `./priceGroupService.ts`; the third is the pair of
-//   smart-list renames in `./productService.ts` and `./skuService.ts`. Narrowing an out-of-scope
-//   entity parameter to an opaque identifier - `Account` to `accountID: string` - is sanctioned and
-//   is NOT a reshaping.
-//
-// SIGNATURE WIDENINGS: one project-wide, already spent on `isCurrent(now?: Date)` in
-//   `src/domain/entities/promotionPeriod.ts`. ZERO REMAIN, and no method here gained a parameter.
-//   This ledger is distinct from the visibility ledger above.
-//
-// DELIBERATE DIVERGENCES: exactly THREE project-wide, and TWO of them belong to this subtree.
-//   (a) register entry 13, the un-`var`'d scope leak - made function-local.
-//   (b) register entry 12, the `amountOff` float gap - closed by routing through `Money`.
-//   (c) register entry 19's entity memo bug in `src/domain/entities/product.ts` - already spent.
-//   THERE IS NO FOURTH. Every other finding is reproduced, not repaired.
-//
-//   ONE NEIGHBOURING DECISION IS DELIBERATELY NOT COUNTED HERE, and a code review asked for it to
-//   be stated where the budget is stated. `src/services/productService.ts` refuses a
-//   caller-supplied default-image path [model/service/ProductService.cfc:L241-L250]. That is a
-//   security refusal on a method AAP 0.2.2 ports as a thin pass-through to a stub port, it repairs
-//   no numbered register entry, and AAP 0.6.7's budget is a register-repair budget - so it is
-//   registered in `tests/traceability/legacyTestMap.ts` under `outOfScopeSecurityRefusals`, with a
-//   gate of its own, rather than counted against the three above. The budget here stays at three.
-//
-//   LEGACY-DEFECT [model/service/PromotionService.cfc:L1007, L1009, L1014]: `discountAmount` is
-//   assigned without `var` at THREE sites - not the two the specification cites - leaking into the
-//   component `variables` scope. DELIBERATE DIVERGENCE [model/service/PromotionService.cfc:L1007] -
-//   divergence (a) of three: made function-local. Reproducing state
-//   that persists across warm Lambda invocations could leak one customer's discount into another's
-//   order. Implemented in `./promotion/discountAmount.ts`; recorded here so the budget is auditable
-//   from the service surface.
-//
-//   LEGACY-DEFECT [model/service/PromotionService.cfc:L998]: the `amountOff` branch omits
-//   `precisionEvaluate` and uses raw floating-point multiplication while its two sibling branches
-//   use it. DELIBERATE DIVERGENCE [model/service/PromotionService.cfc:L998] - divergence (b) of
-//   three: closed. All arithmetic routes through `Money`, and preserving
-//   one branch's drift would require deliberately bypassing the value object. Strictly more correct
-//   than the source. Implemented in `./promotion/discountAmount.ts`.
-//
-// PORTS: locked at 13. None is added and no port member is invented. The two inline structural
-//   collaborators below are NOT ports - the lock counts files under `src/domain/ports/`.
-//
-// DEFECT REGISTER: 30 numbered entries plus its eight secondary items. This subtree owns numbered
-//   entries 9, 10, 11, 12, 13, 14 and 15 plus the `issue #1766` no-op; entries 5, 6, 7, 8, 29 and 30
-//   belong to `./priceGroupService.ts` and 28 to `./skuService.ts`. Of this subtree's, THIS FILE
-//   implements 15 and the `issue #1766` carry-forward; 9, 10, 11, 12, 13 and 14 are marked in the
-//   `./promotion/` modules and referenced from here.
-//
-// ===========================================================================================
-// LOCATOR VERIFICATION - THE SOURCE WINS
-// ===========================================================================================
-// Every locator cited in this file was re-verified against `model/service/PromotionService.cfc` as
-// it was ported, and the specification's line references are known to drift. Where the two
-// disagreed, the source governed and the correction is recorded at the site. Corrections found:
-//
-// LEGACY-NOTE [model/service/PromotionService.cfc:L541-L544]: the `issue #1766` block spans four
-// lines - L541 is the `// Return & Exchange Orders` comment, L542 the `if`, L543 the TODO text
-// itself and L544 the closing brace. The specification cites the TODO at both "L541-L544" and
-// "L542-L544" in different places; the TODO text is on L543. Verified against source.
-//
-// LEGACY-NOTE [model/service/PromotionService.cfc:L865, L900, L935, L966]: the
-// `if(listFindNoCase(...))`-as-boolean anti-pattern has FOUR sites in this component, not the three
-// the specification lists - it omits L900, the qualifier's product-type INCLUSION walk, which is
-// structurally identical to the exclusion walk at L865. All four are inside
-// `./promotion/orderItemMembership.ts`. This file's own two membership-style tests are the
-// `arrayFind` calls at L209 and L351, which become `Array.prototype.includes` on a `string[]` - an
-// intrinsically boolean expression, so no index is compared and the anti-pattern cannot arise.
-//
-// SECONDARY-REGISTER ITEMS recorded from this component:
-// LEGACY-NOTE [model/service/PromotionService.cfc:L1092, L1102]: the DAO Passthrough section opens
-// with `START` twice; the second banner was clearly intended to be `END`. Cosmetic. The
-// project-wide banner audit is complete at six files - this one, `RoundingRuleService.cfc:L181/L183`,
-// `BrandService.cfc:L57/L59`, `OptionService.cfc:L70/L80`, `ProductService.cfc:L102/L108` and
-// `PriceGroupService.cfc:L382/L384` - so every in-scope service carries the same duplicated-START
-// wart. Note also that this component's Logical Methods [L1088/L1090], Process Methods, Status
-// Methods, Save Overrides, Smart List Overrides and Get Overrides banners are ALL EMPTY, which is
-// why this file spends no smart-list rename budget: those two renames belong to `./productService.ts`
-// and `./skuService.ts`.
-//
-// LEGACY-NOTE [model/service/PromotionService.cfc:L82-L133]: the engine's own documentation block
-// places `qualifiedFulfillments` only inside `qualifierDetails`, never at the promotionPeriod level,
-// while listing `qualifiedFulfillmentIDs` at the period level. That is the direct proof that
-// register entry 10's write at L621-L623 is a level confusion rather than intent. The field is typed
-// as a documented dead field in `../domain/promotionEngine/qualificationTypes.ts` and is NEVER READ
-// by this file.
-//
-// LEGACY-NOTE [model/service/PromotionService.cfc:L82-L133]: the legacy accumulator key is spelled
-// `orderItemQulifiedDiscounts` - missing the `a` - at its declaration [L142] and at every use. The
-// target symbol is renamed to the correct spelling because it is a purely internal identifier, never
-// a persisted column or a wire-format data contract. The original spelling is recorded here.
-//
-// LEGACY-NOTE [model/service/PromotionService.cfc:L244, L249, L252]: the source declares
-// `var discountAmount` TWICE in sibling branches of the same function - at L244 and L252 - alongside
-// `var originalDiscountAmount` at L249. CFML tolerates the duplicate declaration because `var`
-// is function-scoped and the branches are exclusive; the target binds one `const` per branch.
-//
-// ===========================================================================================
-// NO MODULE-LEVEL MUTABLE STATE
-// ===========================================================================================
-// On a warm Lambda container module-level state persists between UNRELATED requests. Four such
-// caches exist in the legacy slice - `SkuDAO.variables.nextOptionGroupSortOrder` (whose clear
-// method's condition is inverted so it can never fire), `RoundingRuleService.variables.roundingRuleDetails`,
-// the un-`var`'d `discountAmount` of divergence (a), and every entity memo - and ALL of them become
-// request-scoped. Concretely here: the reward-usage ledger, the period-qualification memo, the
-// qualified-discount accumulator, the applied-promotion mirrors and
-// `getShippingMethodOptionsDiscountAmountDetails`'s own separate memo are ALL created fresh inside
-// the call that uses them. No field on this class holds any of them, there is no module-level map,
-// and nothing is memoised across calls. The single documented exception in the whole subtree is the
-// MySQL connection pool in `src/repositories/mysql/connection.ts`.
-//
-// The legacy runtime's 60-second order-placement lock, 45-second payment-transaction lock and
-// 30-second DI/1 first-scan lock are NOTED AND DELIBERATELY NOT IMPLEMENTED. `cfthread` usage
-// across the entire in-scope slice is zero, verified, so the thread-translation rule is recorded
-// and unexercised.
-// ---------------------------------------------------------------------------
+// LEGACY-DEFECT [model/service/PromotionService.cfc:L1007, L1009, L1014]: `discountAmount` is
+// assigned without `var` at three sites, leaking into the component `variables` scope.
+// DELIBERATE DIVERGENCE [model/service/PromotionService.cfc:L1007]: made function-local, because
+// state surviving a warm invocation could leak one customer's discount into another's order.
 
 // LEGACY-NOTE [model/service/PromotionService.cfc:L401, L447, L530]: `this.newPromotionApplied()`
-// is `HibachiService`'s generic `new<Entity>()` factory, not a declared collaborator. The 13-port
-// set publishes no entity-factory port and none was invented, so the target emits a
-// `PromotionAppliedIntent` instead of constructing and persisting a `PromotionApplied` entity - and
-// `../domain/entities/promotionApplied.js` is therefore deliberately NOT imported here. The entity
-// is the repository's concern; the intent algebra is this file's.
+// is `HibachiService`'s generic `new<Entity>()` factory, not a declared collaborator.
 import type { Promotion } from '../domain/entities/promotion.js';
 import type { PromotionCode } from '../domain/entities/promotionCode.js';
 import type { PromotionPeriod } from '../domain/entities/promotionPeriod.js';
@@ -370,72 +59,24 @@ import { SalePriceSeeder } from './promotion/salePriceSeeding.js';
 import type { RewardVisitOutcome } from './promotion/twoPassRewardIterator.js';
 import { TwoPassRewardIterator } from './promotion/twoPassRewardIterator.js';
 
-// JUDGMENT CALL: this façade imports its nine `./promotion/*` decomposition modules directly - they
-// are its own subtree, not sibling services, and delegating to them is the entire point of the
-// decomposition. No other file in `src/services/` imports a sibling, and this file imports none:
-// `roundingRuleService` arrives as the structural collaborator below, resolved in
-// `src/handlers/bootstrap.ts`, and `productService`, `skuService`, `brandService`, `optionService`
-// and `priceGroupService` are not referenced at all.
-//
-// JUDGMENT CALL: neither `../lib/cfml/precision.js` nor `../lib/cfml/numberFormat.js` is imported,
-// and the omission is deliberate rather than an oversight. Every arithmetic site THIS file owns is
-// Money-to-Money - the L252 correction term and the L417 sum - and `Money` is itself the project's
-// single arithmetic surface, reaching arbitrary-precision decimals through `precision.ts` internally.
-// Importing either helper to satisfy a naming expectation would leave an unused binding, which the
-// strict profile rejects. The `numberFormat` presentation step at L1017 belongs to
-// `./promotion/discountAmount.ts`, at the very end of the calculation, and is not moved earlier.
-// No `decimal.js` and no `zod` import appears here either: this service performs no declarative
-// validation, there being no promotion process object and no promotion validation schema in the
-// service tier's scope.
+// JUDGMENT CALL: this façade imports its nine `./promotion/*` decomposition modules directly -
+// they are its own subtree, not sibling services, and delegating to them is the entire point of
+// the decomposition.
 
 /**
  * The two rounding-rule members this service reaches, as a narrow structural collaborator.
  *
  * JUDGMENT CALL: narrow structural collaborator, satisfied in `src/handlers/bootstrap.ts` by the
- * sibling `RoundingRuleService` instance. AN INLINE COLLABORATOR IS NOT A FOURTEENTH PORT - the
- * 13-port lock counts files under `src/domain/ports/`, and the precedent is established:
- * `priceGroupRepository.ts` publishes `SkuPriceGroupResolver` and `priceGroupService.ts` declares
- * `PriceGroupFrameworkReads` for exactly this purpose. Only the two members actually reached are
- * available - `roundValueByRoundingRule` at [model/service/PromotionService.cfc:L1006], threaded
- * down into `./promotion/discountAmount.ts`, and `roundValueByRoundingRuleID` at [L1026], used by
- * `getSalePriceDetailsForProductSkus`.
- *
- * WHY IT IS DERIVED RATHER THAN HAND-DECLARED. `DiscountAmountCalculator`'s constructor is typed to
- * the CONCRETE `RoundingRuleService` class, and that class carries private members, so TypeScript
- * types it NOMINALLY: a hand-written two-member interface is not assignable to it and the compiler
- * rejects the wiring outright. Deriving the type from the constructor of a module this file is
- * already required to import produces a collaborator that is simultaneously narrow at this file's
- * boundary and assignable at the module's, without importing `./roundingRuleService.js` - which
- * intra-folder import discipline forbids - and without any module-level circularity. There is no
- * `implements` clause anywhere; the satisfaction is purely structural.
+ * sibling `RoundingRuleService` instance.
  */
 type RoundingRuleValueResolver = ConstructorParameters<typeof DiscountAmountCalculator>[0];
 
 /**
  * The one framework-generic read this service still needs, as a narrow structural collaborator.
- *
- * JUDGMENT CALL: FOUR inherited-but-undeclared framework accessors appear in this component, and
- * exactly one survives into the target.
- *   1. `getHibachiUtilityService().queryToStructOfStructures(...)` [L1023] - DROPPED; the keying
- *      becomes an explicit step, see `getSalePriceDetailsForProductSkus`.
- *   2. `this.newPromotionApplied()` [L401, L447, L530] - DROPPED; the target emits intents instead
- *      of constructing entities.
- *   3. `getPromotionDAO()` / `getAddressService()` / `getRoundingRuleService()` - these are the
- *      three DECLARED properties and become the first three constructor arguments.
- *   4. `this.getPromotion(salePriceDetails.promotionID)` [L157] - SURVIVES, and is declared here.
- * It survives because `QualifiedDiscount.promotion` is typed to the `Promotion` ENTITY in the
- * published domain type, so the sale-price seeding step genuinely has to resolve an identifier into
- * an entity, and `PromotionRepository`'s seven locked members publish no such lookup. Declaring it
- * module-locally and un-exported, and taking it as a constructor argument, follows
- * `priceGroupService.ts`'s shipped `PriceGroupFrameworkReads` precedent verbatim. It is NOT a
- * fourteenth port, and it is NOT a signature widening - that ledger governs the twelve ported
- * methods, and DI/1 gave this component no constructor to widen.
  */
 interface PromotionFrameworkReads {
   /**
    * `HibachiService`'s generic `get<Entity>(id)`, narrowed to the one entity this service loads.
-   *
-   * [model/service/PromotionService.cfc:L157] `promotion = this.getPromotion(salePriceDetails.promotionID)`.
    */
   getPromotion(promotionID: string): Promise<Promotion>;
 }
@@ -443,102 +84,41 @@ interface PromotionFrameworkReads {
 /**
  * What `getShippingMethodOptionsDiscountAmountDetails` returns.
  *
- * [model/service/PromotionService.cfc:L1033-L1036] `var details = { promotionID="", discountAmount=0 };`
- * - two members, seeded exactly as the source seeds them. Declared locally, under the one-exported-
- * unit standard, as a type alias belonging to this service's published surface.
+ * [model/service/PromotionService.cfc:L1033-L1036]
+ * `var details = { promotionID="", discountAmount=0 };` - two members, seeded exactly as the
+ * source seeds them.
  *
  * JUDGMENT CALL: `ShippingMethodOptionView` is IMPORTED from `../domain/views/orderView.js`, which
- * is its documented home and where its four members are declared; only `ShippingDiscountDetails` is
- * declared here. An earlier and more general reading placed both types in the service tier, but the
- * direct reading of the owning view module governs.
+ * is its documented home and where its four members are declared; only `ShippingDiscountDetails`
+ * is declared here.
  */
 export interface ShippingDiscountDetails {
   /**
    * [model/service/PromotionService.cfc:L1034] seeded to the EMPTY STRING, and still the empty
-   * string when nothing qualified. Not `undefined`, not `null` - the source seeds `""` and the
-   * caller distinguishes "no discount" by that value.
+   * string when nothing qualified.
    */
   readonly promotionID: string;
 
   /**
    * [model/service/PromotionService.cfc:L1035] seeded to zero.
    *
-   * JUDGMENT CALL: `Money.zero` here is an ACCUMULATOR SEED for a maximum-search, not a fallback
-   * for an absent price. The standing prohibition on `Money.zero` targets `?? Money.zero`-style
-   * defaults in price paths, where a silent zero sells product for free; a documented accumulator
-   * seed is the legacy behaviour exactly. This is the ONLY `Money.zero` SEED in the file. The file's
-   * only other two `Money.zero` occurrences are COMPARISON OPERANDS - the ports of
-   * `if(discountAmount > 0)` at [model/service/PromotionService.cfc:L257] and at [L378, L424] - and
-   * a comparison operand is neither a seed nor a fallback. `Money` publishes no `isPositive` and no
-   * `isZero`, so a zero operand is the only way to express the source's `> 0` test through the value
-   * object. Nowhere in this file is `Money.zero` used as a coalesce (`??`/`||`), an `orZero()` or a
-   * parameter default.
+   * JUDGMENT CALL: `Money.zero` here is an accumulator seed for a maximum-search, not a fallback
+   * for an absent price.
    */
   readonly discountAmount: Money;
 }
 
 /**
- * A local mirror of one applied-promotion slot on the live ORM graph, AS IT STANDS AFTER THE BLANKET
- * CLEAR - which is to say, starting EMPTY.
+ * A local mirror of one applied-promotion slot on the live ORM graph, as it stands after the
+ * blanket clear - which is to say, starting empty.
  *
- * ★ WHY THIS EXISTS - MIRROR THE MUTATION, THEN EMIT WHAT IT HOLDS.
- * The fulfillment arm [model/service/PromotionService.cfc:L345-L412] and the order arm [L415-L454]
- * are structurally identical and both operate on a LIVE Hibernate graph: they read
- * `getAppliedPromotions()[1]`, and when a reward wins they either call `setDiscountAmount` on that
- * entity, or unlink it and attach a new one. Because the graph is live, the very next reward in the
- * same invocation reads the value the previous reward just wrote - the comparison baseline EVOLVES
- * within one call, and that is load-bearing.
- *
- * A read-only `OrderView` cannot be mutated and this service never mutates order persistence, so
- * the mutation is replayed against this local mirror - step for step, exactly as L378-L406 and
- * L424-L451 perform it - and what the mirror holds at the end is emitted as an `add`.
- *
- * ★★ THE SLOT STARTS EMPTY, AND THAT IS THE WHOLE POINT. By the time the fulfillment arm first runs,
- * the engine has already executed the blanket clear at [model/service/PromotionService.cfc:L61-L80],
- * which detached EVERY previously applied promotion from every order item, every fulfillment and the
- * order itself. `removeOrderFulfillment()` [model/entity/PromotionApplied.cfc:L121] and
- * `removeOrder()` [:L139] each `arrayDeleteAt` from the owner's live association, so after L80 all
- * three collections are EMPTY. That is why the emptiness tests at L381 and L427 are ALWAYS TRUE for
- * the first reward of their kind, and why their else-arms at L385-L393 and L431-L439 are reachable
- * ONLY from a row THIS SAME INVOCATION created at L401 or L447. A slot seeded from persisted rows
- * would make those else-arms reachable on the first reward, which the legacy cannot do.
- *
- * ★ QUOTE-THEN-REVISE ON SEEDING, AND WHY THE EARLIER READING LOST MONEY. An earlier revision seeded
- * this mirror from `OrderView.appliedPromotions` and emitted "the NET DELTA against the state the
- * view reported", arguing: "If reward A displaces a pre-existing promotion P0 and reward B then
- * displaces A, the legacy net effect is that P0's row is unlinked, A's row is created and then
- * unlinked before it is ever persisted, and B's row is created - which is `remove(P0)` followed by
- * `add(B)`, exactly what the diff produces."
- *
- * That reasoning holds for the case it examines and fails for the two it does not, both of which are
- * ordinary rather than exotic, and both of which change what a customer is charged:
- *
- *   * A SMALLER DISCOUNT NOW QUALIFIES. Say the order carries P0 at 50.00 and the only reward that
- *     qualifies this time yields 10.00. Seeded, the mirror holds 50.00, the strict greater-than test
- *     at L385 / L431 rejects 10.00, nothing is marked mutated and NO INTENT IS EMITTED - so the
- *     customer keeps a 50.00 discount that no longer qualifies. The legacy removes P0 at L71-L75 /
- *     L78-L80 and then applies 10.00 at L401 / L447.
- *   * NOTHING QUALIFIES AT ALL. Seeded, the mirror still holds P0, nothing was mutated, no intent is
- *     emitted, and P0 survives indefinitely. The legacy removes it unconditionally.
- *
- * The defect is structural, not a missing case: a seeded mirror cannot distinguish "the incumbent
- * won" from "the incumbent was never a candidate", because under the legacy it is never a candidate.
- * So the mirror starts empty, and the pre-existing rows are detached by
- * {@link buildBlanketClearIntents} instead of competing here.
- *
- * One instance per target per invocation; never a field on the service, never module state.
+ * The fulfillment arm [model/service/PromotionService.cfc:L345-L412] and the order arm
+ * [model/service/PromotionService.cfc:L415-L454] are structurally identical and both operate on a
+ * LIVE Hibernate graph: they read `getAppliedPromotions()[1]`.
  */
 interface AppliedPromotionSlot {
   /**
-   * The mirror of `getAppliedPromotions()[1]` as the legacy graph would currently hold it -
-   * `undefined` while the slot is empty, which is its state at construction and its state for the
-   * whole invocation if no reward ever wins. Mutated in place by the replay, exactly as the source
-   * mutates the entity.
-   *
-   * This single member replaces the three the seeded design needed. `originalPromotionID` is gone
-   * because post-clear there is no original - the blanket clear owns every pre-existing row. And a
-   * separate `mutated` flag is gone because it was only ever set alongside `current` and could not
-   * disagree with it: an empty slot is an untouched slot once nothing is seeded into it.
+   * This single member replaces the three the seeded design needed.
    */
   current: { promotionID: string; discountAmount: Money } | undefined;
 }
@@ -547,15 +127,12 @@ interface AppliedPromotionSlot {
  * A mirror in its post-clear state.
  *
  * CFML parity [model/service/PromotionService.cfc:L64-L80]: the blanket clear has already detached
- * every applied promotion from this target, so the collection the legacy is about to read is empty.
- * There is deliberately no parameter - seeding this from `OrderView.appliedPromotions` is the defect
- * documented on {@link AppliedPromotionSlot}, and removing the parameter is what makes reintroducing
- * it a compile error rather than a judgment call.
+ * every applied promotion from this target, so the collection the legacy is about to read is
+ * empty.
  *
  * CFML parity [model/service/PromotionService.cfc:L381, L385, L427, L431]: the source tests
- * `!arrayLen(getAppliedPromotions())` and then reads index `[1]`. CFML arrays are 1-based, so `[1]`
- * is the FIRST element. Only the first is ever read, so the mirror holds exactly one row - and
- * post-clear the only rows that can reach it are the ones this invocation created.
+ * `!arrayLen(getAppliedPromotions())` and then reads index `[1]`. CFML arrays are 1-based, so
+ * `[1]` is the FIRST element.
  */
 function createEmptyAppliedPromotionSlot(): AppliedPromotionSlot {
   return { current: undefined };
@@ -564,33 +141,18 @@ function createEmptyAppliedPromotionSlot(): AppliedPromotionSlot {
 /**
  * Replays one reward's outcome against the mirror.
  *
- * This is a line-for-line transcription of [model/service/PromotionService.cfc:L378-L396] - which
- * [L424-L442] repeats verbatim at the order level - and of the `addNew` block that follows it at
- * [L400-L406] / [L446-L451].
- *
  * CFML parity [model/service/PromotionService.cfc:L378, L424]: `if(discountAmount > 0)` gates the
- * whole comparison, so a reward computing a non-positive discount is skipped entirely and leaves the
- * mirror untouched - while the value already in the mirror still serves as the baseline for the
- * rewards that follow. Expressed with `Money.isGreaterThan` against zero rather than a numeric
- * comparison, because no raw arithmetic comparison may touch a monetary value.
+ * whole comparison, so a reward computing a non-positive discount is skipped entirely and leaves
+ * the mirror untouched.
  *
  * CFML parity [model/service/PromotionService.cfc:L385, L431]: the displacement test is STRICTLY
- * greater-than, so on a tie the incumbent is kept and the FIRST qualifying reward wins. Combined
- * with the absence of `ORDER BY` on the reward query, tie outcomes are driver-order dependent - and
- * that is preserved, not resolved.
- *
- * CFML parity [model/service/PromotionService.cfc:L388, L434]: the promotion identity test is CFML
- * `==` on two strings, which is CASE-INSENSITIVE, so it is routed through the case-folding
- * comparison helper rather than through `===`. Persisted UUID identifiers cannot in practice differ
- * only by case, but the ported comparison matches the source's semantics rather than assuming they
- * coincide.
+ * greater-than, so on a tie the incumbent is kept and the FIRST qualifying reward wins.
  */
 function mirrorRewardApplication(
   slot: AppliedPromotionSlot,
   rewardPromotionID: string,
   discountAmount: Money,
 ): void {
-  // [model/service/PromotionService.cfc:L378, L424]
   if (!discountAmount.isGreaterThan(Money.zero)) {
     return;
   }
@@ -604,40 +166,26 @@ function mirrorRewardApplication(
     return;
   }
 
-  // [model/service/PromotionService.cfc:L385, L431] only a strictly greater discount displaces. The
-  // incumbent here is necessarily a row THIS invocation created, never a persisted one.
+  // [model/service/PromotionService.cfc:L385, L431] only a strictly greater discount displaces.
+  // The incumbent here is necessarily a row this invocation created, never a persisted one.
   if (!discountAmount.isGreaterThan(current.discountAmount)) {
     return;
   }
 
-  // [model/service/PromotionService.cfc:L388-L389, L434-L435] same promotion, so the legacy revises
-  // the amount on the existing row in place. The incumbent's own spelling of the identifier is kept
-  // rather than the reward's: `cfEquals` is case-insensitive, matching CFML `==` on two strings, so
-  // the two can compare equal while differing in case, and the legacy `setDiscountAmount` call
-  // leaves the row's existing promotion association - and therefore its spelling - untouched.
+  // [model/service/PromotionService.cfc:L388-L389, L434-L435] same promotion, so the legacy
+  // revises the amount on the existing row in place.
   if (cfEquals(current.promotionID, rewardPromotionID)) {
     slot.current = { promotionID: current.promotionID, discountAmount };
     return;
   }
 
   // [model/service/PromotionService.cfc:L392-L394, L438-L440] a different promotion, so the legacy
-  // unlinks the incumbent and attaches a new row. Because that incumbent is a row this invocation
-  // created and has not been emitted yet, the unlink needs no `remove` intent of its own - it simply
-  // never becomes an `add`.
+  // unlinks the incumbent and attaches a new row.
   slot.current = { promotionID: rewardPromotionID, discountAmount };
 }
 
 /**
  * Which of the two arms a mirror belongs to, and the opaque identifier its intents carry.
- *
- * Only the order and orderFulfillment levels appear, because only those two arms mirror a live
- * applied-promotion row across rewards; the order-item arm accumulates candidate discounts instead
- * and is applied once by `./promotion/promotionApplication.ts`, which is why the item level needs no
- * `update` in the intent algebra.
- *
- * This says nothing about REMOVALS. All three levels are removed from, by the blanket clear at
- * [model/service/PromotionService.cfc:L61-L80]; see {@link buildBlanketClearIntents}, which does not
- * go through a mirror at all and therefore does not use this type.
  */
 type AppliedPromotionSlotTarget =
   | { readonly appliedType: 'order'; readonly orderID: string }
@@ -645,34 +193,6 @@ type AppliedPromotionSlotTarget =
 
 /**
  * Emits what the mirror holds at the end of the invocation.
- *
- * Because the mirror starts empty - the blanket clear having already detached every pre-existing row
- * - there are exactly two outcomes, and they map one-to-one onto the legacy's writes:
- *   slot still empty  -> no intent at all. No reward ever passed L378 / L424 and the strict
- *                        greater-than test, so the legacy created no row. Whatever the target used to
- *                        carry has already been detached by {@link buildBlanketClearIntents}.
- *   slot holds a row  -> `add`                              [L400-L406, L446-L451]
- *
- * ★ WHY NO `update` AND NO `remove` IS EMITTED HERE, THOUGH BOTH EXIST IN THE ALGEBRA. Both legacy
- * operations act exclusively on a row created earlier in THIS invocation, which no consumer has been
- * told about yet:
- *   * `setDiscountAmount` at [L389, L435] revises the row L401 / L447 created moments earlier. Its
- *     net effect on persistence is simply that the row lands at the revised amount, which is what the
- *     single `add` carries. Emitting `add` then `update` would describe one row as two instructions.
- *   * `removeOrderFulfillment()` / `removeOrder()` at [L393, L439] unlink that same pending row. A
- *     row that was never emitted needs no removal; it just never becomes an `add`.
- * The pre-existing rows - the ones a consumer HAS seen - are removed unconditionally by the blanket
- * clear, which is where every `remove` this method's arms are responsible for now comes from. So the
- * emitted vocabulary is `remove` for everything that was there and `add` for everything that wins,
- * which is exactly the row-level truth: `cascade="all-delete-orphan"` means the cleared rows are
- * DELETED and the winners are INSERTED with fresh identity. An `update` would wrongly imply a
- * surviving row.
- *
- * ★ QUOTE-THEN-REVISE. An earlier revision described "four outcomes" and mapped
- * "same promotion retained -> `update`" and "promotion replaced -> `remove` then `add`". Both rows of
- * that mapping were artefacts of seeding the mirror from persisted state: they compared against an
- * `originalPromotionID` that, post-clear, does not exist. The two remaining outcomes below are what
- * the legacy actually leaves behind.
  */
 function emitAppliedPromotionSlotIntents(
   slot: AppliedPromotionSlot,
@@ -709,54 +229,12 @@ function emitAppliedPromotionSlotIntents(
 }
 
 /**
- * Reproduces the three backwards clear-out loops at [model/service/PromotionService.cfc:L61-L80] as
- * `remove` intents - one per applied-promotion row the view reported, at all three levels.
+ * Reproduces the three backwards clear-out loops at [model/service/PromotionService.cfc:L61-L80]
+ * as `remove` intents - one per applied-promotion row the view reported, at all three levels.
  *
- * ★★ THIS IS THE ENGINE'S FIRST ACT, AND IT IS UNCONDITIONAL. The source, verbatim:
+ * No gate, no comparison, no same-promotion test: every row goes.
  *
- *   L63 // Clear out all previously applied promotions
- *   L64 for(var oi=arrayLen(arguments.order.getOrderItems()); oi >= 1; oi--) {
- *   L65   for(var pa=arrayLen(arguments.order.getOrderItems()[oi].getAppliedPromotions()); pa >= 1; pa--) {
- *   L66     arguments.order.getOrderItems()[oi].getAppliedPromotions()[pa].removeOrderItem();
- *   L67   }
- *   L68 }
- *   L70 // Clear out all previously applied promotions on fulfillments
- *   L71 for(var of=arrayLen(arguments.order.getOrderFulfillments()); of >= 1; of--) {
- *   L72   for(var pa=arrayLen(arguments.order.getOrderFulfillments()[of].getAppliedPromotions()); pa >= 1; pa--) {
- *   L73     arguments.order.getOrderFulfillments()[of].getAppliedPromotions()[pa].removeOrderFulfillment();
- *   L74   }
- *   L75 }
- *   L77 // Clear out all previously applied promotions on the order
- *   L78 for(var pa=arrayLen(arguments.order.getAppliedPromotions()); pa >= 1; pa--) {
- *   L79   arguments.order.getAppliedPromotions()[pa].removeOrder();
- *   L80 }
- *
- * No gate, no comparison, no same-promotion test: every row goes. `removeOrderItem()`,
- * `removeOrderFulfillment()` and `removeOrder()` [model/entity/PromotionApplied.cfc:L103, L121, L139]
- * each `arrayDeleteAt` from the owner's live association, and all three associations declare
- * `cascade="all-delete-orphan"` [model/entity/OrderItem.cfc:L71, model/entity/OrderFulfillment.cfc:L79,
- * model/entity/Order.cfc:L72], so an unlinked row is DELETED rather than merely detached.
- *
- * ★ WHY THIS IS EMITTED RATHER THAN ELIDED. The legacy performs the clear as a side effect on a live
- * ORM graph, so it has nothing to announce. Here the order aggregate is out of scope and the returned
- * intent array is the ONLY channel to persistence, so a clear that is not emitted is a clear that
- * never happens. An earlier revision of this file argued the opposite - that "this service returns a
- * fresh intent list on every call and never mutates order persistence, so the recomputation is
- * inherently idempotent and there is nothing to clear". The premise is true and the conclusion does
- * not follow: the recomputation is idempotent, but the DATABASE is not recomputed, it is amended by
- * whatever the consumer is told. Told nothing, it keeps every stale row.
- *
- * ★ ALL THREE LEVELS, AND ALL ROWS AT EACH. Note the asymmetry with the reward arms, which read only
- * index `[1]`: these loops walk `arrayLen(...)` down to `1`, so a target carrying several applied
- * promotions has every one of them removed even though only the first was ever visible to the
- * comparison at L385 / L431. Emitting only the first would leave the rest orphaned forever.
- *
- * ★ TRAVERSAL ORDER IS PRESERVED EXACTLY, though nothing in the target depends on it. Reverse index
- * is the CFML idiom for deleting from a live collection while iterating it - a forward loop would
- * skip elements as the array shrank under it. Here nothing is being deleted from, so the order is
- * merely the order the intents appear in. It is reproduced anyway: items before fulfillments before
- * the order, and within each, last row first. A consumer applying these intents in sequence therefore
- * observes precisely the sequence the legacy performed, which is what makes the two comparable.
+ * Traversal order is preserved exactly, though nothing in the target depends on it.
  */
 function buildBlanketClearIntents(order: OrderView): PromotionAppliedIntent[] {
   const intents: PromotionAppliedIntent[] = [];
@@ -764,7 +242,8 @@ function buildBlanketClearIntents(order: OrderView): PromotionAppliedIntent[] {
   // [model/service/PromotionService.cfc:L64-L68] Order items, last item first, last row first.
   for (let itemIndex = order.orderItems.length - 1; itemIndex >= 0; itemIndex -= 1) {
     // Narrowed rather than asserted: `noUncheckedIndexedAccess` types an indexed read as possibly
-    // absent even inside a bounded loop, and non-null assertions are unavailable by project standard.
+    // absent even inside a bounded loop, and non-null assertions are unavailable by project
+    // standard.
     const orderItem = order.orderItems[itemIndex];
 
     if (orderItem === undefined) {
@@ -776,15 +255,8 @@ function buildBlanketClearIntents(order: OrderView): PromotionAppliedIntent[] {
 
       if (appliedPromotion !== undefined) {
         intents.push({
-          // ★ THE ROW'S OWN IDENTITY, not a re-derivation of it. The legacy calls
-          // `removeOrderItem()` on this row OBJECT [model/service/PromotionService.cfc:L66], reading
-          // neither its promotion nor its amount; carrying `promotionAppliedID` is what lets a
-          // consumer detach the same row rather than "some row for this promotion on this item".
+          // The row's own identity, not a re-derivation of it.
           promotionAppliedID: appliedPromotion.promotionAppliedID,
-          // Nullable on a persisted-row removal, and passed through rather than dereferenced: the FK
-          // declares no `notnull` [model/entity/PromotionApplied.cfc:L58] and the legacy itself
-          // produces promotion-less rows via `removePromotion` [:L85-L94]. Legacy clears them, so
-          // this emits an intent for them instead of skipping them.
           promotionID: appliedPromotion.promotion?.promotionID,
           operation: 'remove',
           appliedType: 'orderItem',
@@ -815,8 +287,8 @@ function buildBlanketClearIntents(order: OrderView): PromotionAppliedIntent[] {
       const appliedPromotion = orderFulfillment.appliedPromotions[rowIndex];
 
       if (appliedPromotion !== undefined) {
-        // Row identity and a nullable promotion, for the reasons given at the order-item loop above;
-        // the legacy locator for this level is [model/service/PromotionService.cfc:L73].
+        // Row identity and a nullable promotion, for the reasons given at the order-item loop
+        // above; the legacy locator for this level is [model/service/PromotionService.cfc:L73].
         intents.push({
           promotionAppliedID: appliedPromotion.promotionAppliedID,
           promotionID: appliedPromotion.promotion?.promotionID,
@@ -852,12 +324,8 @@ function buildBlanketClearIntents(order: OrderView): PromotionAppliedIntent[] {
  * Writes a key that an externally-sourced identifier may name, without letting a reserved name be
  * silently intercepted.
  *
- * A plain `target[key] = value` for the key `__proto__` stores NOTHING on the object: it walks the
- * inherited setter instead. Every key written through this function is a persisted identifier that
- * arrived from outside, so a plain assignment would silently drop the entry and the guard that
- * follows would re-seed it on every visit. `Object.defineProperty` installs an own, enumerable,
- * writable, configurable property under any name at all. This is the established house helper,
- * declared module-locally and un-exported in seven shipped files across the subtree.
+ * A plain `target[key] = value` for the key `__proto__` stores nothing on the object: it walks the
+ * inherited setter instead.
  */
 function putOwnStructKey<TValue>(target: Record<string, TValue>, key: string, value: TValue): void {
   Object.defineProperty(target, key, {
@@ -871,10 +339,8 @@ function putOwnStructKey<TValue>(target: Record<string, TValue>, key: string, va
 /**
  * Reduces a fulfillment address view to the projection the address-zone port accepts.
  *
- * The port's projection members are nullable, and the view's are optional, so absence is normalised
- * to `null` rather than dropped - the port distinguishes "this component is unconstrained" by a null
- * and would read an omitted member as `undefined`, which is not the same value. Mirrors the helper
- * `./promotion/qualifierQualification.ts` already uses, so both address-zone paths reduce identically.
+ * The port's projection members are nullable, and the view's are optional, so absence is
+ * normalised to `null` rather than dropped.
  */
 function toAddressProjection(address: ShippingAddressView): AddressProjection {
   return {
@@ -890,34 +356,8 @@ function toAddressProjection(address: ShippingAddressView): AddressProjection {
  *
  * LEGACY-NOTE [model/entity/PromotionReward.cfc:L77]: the legacy association is the many-to-many
  * link table `SwPromoRewardShipAddressZone`, and the ported entity deliberately publishes it as
- * `getShippingAddressZoneIDs(): readonly string[]` rather than as an array of `AddressZone` entities -
- * the entity graph beyond the identifier is not in scope. The zone locations therefore arrive empty,
- * and `addressZoneID` is what the port resolves them from.
- *
- * ★★ THIS PARAGRAPH USED TO STATE THE OPPOSITE, AND THE MISSTATEMENT WAS THE DEFECT.
- * It finished: "The zone locations therefore arrive empty, which the port reads as a zone matching
- * nothing; the repository is what populates them when a zone's locations are materialised." Both
- * halves were wrong, and together they described a promotion engine in which every configured
- * shipping-address zone silently answers `false`.
- *
- *   * "the port reads as a zone matching nothing" inverts the contract. {@link AddressZoneProjection}
- *     distinguishes an empty list that means NOT SUPPLIED - which this function produces, because this
- *     layer publishes no locations - from a zone that GENUINELY has none. Only the second is
- *     unmatchable. On the first, the implementation is obliged to resolve the zone from
- *     `addressZoneID` before answering.
- *   * "the repository is what populates them" names a collaborator that neither does this nor can.
- *     No repository port carries a zone-locations member, and the port set is closed at thirteen
- *     [AAP 0.2.1], so no repository was ever going to grow one. The resolution belongs to the port
- *     IMPLEMENTATION, and the composition root now performs it: it materialises an immutable
- *     zone-ID-to-locations index per request from the `SwAddressZoneLocation` link table and hands it
- *     to the evaluator, which folds case on the identifier when it looks a zone up
- *     [src/handlers/bootstrap.ts, section 4.2].
- *
- * Nothing about this function changes as a result - it supplies the identifier and an empty list, which
- * is exactly what the contract asks a caller with no locations to supply. What changed is that the
- * claim written here no longer contradicts the port it documents. The shape is the same one
- * `./promotion/qualifierQualification.ts` builds for the structurally identical qualifier path, and
- * that module has stated the obligation correctly all along.
+ * `getShippingAddressZoneIDs(): readonly string[]` rather than as an array of `AddressZone`
+ * entities.
  */
 function toConfiguredShippingAddressZones(
   addressZoneIDs: readonly string[],
@@ -928,15 +368,10 @@ function toConfiguredShippingAddressZones(
 /**
  * Dereferences a reward's promotion period, reproducing the legacy unguarded dereference.
  *
- * CFML parity [model/service/PromotionService.cfc:L192, L193, L197, L209, L212, L213, L222, L223,
- * L276, L290, L351, L388, L403, L434, L449]: the source writes
- * `reward.getPromotionPeriod().getPromotionPeriodID()` and `reward.getPromotionPeriod().getPromotion()`
- * at every one of those sites with NO null test, because the mapping makes the association
- * mandatory and the reward query INNER JOINs it. The ported entity types the accessor
- * `PromotionPeriod | undefined`, so the target must resolve it explicitly - and resolves it by
- * THROWING, which is what the legacy runtime does when a mandatory association is absent. Returning
- * a default, skipping the reward or coalescing to an empty identifier would each invent behaviour
- * the source does not have, and the last of them would silently mis-key the qualification memo.
+ * CFML parity
+ * [model/service/PromotionService.cfc:L192, L193, L197, L209, L212, L213, L222, L223, L276, L290, L351, L388, L403, L434, L449]:
+ * the source writes `reward.getPromotionPeriod().getPromotionPeriodID()` and
+ * `reward.getPromotionPeriod().getPromotion()` at every one of those sites with no null test.
  */
 function dereferencePromotionPeriod(reward: PromotionReward, locator: string): PromotionPeriod {
   const promotionPeriod = reward.getPromotionPeriod();
@@ -956,52 +391,19 @@ function dereferencePromotionPeriod(reward: PromotionReward, locator: string): P
 /**
  * Reproduces `Order.getSubtotalAfterItemDiscounts()` as the order arm reads it in pass two.
  *
- * SECURITY REVIEW DISPOSITION - RAISED AS S-22, ACCEPTED. The finding reported that the
- * order-level reward base was taken from a caller-supplied snapshot rather than from
- * post-pass-one state, letting a caller understate what the order arm discounts against.
- * THIS DERIVATION IS THAT FIX: the base is recomputed from the materialized order items on
- * every call, and `OrderView.subtotalAfterItemDiscounts` is deliberately never read. The
- * composition root supplies the matching between-pass projection, so the two passes agree -
- * see `computeProjectedOrderSubtotal` in `../handlers/bootstrap.ts`.
- *
- * [model/entity/Order.cfc:L700-L702] is `precisionEvaluate('getSubtotal() - getItemDiscountAmountTotal()')`,
- * and [L686-L699] defines the subtotal as a signed sum over the order items: `oitSale` items ADD their
- * extended price, `oitReturn` items SUBTRACT it, and any other type code THROWS. The trichotomy is
- * reproduced exactly, throw included - a silent zero or a silent skip would let an unrecognised order
- * item type quietly shrink an order-level discount base, where the legacy refuses to price the order
- * at all.
- *
- * ★ WHY THE SUBTRACTION IS OMITTED RATHER THAN IMPLEMENTED, AND WHY THAT IS NOT A DIVERGENCE.
- * `getItemDiscountAmountTotal()` [model/entity/Order.cfc:L317-L330] sums `orderItem.getDiscountAmount()`,
- * which sums the item's APPLIED PROMOTIONS. Within this invocation that collection is provably empty
- * on every item: [model/service/PromotionService.cfc:L64-L68] detached every order-item applied
- * promotion before the traversal began, and the winners are attached only at [L523-L536], after pass
- * two has already run. The legacy therefore evaluates `getSubtotal() - 0` at [L417], and subtracting
- * anything here - in particular the candidate discounts accumulated in
- * `orderItemQualifiedDiscounts`, which are NOT applied promotions and of which only index `[1]` will
- * ever become one - would deduct discounts the legacy has not applied yet and shrink the order-level
- * base below what a customer is charged today.
- *
- * CFML parity [model/entity/Order.cfc:L689, L691]: the type-code comparisons are CFML `==` on strings,
- * which is CASE-INSENSITIVE, so they are routed through the case-folding helper rather than `===`.
- *
- * Deliberately NOT reading `OrderView.subtotalAfterItemDiscounts`: that member is a caller-built
- * snapshot, and the whole point of this derivation is that pass two must see post-price-group,
- * post-pass-one state. See the note on `applyOrderReward`.
+ * CFML parity [model/entity/Order.cfc:L689, L691]: the type-code comparisons are CFML `==` on
+ * strings, which is CASE-INSENSITIVE, so they are routed through the case-folding helper rather
+ * than `===`.
  */
 function computeSubtotalAfterItemDiscounts(order: OrderView): Money {
   let subtotal = Money.zero;
 
   for (const orderItem of order.orderItems) {
     const typeCode = orderItem.orderItemType.systemCode;
-
-    // [model/entity/Order.cfc:L689-L690]
     if (cfEquals(typeCode, 'oitSale')) {
       subtotal = subtotal.plus(orderItem.extendedPrice);
       continue;
     }
-
-    // [model/entity/Order.cfc:L691-L692]
     if (cfEquals(typeCode, 'oitReturn')) {
       subtotal = subtotal.minus(orderItem.extendedPrice);
       continue;
@@ -1019,25 +421,14 @@ function computeSubtotalAfterItemDiscounts(order: OrderView): Money {
 }
 
 /**
- * Reproduces `Order.getFulfillmentChargeAfterDiscountTotal()` as the order arm reads it in pass two.
+ * Reproduces `Order.getFulfillmentChargeAfterDiscountTotal()` as the order arm reads it in pass
+ * two.
  *
- * [model/entity/Order.cfc:L356-L362] sums `orderFulfillment.getChargeAfterDiscount()` over every
- * fulfillment, and [model/entity/OrderFulfillment.cfc:L183-L185] defines that as
- * `getFulfillmentCharge() - getDiscountAmount()`, whose subtrahend [L187-L193] is the sum of the
- * fulfillment's APPLIED PROMOTIONS.
+ * Which applied promotions those are is decided entirely by this invocation.
  *
- * Which applied promotions those are is decided entirely by this invocation. [L71-L75] detached the
- * persisted ones before the traversal, and pass one's fulfillment arm attached at most one per
- * fulfillment - so the rows the legacy sums at [L417] are exactly the mirrors this engine holds. Any
- * fulfillment the arm never touched, or touched without a positive discount winning, contributes its
- * GROSS charge, which is what an empty slot yields here.
- *
- * CFML parity [model/entity/OrderFulfillment.cfc:L188-L191]: the subtrahend is a sum over the whole
- * collection, but only index `[1]` is ever written by the engine [model/service/PromotionService.cfc:L381-L406],
- * so a single-slot mirror is exact rather than an approximation.
- *
- * Deliberately NOT reading `OrderView.fulfillmentChargeAfterDiscountTotal`, for the same reason
- * `computeSubtotalAfterItemDiscounts` does not read its snapshot.
+ * CFML parity [model/entity/OrderFulfillment.cfc:L188-L191]: the subtrahend is a sum over the
+ * whole collection, but only index `[1]` is ever written by the engine
+ * [model/service/PromotionService.cfc:L381-L406].
  */
 function computeFulfillmentChargeAfterDiscountTotal(
   order: OrderView,
@@ -1063,8 +454,8 @@ function computeFulfillmentChargeAfterDiscountTotal(
  * Dereferences a promotion period's promotion, reproducing the legacy unguarded dereference.
  *
  * CFML parity [model/service/PromotionService.cfc:L276, L290, L388, L403, L434, L449]: the source
- * writes `reward.getPromotionPeriod().getPromotion()` with no null test for the same reason, and the
- * resolution is the same - throw rather than invent.
+ * writes `reward.getPromotionPeriod().getPromotion()` with no null test for the same reason, and
+ * the resolution is the same - throw rather than invent.
  */
 function dereferencePromotion(promotionPeriod: PromotionPeriod, locator: string): Promotion {
   const promotion = promotionPeriod.getPromotion();
@@ -1085,10 +476,9 @@ function dereferencePromotion(promotionPeriod: PromotionPeriod, locator: string)
  * Dereferences a fulfillment's address, reproducing the legacy unguarded dereference.
  *
  * Used only by `getShippingMethodOptionsDiscountAmountDetails`, whose address-zone loop at
- * [model/service/PromotionService.cfc:L1059-L1068] reads `getAddress()` with NO `isNull` test and NO
- * `isNew()` test - unlike the structurally similar fulfillment-arm loop at [L360], which guards
- * both. That asymmetry is real, it is preserved, and it is why this helper throws rather than
- * skipping the zone test.
+ * [model/service/PromotionService.cfc:L1059-L1068] reads `getAddress()` with no `isNull` test and
+ * no `isNew()` test - unlike the structurally similar fulfillment-arm loop at
+ * [model/service/PromotionService.cfc:L360].
  */
 function dereferenceFulfillmentAddress(
   orderFulfillment: OrderFulfillmentView,
@@ -1113,28 +503,19 @@ function dereferenceFulfillmentAddress(
  *
  * The legacy body declares its state as three function-local structs
  * [model/service/PromotionService.cfc:L136, L139, L142] and reaches the rest through a live ORM
- * graph. Both become explicit here, bundled so the reward visitor and the three arm bodies can be
- * separate methods without threading six parameters each - which is what keeps the orchestration
- * method readable end to end.
- *
- * ONE INSTANCE PER CALL. Nothing here is a field on the service and nothing is module-level: on a
- * warm container module state persists between unrelated requests, and this is precisely the state
- * that must not.
+ * graph.
  */
 interface PromotionEngineState {
-  /** The read-only order projection, already reflecting the price-group pass. */
+  /**
+   * The read-only order projection, already reflecting the price-group pass.
+   */
   readonly order: OrderView;
 
   /**
    * [model/service/PromotionService.cfc:L136] the period-qualification memo, keyed by
-   * `promotionPeriodID` and filled lazily at [L192-L194].
+   * `promotionPeriodID` and filled lazily at [model/service/PromotionService.cfc:L192-L194].
    */
   readonly promotionPeriodQualifications: PromotionPeriodQualifications;
-
-  /**
-   * [model/service/PromotionService.cfc:L139] the reward-usage ledger, whose in-place mutation is
-   * order-dependence vector 1.
-   */
   readonly rewardUsageLedger: RewardUsageLedger;
 
   /**
@@ -1144,8 +525,8 @@ interface PromotionEngineState {
   readonly orderItemQualifiedDiscounts: OrderItemQualifiedDiscounts;
 
   /**
-   * One applied-promotion mirror per fulfillment, keyed by `orderFulfillmentID` and seeded lazily on
-   * first touch, standing in for `orderFulfillment.getAppliedPromotions()` on the live graph.
+   * One applied-promotion mirror per fulfillment, keyed by `orderFulfillmentID` and seeded lazily
+   * on first touch, standing in for `orderFulfillment.getAppliedPromotions()` on the live graph.
    */
   readonly fulfillmentSlots: Record<string, AppliedPromotionSlot>;
 
@@ -1159,17 +540,10 @@ interface PromotionEngineState {
 /**
  * The ported surface of `model/service/PromotionService.cfc`.
  *
- * Twelve public methods, matching the component's twelve declarations name for name. Six are
- * asynchronous and six are synchronous, and the split is not a style choice: a method is `async` IF
- * AND ONLY IF its legacy body reaches the DAO, or reaches a collaborator that does. Methods that
- * only traverse already-materialised associations or perform pure arithmetic stay synchronous, so
- * `getQualifierQualificationDetails`, both membership tests and `getDiscountAmount` are deliberately
- * NOT asynchronous even though three of their siblings are. Calibration across the folder: SkuService
- * 9 of 9 async, ProductService 14 of 15, PriceGroupService 8 async and 5 sync, and this file 6 and 6
- * - the most balanced of the seven.
+ * Twelve public methods, matching the component's twelve declarations name for name.
  *
- * @see the file header for the ordering constraint, the six order-dependence vectors, the ownership
- *   split, the budget ledgers and the defect-register accounting.
+ * @see the file header for the ordering constraint, the six order-dependence vectors, the
+ * ownership split, the budget ledgers and the defect-register accounting.
  */
 export class PromotionService {
   /**
@@ -1179,41 +553,36 @@ export class PromotionService {
   private readonly salePriceSeeder: SalePriceSeeder;
 
   /**
-   * [model/service/PromotionService.cfc:L549-L627, L752-L781, L783-L849] period-level qualification
-   * and its two private helpers.
+   * [model/service/PromotionService.cfc:L549-L627, L752-L781, L783-L849] period-level
+   * qualification and its two private helpers.
    */
   private readonly promotionPeriodQualificationEvaluator: PromotionPeriodQualificationEvaluator;
 
-  /** [model/service/PromotionService.cfc:L629-L750] qualifier evaluation across all gate types. */
+  /**
+   * [model/service/PromotionService.cfc:L629-L750] qualifier evaluation across all gate types.
+   */
   private readonly qualifierQualificationEvaluator: QualifierQualificationEvaluator;
 
-  /** [model/service/PromotionService.cfc:L852-L919, L921-L985] both membership tests. */
+  /**
+   * [model/service/PromotionService.cfc:L852-L919, L921-L985] both membership tests.
+   */
   private readonly orderItemMembership: OrderItemMembership;
 
-  /** [model/service/PromotionService.cfc:L987-L1018] the three amount-type strategies. */
+  /**
+   * [model/service/PromotionService.cfc:L987-L1018] the three amount-type strategies.
+   */
   private readonly discountAmountCalculator: DiscountAmountCalculator;
 
-  /** [model/service/PromotionService.cfc:L165-L171, L458-L461] the two explicit ordered passes. */
+  /**
+   * [model/service/PromotionService.cfc:L165-L171, L458-L461] the two explicit ordered passes.
+   */
   private readonly twoPassRewardIterator: TwoPassRewardIterator;
 
   /**
-   * Every collaborator is an explicit constructor argument typed to a port or to a narrow structural
-   * interface, wired once in `src/handlers/bootstrap.ts`. This replaces DI/1 0.4.2's runtime
-   * convention scan over `property name="xService";` declarations - and retires its first-scan lock
-   * along with it.
+   * Every collaborator is an explicit constructor argument typed to a port or to a narrow
+   * structural interface, wired once in `src/handlers/bootstrap.ts`.
    *
-   * The first three arguments are the component's three declared properties, in declaration order:
-   *   `promotionDAO`        [model/service/PromotionService.cfc:L51] -> `PromotionRepository`
-   *   `addressService`      [L53]                                    -> `AddressZoneEvaluator`
-   *   `roundingRuleService` [L54]                                    -> the structural resolver
-   * The fourth is the single surviving framework-generic read; see {@link PromotionFrameworkReads}
-   * for why it exists and why it is neither a port nor a signature widening.
-   *
-   * The six collaborators built here are STATELESS OR CONFIGURATION-ONLY, which is the whole reason
-   * they may be fields. The reward-usage ledger is deliberately NOT among them: it carries the
-   * per-order mutable state of vector 1, so it is constructed fresh inside every call to
-   * `updateOrderAmountsWithPromotions` and can never be shared between two requests on a warm
-   * container.
+   * The first three arguments are the component's three declared properties.
    */
   public constructor(
     private readonly promotionRepository: PromotionRepository,
@@ -1236,55 +605,20 @@ export class PromotionService {
     this.twoPassRewardIterator = new TwoPassRewardIterator(this.promotionRepository);
   }
 
-  // ===================== START: Logical Methods ===========================
-
   /**
    * Recomputes every promotion discount for an order and returns the applied-promotion intents.
    *
-   * [model/service/PromotionService.cfc:L58-L546] - 489 lines in the source, ORCHESTRATED here and
-   * IMPLEMENTED across the nine `./promotion/` modules. This method contains no discount arithmetic,
-   * no qualification logic and no membership testing; every one of those is a call into a module.
-   *
-   * ★ MUST-PRESERVE AREA #1. Promotion discount math AND use-limit enforcement semantics survive
-   * unchanged, defects included. Six independent order-dependence vectors govern the result and are
-   * enumerated in the file header; the two this method itself is responsible for honouring are
-   * vector 2 - the two ordered passes, driven by `./promotion/twoPassRewardIterator.ts`, whose second
-   * pass must not run when the reward collection is empty - and vector 4's descending insertion sort,
-   * which this method owns directly.
-   *
-   * ★ EXECUTION ORDER IS A PRECONDITION THIS METHOD CANNOT CHECK.
-   * `PriceGroupService.updateOrderAmountsWithPriceGroups()` MUST have run first, and the `OrderView`
-   * passed here MUST already reflect the intents it produced. The requirement is non-optional and it
-   * decides how much money a customer is charged: the order-item arm reads `appliedPriceGroup`,
-   * `price`, `skuPrice`, `extendedPrice` and `extendedSkuPrice`
-   * [model/service/PromotionService.cfc:L241-L252], and the price-group pass is what writes all five.
-   * In the legacy system nothing enforced the ordering either - it held only because out-of-scope
-   * `model/service/OrderService.cfc` happened to call the two in sequence. This method therefore
-   * DOCUMENTS the requirement and does not police it: an `OrderView` cannot report whether the
-   * price-group pass ran, and inventing a flag would add state the legacy lacks. Sequencing belongs
-   * to `src/handlers/promotionApplicationHandler.ts`, and `./priceGroupService.ts` declares the same
-   * constraint from the other side.
-   *
-   * ★ THE SIGNATURE RESHAPING. The legacy returns `void` and mutates the order aggregate in place.
-   * The order aggregate is out of scope, so this returns intents keyed by opaque identifiers instead
-   * and NEVER mutates order persistence. One of exactly three reshapings project-wide.
-   *
    * @param order A read-only projection of the order, already reflecting the price-group pass.
-   * @returns The applied-promotion intents to persist, in the order the engine produced them:
-   *   the fulfillment and order arms' intents first, in traversal order, then the order-item winners.
-   *   Never `undefined`, and an empty array when nothing qualified - which is also what a return or
-   *   exchange order yields.
+   * @returns The applied-promotion intents to persist, in the order the engine produced them: the
+   * fulfillment and order arms' intents first, in traversal order, then the order-item winners.
    */
   public async updateOrderAmountsWithPromotions(
     order: OrderView,
   ): Promise<PromotionAppliedIntent[]> {
     const appliedIntents: PromotionAppliedIntent[] = [];
 
-    // CFML parity [model/service/PromotionService.cfc:L61, L542]: `otExchangeOrder` appears in BOTH
-    // order-type gates and the two conditionals are SEQUENTIAL, NOT else-if. A sales order runs only
-    // the first; a return order runs only the second; an EXCHANGE order runs the entire sales branch
-    // and THEN enters the (empty) return branch. This is deliberate and load-bearing, and merging the
-    // two into an if/else or a switch would silently change exchange-order behaviour.
+    // CFML parity [model/service/PromotionService.cfc:L61, L542]: `otExchangeOrder` appears in
+    // both order-type gates and the two conditionals are SEQUENTIAL, not else-if.
     //
     // `listFindNoCase` returns a 1-based INDEX and `0` for absent, so it is compared explicitly
     // against `0` rather than used as a truth value.
@@ -1292,64 +626,35 @@ export class PromotionService {
 
     // [model/service/PromotionService.cfc:L61] Sales and exchange orders.
     if (listFindNoCase('otSalesOrder,otExchangeOrder', orderTypeSystemCode) !== 0) {
-      // [model/service/PromotionService.cfc:L61-L80] THE BLANKET CLEAR, REPRODUCED, AND FIRST. Three
-      // backwards loops detach every previously applied promotion from every order item, every
-      // fulfillment and the order itself before any qualification runs. This must precede everything
-      // else in this method for the same reason it precedes everything else in the source: every
-      // emptiness test the reward arms perform - L381 for fulfillments, L427 for the order - is a test
-      // of the POST-CLEAR collection, and the item creation block at L521-L537 likewise assumes it is
-      // populating an empty association.
+      // [model/service/PromotionService.cfc:L61-L80] the blanket clear, reproduced, and first.
       //
-      // ★ QUOTE-THEN-REVISE. An earlier revision emitted nothing here, on this reasoning: "the three
-      // backwards clear-out loops are REPLACED, not reproduced ... This service returns a fresh intent
-      // list on every call and never mutates order persistence, so the recomputation is inherently
-      // idempotent and there is nothing to clear. No `clearAppliedPromotions` method is published, no
-      // removal intent is emitted for this step". The idempotence claim is true of THIS SERVICE and
-      // irrelevant to the outcome: the intent array is the only channel to persistence, so a consumer
-      // told nothing about the pre-existing rows leaves every one of them in place. Recomputing a
-      // fresh answer and then failing to say what to delete is precisely how a stale discount
-      // survives. See {@link buildBlanketClearIntents} for the money cases.
-      //
-      // What survives from that earlier reading: no `clearAppliedPromotions` method is published, and
-      // the order views still expose no mutation affordance. The clear is expressed as intents, which
-      // is the only mechanism this boundary has.
+      // What survives from that earlier reading: no `clearAppliedPromotions` method is published,
+      // and the order views still expose no mutation affordance.
       appliedIntents.push(...buildBlanketClearIntents(order));
 
-      // Every mutable structure the engine needs, created fresh for THIS call. These are the
-      // legacy's three function-local structs [L136, L139, L142] plus the two applied-promotion
-      // mirrors that stand in for the live ORM graph. None is a field, none is module state.
+      // Every mutable structure the engine needs, created fresh for this call.
       const state: PromotionEngineState = {
         order,
         promotionPeriodQualifications: {},
         rewardUsageLedger: new RewardUsageLedger(),
-        // The legacy identifier is misspelled `orderItemQulifiedDiscounts` [L142]; renamed here,
-        // with the original recorded in the file header.
+        // The legacy identifier is misspelled `orderItemQulifiedDiscounts`
+        // [model/service/PromotionService.cfc:L142]; renamed here, with the original recorded in
+        // the file header.
         orderItemQualifiedDiscounts: {},
         fulfillmentSlots: {},
-        // EMPTY, because the clear above has just detached whatever the order was carrying. Seeding
-        // this from `order.appliedPromotions` is the defect documented on `AppliedPromotionSlot`.
+        // EMPTY, because the clear above has just detached whatever the order was carrying.
+        // Seeding this from `order.appliedPromotions` is the defect documented on
+        // `AppliedPromotionSlot`.
         orderSlot: createEmptyAppliedPromotionSlot(),
       };
 
       // [model/service/PromotionService.cfc:L145-L162] Sale-price rewards are seeded into the
-      // qualified-discount accumulator BEFORE the reward traversal, so a reward discount must beat an
-      // existing sale price to displace it in the descending sort.
+      // qualified-discount accumulator before the reward traversal.
       await this.salePriceSeeder.seedSalePriceDiscounts(order, state.orderItemQualifiedDiscounts);
-
-      // [model/service/PromotionService.cfc:L165-L171, L458-L465] The traversal, both passes and the
-      // loop-counter reset - including the case where the reward collection is empty and pass two
-      // consequently never runs at all.
       const iterationResult = await this.twoPassRewardIterator.iterate(
         order,
         async (reward, isOrderRewardsPass) => this.visitReward(state, reward, isOrderRewardsPass),
       );
-
-      // [model/service/PromotionService.cfc:L400-L406, L446-L451] The fulfillment and order arms'
-      // row creations, emitted as `add` intents for whatever each mirror holds. Fulfillment first and
-      // the order last, because the fulfillment arm runs in pass one and the order arm only in pass
-      // two, so this is the order the legacy created the rows in. Every `remove` these two levels
-      // need was already emitted by the blanket clear above; see
-      // {@link emitAppliedPromotionSlotIntents} for why neither `update` nor `remove` appears here.
       for (const orderFulfillment of order.orderFulfillments) {
         const slot = structGet(state.fulfillmentSlots, orderFulfillment.orderFulfillmentID);
 
@@ -1368,32 +673,27 @@ export class PromotionService {
           orderID: order.orderID,
         }),
       );
-
-      // [model/service/PromotionService.cfc:L468-L521] Strip discounts that exceeded their per-order
-      // use limits. The leaked reward identity is handed over UNGUARDED - it is the empty string only
-      // when the reward collection was empty, which is precisely when the ledger is empty and the
-      // stripping loop's body never runs, so wrapping this call in a conditional is forbidden.
       stripOverUsedRewardDiscounts(
         state.rewardUsageLedger.promotionRewardUsageDetails,
         state.orderItemQualifiedDiscounts,
         iterationResult.lastProcessedRewardID,
       );
 
-      // [model/service/PromotionService.cfc:L523-L536] Apply only the single best discount per order
-      // item - index `[1]` of the descending list, and nothing else.
+      // [model/service/PromotionService.cfc:L523-L536] Apply only the single best discount per
+      // order item - index `[1]` of the descending list, and nothing else.
       appliedIntents.push(...applyBestOrderItemDiscounts(order, state.orderItemQualifiedDiscounts));
     }
 
-    // [model/service/PromotionService.cfc:L541] Return & Exchange Orders
+    // [model/service/PromotionService.cfc:L541] Return & Exchange Orders.
     if (listFindNoCase('otReturnOrder,otExchangeOrder', orderTypeSystemCode) !== 0) {
-      // TODO [issue #1766]: In the future allow for return Items to have negative promotions applied.  This isn't import right now because you can determine how much you would like to refund ordersItems
+      // TODO [issue #1766]: In the future allow for return Items to have negative promotions
+      // applied. This isn't import right now because you can determine how much you would like to
+      // refund ordersItems.
       //
-      // LEGACY-NOTE [model/service/PromotionService.cfc:L542-L544]: this branch is INTENTIONALLY
-      // EMPTY in the legacy source - the `if` at L542 encloses nothing but the TODO comment at L543.
-      // It is carried forward verbatim, typos included (`isn't import` for "isn't important", and
-      // `ordersItems`), per the TODO carry-forward directive: a known source TODO is preserved as a
-      // flagged TODO and never silently completed. A placeholder regression test named `issue_1766`
-      // documents the gap; this file authors no test.
+      // The three lines above are carried forward verbatim from
+      // [model/service/PromotionService.cfc:L542-L544], which is the entire body of that branch: it
+      // does nothing in the source and does nothing here. The gap is tracked by the `issue_1766`
+      // regression case rather than closed.
     }
 
     return appliedIntents;
@@ -1402,36 +702,22 @@ export class PromotionService {
   /**
    * Everything the legacy reward loop's BODY does, for one reward.
    *
-   * [model/service/PromotionService.cfc:L169-L456]. `./promotion/twoPassRewardIterator.ts` owns the
-   * traversal, both passes and the loop-counter reset, and hands each reward over here; it documents
-   * three obligations it deliberately does NOT enforce, and this method is where all three are met:
-   *   1. seed the reward's ledger entry     [L172-L189] - BEFORE the gate, so it runs for every
-   *      reward the traversal encounters, qualified or not. That positioning is what makes the
-   *      iterator's leaked-identity hand-off safe.
-   *   2. populate the period-qualification memo lazily [L192-L194]
-   *   3. evaluate the gate                  [L197] and REPORT ITS OUTCOME BACK, because the reset at
-   *      [L458-L461] sits inside the gate and therefore depends on it.
-   *
    * The three reward-level arms are then dispatched exactly as the source dispatches them, on the
-   * pass flag and the reward type. The pass flag is why the order arm is unreachable in pass one and
-   * the other two are unreachable in pass two.
+   * pass flag and the reward type.
    */
   private async visitReward(
     state: PromotionEngineState,
     reward: PromotionReward,
     isOrderRewardsPass: boolean,
   ): Promise<RewardVisitOutcome> {
-    // OBLIGATION 1 - [model/service/PromotionService.cfc:L172-L189]. The ledger owns the
-    // `structKeyExists` guard, the `1000000` unlimited sentinel and the three `> 0` overrides; this
-    // call is the seed site, and it precedes the gate exactly as the source's does.
     const usage = state.rewardUsageLedger.ensureRewardEntry(reward);
 
     const promotionPeriod = dereferencePromotionPeriod(reward, 'L192-L193');
     const promotionPeriodID = promotionPeriod.getPromotionPeriodID();
 
-    // OBLIGATION 2 - [model/service/PromotionService.cfc:L192-L194]. `structKeyExists` and the read
-    // are routed through the CFML struct helpers so key case folds the way a CFML struct folds it.
-    // `putOwnStructKey`, not a plain assignment, because the key is a persisted identifier.
+    // OBLIGATION 2 - [model/service/PromotionService.cfc:L192-L194]. `structKeyExists` and the
+    // read are routed through the CFML struct helpers so key case folds the way a CFML struct
+    // folds it.
     if (!structKeyExists(state.promotionPeriodQualifications, promotionPeriodID)) {
       putOwnStructKey(
         state.promotionPeriodQualifications,
@@ -1442,16 +728,13 @@ export class PromotionService {
 
     const periodQualification = structGet(state.promotionPeriodQualifications, promotionPeriodID);
 
-    // Narrowed rather than asserted. The populate above guarantees the key, and the two helpers agree
-    // on key folding, but `noUncheckedIndexedAccess` types the read as possibly absent and non-null
-    // assertions are unavailable by project standard. Reporting a failed gate is the safe resolution
-    // if the two ever disagreed: it is what the source does for a period that does not qualify.
+    // Narrowed rather than asserted.
     if (periodQualification === undefined) {
       return { qualificationsMeet: false };
     }
 
-    // OBLIGATION 3 - [model/service/PromotionService.cfc:L197]. The gate, and the value the iterator
-    // needs back in order to honour the reset's placement.
+    // OBLIGATION 3 - [model/service/PromotionService.cfc:L197]. The gate, and the value the
+    // iterator needs back in order to honour the reset's placement.
     const qualificationsMeet = periodQualification.qualificationsMeet;
 
     if (!qualificationsMeet) {
@@ -1462,27 +745,17 @@ export class PromotionService {
 
     // CFML parity [model/service/PromotionService.cfc:L200]: `listFindNoCase` against the three
     // item-level reward types, compared explicitly against `0` rather than used as a truth value.
-    // A reward whose type is absent yields the empty string, which the list cannot contain, so it
-    // falls through every arm - and the DAO's `spr.rewardType IN (:rewardTypeList)` filter
-    // [model/dao/PromotionDAO.cfc:L71] means the collection cannot in fact carry one.
     const rewardTypeForListTest = rewardType ?? '';
-
-    // =============== Order Item Reward ==============
-    // [model/service/PromotionService.cfc:L200-L341]
     if (
       !isOrderRewardsPass &&
       listFindNoCase('merchandise,subscription,contentAccess', rewardTypeForListTest) !== 0
     ) {
       this.applyOrderItemReward(state, reward, promotionPeriod, periodQualification, usage);
 
-      // =============== Fulfillment Reward ======================
-      // [model/service/PromotionService.cfc:L345-L412]. CFML `eq` on strings is case-insensitive, so
-      // the type test folds case rather than using `===`.
+      // [model/service/PromotionService.cfc:L345-L412]. CFML `eq` on strings is case-insensitive,
+      // so the type test folds case rather than using `===`.
     } else if (!isOrderRewardsPass && cfEquals(rewardType, 'fulfillment')) {
       this.applyFulfillmentReward(state, reward, promotionPeriod, periodQualification);
-
-      // ================== Order Reward =========================
-      // [model/service/PromotionService.cfc:L415-L454]
     } else if (isOrderRewardsPass && cfEquals(rewardType, 'order')) {
       this.applyOrderReward(state, reward, promotionPeriod);
     }
@@ -1492,16 +765,6 @@ export class PromotionService {
 
   /**
    * The order-item arm.
-   *
-   * [model/service/PromotionService.cfc:L200-L341] in full, including the descending insertion sort
-   * at [L259-L294] which no `./promotion/` module claims and which all three candidate modules
-   * explicitly disclaim in their own headers.
-   *
-   * ★ ORDER-DEPENDENCE VECTOR 6 IS VISIBLE HERE, at [L223-L224]: the ratchet lowers the reward's
-   * `maximumUsePerOrder` on the SHARED ledger entry before the discount quantity is derived from it,
-   * so how much a later order item may claim depends on what earlier items already consumed. The
-   * ratchet itself belongs to `./promotion/rewardUsageLedger.ts`; the ordering that makes it
-   * order-dependent belongs here.
    */
   private applyOrderItemReward(
     state: PromotionEngineState,
@@ -1520,18 +783,17 @@ export class PromotionService {
       }
 
       // CFML parity [model/service/PromotionService.cfc:L209]: `arrayFind` used as a boolean. The
-      // target tests membership of a `string[]` directly, which is intrinsically boolean, so no index
-      // is produced and no index comparison can be got wrong. The view publishes
-      // `orderFulfillmentID` as a plain string, so the legacy
-      // `orderItem.getOrderFulfillment().getOrderFulfillmentID()` becomes one property read.
+      // target tests membership of a `string[]` directly, which is intrinsically boolean, so no
+      // index is produced and no index comparison can be got wrong.
       if (!periodQualification.qualifiedFulfillmentIDs.includes(orderItem.orderFulfillmentID)) {
         continue;
       }
 
       const orderItemID = orderItem.orderItemID;
 
-      // [model/service/PromotionService.cfc:L212-L214] memoise this order item's qualification count
-      // against the PERIOD, not the reward - so two rewards sharing a period share the count.
+      // [model/service/PromotionService.cfc:L212-L214] memoise this order item's qualification
+      // count against the PERIOD, not the reward - so two rewards sharing a period share the
+      // count.
       if (!structKeyExists(periodQualification.orderItems, orderItemID)) {
         putOwnStructKey(
           periodQualification.orderItems,
@@ -1547,9 +809,7 @@ export class PromotionService {
       const qualificationQuantity = structGet(periodQualification.orderItems, orderItemID);
 
       // CFML parity [model/service/PromotionService.cfc:L217]: the source uses the count BARE as a
-      // boolean. Numeric truthiness is not available in the target, so it becomes an explicit
-      // `> 0` - and the absent case, which the populate above rules out, is narrowed rather than
-      // defaulted, because substituting a count would invent a qualification the engine never found.
+      // boolean.
       if (qualificationQuantity === undefined || qualificationQuantity <= 0) {
         continue;
       }
@@ -1558,14 +818,10 @@ export class PromotionService {
       if (!this.getOrderItemInReward(reward, orderItem)) {
         continue;
       }
-
-      // [model/service/PromotionService.cfc:L223-L224] VECTOR 6 - the ratchet, in place on the
-      // shared ledger entry.
       state.rewardUsageLedger.ratchetMaximumUsePerOrder(usage, qualificationQuantity);
 
-      // [model/service/PromotionService.cfc:L228] the discount quantity, derived from the ratcheted
-      // limit. With no qualification constraint configured this reduces to the order item quantity
-      // by way of the two clamps below.
+      // [model/service/PromotionService.cfc:L228] the discount quantity, derived from the
+      // ratcheted limit.
       let discountQuantity = qualificationQuantity * usage.maximumUsePerQualification;
 
       // [model/service/PromotionService.cfc:L231-L233] clamp to the order item's own quantity.
@@ -1596,10 +852,6 @@ export class PromotionService {
         promotion: dereferencePromotion(promotionPeriod, 'L276, L290'),
         discountAmount,
       });
-
-      // [model/service/PromotionService.cfc:L296-L329] VECTOR 1 - the in-place usage increment, the
-      // deliberately unguarded division of VECTOR 5, and the ASCENDING insertion sort of VECTOR 4's
-      // other half. All three belong to the ledger; this is the single call site that drives them.
       state.rewardUsageLedger.recordOrderItemUsage(
         usage,
         orderItem,
@@ -1612,19 +864,8 @@ export class PromotionService {
   /**
    * Chooses the order item's discount base and computes the discount.
    *
-   * [model/service/PromotionService.cfc:L240-L254], and THE SINGLE MOST MISREAD BRANCH IN THE
-   * COMPONENT.
-   *
-   * LEGACY-NOTE [model/service/PromotionService.cfc:L241-L252]: read the guard literally. The `if` -
-   * taken when there is NO applied price group, OR the reward DOES list the applied group as
-   * eligible - discounts from `getPrice()` with NO correction term. The `else` - taken when there IS
-   * an applied price group AND the reward does NOT list it as eligible - discounts from
-   * `getSkuPrice()` and THEN subtracts the price-group saving the item is already receiving. The
-   * specification's prose has these two branches TRANSPOSED, and so did three docblocks in this
-   * subtree until a code review flagged the copy in `../handlers/priceResolutionHandler.ts`:
-   * `./priceGroupService.ts`'s header and `../handlers/bootstrap.ts`'s capability note carried the
-   * same inversion and have been corrected to match this method. The source governs, and implementing
-   * the transposed wording would invert the discount on every price-group order.
+   * [model/service/PromotionService.cfc:L240-L254], and the single most misread branch in the
+   * component.
    *
    * This is also the method that makes the cross-service ordering constraint concrete: all five
    * values it reads are written by the price-group pass.
@@ -1636,22 +877,18 @@ export class PromotionService {
   ): Money {
     const appliedPriceGroup = orderItem.appliedPriceGroup;
 
-    // CFML parity [model/service/PromotionService.cfc:L241]: `isNull(...)` is a GENUINE NULL TEST, so
-    // it is routed through the CFML null helper rather than a bare falsy check - which would wrongly
-    // fold an empty string or a zero in with an absent value - and rather than a `structKeyExists`
-    // probe, which tests something else entirely. The helper reports the SEMANTICS; the `=== undefined`
-    // beside it is what NARROWS THE TYPE, because the helper returns a plain boolean rather than a type
-    // predicate and the project forbids `!` and `as`. The two are not redundant: removing the helper
-    // would lose the parity record, and removing the narrowing would leave the branch below
-    // dereferencing a possibly-absent value.
+    // CFML parity [model/service/PromotionService.cfc:L241]: `isNull(...)` is a genuine null test,
+    // so it is routed through the CFML null helper rather than a bare falsy check - which would
+    // wrongly fold an empty string or a zero in with an absent value - and rather than a
+    // `structKeyExists` probe.
     if (isNullish(appliedPriceGroup) || appliedPriceGroup === undefined) {
       // [model/service/PromotionService.cfc:L244] the uncorrected arm.
       return this.getDiscountAmount(reward, orderItem.price, discountQuantity);
     }
 
     if (reward.hasEligiblePriceGroup(appliedPriceGroup)) {
-      // [model/service/PromotionService.cfc:L244] the uncorrected arm, reached by the guard's second
-      // disjunct.
+      // [model/service/PromotionService.cfc:L244] the uncorrected arm, reached by the guard's
+      // second disjunct.
       return this.getDiscountAmount(reward, orderItem.price, discountQuantity);
     }
 
@@ -1662,32 +899,14 @@ export class PromotionService {
       orderItem.skuPrice,
       discountQuantity,
     );
-
-    // CFML parity [model/service/PromotionService.cfc:L252]: `precisionEvaluate('originalDiscountAmount
-    // - (orderItem.getExtendedSkuPrice() - orderItem.getExtendedPrice())')`, translated into typed
-    // calls on the single arithmetic surface rather than into a string evaluator. `Money` reaches
-    // arbitrary-precision arithmetic internally, so no expression parser, no `eval` and no
-    // `new Function` appears anywhere. The parenthesisation is the source's: the price-group saving
-    // is computed first and then subtracted, so the sign of the result follows the source's exactly.
     return originalDiscountAmount.minus(orderItem.extendedSkuPrice.minus(orderItem.extendedPrice));
   }
 
   /**
-   * The descending insertion sort - ORDER-DEPENDENCE VECTOR 4, first half.
-   *
-   * [model/service/PromotionService.cfc:L259-L294]. The list is kept in DESCENDING discount order and
-   * only index `[1]` is ever applied [L523-L536], so this ordering decides which promotion an order
-   * item actually receives.
+   * The descending insertion sort - order-dependence vector 4, first half.
    *
    * CFML parity [model/service/PromotionService.cfc:L271]: the scan inserts at the FIRST position
-   * whose existing discount is STRICTLY LESS than the incoming one. Strictness makes the sort stable:
-   * an equal discount does not displace the incumbent, so on a tie the earlier-inserted record keeps
-   * index `[1]`. Combined with the absence of `ORDER BY` on the reward query that makes tie outcomes
-   * driver-order dependent, which is preserved rather than resolved.
-   *
-   * CFML parity [model/service/PromotionService.cfc:L285-L294]: when the scan finds no such position -
-   * because the list is empty, or because every existing discount is greater than or equal to the
-   * incoming one - the record is APPENDED, which keeps the descending invariant at the tail.
+   * whose existing discount is STRICTLY LESS than the incoming one.
    */
   private insertQualifiedDiscountDescending(
     orderItemQualifiedDiscounts: OrderItemQualifiedDiscounts,
@@ -1722,10 +941,11 @@ export class PromotionService {
       // [model/service/PromotionService.cfc:L271] STRICTLY less than, expressed through `Money`.
       if (existing.discountAmount.isLessThan(qualifiedDiscount.discountAmount)) {
         // CFML parity [model/service/PromotionService.cfc:L274]: `arrayInsertAt(list, d, record)`
-        // inserts BEFORE the element at 1-based position `d`, which is `splice` at 0-based `index`.
+        // inserts before the element at 1-based position `d`, which is `splice` at 0-based
+        // `index`.
         qualifiedDiscounts.splice(index, 0, qualifiedDiscount);
-        // [model/service/PromotionService.cfc:L280-L281] the source sets its `discountAdded` flag and
-        // breaks; returning here is the same control flow with no flag to carry.
+        // [model/service/PromotionService.cfc:L280-L281] the source sets its `discountAdded` flag
+        // and breaks; returning here is the same control flow with no flag to carry.
         return;
       }
     }
@@ -1737,49 +957,12 @@ export class PromotionService {
   /**
    * The fulfillment arm.
    *
-   * [model/service/PromotionService.cfc:L345-L412]. Reaches the applied-promotion mirror rather than
-   * a live ORM graph; see {@link AppliedPromotionSlot} for why, and for the case-by-case proof that
-   * the mirror-then-diff produces exactly the writes the legacy performs.
-   *
-   * ★ THIS ARM NEVER TOUCHES THE USAGE LEDGER, AND THAT IS THE SOURCE'S BEHAVIOUR, NOT AN OMISSION.
-   *
-   * LEGACY-DEFECT [model/service/PromotionService.cfc:L345-L412]: no line in the fulfillment arm
-   * reads, seeds or increments `promotionRewardUsageDetails`. Compare the order-item arm, which seeds
-   * the ledger at [L173-L188] and increments `usedInOrder` at [L297] with the per-item usage
-   * bookkeeping at [L301-L329]. Three consequences, all preserved:
-   *   1. `maximumUsePerOrder`, `maximumUsePerItem` and `maximumUsePerQualification` are NOT enforced
-   *      against fulfillment discounts - a reward capped at one use per order can discount every
-   *      fulfillment on the order;
-   *   2. fulfillment discounts are invisible to the over-use stripping loop at [L468-L521], so a
-   *      fulfillment discount is never stripped back however over-used its reward is;
-   *   3. a fulfillment discount does not consume budget that would otherwise have limited the SAME
-   *      reward's item-level discounts, so the two levels do not compete.
+   * LEGACY-DEFECT [model/service/PromotionService.cfc:L345-L412]: no line in this arm reads, seeds
+   * or increments `promotionRewardUsageDetails`, unlike the order-item arm which seeds it at
+   * L173-L188 and increments `usedInOrder` at L297. So per-order, per-item and per-qualification use
+   * limits are not enforced against fulfillment discounts, and those discounts are invisible to the
+   * over-use stripping loop at L468-L521.
    * Preserved deliberately; do not fix without a product decision.
-   *
-   * SECURITY REVIEW DISPOSITION - RAISED AS S-21, DECLINED ON A CITED MANDATE.
-   *
-   * A security review raised this as a HIGH finding: fulfillment rewards bypass use-limit enforcement
-   * and over-use stripping entirely. Its suggested resolution was to seed and increment the ledger
-   * from this arm as the order-item arm does, so the three limits apply uniformly.
-   *
-   * THAT RESOLUTION IS DECLINED, AND THE DECLINE IS MANDATED RATHER THAN CHOSEN:
-   *
-   *   * AAP 0.8.1 Preserve-Exactly names "promotion discount math TOGETHER WITH use-limit enforcement
-   *     semantics" as must-preserve area #1. Which levels a limit applies to is exactly such a
-   *     semantic, and extending it to a level the source never applied it to changes the amount
-   *     charged on every order carrying a fulfillment reward.
-   *   * AAP 0.4.1 specifies `rewardUsageLedger.ts` as CREATE from "[L173-L188] + [L297-L329]" - the
-   *     two ORDER-ITEM ranges - and specifies this arm's range [L345-L412] with no ledger role at all.
-   *     Wiring one in would contradict the file-by-file transformation plan, not merely exceed it.
-   *   * AAP 0.9.3 makes the inverse a failing gate: "A defect that is silently fixed fails this
-   *     gate", and its three sanctioned divergences - register entries 13, 12 and 17/18/19 - do not
-   *     include this one.
-   *
-   * The severity assessment is not disputed; the remedy is a product decision taken across both
-   * implementations, not a unilateral tightening inside a strangler-fig seam whose purpose is that the
-   * two agree. `tests/unit/services/promotionService.test.ts` pins the bypass adversarially - a
-   * multi-fulfillment order whose reward is capped at one use per order still receives a discount on
-   * every fulfillment - so it cannot change by accident in either direction.
    */
   private applyFulfillmentReward(
     state: PromotionEngineState,
@@ -1787,10 +970,9 @@ export class PromotionService {
     promotionPeriod: PromotionPeriod,
     periodQualification: PeriodQualification,
   ): void {
-    // [model/service/PromotionService.cfc:L348]
     for (const orderFulfillment of state.order.orderFulfillments) {
-      // [model/service/PromotionService.cfc:L351-L355] the three-part gate, in the source's order and
-      // joined by short-circuiting `&&`.
+      // [model/service/PromotionService.cfc:L351-L355] the three-part gate, in the source's order
+      // and joined by short-circuiting `&&`.
       //
       // CFML parity [model/service/PromotionService.cfc:L351]: `arrayFind` as a boolean becomes
       // direct membership of a `string[]`.
@@ -1800,17 +982,9 @@ export class PromotionService {
         continue;
       }
 
-      // CFML parity [model/service/PromotionService.cfc:L353]: `!arrayLen(x) || hasX(...)` - AN EMPTY
-      // COLLECTION MEANS "NO RESTRICTION", not "matches nothing". Expressed as an explicit
+      // CFML parity [model/service/PromotionService.cfc:L353]: `!arrayLen(x) || hasX(...)` - an
+      // empty collection means "no restriction", not "matches nothing". Expressed as an explicit
       // `length === 0`, never as a bare truthiness test on a length.
-      //
-      // LEGACY-NOTE [model/entity/PromotionReward.cfc:L76, L78]: the legacy `getFulfillmentMethods()`
-      // and `getShippingMethods()` return arrays of entities and are tested with
-      // `hasFulfillmentMethod(...)` / `hasShippingMethod(...)`. The ported entity deliberately drops
-      // those four accessors and publishes the many-to-many link tables as identifier arrays instead,
-      // because the entity graph beyond the identifier is not in scope. The membership tests therefore
-      // compare identifiers, which is exactly what the link tables hold and what the `has*` helpers
-      // ultimately compared.
       const fulfillmentMethodIDs = reward.getFulfillmentMethodIDs();
 
       if (
@@ -1821,10 +995,9 @@ export class PromotionService {
       }
 
       // CFML parity [model/service/PromotionService.cfc:L355]: this conjunct carries an extra null
-      // test the fulfillment-method conjunct does not - `!isNull(getShippingMethod()) && hasShippingMethod(...)` -
-      // so a restricted reward fails the gate outright when the fulfillment has no shipping method,
-      // rather than dereferencing it. That asymmetry between the two conjuncts is the source's and is
-      // preserved.
+      // test the fulfillment-method conjunct does not -
+      // `!isNull(getShippingMethod()) && hasShippingMethod(...)` - so a restricted reward fails
+      // the gate outright when the fulfillment has no shipping method.
       const shippingMethodIDs = reward.getShippingMethodIDs();
       const shippingMethod = orderFulfillment.shippingMethod;
 
@@ -1836,9 +1009,7 @@ export class PromotionService {
         continue;
       }
 
-      // [model/service/PromotionService.cfc:L357-L368] the address-zone test. `addressIsInZone`
-      // defaults TRUE and is only forced false when zones are actually configured, so an
-      // unrestricted reward passes; the first matching zone flips it back and stops the scan.
+      // [model/service/PromotionService.cfc:L357-L368] the address-zone test.
       let addressIsInZone = true;
       const shippingAddressZoneIDs = reward.getShippingAddressZoneIDs();
 
@@ -1846,20 +1017,17 @@ export class PromotionService {
         addressIsInZone = false;
         const address = orderFulfillment.address;
 
-        // CFML parity [model/service/PromotionService.cfc:L360]: BOTH preconditions are the source's -
-        // the address must be resolved AND must not be new. A new address has nothing to match, so a
-        // zone-restricted reward simply fails here rather than throwing. Note that the structurally
-        // similar loop in `getShippingMethodOptionsDiscountAmountDetails` at [L1059-L1068] has
-        // NEITHER precondition; the asymmetry is real and both sides are preserved as written.
+        // CFML parity [model/service/PromotionService.cfc:L360]: both preconditions are the
+        // source's - the address must be resolved and must not be new. A new address has nothing
+        // to match, so a zone-restricted reward simply fails here rather than throwing.
         if (address !== undefined && !address.isNew) {
           const addressProjection = toAddressProjection(address);
 
           for (const addressZone of toConfiguredShippingAddressZones(shippingAddressZoneIDs)) {
             // CFML parity [model/service/PromotionService.cfc:L362]: the source calls
-            // `isAddressInZone(address=..., addressZone=...)` in KEYWORD form here, positionally at
-            // [L684] and in keyword form again at [L1063]. CFML keyword and positional calls bind the
-            // same parameters in the same order, so the single positional signature the port publishes
-            // reproduces all three call shapes.
+            // `isAddressInZone(address=..., addressZone=...)` in KEYWORD form here, positionally
+            // at [model/service/PromotionService.cfc:L684] and `IN` keyword form again at
+            // [model/service/PromotionService.cfc:L1063].
             if (this.addressZoneEvaluator.isAddressInZone(addressProjection, addressZone)) {
               addressIsInZone = true;
               break;
@@ -1867,25 +1035,18 @@ export class PromotionService {
           }
         }
       }
-
-      // [model/service/PromotionService.cfc:L371]
       if (!addressIsInZone) {
         continue;
       }
 
       // CFML parity [model/service/PromotionService.cfc:L373]: `getDiscountAmount` is called
-      // POSITIONALLY with the literal quantity `1` - a fulfillment charge is discounted once, not per
-      // unit.
+      // POSITIONALLY with the literal quantity `1` - a fulfillment charge is discounted once, not
+      // per unit.
       const discountAmount = this.getDiscountAmount(reward, orderFulfillment.fulfillmentCharge, 1);
 
       // [model/service/PromotionService.cfc:L375-L406] replayed against the mirror, which starts
       // EMPTY on first touch - the blanket clear at L71-L75 having already detached whatever this
-      // fulfillment was carrying - and then evolves across rewards exactly as the live graph does.
-      //
-      // The mirror is created lazily rather than for every fulfillment up front because only a
-      // fulfillment that reaches this point has a row to model, which keeps the emission loop's
-      // "no slot means no write" reading exact. Laziness is about which fulfillments get a mirror; it
-      // has no bearing on what a mirror starts as, which is always empty.
+      // fulfillment was carrying.
       const orderFulfillmentID = orderFulfillment.orderFulfillmentID;
 
       if (!structKeyExists(state.fulfillmentSlots, orderFulfillmentID)) {
@@ -1914,80 +1075,18 @@ export class PromotionService {
   /**
    * The order arm - reachable in pass two only.
    *
-   * [model/service/PromotionService.cfc:L415-L454]. Structurally identical to the fulfillment arm but
-   * with no loop: there is one order, and the source guards the arm on the pass flag being TRUE,
-   * which is what makes it the only arm pass two can reach.
+   * TERM 1 - `getSubtotalAfterItemDiscounts()` reduces to `getSubtotal()`, EXACTLY, at this point
+   * in the pass.
    *
-   * ★★ THE PASS-TWO BASE IS DERIVED FROM LIVE ENGINE STATE, NOT READ FROM THE INPUT.
-   * [model/service/PromotionService.cfc:L417] reads
-   * `getSubtotalAfterItemDiscounts() + getFulfillmentChargeAfterDiscountTotal()` off a LIVE ORM graph
-   * that pass one has already written to, so the base reflects THIS invocation's pass-one output. The
-   * two terms are reconstructed here from the same facts the legacy entities compute them from:
-   *
-   * TERM 1 - `getSubtotalAfterItemDiscounts()` reduces to `getSubtotal()`, EXACTLY, at this point in
-   * the pass. [model/entity/Order.cfc:L700-L702] defines it as `getSubtotal()` minus
-   * `getItemDiscountAmountTotal()`, and [model/entity/Order.cfc:L317-L327] sums that second term over
-   * each item's LIVE `getAppliedPromotions()`. Two facts make it zero here: the blanket clear at
-   * [model/service/PromotionService.cfc:L64-L68] emptied every item's collection, and the item rows
-   * are created ONLY at [L521-L537] - after both passes and after over-use stripping. So no item row
-   * exists anywhere in the graph when L417 runs, and the subtraction subtracts nothing. Recomputing
-   * `getSubtotal()` from the order items - the `oitSale` / `oitReturn` discrimination and the legacy
-   * throw included, in `computeSubtotalAfterItemDiscounts` - is therefore not an approximation; it is
-   * the same number by derivation, and it reads the post-price-group item prices rather than a
-   * pre-computed total the caller supplied.
-   *
-   * TERM 2 - `getFulfillmentChargeAfterDiscountTotal()` is rebuilt per fulfillment.
-   * [model/entity/Order.cfc:L356-L363] sums `getChargeAfterDiscount()` across fulfillments, and
-   * [model/entity/OrderFulfillment.cfc:L183-L193] defines that as the fulfillment's charge minus the
-   * sum of its live applied-promotion discounts. Post-clear the only such row a fulfillment can hold
-   * is the one pass one just created at [L401], which is precisely what this method's sibling arm
-   * mirrored into `state.fulfillmentSlots`. Reading the mirror is reading the graph.
-   *
-   * ★ QUOTE-THEN-REVISE, AND THE MONEY THAT WAS AT STAKE. An earlier revision read both terms
-   * straight off the immutable input and justified it thus: "neither
-   * `OrderView.subtotalAfterItemDiscounts` nor `OrderView.fulfillmentChargeAfterDiscountTotal` is
-   * derivable from the collections the views publish ... `../domain/views/orderView.ts` assigns the
-   * obligation explicitly to THE PRODUCER OF THE VIEW: the two values supplied must already reflect
-   * pass one's output. This method therefore reads them as given and never attempts to recompute or
-   * adjust them - a recomputation would need state the views withhold by design, and adjusting them
-   * would double-count."
-   *
-   * The non-derivability premise was wrong on both terms, as the two derivations above show, and the
-   * obligation it fell back on was IMPOSSIBLE TO DISCHARGE: pass one's output is produced BY this
-   * invocation, so no producer constructing the input beforehand can know it. In practice the input
-   * carried pre-invocation totals, so an order with subtotal 100.00, a fulfillment charge of 10.00 and
-   * a newly selected fulfillment discount of 2.00 computed its order-reward base as 110.00 where the
-   * legacy computes 108.00 - and every order-level percentage discount was struck against the inflated
-   * figure. The double-counting worry is answered by the derivation rather than by abstention: term 2
-   * subtracts each fulfillment's CURRENT mirrored winner exactly once, which is the one row
-   * [model/entity/OrderFulfillment.cfc:L183-L193] would find.
-   *
-   * `OrderView.subtotalAfterItemDiscounts` and `OrderView.fulfillmentChargeAfterDiscountTotal` are
-   * consequently NO LONGER READ by this engine; see their notes in `../domain/views/orderView.ts`.
+   * The non-derivability premise was wrong on both terms, as the two derivations above show.
    */
   private applyOrderReward(
     state: PromotionEngineState,
     reward: PromotionReward,
     promotionPeriod: PromotionPeriod,
   ): void {
-    // CFML parity [model/service/PromotionService.cfc:L417]: the discountable base is a SUM OF TWO
-    // TERMS - `getSubtotalAfterItemDiscounts() + getFulfillmentChargeAfterDiscountTotal()` - and the
-    // source uses a BARE `+` here, with no `precisionEvaluate`, unlike all nine of its sibling
-    // arithmetic sites in this component (L150, L252, L299, L486, L990, L995, L1001, L1006, L1007).
-    // It is the only sum in the pass computed with unguarded arithmetic.
-    //
-    // THE ACCOUNTING FOR THAT GAP LANDS HERE, AND THE ANSWER IS THAT IT IS NOT A DIVERGENCE.
-    // `../domain/views/orderView.ts` records the gap where the value enters the type and expressly
-    // defers the deliberate-divergence accounting to `src/services/**`, claiming no register entry of
-    // its own. The resolution: `Money` is the project's single mandated arithmetic surface and offers
-    // no unguarded arithmetic to call, so routing this sum through `Money.plus` closes the gap
-    // STRUCTURALLY rather than by a decision taken here. No float drift is being deliberately
-    // preserved and no fourth deliberate divergence is spent - the budget of exactly three is closed,
-    // and register entry 12's `amountOff` gap remains the only float gap in this subtree closed by an
-    // explicit decision.
-    //
-    // Both terms are reconstructed from post-pass-one state rather than read off the view; the method
-    // note above derives each one from the legacy entity method it reproduces.
+    // CFML parity [model/service/PromotionService.cfc:L417]: the discountable base is a sum of two
+    // terms - `getSubtotalAfterItemDiscounts() + getFulfillmentChargeAfterDiscountTotal()`.
     const totalDiscountableAmount = computeSubtotalAfterItemDiscounts(state.order).plus(
       computeFulfillmentChargeAfterDiscountTotal(state.order, state.fulfillmentSlots),
     );
@@ -1996,7 +1095,8 @@ export class PromotionService {
     // `1` - an order total is discounted once.
     const discountAmount = this.getDiscountAmount(reward, totalDiscountableAmount, 1);
 
-    // [model/service/PromotionService.cfc:L421-L451] replayed against the single order-level mirror.
+    // [model/service/PromotionService.cfc:L421-L451] replayed against the single order-level
+    // mirror.
     mirrorRewardApplication(
       state.orderSlot,
       dereferencePromotion(promotionPeriod, 'L434, L449').getPromotionID(),
@@ -2007,19 +1107,11 @@ export class PromotionService {
   /**
    * Whether a promotion period qualifies for an order, and the qualification detail behind it.
    *
-   * [model/service/PromotionService.cfc:L549-L627].
+   * Asynchronous because the body reaches the DAO twice, for the period's general use count and
+   * its per-account use count [model/service/PromotionService.cfc:L566-L581].
    *
-   * ★ VISIBILITY WIDENING 1 OF 5. `private` in the legacy source, exported here so it is directly
-   * testable. The widening does not alter behaviour: the body is unchanged and the only new caller is
-   * a test. Exactly five such widenings exist project-wide and all five are on this class.
-   *
-   * Asynchronous because the body reaches the DAO twice, for the period's general use count and its
-   * per-account use count [L566-L581].
-   *
-   * The returned detail carries a `qualifiedFulfillments` member that this class NEVER READS - it is
-   * register entry 10's level confusion, written at [L621-L623] at the period level when the caller
-   * reads `qualifiedFulfillmentIDs`. The engine's own documentation block at [L82-L133] is the proof;
-   * see the file header.
+   * The returned detail carries a `qualifiedFulfillments` member that this class never READS - it
+   * is register entry 10's level confusion.
    */
   public async getPromotionPeriodQualificationDetails(
     promotionPeriod: PromotionPeriod,
@@ -2034,18 +1126,11 @@ export class PromotionService {
   /**
    * Whether a single qualifier is satisfied by an order, and how many times.
    *
-   * [model/service/PromotionService.cfc:L629-L750].
+   * SYNCHRONOUS, and deliberately so: the body reaches no DAO and no collaborator that does.
    *
-   * ★ VISIBILITY WIDENING 2 OF 5. `private` in the legacy source.
-   *
-   * SYNCHRONOUS, and deliberately so: the body reaches no DAO and no collaborator that does. It
-   * evaluates the order, fulfillment and item gate families over already-materialised associations
-   * only.
-   *
-   * Register entry 11 lives in this path: the shipping-address-zones clause at [L703] re-tests
-   * `hasShippingMethod` instead of testing the zone condition. It is REPRODUCED, and the strongest
-   * available evidence that it is a genuine defect rather than intent is recorded on
-   * `getShippingMethodOptionsDiscountAmountDetails` below.
+   * Register entry 11 lives in this path: the shipping-address-zones clause at
+   * [model/service/PromotionService.cfc:L703] re-tests `hasShippingMethod` instead of testing the
+   * zone condition.
    */
   public getQualifierQualificationDetails(
     qualifier: PromotionQualifier,
@@ -2056,17 +1141,6 @@ export class PromotionService {
 
   /**
    * The comma-delimited list of fulfillment identifiers a promotion period qualifies.
-   *
-   * [model/service/PromotionService.cfc:L752-L781].
-   *
-   * ★ VISIBILITY WIDENING 3 OF 5. `private` in the legacy source.
-   *
-   * LEGACY-NOTE [model/service/PromotionService.cfc:L752]: this function is verified to have ZERO
-   * CALL SITES - its only occurrence anywhere in the non-framework tree is its own definition, and the
-   * period-qualification path that would plausibly use it builds `qualifiedFulfillmentIDs` as an array
-   * instead. It is widened from private to exported ANYWAY, because the five-widening budget names it
-   * explicitly, and its COMMA-LIST STRING return is preserved rather than modernised into an array so
-   * that the ported surface still matches the legacy signature a reviewer diffs against.
    *
    * SYNCHRONOUS: the body only walks fulfillments and qualifiers already in memory.
    */
@@ -2083,13 +1157,7 @@ export class PromotionService {
   /**
    * How many times one order item qualifies under a promotion period's qualifiers.
    *
-   * [model/service/PromotionService.cfc:L783-L849].
-   *
-   * ★ VISIBILITY WIDENING 4 OF 5. `private` in the legacy source.
-   *
-   * SYNCHRONOUS: pure traversal and integer arithmetic over materialised associations. The count
-   * starts at the order's total sale quantity [L785], is reduced to the MINIMUM across qualifiers
-   * [L835], and returns early at zero [L840-L842].
+   * SYNCHRONOUS: pure traversal and integer arithmetic over materialised associations.
    */
   public getPromotionPeriodOrderItemQualificationCount(
     promotionPeriod: PromotionPeriod,
@@ -2106,11 +1174,8 @@ export class PromotionService {
   /**
    * Whether an order item falls inside a qualifier's inclusion and exclusion rules.
    *
-   * [model/service/PromotionService.cfc:L852-L919]. Public in the legacy source, so no widening.
-   *
    * SYNCHRONOUS: exclusions are evaluated first and short-circuit to `false`, then inclusions
-   * short-circuit to `true`, all over materialised associations and the product type's materialised
-   * identifier path.
+   * short-circuit to `true`.
    */
   public getOrderItemInQualifier(qualifier: PromotionQualifier, orderItem: OrderItemView): boolean {
     return this.orderItemMembership.getOrderItemInQualifier(qualifier, orderItem);
@@ -2118,12 +1183,6 @@ export class PromotionService {
 
   /**
    * Whether an order item falls inside a reward's inclusion and exclusion rules.
-   *
-   * [model/service/PromotionService.cfc:L921-L985]. Public in the legacy source, so no widening.
-   * Structurally the twin of `getOrderItemInQualifier`, minus the two item-price gates that only a
-   * qualifier carries.
-   *
-   * SYNCHRONOUS, for the same reason.
    */
   public getOrderItemInReward(reward: PromotionReward, orderItem: OrderItemView): boolean {
     return this.orderItemMembership.getOrderItemInReward(reward, orderItem);
@@ -2132,27 +1191,11 @@ export class PromotionService {
   /**
    * The discount one reward yields for a given unit price and quantity.
    *
-   * [model/service/PromotionService.cfc:L987-L1018].
+   * Visibility widening 5 of 5, and the last of the project's budget.
    *
-   * ★ VISIBILITY WIDENING 5 OF 5, and the last of the project's budget. `private` in the legacy
-   * source, exported here because it is the arithmetic heart of must-preserve area #1 and has to be
-   * testable directly.
-   *
-   * SYNCHRONOUS AND PURE. `numeric` becomes `Money` on both the price input and the return, so no
-   * raw floating-point value crosses this boundary in either direction; the quantity stays a plain
-   * integer count because it is a count and not money.
-   *
-   * FOUR REGISTER ENTRIES LIVE IN THE DELEGATED BODY, and their treatment is recorded in the file
-   * header rather than repeated here: entry 12's `amountOff` float gap [L998] is DELIBERATE
-   * DIVERGENCE (b), closed; entry 13's un-`var`'d assignment at [L1007, L1009, L1014] is DELIBERATE
-   * DIVERGENCE (a), made function-local; entry 14's clamp [L1013-L1015] compares the PRE-rounding
-   * value and overwrites the POST-rounding one and is REPRODUCED; and the `numberFormat` presentation
-   * step [L1017] stays at the very end of the calculation.
-   *
-   * BY DESIGN THIS METHOD VALIDATES NOTHING. It does not check that the reward's `amountType` is one
-   * of the three the source switches on - the switch has no `default` arm [L993] - and it does not
-   * check that the amount or quantity is positive. Adding any of those would be adding a constraint
-   * the legacy lacks.
+   * Four register entries live in the delegated body, and their treatment is recorded in the file
+   * header rather than repeated here: entry 12's `amountOff` float gap
+   * [model/service/PromotionService.cfc:L998] is deliberate divergence (b), closed.
    */
   public getDiscountAmount(reward: PromotionReward, price: Money, quantity: number): Money {
     return this.discountAmountCalculator.getDiscountAmount(reward, price, quantity);
@@ -2161,68 +1204,44 @@ export class PromotionService {
   /**
    * The sale-price detail for every SKU of a product, with rounding rules applied.
    *
-   * [model/service/PromotionService.cfc:L1022-L1030]. Implemented here rather than delegated: it sits
-   * outside the 489-line method and outside every `./promotion/` module's range.
-   *
-   * ★ THE SIGNATURE IS A CONTRACT, NOT A CHOICE. `src/handlers/bootstrap.ts` adapts this method to
-   * satisfy the sale-price resolver that `src/domain/entities/product.ts` consumes - which is how the
-   * legacy `getService("promotionService")` locator at [model/entity/Product.cfc:L519] is replaced.
-   * The parameter list, the asynchrony and the `Record`-keyed return must all stay exactly as they
-   * are, and `SalePriceDetail` is IMPORTED from `../domain/ports/promotionRepository.js` rather than
-   * redeclared, or the adaptation breaks and the entity's sale-price path dies with it.
-   *
    * @param productID The product whose SKUs to resolve.
-   * @returns One detail per SKU, keyed by `skuID`. Empty when the product has no sale-price rewards.
+   * @returns One detail per SKU, keyed by `skuID`.
    */
   public async getSalePriceDetailsForProductSkus(
     productID: string,
   ): Promise<Record<string, SalePriceDetail>> {
-    // [model/service/PromotionService.cfc:L1023] the six-branch UNION and its three query-of-queries
-    // reduction steps [model/dao/PromotionDAO.cfc:L298-L591] are entirely the repository's concern;
-    // this method receives already-reduced rows.
+    // [model/service/PromotionService.cfc:L1023] the six-branch UNION and its three
+    // query-of-queries reduction steps [model/dao/PromotionDAO.cfc:L298-L591] are entirely the
+    // repository's concern.
     const salePriceRows =
       await this.promotionRepository.getSalePricePromotionRewardsQuery(productID);
 
     // LEGACY-NOTE [model/service/PromotionService.cfc:L1023]: `getHibachiUtilityService()` is an
-    // inherited `HibachiService` affordance, not one of this component's three declared collaborators,
-    // and it has no TypeScript analogue. Its `queryToStructOfStructures(query, "skuID")` call converts
-    // a flat query into a struct keyed by `skuID`; that becomes the explicit keying step below and the
-    // framework accessor is dropped. Keying is last-wins, as overwriting a struct key is, so two rows
-    // sharing a `skuID` resolve the same way they resolve in the source.
+    // inherited `HibachiService` affordance, not one of this component's three declared
+    // collaborators, and it has no TypeScript analogue.
     const priceDetails: Record<string, SalePriceDetail> = {};
 
     for (const salePriceRow of salePriceRows) {
       const roundingRuleID = salePriceRow.roundingRuleID;
 
-      // CFML parity [model/service/PromotionService.cfc:L1025]: the guard is `!= ""` - a LITERAL
-      // EMPTY-STRING COMPARISON, not `len()` and not a null test - so it is reproduced as an explicit
-      // comparison against `''` rather than routed through a truthiness helper. The port types an
-      // absent rounding rule as `undefined` where the legacy query column yields `""`, so BOTH forms
-      // of absence are excluded here in order to reproduce the source's single test faithfully.
+      // CFML parity [model/service/PromotionService.cfc:L1025]: the guard is `!= ""` - a literal
+      // empty-string comparison, not `len()` and not a null test - so it is reproduced as an
+      // explicit comparison against `''` rather than routed through a truthiness helper.
       if (roundingRuleID === undefined || roundingRuleID === '') {
         putOwnStructKey(priceDetails, salePriceRow.skuID, salePriceRow);
         continue;
       }
 
-      // [model/service/PromotionService.cfc:L1026]
-      //
       // LEGACY-NOTE [model/service/RoundingRuleService.cfc:L79 vs L88]:
       // `roundValueByRoundingRuleID` declares `returntype="numeric"` but returns `roundValue`'s
-      // `string`, which the legacy then assigns straight back into a numeric field. The target's
-      // `Money`-typed boundary closes the mismatch by construction - the collaborator returns
-      // `Promise<Money>` and the detail's `salePrice` is a `Money`, so no conversion is needed and no
-      // string can leak into a numeric field. Secondary register; not a numbered defect and not a
-      // deliberate divergence.
+      // `string`, which the legacy then assigns straight back into a numeric field.
       const roundedSalePrice = await this.roundingRuleValues.roundValueByRoundingRuleID(
         salePriceRow.salePrice,
         roundingRuleID,
       );
 
-      // JUDGMENT CALL: the legacy reassigns `priceDetails[key].salePrice` IN PLACE while iterating.
-      // The target builds a fresh record instead. No key is added or removed either way, so the
-      // observable result is identical, and the rows the repository returned are left unpolluted -
-      // mutating a value that crossed the repository boundary is the pollution pattern this subtree
-      // has already rejected once, in `./priceGroupService.ts`.
+      // JUDGMENT CALL: the legacy reassigns `priceDetails[key].salePrice` in PLACE while
+      // iterating. The target builds a fresh record instead.
       putOwnStructKey(priceDetails, salePriceRow.skuID, {
         ...salePriceRow,
         salePrice: roundedSalePrice,
@@ -2235,56 +1254,32 @@ export class PromotionService {
   /**
    * The best fulfillment discount available for one shipping-method option.
    *
-   * [model/service/PromotionService.cfc:L1032-L1086]. A SECOND, INDEPENDENT promotion loop -
-   * self-contained, far smaller than the main engine, and reusing only the period-qualification and
-   * discount-amount collaborators. Implemented here rather than delegated for the same reason as the
-   * method above: it lies outside every module's range.
-   *
-   * ★★ THIS METHOD IS THE PROOF THAT REGISTER ENTRY 11 IS A DEFECT.
-   * LEGACY-NOTE [model/service/PromotionService.cfc:L1059-L1068]: this address-zone loop is the
-   * CORRECT formulation - it tests whether the address is in one of the configured zones - and it is
-   * the direct evidence that the structurally parallel construct at [L703], which re-tests
-   * `hasShippingMethod` instead of the zone condition, is a genuine defect rather than intent. The
-   * same author wrote both; this one is right and that one is wrong. Entry 11 is owned and reproduced
-   * by `./promotion/qualifierQualification.ts`, and this is the strongest evidence available for it.
-   *
    * @param option A read-only projection of the shipping-method option being priced.
    * @returns The winning promotion's identifier and discount, or the empty identifier and a zero
-   *   discount when nothing qualified.
+   * discount when nothing qualified.
    */
   public async getShippingMethodOptionsDiscountAmountDetails(
     option: ShippingMethodOptionView,
   ): Promise<ShippingDiscountDetails> {
-    // [model/service/PromotionService.cfc:L1033-L1036] the accumulator, seeded exactly as the source
-    // seeds it: the empty identifier and a zero amount. The source mutates a struct in place; the
-    // target accumulates into two locals and constructs the readonly result once, which is the same
-    // computation with no mutable escape.
+    // [model/service/PromotionService.cfc:L1033-L1036] the accumulator, seeded exactly as the
+    // source seeds it: the empty identifier and a zero amount.
     let bestPromotionID = '';
     let bestDiscountAmount = Money.zero;
 
-    // [model/service/PromotionService.cfc:L1038] this method keeps its OWN period-qualification memo,
-    // entirely separate from the main engine's, and it is function-local - never a field.
+    // [model/service/PromotionService.cfc:L1038] this method keeps its own period-qualification
+    // memo, entirely separate from the main engine's, and it is function-local - never a field.
     const promotionPeriodQualifications: PromotionPeriodQualifications = {};
 
     // CFML parity [model/service/PromotionService.cfc:L1040 vs L165]: this call passes
-    // `rewardTypeList="fulfillment"` alone and OMITS `qualificationRequired` entirely, while the main
-    // engine passes five reward types AND `qualificationRequired=true`. Omitting it lets the
-    // repository's own default apply - `default="false"` at [model/dao/PromotionDAO.cfc:L54] - so the
-    // two calls genuinely select different reward sets. The asymmetry is preserved, not normalised.
-    //
-    // The view FLATTENS the legacy `getOrderFulfillment().getOrder()` chain into a direct `order`
-    // member, so the promotion-code list is read in one step rather than two.
+    // `rewardTypeList="fulfillment"` alone and OMITS `qualificationRequired` entirely, while the
+    // main engine passes five reward types and `qualificationRequired=true`.
     const promotionRewards = await this.promotionRepository.getActivePromotionRewards(
       'fulfillment',
       option.order.promotionCodeList,
     );
-
-    // [model/service/PromotionService.cfc:L1043-L1045]
     for (const reward of promotionRewards) {
       const promotionPeriod = dereferencePromotionPeriod(reward, 'L1048-L1049');
       const promotionPeriodID = promotionPeriod.getPromotionPeriodID();
-
-      // [model/service/PromotionService.cfc:L1048-L1050]
       if (!structKeyExists(promotionPeriodQualifications, promotionPeriodID)) {
         putOwnStructKey(
           promotionPeriodQualifications,
@@ -2295,16 +1290,15 @@ export class PromotionService {
 
       const periodQualification = structGet(promotionPeriodQualifications, promotionPeriodID);
 
-      // [model/service/PromotionService.cfc:L1053] the gate reads ONLY `qualificationsMeet` - never
-      // `qualifiedFulfillmentIDs`, never `qualifierDetails`, and never the dead `qualifiedFulfillments`.
-      // The read is not widened. Absence is narrowed to a failed gate rather than asserted away.
+      // [model/service/PromotionService.cfc:L1053] the gate reads only `qualificationsMeet` -
+      // never `qualifiedFulfillmentIDs`, never `qualifierDetails`, and never the dead
+      // `qualifiedFulfillments`.
       if (periodQualification === undefined || !periodQualification.qualificationsMeet) {
         continue;
       }
 
-      // CFML parity [model/service/PromotionService.cfc:L1055]: `!arrayLen(x) || hasX(...)` - an EMPTY
-      // COLLECTION MEANS "NO RESTRICTION". Expressed as an explicit `length === 0`, and as identifier
-      // membership because the ported reward publishes the link tables as identifier arrays.
+      // CFML parity [model/service/PromotionService.cfc:L1055]: `!arrayLen(x) || hasX(...)` - an
+      // empty collection means "no restriction".
       const fulfillmentMethodIDs = reward.getFulfillmentMethodIDs();
 
       if (
@@ -2317,9 +1311,8 @@ export class PromotionService {
       }
 
       // CFML parity [model/service/PromotionService.cfc:L1057]: the shipping method is read from
-      // `getShippingMethodRate().getShippingMethod()` - the OPTION's rate - and NOT from the
-      // fulfillment, and unlike the fulfillment arm's conjunct at [L355] this one carries no null test
-      // because the rate always resolves one. Both readings are the source's and both are preserved.
+      // `getShippingMethodRate().getShippingMethod()` - the OPTION's rate - and not from the
+      // fulfillment.
       const shippingMethodIDs = reward.getShippingMethodIDs();
 
       if (
@@ -2330,8 +1323,7 @@ export class PromotionService {
       }
 
       // [model/service/PromotionService.cfc:L1059-L1068] the CORRECT address-zone loop - see the
-      // register entry 11 proof above. `addressIsInZone` defaults TRUE so an unrestricted reward
-      // passes; configured zones force it false and the first match flips it back and stops the scan.
+      // register entry 11 proof above.
       let addressIsInZone = true;
       const shippingAddressZoneIDs = reward.getShippingAddressZoneIDs();
 
@@ -2339,10 +1331,8 @@ export class PromotionService {
         addressIsInZone = false;
 
         // CFML parity [model/service/PromotionService.cfc:L1063]: this loop dereferences
-        // `getAddress()` with NEITHER an `isNull` test NOR an `isNew()` test, unlike the fulfillment
-        // arm at [L360] which guards both. The asymmetry is real and is preserved: an unresolved
-        // address raises here exactly as it raises in the source, rather than being silently treated
-        // as failing the zone test.
+        // `getAddress()` with neither an `isNull` test NOR an `isNew()` test, unlike the
+        // fulfillment arm at [model/service/PromotionService.cfc:L360] which guards both.
         const addressProjection = toAddressProjection(
           dereferenceFulfillmentAddress(option.orderFulfillment, 'L1063'),
         );
@@ -2354,53 +1344,36 @@ export class PromotionService {
           }
         }
       }
-
-      // [model/service/PromotionService.cfc:L1070]
       if (!addressIsInZone) {
         continue;
       }
 
-      // CFML parity [model/service/PromotionService.cfc:L1071]: POSITIONAL, with the literal quantity
-      // `1`, against the option's TOTAL CHARGE.
+      // CFML parity [model/service/PromotionService.cfc:L1071]: positional, with the literal
+      // quantity `1`, against the option's total charge.
       const discountAmount = this.getDiscountAmount(reward, option.totalCharge, 1);
 
-      // CFML parity [model/service/PromotionService.cfc:L1073]: STRICT greater-than, so on a tie the
-      // FIRST qualifying reward wins. This is the OPPOSITE of the price-group cascade's
-      // last-match-wins selection, and combined with the absence of `ORDER BY` on the reward query it
-      // makes tie outcomes driver-order dependent. Expressed through `Money.isGreaterThan`, never as
-      // `>=` and never as a numeric comparison.
+      // CFML parity [model/service/PromotionService.cfc:L1073]: STRICT greater-than, so on a tie
+      // the FIRST qualifying reward wins.
       if (discountAmount.isGreaterThan(bestDiscountAmount)) {
         // [model/service/PromotionService.cfc:L1074-L1075] both members are updated together.
         bestDiscountAmount = discountAmount;
         bestPromotionID = dereferencePromotion(promotionPeriod, 'L1075').getPromotionID();
       }
     }
-
-    // [model/service/PromotionService.cfc:L1085]
     return { promotionID: bestPromotionID, discountAmount: bestDiscountAmount };
   }
-
-  // =====================  END: Logical Methods ============================
-
-  // ===================== START: DAO Passthrough ===========================
 
   /**
    * How many placed orders have used a promotion code.
    *
-   * [model/service/PromotionService.cfc:L1094-L1096].
+   * LEGACY-NOTE [model/service/PromotionService.cfc:L1094, L1098]: both pass-throughs declare
+   * `returntype="boolean"` while returning the DAO's numeric count, and both callers in
+   * `model/service/OrderService.cfc` compare that count numerically. Recorded, not reproduced: AAP
+   * 0.4.2 types the honest `Promise<number>` here, because a boolean return cannot carry the value
+   * every caller uses.
    *
-   * LEGACY-DEFECT [model/service/PromotionService.cfc:L1094, L1098]: both DAO pass-throughs declare
-   * `returntype="boolean"` while returning the DAO's numeric count. CONFIRMED THREE WAYS: the service
-   * declares `boolean` here; the DAO declares `returntype="numeric"` on both
-   * [model/dao/PromotionDAO.cfc:L254, L274] and returns `results[1]` of a `SELECT count(o.orderID)`;
-   * and both callers in `model/service/OrderService.cfc` compare the result numerically with `<=`
-   * against a maximum use count. The target types the HONEST `Promise<number>`, and the legacy
-   * declaration is recorded here rather than reproduced - a boolean return type is not expressible
-   * without discarding the data every caller actually uses. Register entry 15.
-   *
-   * The legacy body forwards with `argumentcollection=arguments`, passing the whole argument struct
-   * through. The target forwards the parameter explicitly: emulating CFML's `arguments` struct is
-   * exactly the transliteration the migration directive forbids.
+   * The legacy body forwards with `argumentcollection=arguments`; the port forwards the one
+   * parameter explicitly.
    */
   public async getPromotionCodeUseCount(promotionCode: PromotionCode): Promise<number> {
     return this.promotionRepository.getPromotionCodeUseCount(promotionCode);
@@ -2409,12 +1382,7 @@ export class PromotionService {
   /**
    * How many placed orders belonging to one account have used a promotion code.
    *
-   * [model/service/PromotionService.cfc:L1098-L1100]. Register entry 15 applies identically; see
-   * `getPromotionCodeUseCount` above for the three-way confirmation.
-   *
-   * The out-of-scope `Account` entity is reduced to an opaque `accountID`. That is sanctioned and is
-   * NOT a signature reshaping, and the source itself shows why it loses nothing: the DAO's only use of
-   * the account is `arguments.account.getAccountID()` [model/dao/PromotionDAO.cfc:L292].
+   * The out-of-scope `Account` entity is reduced to an opaque `accountID`.
    */
   public async getPromotionCodeAccountUseCount(
     promotionCode: PromotionCode,
@@ -2422,9 +1390,4 @@ export class PromotionService {
   ): Promise<number> {
     return this.promotionRepository.getPromotionCodeAccountUseCount(promotionCode, accountID);
   }
-
-  // LEGACY-NOTE [model/service/PromotionService.cfc:L1092, L1102]: the DAO Passthrough section opens
-  // with `START` twice in the source; the second banner was clearly intended to be `END`. Corrected
-  // here because a banner is a comment and not a behaviour, and recorded in the secondary register.
-  // =====================  END: DAO Passthrough ============================
 }

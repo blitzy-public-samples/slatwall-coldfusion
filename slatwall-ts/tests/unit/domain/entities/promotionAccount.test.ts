@@ -1,92 +1,44 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - PromotionAccount entity suite
+// slatwall-ts - PromotionAccount entity suite.
 //
-// SUBJECT: src/domain/entities/promotionAccount.ts PORTED FROM: model/entity/PromotionAccount.cfc
-// (126 lines, confirmed by `wc -l`)
-//
-// --- 100% net-new coverage, never to be presented as parity ---
-//
-// MEASURED: `PromotionAccount` has NO legacy test of any kind. Exactly three legacy test files
-// touch the in-scope slice: meta/tests/unit/entity/BrandTest.cfc (extended by brand.test.ts),
-// meta/tests/unit/entity/ProductTest.cfc (extended by product.test.ts) and
-// meta/tests/functional/admin/entity/ProductTest.cfc, an EMPTY STUB contributing zero coverage.
-// Only two of the eighteen in-scope entities have a legacy antecedent; this is one of the sixteen
-// net-new entity suites.
-//
-// --- and the entity itself is unexercised in this slice ---
-//
-// `PromotionAccount` is INERT, on four first-hand facts:
-//
-//   1. NO VALIDATION FILE. `model/validation/PromotionAccount.json` does not exist.
-//   2. NO IN-SCOPE SERVICE REFERENCES IT. A case-insensitive sweep of `model/service/*.cfc`
-//      returns ZERO hits, as does one over all of `model/` excluding the entity's own file. In
-//      particular `model/service/PromotionService.cfc` - the service its own
-//      `hb_serviceName="promotionService"` names - NEVER TOUCHES IT.
-//   3. PORTED FOR COMPLETENESS ONLY, labelled unexercised rather than covered.
-//   4. STRONGER THAN INERT - UNUSABLE: both Promotion-side helpers throw on every path.
+// Measured: `PromotionAccount` has no legacy test of any kind.
 //
 // Reproducing that faithfully is the requirement; both faults are PRESERVED, never repaired.
 //
-// --- what this suite deliberately does not do: invent behaviour ---
-//
-// The entity carries NO date comparator and NO clock, and this suite adds neither: no `isCurrent`,
-// `isExpired` or `isActive` test, no injected clock, and the two bounds are never compared to a
-// notional "now". `model/entity/PromotionPeriod.cfc:L78-L85` declares `isCurrent()` and
-// `isExpired()` over `now()`, so its port declares `now: () => Date`
-// [slatwall-ts/src/domain/entities/promotionPeriod.ts:L576] and `:L630`, as does
-// [slatwall-ts/src/domain/entities/promotionCode.ts:L753] and `:L797`;
-// `model/entity/PromotionAccount.cfc` declares no comparator, so
-// `src/domain/entities/promotionAccount.ts` takes no clock parameter.
-//
-// --- locator verification ---
-//
-// Every locator was re-verified against the source; where a number differs THE SOURCE WINS. Three
-// corrections apply: the masked-versus-reachable stray contrast is
-// `model/entity/PromotionAccount.cfc:L103` (MASKED) against `model/entity/PromotionPeriod.cfc:L110`
-// (REACHABLE); `model/validation/` holds 96 `.json` files, not 94; and the in-scope validation
-// split is 15 PRESENT / 6 ABSENT, so "12 present" is stale.
-// ---------------------------------------------------------------------------
+// The entity carries no date comparator and no clock, and this suite adds neither: no `isCurrent`,
+// `isExpired` or `isActive` test, no injected clock.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PromotionAccount } from '../../../../src/domain/entities/promotionAccount.js';
 import { Promotion } from '../../../../src/domain/entities/promotion.js';
 
-// JUDGMENT CALL: `Promotion` is imported as a VALUE, not with `import type`, because this suite
-// must CONSTRUCT one. `src/domain/entities/promotion.ts` declares fourteen `private readonly`
-// fields, which makes the class NOMINALLY typed: no object literal is assignable to `Promotion`, so
-// a structural double is unrepresentable without a cast. `new Promotion({ promotionID })` supplies
-// the one required slot and leaves the other thirteen at their declared defaults, and the real
-// collaborator lacking `getPromotionAccounts()` is the fact under test rather than something a stub
-// was made to do. The 4612-line `tests/fixtures/promotionFixtures.ts` is deliberately NOT imported:
-// its ready-made `promotionAccount` builds price groups, products, SKUs and a rounding rule as a
-// side effect.
+// JUDGMENT CALL: `Promotion` is imported as a value, not with `import type`, because this suite
+// must construct one.
 
-// ---------------------------------------------------------------------------
-// Instants
-//
 // Every business date is an explicit UTC ISO-8601 literal: no bare `new Date()`, no `Date.now()`,
-// no fake timers - the subject reads no clock. `tests/setup.ts` forces `process.env.TZ = 'UTC'` and
-// hard-fails otherwise, so these literals mean the same instant everywhere; the values match
-// PERIOD_START_UTC, PERIOD_END_UTC, CREATED_DATE_TIME_UTC and MODIFIED_DATE_TIME_UTC in
-// `tests/fixtures/promotionFixtures.ts`.
-// ---------------------------------------------------------------------------
+// no fake timers - the subject reads no clock.
 
-/** Lower bound of the exhibit window. */
+/**
+ * Lower bound of the exhibit window.
+ */
 const START_DATE_TIME_UTC = '2024-06-01T00:00:00.000Z';
 
-/** Upper bound of the exhibit window. */
+/**
+ * Upper bound of the exhibit window.
+ */
 const END_DATE_TIME_UTC = '2024-07-01T00:00:00.000Z';
 
-/** Audit creation instant. */
+/**
+ * Audit creation instant.
+ */
 const CREATED_DATE_TIME_UTC = '2024-06-01T00:00:00.000Z';
 
-/** Audit modification instant. */
+/**
+ * Audit modification instant.
+ */
 const MODIFIED_DATE_TIME_UTC = '2024-06-15T12:30:00.000Z';
 
 /**
- * The Unix epoch, present ONLY as the value every date assertion proves is NOT used.
- *
  * CFML parity [model/entity/PromotionAccount.cfc:L53-L54]: an absent timestamp is `undefined` and
  * never this.
  */
@@ -103,16 +55,9 @@ type PromotionAccountInit = ConstructorParameters<typeof PromotionAccount>[0];
 /**
  * The columns of an UNSAVED row, with every one of the ten slots explicit.
  *
- * A FUNCTION, not a shared literal: `setPromotion` MUTATES before it throws, and a leaked subject
- * would make the half-mutation assertion meaningless.
- *
- * All ten slots are stated even though nine are `undefined`, because `exactOptionalPropertyTypes`
- * is enabled and the init type declares every slot REQUIRED rather than optional as `?:` - "absent"
- * and "present-but-undefined" are different types under that flag.
- *
- * CFML parity [model/entity/PromotionAccount.cfc:L52]: `promotionAccountID` starts `''` rather than
- * absent, because `unsavedvalue="" default=""` makes the empty string the honest answer for a row
- * never saved - and it is what `isNew()` keys on.
+ * CFML parity [model/entity/PromotionAccount.cfc:L52]: `promotionAccountID` starts `''` rather
+ * than absent, because `unsavedvalue="" default=""` makes the empty string the honest answer for a
+ * row never saved - and it is what `isNew()` keys on.
  *
  * @returns a fresh init object for an unsaved row.
  */
@@ -134,7 +79,7 @@ function unsavedRowColumns(): PromotionAccountInit {
 /**
  * Builds one `SwPromotionAccount` link row, overriding only what a test cares about.
  *
- * @param overrides - the columns this test is about.
+ * @param overrides the columns this test is about.
  * @returns a fresh `PromotionAccount`.
  */
 function aPromotionAccount(overrides: Partial<PromotionAccountInit> = {}): PromotionAccount {
@@ -144,10 +89,10 @@ function aPromotionAccount(overrides: Partial<PromotionAccountInit> = {}): Promo
 /**
  * Builds a SAVED row - primary key non-empty, so `isNew()` is false.
  *
- * Split out because the two `isNew()` states select DIFFERENT throw messages inside `setPromotion`,
- * reproducing CFML's short-circuiting `or`.
+ * Split out because the two `isNew()` states select DIFFERENT throw messages inside
+ * `setPromotion`, reproducing CFML's short-circuiting `or`.
  *
- * @param overrides - the columns this test is about.
+ * @param overrides the columns this test is about.
  * @returns a fresh, persisted-looking `PromotionAccount`.
  */
 function aSavedPromotionAccount(overrides: Partial<PromotionAccountInit> = {}): PromotionAccount {
@@ -157,10 +102,10 @@ function aSavedPromotionAccount(overrides: Partial<PromotionAccountInit> = {}): 
 /**
  * Builds the one in-scope far side.
  *
- * The three collections `Promotion` declares [model/entity/Promotion.cfc:L62-L64] each default to a
- * fresh empty array, and NONE is `promotionAccounts` - the reason the helpers below throw.
+ * The three collections `Promotion` declares [model/entity/Promotion.cfc:L62-L64] each default to
+ * a fresh empty array, and none is `promotionAccounts` - the reason the helpers below throw.
  *
- * @param promotionID - the identifier to give it.
+ * @param promotionID the identifier to give it.
  * @returns a fresh `Promotion`.
  */
 function aPromotion(promotionID: string): Promotion {
@@ -194,27 +139,12 @@ function promotionPrototypeMembers(): string[] {
 /**
  * The framework's terminal missing-method message, rebuilt for comparison.
  *
- * The legacy statement is identical at [org/Hibachi/HibachiEntity.cfc:L565] and
- * [org/Hibachi/HibachiService.cfc:L280]:
- *
- *   throw('You have called a method #arguments.missingMethodName#() which does not exists in
- *          the #getClassName()# entity.');
- *
- * Reproduced BYTE FOR BYTE because it is an observable error contract:
- * `src/handlers/errorMapper.ts` recognises this exact shape with an anchored pattern. Three details
- * must never be "corrected":
- *
- *   1. "does not exists" is grammatically wrong IN THE SOURCE.
- *   2. The trailing " entity." is present even for the service-tier copy.
- *   3. `getClassName()` is `listLast(getClassFullname(), ".")`
- *      [org/Hibachi/HibachiObject.cfc:L136], so the class slot carries the BARE component name -
- *      `Promotion`, never `Slatwall.model.entity.Promotion` and never the
- *      `entityname="SlatwallPromotion"` value.
+ * "does not exists" is grammatically wrong in the SOURCE.
  *
  * Rebuilt locally rather than imported, so the assertion is a real check.
  *
  * @param methodName The dead call target, without parentheses - they are added here.
- * @param className  The bare component name of the entity the call was made ON.
+ * @param className The bare component name of the entity the call was made ON.
  * @returns the exact message the framework would have thrown.
  */
 function hibachiMissingMethodMessage(methodName: string, className: string): string {
@@ -222,14 +152,10 @@ function hibachiMissingMethodMessage(methodName: string, className: string): str
 }
 
 afterEach(() => {
-  // A2: no spy may outlive its test. `vitest.config.ts` sets `restoreMocks` and `clearMocks`
-  // globally; this makes it local and visible, and this suite installs no spy.
   vi.restoreAllMocks();
 });
 
-// ---------------------------------------------------------------------------
 // The censuses, named so each assertion reads as a claim about an enumerated set.
-// ---------------------------------------------------------------------------
 
 /**
  * Every member the class actually installs, and the complete list of them.
@@ -250,9 +176,9 @@ const PORTED_PUBLIC_SURFACE: readonly string[] = [
   'getCreatedByAccountID',
   'getModifiedDateTime',
   'getModifiedByAccountID',
-  // The single framework member concretely called by the legacy body, at L74 and L92
+  // The single framework member concretely called by the legacy body, at L74 and L92.
   'isNew',
-  // Bidirectional helpers [model/entity/PromotionAccount.cfc:L90, L97] - both throw
+  // Bidirectional helpers [model/entity/PromotionAccount.cfc:L90, L97] - both throw.
   'setPromotion',
   'removePromotion',
 ];
@@ -260,17 +186,10 @@ const PORTED_PUBLIC_SURFACE: readonly string[] = [
 /**
  * The Account-side bidirectional pair, DROPPED at the anti-corruption boundary.
  *
- * CFML parity [model/entity/PromotionAccount.cfc:L72-L77, L78-L87], verbatim signatures:
- *
- *   public void function setAccount(required any account)   // L72
- *   public void function removeAccount(any account)         // L78
- *
- * Their far side is `model/entity/Account.cfc`, explicitly OUT OF SCOPE along with
+ * Their far side is `model/entity/Account.cfc`, explicitly out of SCOPE along with
  * `model/service/AccountService.cfc` and the whole account module, so their three reach-throughs
  * have no in-scope counterpart: `account.hasAccountPromotion(this)` at L74, and
- * `account.getAccountPromotions()` at L75, L82 and L84. The L58 many-to-one collapses to an inert
- * opaque ID column, and "dropped" means NOT AUTHORED IN THE TARGET rather than removed from the
- * legacy file, which is reference-only and untouched.
+ * `account.getAccountPromotions()` at L75.
  */
 const DROPPED_ACCOUNT_SIDE_HELPERS: readonly string[] = ['setAccount', 'removeAccount'];
 
@@ -280,13 +199,7 @@ const DROPPED_ACCOUNT_SIDE_HELPERS: readonly string[] = ['setAccount', 'removeAc
  * CFML parity [org/Hibachi/HibachiEntity.cfc:L507-L565]: `onMissingMethod` matches eleven
  * method-name patterns - `hasUniqueOrNull*`, `hasUnique*`, `hasAny*`, `get*AssignedIDList`,
  * `get*ID`, `get*Options`, `get*OptionsSmartList`, `get*SmartList`, `get*Struct`, `get*Count`, and
- * a `getAttributeValue` fallback whose guard sits at L559 - and TERMINATES IN A THROW AT L565. The
- * target has NO DYNAMIC DISPATCH AT ALL: only concretely-called members are authored, and for this
- * entity that is exactly one, `isNew()`.
- *
- * The L559 EAV fallback is unreachable here anyway - it requires an `attributeValues` property and
- * `PromotionAccount` declares none, confirmed by a case-insensitive census. Only Sku, Product,
- * ProductType and Brand declare that collection, so an unmatched `get...` throws directly at L565.
+ * a `getAttributeValue` fallback whose guard sits at L559.
  */
 const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
   'getNewFlag',
@@ -306,7 +219,7 @@ const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
 ];
 
 /**
- * Members that exist on sibling promotion entities but MUST NOT exist here.
+ * Members that exist on sibling promotion entities but must not exist here.
  *
  * Every entry was checked against `model/entity/PromotionAccount.cfc` and has no declaration.
  */
@@ -337,10 +250,8 @@ const MEMBERS_ABSENT_BY_SOURCE: readonly string[] = [
 /**
  * Write-side members the legacy declares no setter for.
  *
- * The legacy declares exactly FOUR methods - the Account-side helpers at L72/L78 and the
- * Promotion-side helpers at L90/L97 - and not one is a property setter, so every column is
- * read-only on the target. The four audit columns additionally carry `hb_populateEnabled="false"`
- * [model/entity/PromotionAccount.cfc:L62-L65], the legacy's mass-assignment exclusion.
+ * The legacy declares exactly four methods - the Account-side helpers at L72/L78 and the
+ * Promotion-side helpers at L90/L97 - and not one is a property setter.
  */
 const UNAUTHORED_SETTERS: readonly string[] = [
   'setPromotionAccountID',
@@ -356,9 +267,7 @@ const UNAUTHORED_SETTERS: readonly string[] = [
 
 describe('the ported surface, and everything deliberately left off it', () => {
   it('installs exactly the thirteen authored members and nothing else', () => {
-    // Thirteen members in census order. The message helper is MODULE-PRIVATE rather than a private
-    // method, unlike `promotionApplied.ts` whose `isSameRowAs` IS one and appears on the prototype,
-    // so surface and prototype coincide exactly and drift either way fails here.
+    // Thirteen members in census order.
     expect(prototypeMembers()).toEqual([...PORTED_PUBLIC_SURFACE].sort());
     expect(PORTED_PUBLIC_SURFACE).toHaveLength(13);
   });
@@ -379,8 +288,7 @@ describe('the ported surface, and everything deliberately left off it', () => {
     const subject = aPromotionAccount();
 
     // Removing the dispatcher turns this into a TYPE error rather than a runtime surprise: in CFML
-    // the call resolves - `setAccount` exists at [model/entity/PromotionAccount.cfc:L72] - then
-    // fails at `account.hasAccountPromotion(this)` on L74.
+    // the call resolves - `setAccount` exists at [model/entity/PromotionAccount.cfc:L72].
     // @ts-expect-error PromotionAccount authors no setAccount: the far side is the out-of-scope Account entity [model/entity/PromotionAccount.cfc:L72-L77].
     const absentHelper: unknown = subject.setAccount;
 
@@ -437,8 +345,8 @@ describe('the ported surface, and everything deliberately left off it', () => {
     const members = prototypeMembers();
 
     // CFML parity [model/entity/PromotionAccount.cfc:L49]: `displayname`, `entityname`, `table`,
-    // `persistent`, `cacheuse` and `hb_serviceName` are component ATTRIBUTES, exposed by the legacy
-    // through metadata introspection rather than instance accessors.
+    // `persistent`, `cacheuse` and `hb_serviceName` are component ATTRIBUTES, exposed by the
+    // legacy through metadata introspection rather than instance accessors.
     for (const metadataAccessor of [
       'getTable',
       'getEntityName',
@@ -454,11 +362,9 @@ describe('the ported surface, and everything deliberately left off it', () => {
   it('carries no hb_permission-derived member, because the component declares none', () => {
     const members = prototypeMembers();
 
-    // CFML parity [model/entity/PromotionAccount.cfc:L49]: this component carries NO
+    // CFML parity [model/entity/PromotionAccount.cfc:L49]: this component carries no
     // `hb_permission` attribute at all, re-verified case-insensitively - unusual among its
-    // siblings, since `model/entity/Promotion.cfc:L49` carries `hb_permission="this"` and
-    // `model/entity/PromotionPeriod.cfc:L49` the dotted
-    // `hb_permission="promotion.promotionPeriods"`.
+    // siblings.
     for (const permissionMember of ['getPermission', 'getHbPermission', 'hasPermission']) {
       expect(members).not.toContain(permissionMember);
     }
@@ -468,10 +374,7 @@ describe('the ported surface, and everything deliberately left off it', () => {
 describe('the structural surface the SwPromotionAccount row carries', () => {
   it('hydrates the primary key, the two date bounds and both association keys', () => {
     // CFML parity [model/entity/PromotionAccount.cfc:L49]: the physical table is
-    // `SwPromotionAccount` - the FULL, UNABBREVIATED name, worth pinning because two close siblings
-    // abbreviate: `model/entity/PromotionQualifier.cfc:L49` maps to `SwPromoQual` and
-    // `model/entity/PromotionReward.cfc:L57` to `SwPromoReward`. Schema continuity binds: the
-    // target reads and writes it unchanged.
+    // `SwPromotionAccount` - the full, unabbreviated name.
     const promotion = aPromotion('promotion-1');
     const subject = aPromotionAccount({
       promotionAccountID: 'promotion-account-1',
@@ -520,10 +423,6 @@ describe('the structural surface the SwPromotionAccount row carries', () => {
   it('hands back the very Promotion instance it was given, materializing nothing', () => {
     const promotion = aPromotion('promotion-1');
     const subject = aPromotionAccount({ promotion, promotionID: 'promotion-1' });
-
-    // Associations arrive ALREADY MATERIALIZED OR ABSENT: Hibernate lazy collections have no
-    // equivalent in a driver-only stack, so `src/repositories/mysql/**` owns hydration. Reference
-    // identity proves it - a re-materializing accessor would return an equal-but-distinct object.
     expect(subject.getPromotion()).toBe(promotion);
   });
 
@@ -532,8 +431,7 @@ describe('the structural surface the SwPromotionAccount row carries', () => {
     //
     // CFML parity [org/Hibachi/HibachiEntity.cfc:L365-L372]: the legacy `get<Assoc>ID` accessors
     // resolved through the dispatcher into `getPropertyPrimaryID`, which invoked the ASSOCIATION
-    // getter, so with a null association the legacy could only answer the EMPTY STRING. The target
-    // reads the foreign-key COLUMN.
+    // getter.
     const subject = aPromotionAccount({ promotion: undefined, promotionID: 'promotion-1' });
 
     expect(subject.getPromotion()).toBeUndefined();
@@ -543,14 +441,6 @@ describe('the structural surface the SwPromotionAccount row carries', () => {
 });
 
 describe('the account side is an opaque identifier, and no Account is ever constructed', () => {
-  // CFML parity [model/entity/PromotionAccount.cfc:L58, L63, L65]: three of the five associations
-  // point at `model/entity/Account.cfc`, explicitly OUT OF SCOPE, and all three collapse to opaque
-  // nullable ID columns:
-  //
-  //   L58  property name="account"           ... fkcolumn="accountID"
-  //   L63  property name="createdByAccount"  ... fkcolumn="createdByAccountID"
-  //   L65  property name="modifiedByAccount" ... fkcolumn="modifiedByAccountID"
-  //
   // No `Account` type is imported anywhere; the columns are PRESERVED rather than dropped.
 
   it('returns opaque strings for all three account-side keys', () => {
@@ -586,8 +476,8 @@ describe('the account side is an opaque identifier, and no Account is ever const
   it('exposes no hydrated accessor for any out-of-scope account association', () => {
     const members = prototypeMembers();
 
-    // The ID accessor exists; the ENTITY accessor must not. `getAccount()` would imply an `Account`
-    // far side this port does not have.
+    // The ID accessor exists; the ENTITY accessor must not. `getAccount()` would imply an
+    // `Account` far side this port does not have.
     for (const hydratedAccessor of ['getAccount', 'getCreatedByAccount', 'getModifiedByAccount']) {
       expect(members).not.toContain(hydratedAccessor);
     }
@@ -609,16 +499,6 @@ describe('the account side is an opaque identifier, and no Account is ever const
 });
 
 describe('the commented-out promotionPeriod foreign key stays a comment', () => {
-  // CFML parity [model/entity/PromotionAccount.cfc:L59]: the source declares - and then comments
-  // out - a third many-to-one association. The line reads, verbatim:
-  //
-  //   //property name="promotionPeriod" cfc="PromotionPeriod" fieldtype="many-to-one" fkcolumn="promotionPeriodID";
-  //
-  // Preserved AS A COMMENT and not as a member, which is right twice over: the `promotionPeriodID`
-  // column does not exist in `SwPromotionAccount`, so reviving the association would need a new
-  // column and breach schema continuity; and a commented-out declaration is documented schema
-  // history a reviewer diffing against the CFC needs. Not revived, not completed, not "fixed".
-
   it('declares no promotionPeriod member in any spelling', () => {
     const subject = aPromotionAccount();
     const members = prototypeMembers();
@@ -647,9 +527,6 @@ describe('the commented-out promotionPeriod foreign key stays a comment', () => 
   });
 
   it('cannot be supplied through the constructor at compile time', () => {
-    // The strongest available statement of the ruling: the slot is not merely unread, it is
-    // unwritable, because `exactOptionalPropertyTypes` plus an exact init type makes an unknown key
-    // an excess-property error.
     // @ts-expect-error promotionPeriod is commented out at [model/entity/PromotionAccount.cfc:L59] and is deliberately not a member, so there is no constructor slot for it.
     const rejected = new PromotionAccount({ ...unsavedRowColumns(), promotionPeriodID: 'pp-1' });
 
@@ -659,23 +536,10 @@ describe('the commented-out promotionPeriod foreign key stays a comment', () => 
 
 describe('the four timestamps are Date or undefined, and absence is never an epoch', () => {
   // CFML parity [model/entity/PromotionAccount.cfc:L53-L54, L62, L64]: all four timestamp columns
-  // are `ormtype="timestamp"` with NO ORM default, so a NULL column hydrates to `undefined`.
+  // are `ormtype="timestamp"` with no ORM default, so a NULL column hydrates to `undefined`.
   //
-  // FOR THE TWO PROMOTION BOUNDS, `undefined` MEANS FOREVER - the PERMISSIVE extreme: an absent
-  // bound is no bound. Substituting the Unix epoch, `0`, a clock reading or any other sentinel
-  // would change the meaning from "unbounded" to "bounded at an arbitrary instant", and for a start
-  // bound an epoch would read as "began in 1970", which is not what NULL says.
-  //
-  // AN ANNOTATION ASYMMETRY that looks like an oversight and is not: the "forever" reading is
-  // DECLARED on the sibling. `model/entity/PromotionPeriod.cfc:L53-L54` writes
-  // `hb_formatType="dateTime" hb_nullRBKey="define.forever"` on both bounds, so the legacy admin
-  // renders a NULL there as the localised word "forever"; `PromotionAccount.cfc:L53-L54` carry
-  // NEITHER, so only the admin-facing label is missing.
-  //
-  // The convention is per-entity, not global: contrast `Sku.getPriceByCurrencyCode()`
-  // [model/entity/Sku.cfc:L269-L273], which must return `Money | undefined` and never 0, and
-  // `Product.getSalePrice()` [model/entity/Product.cfc:L598], which must `return 0` and never
-  // undefined.
+  // For the two promotion bounds, `undefined` means forever - the permissive extreme: an absent
+  // bound is no bound.
 
   it('reports undefined for every timestamp the row does not carry', () => {
     const subject = aPromotionAccount();
@@ -720,8 +584,8 @@ describe('the four timestamps are Date or undefined, and absence is never an epo
   });
 
   it('round-trips each bound independently, so one absent bound does not erase the other', () => {
-    // A half-open window is a legitimate row: "from this instant, forever" and "until this instant,
-    // from forever" are both expressible, and the columns are independent.
+    // A half-open window is a legitimate row: "from this instant, forever" and "until this
+    // instant, from forever" are both expressible, and the columns are independent.
     const openEnded = aPromotionAccount({
       startDateTime: new Date(START_DATE_TIME_UTC),
       endDateTime: undefined,
@@ -747,7 +611,7 @@ describe('the four timestamps are Date or undefined, and absence is never an epo
   });
 
   it('accepts an end bound earlier than its start bound, because the row constrains no order', () => {
-    // CFML parity: `model/entity/PromotionAccount.cfc` declares NO comparator and NO ORM event
+    // CFML parity: `model/entity/PromotionAccount.cfc` declares no comparator and no ORM event
     // hook, with a case-insensitive census confirming zero `preInsert` and zero `preUpdate`, and
     // there is no validation file to impose a cross-field rule.
     const inverted = aPromotionAccount({
@@ -767,9 +631,6 @@ describe('the four timestamps are Date or undefined, and absence is never an epo
     const members = prototypeMembers();
 
     // The bounds are INERT COLUMNS, not a live window; this entity evaluates nothing about them.
-    // Compare `model/entity/PromotionPeriod.cfc:L78-L85`, which does declare `isCurrent()` and
-    // `isExpired()` over the clock, and whose ported form consequently takes an injected clock
-    // [slatwall-ts/src/domain/entities/promotionPeriod.ts:L630].
     for (const comparator of ['isCurrent', 'isExpired', 'isActive', 'getCurrentFlag']) {
       expect(members).not.toContain(comparator);
     }
@@ -782,17 +643,7 @@ describe('the four timestamps are Date or undefined, and absence is never an epo
 describe('isNew is honest, keyed on the unsavedvalue empty string', () => {
   // CFML parity [model/entity/PromotionAccount.cfc:L52]: `unsavedvalue="" default=""` makes the
   // empty string the honest answer for a row never saved, and the empty-string test is what the
-  // framework does. `isNew()` at [org/Hibachi/HibachiEntity.cfc:L707-L709] returns `getNewFlag()`,
-  // and `getNewFlag()` at [org/Hibachi/HibachiEntity.cfc:L571-L576] is, verbatim:
-  //
-  //   if(getPrimaryIDValue() == "") { return true; } return false;
-  //
-  // This is the one framework member the legacy body concretely calls - at
-  // [model/entity/PromotionAccount.cfc:L74] in `setAccount` and at
-  // [model/entity/PromotionAccount.cfc:L92] in `setPromotion` - which is why it is the only one
-  // authored. It also carries the ONE inherited MXUnit assertion that applies:
-  // `defaults_are_correct()` at [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67] asserts
-  // `entity.isNew()` and `!len(entity.getPrimaryIDValue())`.
+  // framework does.
 
   it('reports true for an unsaved row whose key is the empty string', () => {
     const subject = aPromotionAccount();
@@ -831,9 +682,7 @@ describe('isNew is honest, keyed on the unsavedvalue empty string', () => {
     const members = prototypeMembers();
 
     // `getPrimaryIDValue()` and `getPrimaryIDPropertyName()` are framework members
-    // [org/Hibachi/HibachiEntity.cfc:L244, L249] and deliberately not ported, which is why the
-    // inherited `has_primary_id_property_name()` case at
-    // [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L60-L62] has no counterpart.
+    // [org/Hibachi/HibachiEntity.cfc:L244, L249] and deliberately not ported.
     expect(members).not.toContain('getPrimaryIDValue');
     expect(members).not.toContain('getPrimaryIDPropertyName');
     expect(members).toContain('getPromotionAccountID');
@@ -841,16 +690,9 @@ describe('isNew is honest, keyed on the unsavedvalue empty string', () => {
 });
 
 describe('the far-side anti-contract that makes both bidirectional helpers throw', () => {
-  // CFML parity [model/entity/Promotion.cfc:L62-L64]: `Promotion` declares EXACTLY three
-  // collections and none is `promotionAccounts`:
-  //
-  //   L62  promotionPeriods    singularname="promotionPeriod"    one-to-many
-  //   L63  promotionCodes      singularname="promotionCode"      one-to-many
-  //   L64  appliedPromotions   singularname="appliedPromotion"   one-to-many
-  //
   // There is consequently no `SwPromotion` -> `SwPromotionAccount` inverse to honour, and
-  // `src/domain/entities/promotion.ts` MUST NOT gain one: adding the far side would SILENTLY REPAIR
-  // both defects below, inventing behaviour the legacy lacks.
+  // `src/domain/entities/promotion.ts` must not gain one: adding the far side would SILENTLY
+  // REPAIR both defects below.
 
   it('confirms Promotion declares neither method the helpers call', () => {
     const members = promotionPrototypeMembers();
@@ -876,8 +718,8 @@ describe('the far-side anti-contract that makes both bidirectional helpers throw
   it('confirms a real Promotion instance carries no promotionAccounts collection', () => {
     const promotion = aPromotion('promotion-1');
 
-    // Instance-level, not just prototype-level: no own property either, so nothing could be reached
-    // through a hydration slot.
+    // Instance-level, not just prototype-level: no own property either, so nothing could be
+    // reached through a hydration slot.
     expect('getPromotionAccounts' in promotion).toBe(false);
     expect('promotionAccounts' in promotion).toBe(false);
     expect(Object.keys(promotion)).not.toContain('promotionAccounts');
@@ -886,33 +728,13 @@ describe('the far-side anti-contract that makes both bidirectional helpers throw
 
 // LEGACY-DEFECT [model/entity/PromotionAccount.cfc:L90-L95]: setPromotion assigns
 // variables.promotion at L91 and only then calls hasPromotionAccount()/getPromotionAccounts() at
-// L92-L93, neither of which Promotion.cfc declares. The method therefore throws AFTER mutating,
-// leaving a half-mutated instance.
-//
+// L92-L93, neither of which Promotion.cfc declares.
 // Preserved deliberately; do not fix without a product decision.
 describe('setPromotion throws on every path, and mutates before it does', () => {
-  // The legacy body, verbatim [model/entity/PromotionAccount.cfc:L90-L95]:
+  // Branches are fatal: with isNew() TRUE the second operand at L92 is never EVALUATED, control
+  // enters the body, and the getPromotionAccounts() call at L93 throws.
   //
-  //   public void function setPromotion(required any promotion) {
-  //     variables.promotion = arguments.promotion;                     // L91 ASSIGNS FIRST
-  //     if(isNew() or !arguments.promotion.hasPromotionAccount( this )) {   // L92
-  //       arrayAppend(arguments.promotion.getPromotionAccounts(), this);    // L93
-  //     }
-  //   }
-  //
-  // FACT ONE - IT THROWS, AND WHICH MESSAGE DEPENDS ON isNew(). CFML's `or` SHORT-CIRCUITS, so BOTH
-  // branches are fatal: with isNew() TRUE the second operand at L92 is NEVER EVALUATED, control
-  // enters the body, and the getPromotionAccounts() call at L93 throws; with isNew() FALSE the
-  // second operand IS evaluated, and hasPromotionAccount() at L92 throws before the body is
-  // entered. Both name a method on `Promotion`, because both are called ON the argument.
-  //
-  // FACT TWO - THE ASSIGNMENT AT L91 SUCCEEDS FIRST, leaving the instance HALF-MUTATED. Tidying
-  // this into a guard-first shape would change observable behaviour, so the ordering is reproduced.
-  //
-  // The signature is typed `void`, NOT `never`: the legacy declares `public void function`, and
-  // control reaches the assignment before failing. Contrast `Sku.getPriceByPromotion()`
-  // [model/entity/Sku.cfc:L258], whose `returntype="numeric"` promises a value it can never
-  // deliver, and whose ported form is `never`.
+  // Fact two - the assignment at L91 succeeds first, leaving the instance half-mutated.
 
   it('throws when called on an unsaved row, naming the L93 call target', () => {
     const subject = aPromotionAccount();
@@ -966,7 +788,7 @@ describe('setPromotion throws on every path, and mutates before it does', () => 
       subject.setPromotion(promotion);
     }).toThrow();
 
-    // THE HALF-MUTATION. This is the assertion the whole defect turns on: the throw did NOT roll
+    // The HALF-MUTATION. This is the assertion the whole defect turns on: the throw did not roll
     // the assignment back, because L91 ran before L92/L93 were reached.
     expect(subject.getPromotion()).toBe(promotion);
   });
@@ -1001,7 +823,7 @@ describe('setPromotion throws on every path, and mutates before it does', () => 
     expect(subject.getPromotion()).toBe(replacement);
     expect(subject.getPromotion()).not.toBe(original);
 
-    // And the foreign-key column does NOT follow the association, because L91 writes only the
+    // And the foreign-key column does not follow the association, because L91 writes only the
     // object.
     expect(subject.getPromotionID()).toBe('promotion-original');
   });
@@ -1012,8 +834,7 @@ describe('setPromotion throws on every path, and mutates before it does', () => 
 
     // A `never` return would let TypeScript treat every later statement as unreachable, which
     // misrepresents the contract: `public void function setPromotion` at
-    // [model/entity/PromotionAccount.cfc:L90] declares void, and the method really does execute its
-    // first statement.
+    // [model/entity/PromotionAccount.cfc:L90] declares void.
     const returnValue: void = ((): void => {
       try {
         subject.setPromotion(promotion);
@@ -1027,50 +848,13 @@ describe('setPromotion throws on every path, and mutates before it does', () => 
 });
 
 // LEGACY-DEFECT [model/entity/PromotionAccount.cfc:L97-L106]: removePromotion throws at L101
-// because Promotion.cfc declares no getPromotionAccounts(). The undeclared `arguments.account`
-// stray at L103 is therefore MASKED and unreachable -- the exact opposite of
-// [model/entity/PromotionPeriod.cfc:L110], where the equivalent stray IS reachable because
-// Promotion.cfc does declare getPromotionPeriods().
-//
+// because Promotion.cfc declares no getPromotionAccounts().
 // Preserved deliberately; do not fix without a product decision.
 describe('removePromotion throws at L101, masking the stray at L103 and stranding L105', () => {
-  // The legacy body, verbatim [model/entity/PromotionAccount.cfc:L97-L106]:
-  //
-  //   public void function removePromotion(any promotion) {
-  //     if(!structKeyExists(arguments, "promotion")) {                       // L98
-  //       arguments.promotion = variables.promotion;                         // L99
-  //     }                                                                   // L100
-  //     var index = arrayFind(arguments.promotion.getPromotionAccounts(), this);  // L101 THROWS
-  //     if(index > 0) {                                                     // L102
-  //       arrayDeleteAt(arguments.account.getPromotionAccounts(), index);    // L103 STRAY
-  //     }                                                                   // L104
-  //     structDelete(variables, "promotion");                               // L105
-  //   }
-  //
-  // THREE STACKED FACTS, the middle the most instructive.
-  //
-  // FACT ONE - L101 THROWS UNCONDITIONALLY, before any guard on the index, because
+  // Fact one - L101 throws unconditionally, before any guard on the index, because
   // `getPromotionAccounts()` does not resolve on `Promotion`.
   //
-  // FACT TWO - THE STRAY AT L103 IS MASKED. L103 dereferences `arguments.account`, which is NOT a
-  // declared argument: the signature at L97 is `removePromotion(any promotion)`, so in CFML this is
-  // an undefined-variable error. Worse, search and delete address DIFFERENT OBJECTS - L101 searches
-  // `arguments.promotion` while L103 deletes from `arguments.account` - so even with live
-  // collections on both sides the method could not do its job. L103 is unreachable only because
-  // L101 throws first: the first defect masks the second. Latent, not harmless - were a product
-  // decision to add a `promotionAccounts` collection to `Promotion`, L101 would begin succeeding
-  // and this leak would go live.
-  //
-  //   THE CONTRAST, AND THE LESSON. The IDENTICAL stray appears at
-  //   [model/entity/PromotionPeriod.cfc:L110] as
-  //   `arrayDeleteAt(arguments.account.getPromotionPeriods(), index)`
-  //   and there it IS REACHABLE, because the preceding
-  //   `arrayFind(arguments.promotion.getPromotionPeriods(), this)` at
-  //   [model/entity/PromotionPeriod.cfc:L108] SUCCEEDS: `model/entity/Promotion.cfc:L62` genuinely
-  //   declares `promotionPeriods`. Same error, opposite consequence - masked here, live
-  //   there - decided by whether the far-side collection exists.
-  //
-  // FACT THREE - L105 IS STRANDED: `structDelete(variables, "promotion")` NEVER EXECUTES, so the
+  // Fact three - L105 is stranded: `structDelete(variables, "promotion")` never executes, so the
   // legacy never clears the field it set.
 
   it('throws when given an explicit promotion, naming the L101 call target', () => {
@@ -1106,9 +890,8 @@ describe('removePromotion throws at L101, masking the stray at L103 and strandin
     }
 
     // CFML parity [model/entity/PromotionAccount.cfc:L98-L100]: with no argument and no
-    // `variables.promotion`, CFML fails on the DEFAULT READ ITSELF with "Element PROMOTION is
-    // undefined in VARIABLES." - before any method is called. An undefined-variable error and NOT a
-    // missing-method contract, so it deliberately does NOT carry the framework's terminal message.
+    // `variables.promotion`, CFML fails on the default read itself with "Element promotion is
+    // undefined in variables." - before any method is called.
     expect(captured).toContain('Element PROMOTION is undefined in VARIABLES.');
     expect(captured).not.toContain('does not exists');
     expect(captured).not.toBe(hibachiMissingMethodMessage('getPromotionAccounts', 'Promotion'));
@@ -1122,7 +905,7 @@ describe('removePromotion throws at L101, masking the stray at L103 and strandin
       subject.removePromotion();
     }).toThrow();
 
-    // THE STRANDED L105. A remove that removes nothing: the field it was asked to clear is still
+    // The STRANDED L105. A remove that removes nothing: the field it was asked to clear is still
     // set, because the throw at L101 happens first.
     expect(subject.getPromotion()).toBe(promotion);
     expect(subject.getPromotionID()).toBe('promotion-1');
@@ -1161,7 +944,7 @@ describe('removePromotion throws at L101, masking the stray at L103 and strandin
     const promotion = aPromotion('promotion-1');
     const subject = aSavedPromotionAccount({ promotion, promotionID: 'promotion-1' });
 
-    // CFML parity [model/entity/PromotionAccount.cfc:L97]: `any promotion` WITHOUT `required`, and
+    // CFML parity [model/entity/PromotionAccount.cfc:L97]: `any promotion` without `required`, and
     // the L98 `structKeyExists` probe is what makes the absence meaningful.
     expect(() => {
       subject.removePromotion();
@@ -1192,18 +975,8 @@ describe('removePromotion throws at L101, masking the stray at L103 and strandin
 
 describe('the remove-that-ADDs inversion cross-check', () => {
   it('records the verdict: CLEAN - zero inversions among the four legacy helpers', () => {
-    // The cross-check was run against ALL FOUR legacy bidirectional helpers, reading the verbatim
-    // source. THE VERDICT IS CLEAN: ZERO INVERSIONS - neither `remove*` calls an `add*`.
-    //
-    //   removeAccount   [L78-L87]  searches at L82 and deletes at L84, BOTH against
-    //                              `arguments.account.getAccountPromotions()` - one object.
-    //   removePromotion [L97-L106] searches at L101 and deletes at L103, and while those address
-    //                              DIFFERENT objects (the L103 stray), the operation is still a
-    //                              delete: a wrong-receiver defect, NOT an inversion.
-    //
-    // The defect is real elsewhere: `model/entity/Option.cfc:L129-L131` and `:L145-L147` have
-    // `removePromotionRewardExclusion` and `removePromotionQualifierExclusion` each calling
-    // `addExcludedOption(this)` - two genuine inversions, preserved as defects there.
+    // The cross-check was run against all four legacy bidirectional helpers, reading the verbatim
+    // source. The verdict is clean: zero inversions - neither `remove*` calls an `add*`.
     const members = prototypeMembers();
     const removers = members.filter((name: string) => name.startsWith('remove'));
     const adders = members.filter((name: string) => name.startsWith('add'));
@@ -1220,16 +993,8 @@ describe('no validation surface, because the legacy declares none', () => {
     const subject = aPromotionAccount();
     const members = prototypeMembers();
 
-    // CFML parity: `model/validation/PromotionAccount.json` IS VERIFIED ABSENT - not missing, not
-    // pending, but BY DESIGN - and one of exactly SIX deliberate absences across the in-scope set.
-    // Directory-listed, not assumed: `model/validation/` holds 96 `.json` files, not 94, and of the
-    // 21 in-scope artifacts the split is 15 PRESENT / 6 ABSENT, not the plan's "12 present". The
-    // six are FOUR ENTITIES - Category, PromotionQualifier, PromotionApplied, PromotionAccount -
-    // and TWO PROCESS OBJECTS - Product_AddOption, Product_AddOptionGroup. Consequently there is no
-    // zod schema, no `validate(context)`, no `hasErrors()`, no `getErrors()` and no `hasUnique*`
-    // member, since the legacy dispatcher branches [org/Hibachi/HibachiEntity.cfc:L507-L565] served
-    // declarative uniqueness rules this entity has none of. COMPLETING THE LEGACY VALIDATION GAP IS
-    // OUT OF BOUNDS.
+    // CFML parity: `model/validation/PromotionAccount.json` is VERIFIED ABSENT - not missing, not
+    // pending, but by DESIGN - and one of exactly six deliberate absences across the in-scope set.
     for (const validationMember of [
       'validate',
       'hasErrors',
@@ -1245,10 +1010,7 @@ describe('no validation surface, because the legacy declares none', () => {
 
   it('accepts a row that a validation schema might well have rejected', () => {
     // Nothing in the legacy rejects an all-NULL row: no schema file, no ORM hook, no notnull
-    // attribute on any of the nine nullable columns. The inherited MXUnit case
-    // `validate_as_save_for_a_new_instance_doesnt_pass()` at
-    // [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L54] has NO counterpart for exactly
-    // this reason: with no schema there is nothing for `validate(context="save")` to fail.
+    // attribute on any of the nine nullable columns.
     const subject = aPromotionAccount();
 
     expect(subject.isNew()).toBe(true);
@@ -1265,14 +1027,7 @@ describe('framework behaviour that is documented rather than reproduced', () => 
 
     // CFML parity [org/Hibachi/HibachiEntity.cfc:L507-L565]: in the legacy an undeclared
     // `getSomething()` entered `onMissingMethod`, matched none of its eleven patterns and hit the
-    // terminal throw at L565. The `getAttributeValue` fallback at L559 could not catch it either,
-    // for the reason the census JSDoc above records.
-    //
-    // THE TARGET HAS NO DYNAMIC DISPATCH WHATSOEVER: no Proxy, no index signature, no `evaluate()`,
-    // no `variables.` scope object, no `clearAttributeCache`, no `getNewFlag`. DOCUMENTED, not
-    // reproduced - an unknown member is simply `undefined` and the call site does not compile. A
-    // STRUCTURAL CONSEQUENCE, NOT A BEHAVIOURAL CHANGE: only the fate of an UNDECLARED call moves,
-    // from a runtime throw to a compile error.
+    // terminal throw at L565.
     expect('getAnythingUndeclared' in subject).toBe(false);
 
     // @ts-expect-error There is no dynamic dispatch: an undeclared accessor is a compile error here, where CFML would have thrown at [org/Hibachi/HibachiEntity.cfc:L565] only when executed.
@@ -1284,45 +1039,25 @@ describe('framework behaviour that is documented rather than reproduced', () => 
   it('exposes no getSimpleRepresentation, so the inherited base-class case is not forced', () => {
     const members = prototypeMembers();
 
-    // EXPLAIN RATHER THAN FABRICATE. The inherited MXUnit case
-    // `simple_representation_exists_and_is_simple()` at
-    // [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58] asserts
-    // `isSimpleValue(entity.getSimpleRepresentation())` and is NOT applicable:
-    // `model/entity/PromotionAccount.cfc` declares no `getSimpleRepresentation`. Per-entity rather
-    // than blanket: `model/entity/PromotionPeriod.cfc:L91-L93` DOES declare one, returning
-    // `getPromotion().getPromotionName()`.
+    // Explain rather than fabricate.
     expect(members).not.toContain('getSimpleRepresentation');
   });
 
   it('carries no ORM event hook, because both banner sections are empty in the source', () => {
     const members = prototypeMembers();
 
-    // CFML parity [model/entity/PromotionAccount.cfc:L121-L123]: the ORM Event Hooks banner pair is
-    // EMPTY, and a case-insensitive census confirms zero `preInsert` and zero `preUpdate`
-    // occurrences - so this entity is not one of the four hook-bearing in-scope entities (Category,
-    // PriceGroup, ProductType, PromotionCode).
+    // CFML parity [model/entity/PromotionAccount.cfc:L121-L123]: the ORM Event Hooks banner pair
+    // is EMPTY, and a case-insensitive census confirms zero `preInsert` and zero `preUpdate`
+    // occurrences.
     expect(members).not.toContain('preInsert');
     expect(members).not.toContain('preUpdate');
   });
 
   it('records the malformed banner layout as a source wart, and normalises nothing', () => {
-    // CFML parity [model/entity/PromotionAccount.cfc:L68, L109, L113-L123]: this component's banner
-    // layout is MALFORMED, uniquely so among the eighteen in-scope entities.
+    // CFML parity [model/entity/PromotionAccount.cfc:L68, L109, L113-L123]: this component's
+    // banner layout is MALFORMED, uniquely so among the eighteen in-scope entities.
     //
-    //   L68        "============= START: Bidirectional Helper Methods ==================="
-    //   L72-L106   the four helpers
-    //   L109       "=============  END:  Bidirectional Helper Methods ==================="
-    //              ...indented with THREE SPACES rather than a tab, unlike every sibling
-    //   L113/L115  "Non-Persistent Property Methods" - an EMPTY pair, positioned AFTER the
-    //              bidirectional block, inverting the ordering every sibling uses
-    //   L117/L119  "Bidirectional Helper Methods" - OPENED AND CLOSED A SECOND TIME: a
-    //              DUPLICATE BANNER PAIR, and empty
-    //   L121/L123  "ORM Event Hooks" - a further EMPTY pair
-    //   L124-L125  blank; the component closes at L126
-    //
-    // A copy-paste artifact with ZERO behavioural consequence, annotated and NEVER normalised.
-    // Comment structure has no observable surface, so this case pins what does: the duplicated
-    // banner authored no member twice and dropped none.
+    // A copy-paste artifact with ZERO behavioural consequence, annotated and never normalised.
     expect(prototypeMembers()).toHaveLength(13);
     expect(new Set(prototypeMembers()).size).toBe(13);
   });
@@ -1330,8 +1065,6 @@ describe('framework behaviour that is documented rather than reproduced', () => 
 
 describe('freshness, because the half-mutation assertions depend on it', () => {
   it('builds an independent subject on every call, sharing no state', () => {
-    // A2 made explicit: `setPromotion` mutates before it throws, so a subject leaked between tests
-    // would make the half-mutation assertions meaningless.
     const first = aPromotionAccount();
     const second = aPromotionAccount();
     const promotion = aPromotion('promotion-1');

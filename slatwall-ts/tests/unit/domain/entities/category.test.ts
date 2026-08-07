@@ -1,49 +1,10 @@
-// ---------------------------------------------------------------------------
 // slatwall-ts - characterization suite pinning `src/domain/entities/category.ts`
 //
 // `Category` ports model/entity/Category.cfc (137 lines), a read-mostly catalog leaf and one of
-// only three in-scope entities carrying a materialized comma-delimited ID path. The CFC is the SOLE
-// authority for every assertion below, each locator re-verified line by line, and the shipped
-// module was read in full first - where the two disagree the SHIPPED MODULE WINS.
-//
-// Five behaviours carry this entity's whole risk, and each has its own suite:
-//
-//   1. `getCategoryIDPath()` IS A PLAIN ACCESSOR. The "Overridden Methods" banner at
-//      [model/entity/Category.cfc:L120-L122] is literally empty, so there is no lazy memoized
-//      path getter - unlike PriceGroup and ProductType, which both memoize.
-//   2. THE HOOK ORDERING IS REVERSED: Category calls `super` FIRST and assigns its path SECOND
-//      [model/entity/Category.cfc:L127-L128], where [model/entity/PriceGroup.cfc:L207-L208] and
-//      [model/entity/ProductType.cfc:L306-L307] do the opposite.
-//   3. THE CMS SURFACE IS INERT. `cmsCategoryID` [model/entity/Category.cfc:L59] and the `site`
-//      association [L62] are persisted schema only; the Mura bridge is out of scope.
-//   4. THE BIDIRECTIONAL HELPERS maintain BOTH sides of the parent/child link, under the guard at
-//      [model/entity/Category.cfc:L103]; the clear at [L115] is UNCONDITIONAL.
-//   5. THE TWO BOOLEAN COLUMNS HAVE NO ORM DEFAULT [model/entity/Category.cfc:L55-L56], so an
-//      unset column must read `false` and not `undefined`.
-//
-// --- 100% net-new coverage - never to be presented as parity --------------
-//
-// MEASURED, not assumed: `find meta/tests -iname '*categor*'` returns ZERO hits across all 32
-// legacy `.cfc` test components. The only legacy suites extended anywhere in this port are
-// [meta/tests/unit/entity/BrandTest.cfc] and [meta/tests/unit/entity/ProductTest.cfc], neither
-// mentioning this entity, and [meta/tests/functional/admin/entity/ProductTest.cfc] is an empty
-// stub. Of the four cases a legacy Category test WOULD have inherited from
-// [meta/tests/unit/entity/SlatwallEntityTestBase.cfc], only `defaults_are_correct()` [L64-L67] is
-// observable, and it is pinned as net-new; `has_primary_id_property_name()` [L60-L62],
-// `validate_as_save_for_a_new_instance_doesnt_pass()` [L51-L54] and
-// `simple_representation_exists_and_is_simple()` [L56-L58] each need a framework accessor, a
-// validation schema or a `getSimpleRepresentation()` that neither the CFC nor the shipped class
-// provides - and there is no model/validation/Category.json.
-//
-// --- zero divergences spent, and no defect claimed -----------------------
+// only three in-scope entities carrying a materialized comma-delimited ID path.
 //
 // The defect register assigns no numbered defect to Category, both bidirectional pairs are the
-// CORRECT pattern, and this entity declares no non-persistent property to memoize. The reversed
-// hook ordering and the absent `addProduct`/`removeProduct` pair are `CFML parity` notes, not
-// defects. Four expectations were corrected against the shipped module while writing this suite -
-// the snapshot type alias, the materialized `contents` projection, the legacy-named hooks and the
-// fully reproduced far-side symmetry - each recorded again at the assertion that pins it.
-// ---------------------------------------------------------------------------
+// CORRECT pattern, and this entity declares no non-persistent property to memoize.
 
 import { describe, expect, it } from 'vitest';
 
@@ -53,14 +14,11 @@ import type { CategoryPreUpdateSnapshot } from '../../../../src/domain/entities/
 /**
  * The overrides a test may supply when building a subject.
  *
- * Every slot is optional HERE and required on the class constructor, deliberately in both places:
- * the constructor requires all sixteen keys so a hydrating repository must state "I read that
- * column and found nothing" rather than silently omit it, and a test has no such obligation.
+ * Every slot is optional here and required on the class constructor.
  *
  * The two flag slots accept the same wide input union the constructor does, modelled structurally
  * rather than by importing the helper's own type because this tier may reach into `src/domain/**`
- * only - while still exercising every form a MySQL driver hands over for an undefaulted
- * `ormtype="boolean"` column.
+ * only.
  */
 interface CategoryOverrides {
   readonly categoryID?: string;
@@ -82,16 +40,8 @@ interface CategoryOverrides {
 /**
  * Builds one `Category`, fresh, from the overrides supplied.
  *
- * A FUNCTION AND NOT A SHARED INSTANCE. Every test calls this for its own subject, so no state
- * crosses a test boundary: `parentCategory`, `categoryIDPath` and the `childCategories` array are
- * all mutable on the class, and a shared subject would let one assertion's mutation decide
- * another's outcome. There is no `beforeEach` for the same reason, and no `afterEach` because
- * nothing here installs a spy, a fake timer or a stubbed environment value.
- *
  * `childCategories` defaults to a NEWLY CONSTRUCTED array on every call: the class does not copy
- * what it is handed and the accessor returns that very array, so a module-level literal would be
- * shared mutable state of the kind this port forbids. `products` and `contents` are deliberately
- * not exposed - `products` needs a real `Product`, and `contents` has its own builder below.
+ * what it is handed and the accessor returns that very array.
  */
 function aCategory(overrides: CategoryOverrides = {}): Category {
   return new Category({
@@ -117,10 +67,9 @@ function aCategory(overrides: CategoryOverrides = {}): Category {
 /**
  * Builds one `Category` carrying a populated `contents` association.
  *
- * Separate from {@link aCategory} because the element type is the port's anti-corruption projection
- * of an `SwContent` row reached across the `SwContentCategory` link table
- * [model/entity/Category.cfc:L70] - the join key and nothing else. `model/entity/Content.cfc` is
- * out of scope, so an inline object supplying `getContentID()` satisfies the element contract.
+ * Separate from {@link aCategory} because the element type is the port's anti-corruption
+ * projection of an `SwContent` row reached across the `SwContentCategory` link table
+ * [model/entity/Category.cfc:L70].
  */
 function aCategoryOnContents(contentIDs: readonly string[]): Category {
   return new Category({
@@ -143,7 +92,9 @@ function aCategoryOnContents(contentIDs: readonly string[]): Category {
   });
 }
 
-/** The `categoryID` of every element, in order - the readable form of an ID-path assertion. */
+/**
+ * The `categoryID` of every element, in order - the readable form of an ID-path assertion.
+ */
 function idsOf(categories: readonly Category[]): readonly string[] {
   return categories.map((category) => category.getCategoryID());
 }
@@ -151,21 +102,16 @@ function idsOf(categories: readonly Category[]): readonly string[] {
 /**
  * Every member name the shipped class carries at runtime, sorted.
  *
- * `Object.getOwnPropertyNames(Category.prototype)` cannot drift the way a hand-maintained list can.
- * TypeScript's `private` is COMPILE-TIME visibility only, so the two internal helpers appear here
- * too - the honest runtime picture.
+ * `Object.getOwnPropertyNames(Category.prototype)` cannot drift the way a hand-maintained list
+ * can.
  */
 function shippedMemberNames(): readonly string[] {
   return Object.getOwnPropertyNames(Category.prototype).sort();
 }
 
-// --- the shipped surface - interface parity, every absence proved at once ---
-
 describe('the shipped member surface is exactly the ported one', () => {
   // CFML parity [model/entity/Category.cfc:L49]: `accessors="true"` generated one getter per
-  // property, and the component hand-writes four bidirectional helpers plus two hooks. Public
-  // method names are carried over VERBATIM in legacy camelCase - `getCategoryIDPath`, not a renamed
-  // equivalent - so a reviewer can diff the two surfaces directly.
+  // property, and the component hand-writes four bidirectional helpers plus two hooks.
   it('carries exactly the expected members and no others', () => {
     expect(shippedMemberNames()).toEqual([
       'addChildCategory',
@@ -200,9 +146,8 @@ describe('the shipped member surface is exactly the ported one', () => {
   });
 
   // CFML parity [model/entity/Category.cfc:L69]: `products` is declared `inverse="true"` and the
-  // component authors NO helper pair for it, unlike model/entity/Brand.cfc, which does author one
-  // for its own products collection. Inventing `addProduct`/`removeProduct` would add public
-  // surface the legacy never had.
+  // component authors no helper pair for it, unlike model/entity/Brand.cfc, which does author one
+  // for its own products collection.
   it('has NO addProduct and NO removeProduct, because the source declares neither', () => {
     expect(shippedMemberNames()).not.toContain('addProduct');
     expect(shippedMemberNames()).not.toContain('removeProduct');
@@ -223,18 +168,15 @@ describe('the shipped member surface is exactly the ported one', () => {
 
   // CFML parity [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58]: the inherited
   // `simple_representation_exists_and_is_simple()` case asserts
-  // `isSimpleValue(getSimpleRepresentation())`. model/entity/Category.cfc DECLARES NO
-  // `getSimpleRepresentation`, and the shipped class exposes none.
+  // `isSimpleValue(getSimpleRepresentation())`. model/entity/Category.cfc DECLARES no
+  // `getSimpleRepresentation`.
   it('exposes no getSimpleRepresentation, so the inherited legacy case is not forced', () => {
     expect(shippedMemberNames()).not.toContain('getSimpleRepresentation');
   });
 
   // CFML parity [org/Hibachi/HibachiEntity.cfc:L507-L565]: the framework synthesised members
   // through `onMissingMethod` - eleven dispatch patterns including `hasUnique*`, `hasAny*`,
-  // `get*Options`, `get*SmartList`, `get*Struct`, `get*Count` and `get*AssignedIDList`. The target
-  // reproduces NONE: no Proxy, no index signature, no `evaluate()`, no dynamic dispatch. Only
-  // concretely-called members are authored, so `hasChildCategory` survives - called at
-  // [model/entity/Category.cfc:L103] - while the rest do not exist to be called.
+  // `get*Options`, `get*SmartList`, `get*Struct`, `get*Count` and `get*AssignedIDList`.
   it('synthesises no dynamic-dispatch members', () => {
     const members = shippedMemberNames();
 
@@ -248,11 +190,8 @@ describe('the shipped member surface is exactly the ported one', () => {
     expect(members).not.toContain('hasAnyChildCategory');
   });
 
-  // CFML parity [org/Hibachi/HibachiEntity.cfc:L559,L565]: the EAV fallback guards on
-  // `hasProperty("attributeValues")`. Across the eighteen in-scope entities `attributeValues` is
-  // declared exactly FOUR times - [model/entity/Sku.cfc:L70], [model/entity/Product.cfc:L75],
-  // [model/entity/ProductType.cfc:L67] and [model/entity/Brand.cfc:L60] - and Category is NOT among
-  // them, so an unmatched `getX()` on a legacy Category threw directly at L565.
+  // CFML parity [org/Hibachi/HibachiEntity.cfc:L559, L565]: the EAV fallback guards on
+  // `hasProperty("attributeValues")`.
   it('carries no attribute-value surface, matching an entity that declares none', () => {
     const members = shippedMemberNames();
 
@@ -262,8 +201,7 @@ describe('the shipped member surface is exactly the ported one', () => {
   });
 
   // CFML parity [model/entity/Category.cfc:L49]: `hb_serviceName="contentService"` routes Category
-  // CRUD to ContentService BY DESIGN - the SOURCE ITSELF resolves the ambiguity, and a
-  // repository-wide check finds no model/service/CategoryService.cfc in the legacy tree.
+  // crud to ContentService by design - the source itself resolves the ambiguity.
   it('reaches no service: hb_serviceName="contentService" is a framework routing hint, not a member', () => {
     const members = shippedMemberNames();
 
@@ -274,7 +212,7 @@ describe('the shipped member surface is exactly the ported one', () => {
     expect(members).not.toContain('getSlatwallScope');
   });
 
-  // CFML parity [model/entity/Category.cfc:L86-L88,L120-L122]: two banner pairs in the source are
+  // CFML parity [model/entity/Category.cfc:L86-L88, L120-L122]: two banner pairs in the source are
   // EMPTY - "Non-Persistent Property Methods" and "Overridden Methods" - as is "Non-Persistent
   // Properties" at L81-L84.
   it('invents no non-persistent property behind the two empty banners', () => {
@@ -285,13 +223,10 @@ describe('the shipped member surface is exactly the ported one', () => {
   });
 });
 
-// --- structural defaults on a fresh row -----------------------------------
-
 describe('a fresh, unhydrated row', () => {
-  // CFML parity [model/entity/Category.cfc:L52]: the id property declares BOTH `unsavedvalue=""`
+  // CFML parity [model/entity/Category.cfc:L52]: the id property declares both `unsavedvalue=""`
   // and `default=""`, so the empty string is the legacy contract and not a sentinel of this port's
-  // invention. `isNew()` reads that value directly: [org/Hibachi/HibachiEntity.cfc:L571-L576]
-  // returns true exactly when the primary id is `""`.
+  // invention.
   it('defaults categoryID to the empty string, so isNew() is honest', () => {
     const category = aCategory();
 
@@ -303,7 +238,7 @@ describe('a fresh, unhydrated row', () => {
     expect(aCategory({ categoryID: 'saved-category' }).isNew()).toBe(false);
   });
 
-  // An id explicitly supplied as `''` is the SAME state as an omitted one, because
+  // An id explicitly supplied as `''` is the same state as an omitted one, because
   // `unsavedvalue=""` makes them the same value in the legacy schema.
   it('treats an explicitly empty id exactly as an absent one', () => {
     const category = aCategory({ categoryID: '' });
@@ -312,8 +247,9 @@ describe('a fresh, unhydrated row', () => {
     expect(category.isNew()).toBe(true);
   });
 
-  // CFML parity [model/entity/Category.cfc:L54,L59,L62,L73]: every nullable string column reads as
-  // `undefined` when the column is SQL NULL, never as `''` and never as a fabricated placeholder.
+  // CFML parity [model/entity/Category.cfc:L54, L59, L62, L73]: every nullable string column reads
+  // as `undefined` when the column is SQL NULL, never as `''` and never as a fabricated
+  // placeholder.
   it('reads every nullable string column as undefined, never as an empty string', () => {
     const category = aCategory();
 
@@ -326,10 +262,7 @@ describe('a fresh, unhydrated row', () => {
   });
 
   // CFML parity [model/entity/Category.cfc:L63]: the `parentCategory` many-to-one is `undefined`
-  // for a root category, and also when the repository chose not to fetch it. The shipped field is
-  // `private parentCategory: Category | undefined` - a required slot whose type includes
-  // `undefined`, not an optional `parentCategory?:` - because `exactOptionalPropertyTypes` would
-  // make the unconditional clear at L115 inexpressible.
+  // for a root category, and also when the repository chose not to fetch it.
   it('has no parent category', () => {
     expect(aCategory().getParentCategory()).toBeUndefined();
   });
@@ -344,10 +277,8 @@ describe('a fresh, unhydrated row', () => {
     expect(category.getContents()).toEqual([]);
   });
 
-  // CFML parity [model/entity/Category.cfc:L76,L78]: both timestamps are `ormtype="timestamp"` with
-  // `hb_populateEnabled="false"`. An unstamped row reads `undefined` - NEVER the Unix epoch and
-  // NEVER `0`, because a zero-valued date is a real instant in 1970 and would silently pass an "is
-  // a Date" check.
+  // CFML parity [model/entity/Category.cfc:L76, L78]: both timestamps are `ormtype="timestamp"`
+  // with `hb_populateEnabled="false"`.
   it('reads unstamped audit timestamps as undefined, never as the epoch and never as 0', () => {
     const category = aCategory();
 
@@ -376,10 +307,9 @@ describe('a fresh, unhydrated row', () => {
     expect(category.getModifiedByAccountID()).toBe('account-modified-by');
   });
 
-  // CFML parity [model/entity/Category.cfc:L77,L79]: `createdByAccount` and `modifiedByAccount` are
-  // `cfc="Account" fieldtype="many-to-one"` and model/entity/Account.cfc is out of scope, so each
-  // collapses to the OPAQUE foreign-key column the association named - the same treatment `site`
-  // receives. No Account class is imported or invented.
+  // CFML parity [model/entity/Category.cfc:L77, L79]: `createdByAccount` and `modifiedByAccount`
+  // are `cfc="Account" fieldtype="many-to-one"` and model/entity/Account.cfc is out of scope, so
+  // each collapses to the OPAQUE foreign-key column the association named.
   it('collapses both audit associations to opaque account id columns', () => {
     const members = shippedMemberNames();
 
@@ -390,9 +320,8 @@ describe('a fresh, unhydrated row', () => {
   });
 
   // CFML parity [model/entity/Category.cfc:L73] vs [model/entity/ProductType.cfc:L80]: Category's
-  // `remoteID` declares `hint="Only used when integrated with a remote system"` while ProductType's
-  // identical column carries NO hint. Genuine source metadata, recorded rather than normalised; a
-  // hint has no runtime effect, so the observable contract is the round trip.
+  // `remoteID` declares `hint="Only used when integrated with a remote system"` while
+  // ProductType's identical column carries no hint.
   it('round-trips remoteID, the one hint-carrying column in this entity', () => {
     expect(aCategory({ remoteID: 'remote-system-key-42' }).getRemoteID()).toBe(
       'remote-system-key-42',
@@ -400,17 +329,12 @@ describe('a fresh, unhydrated row', () => {
   });
 });
 
-// --- the two boolean columns - neither has an ORM default -----------------
-
 describe('restrictAccessFlag and allowProductAssignmentFlag have no ORM default', () => {
-  // CFML parity [model/entity/Category.cfc:L55-L56]: a case-insensitive read finds exactly TWO
-  // `ormtype="boolean"` properties and NEITHER declares a `default=`; the only `default=` in the
-  // file is the `default=""` on the id property at L52. Either column can hydrate as SQL NULL, both
-  // read through the port's shared CFML truthiness helper, and an unset flag reads `false`.
+  // CFML parity [model/entity/Category.cfc:L55-L56]: a case-insensitive read finds exactly two
+  // `ormtype="boolean"` properties and neither declares a `default=`; the only `default=` in the
+  // file is the `default=""` on the id property at L52.
   //
-  // CFML parity [model/entity/Sku.cfc:L57]: THE DEFAULT ASYMMETRY, ANNOTATED AND NOT NORMALISED.
-  // [model/entity/Sku.cfc:L57] and [model/entity/Promotion.cfc:L53] declare `activeFlag` WITH
-  // `default="1"`; [model/entity/Product.cfc:L56] and both flags here declare none.
+  // CFML parity [model/entity/Sku.cfc:L57]: the default asymmetry, annotated and not normalised.
   it('reads an ABSENT value as false on both flags', () => {
     const category = aCategory();
 
@@ -419,9 +343,7 @@ describe('restrictAccessFlag and allowProductAssignmentFlag have no ORM default'
   });
 
   // SQL NULL is an EXPECTED value for these two columns, not an error, so it resolves to `false`
-  // rather than raising. `null` and `undefined` are DIFFERENT inputs - a driver hands over `null`
-  // for a NULL column, an omitted key arrives as `undefined` - and both resolve the same way, which
-  // is what makes the accessor total.
+  // rather than raising.
   it('resolves SQL NULL to false rather than raising', () => {
     const category = aCategory({ restrictAccessFlag: null, allowProductAssignmentFlag: null });
 
@@ -464,8 +386,8 @@ describe('restrictAccessFlag and allowProductAssignmentFlag have no ORM default'
     expect(aCategory({ restrictAccessFlag: '' }).getRestrictAccessFlag()).toBe(false);
   });
 
-  // The two flags are INDEPENDENT columns. Asserting that guards against a hydration transposition,
-  // the one defect class a per-flag test cannot catch alone.
+  // The two flags are INDEPENDENT columns. Asserting that guards against a hydration
+  // transposition, the one defect class a per-flag test cannot catch alone.
   it('keeps the two flags independent of one another', () => {
     const category = aCategory({ restrictAccessFlag: true, allowProductAssignmentFlag: false });
 
@@ -478,9 +400,7 @@ describe('restrictAccessFlag and allowProductAssignmentFlag have no ORM default'
     expect(transposed.getAllowProductAssignmentFlag()).toBe(true);
   });
 
-  // Both accessors return a genuine `boolean`, never the raw input passed through. A truthy string
-  // surviving unconverted would satisfy an `if` and fail a `=== true` comparison, so the type is
-  // asserted with the value.
+  // Both accessors return a genuine `boolean`, never the raw input passed through.
   it('returns a real boolean rather than passing the raw column through', () => {
     const category = aCategory({ restrictAccessFlag: 'yes', allowProductAssignmentFlag: 1 });
 
@@ -489,30 +409,19 @@ describe('restrictAccessFlag and allowProductAssignmentFlag have no ORM default'
   });
 });
 
-// --- the CMS surface is inert persisted schema, with no behaviour ---------
-
-// CFML parity [model/entity/Category.cfc:L59,L62]: cmsCategoryID (index RI_CMSCATEGORYID) and the
+// CFML parity [model/entity/Category.cfc:L59, L62]: cmsCategoryID (index RI_CMSCATEGORYID) and the
 // site association (fkcolumn siteID) are preserved as INERT persisted columns so the Sw* schema
-// contract is unbroken. The Mura CMS bridge is out of scope; no CMS behaviour is ported.
-//
-// C5 SCHEMA CONTINUITY, RECORDED VERBATIM. The physical names this entity binds to are the table
-// `SwCategory` and the entity name `SlatwallCategory` [model/entity/Category.cfc:L49], the link
-// tables `SwProductCategory` [L69] and `SwContentCategory` [L70], and the index `RI_CMSCATEGORYID`
-// [L59]. No column is dropped, renamed or migrated.
+// contract is unbroken.
 //
 // JUDGMENT CALL: those five names are DOCUMENTATION here rather than assertions, because the
 // shipped module exports no schema-metadata constant - asserting one would mean inventing the
-// constant first. Binding the physical names is the repository tier's job, and its suites assert
-// the SQL.
+// constant first.
 describe('cmsCategoryID is an inert persisted column', () => {
   it('round-trips the Mura join key completely unchanged', () => {
     const category = aCategory({ categoryID: 'category-1', cmsCategoryID: '00000000-ABCD-1234' });
 
     expect(category.getCmsCategoryID()).toBe('00000000-ABCD-1234');
   });
-
-  // "Inert" is asserted rather than asserted-about: the value is returned byte-for-byte, with no
-  // trimming and no normalisation.
   it('applies no trimming, casing or normalisation to the value', () => {
     const rawKey = '  Mixed-Case_Cms Key  ';
 
@@ -541,11 +450,9 @@ describe('cmsCategoryID is an inert persisted column', () => {
 });
 
 describe('the site association is an inert foreign key, collapsed to an opaque id', () => {
-  // CFML parity [model/entity/Category.cfc:L62]: the `site` many-to-one declares
-  //   property name="site" cfc="Site" fieldtype="many-to-one" fkcolumn="siteID";
-  // `Site` is a Mura CMS entity, is not one of the eighteen in-scope entities, and no `site.ts` may
-  // be created, so the association is a persisted COLUMN only with no far side to traverse -
-  // exactly as `Option.defaultImage` [model/entity/Option.cfc:L60] collapses to `defaultImageID`.
+  // CFML parity [model/entity/Category.cfc:L62]: the `site` many-to-one declares property
+  // name="site" cfc="Site" fieldtype="many-to-one" fkcolumn="siteID"; `Site` is a Mura CMS entity,
+  // is not one of the eighteen in-scope entities, and no `site.ts` may be created.
   it('exposes the siteID column and no Site entity', () => {
     const category = aCategory({ categoryID: 'category-1', siteID: 'site-77' });
 
@@ -571,21 +478,7 @@ describe('the site association is an inert foreign key, collapsed to an opaque i
   });
 });
 
-// --- `contents` - materialized as a link projection, not a Content entity -
-
 describe('the contents many-to-many is projected across its join key', () => {
-  // CFML parity [model/entity/Category.cfc:L70]: the `contents` many-to-many declares
-  //   property name="contents" singularname="content" cfc="Content" type="array"
-  //   fieldtype="many-to-many" linktable="SwContentCategory" fkcolumn="categoryID"
-  //   inversejoincolumn="contentID" inverse="true";
-  //
-  // THE SHIPPED REALITY, PINNED. Neither omitted nor permanently empty: the class materializes a
-  // readonly array of narrow structural projections carrying exactly the `inversejoincolumn` the
-  // source names - `contentID` - and nothing more. Out of scope is model/entity/Content.cfc, the
-  // FAR SIDE; `SwContentCategory` rows are keyed on THIS entity's own `categoryID`. So no `Content`
-  // is materialized, no `content.ts` exists to import, and no `title` or `activeFlag` surface is
-  // invented. `accessors="true"` at L49 generated `getContents()`, so both the name and the array
-  // shape are the source's, not this port's.
   it('exposes populated link rows through getContents()', () => {
     const category = aCategoryOnContents(['content-a', 'content-b']);
 
@@ -606,10 +499,6 @@ describe('the contents many-to-many is projected across its join key', () => {
     expect(contentIDs).toContain('content-b');
     expect(contentIDs).not.toContain('content-z');
   });
-
-  // An empty result is a FETCH-SHAPE statement and not a domain claim: whether `[]` means "this
-  // category is on no content" or "the repository did not join SwContentCategory" is answered at
-  // the producing repository method, which documents it.
   it('reads as an empty array when nothing was joined', () => {
     expect(aCategoryOnContents([]).getContents()).toEqual([]);
     expect(aCategory().getContents()).toEqual([]);
@@ -627,13 +516,12 @@ describe('the contents many-to-many is projected across its join key', () => {
 
 describe('the products many-to-many is read-only with no helper pair', () => {
   // CFML parity [model/entity/Category.cfc:L69]: declared `inverse="true"`, so `Product` owns
-  // `SwProductCategory` - [model/entity/Product.cfc:L80] declares `categories` with NO `inverse`
-  // attribute. Neither component authors a hand-written helper for its half, so both pairs were
-  // ORM-GENERATED, and a generated helper appends only to its OWN collection.
+  // `SwProductCategory` - [model/entity/Product.cfc:L80] declares `categories` with no `inverse`
+  // attribute.
   //
-  // CFML parity [model/entity/Category.cfc:L66,L69,L70]: A METADATA INCONSISTENCY, RECORDED AND NOT
-  // PROPAGATED. `type="array"` is on `childCategories` L66 and `contents` L70 but OMITTED on
-  // `products` L69, though all three are collections. Cosmetic in CFML, which infers the shape.
+  // CFML parity [model/entity/Category.cfc:L66, L69, L70]: a metadata inconsistency, recorded and
+  // not propagated. `type="array"` is on `childCategories` L66 and `contents` L70 but omitted on
+  // `products` L69, though all three are collections.
   it('reads as an empty array and offers no mutator', () => {
     const category = aCategory({ categoryID: 'category-1' });
 
@@ -643,28 +531,16 @@ describe('the products many-to-many is read-only with no helper pair', () => {
   });
 });
 
-// --- getCategoryIDPath() is a plain accessor - no lazy compute, no memo ---
-
 // CFML parity [model/entity/Category.cfc:L120-L122]: the Overridden Methods block is literally
-// empty, so there is NO lazy `getCategoryIDPath()`. Plain accessor only, deliberately unlike
+// empty, so there is no lazy `getCategoryIDPath()`. Plain accessor only, deliberately unlike
 // PriceGroup.cfc:L195-L200 and ProductType.cfc:L251, which both memoize.
-//
-// THE CONTRAST, VERIFIED VERBATIM IN ALL THREE SOURCES. PriceGroup exposes TWO routes to its path:
-// a lazy memoized getter at [model/entity/PriceGroup.cfc:L195-L200] guarding on
-// `isNull(variables.priceGroupIDPath)`, AND an eager assignment in its hooks at
-// [model/entity/PriceGroup.cfc:L207] and [L212]. ProductType has the same two routes, at
-// [model/entity/ProductType.cfc:L250-L255] and [L306,L311]. CATEGORY HAS ONLY THE EAGER ROUTE - it
-// overrides no getter and declares no "Overridden Implicet Getters" section, so its two hooks are
-// the only way the column is populated. A lazy fallback would import PriceGroup's behaviour into an
-// entity that never had it, and would silently populate a column the legacy left NULL.
 describe('getCategoryIDPath is a plain accessor', () => {
   it('returns undefined when nothing has stored a path', () => {
     expect(aCategory({ categoryID: 'category-1' }).getCategoryIDPath()).toBeUndefined();
   });
 
-  // THE DECISIVE ASSERTION. This category HAS a parent, so a lazy getter of the PriceGroup kind
-  // would compute and return `parent-1,child-1` on the first read. The plain accessor returns
-  // `undefined`, because reading a path is not building one.
+  // The DECISIVE ASSERTION. This category has a parent, so a lazy getter of the PriceGroup kind
+  // would compute and return `parent-1,child-1` on the first read.
   it('does NOT compute a path on read, even with a parent chain available', () => {
     const parent = aCategory({ categoryID: 'parent-1' });
     const child = aCategory({ categoryID: 'child-1', parentCategory: parent });
@@ -710,11 +586,9 @@ describe('getCategoryIDPath is a plain accessor', () => {
     expect(aCategory({ categoryID: 'category-1' }).getCategoryIDPath()).toBeUndefined();
   });
 
-  // CFML parity [model/entity/Category.cfc:L53]:
-  //   property name="categoryIDPath" ormtype="string" length="4000";
-  // The 4000-character limit is part of the `SwCategory` schema contract, but it is a PERSISTENCE
-  // concern enforced by the column. The entity performs no length check, and inventing one would
-  // add a rule the source never had.
+  // CFML parity [model/entity/Category.cfc:L53]: property name="categoryIDPath" ormtype="string"
+  // length="4000"; The 4000-character limit is part of the `SwCategory` schema contract, but it is
+  // a PERSISTENCE concern enforced by the column.
   it('enforces no runtime length limit, though the column contract is 4000 characters', () => {
     const overlongPath = 'x'.repeat(4100);
     const category = aCategory({ categoryID: 'category-1' });
@@ -725,7 +599,7 @@ describe('getCategoryIDPath is a plain accessor', () => {
     expect(category.getCategoryIDPath()).toHaveLength(4100);
   });
 
-  // CFML parity [model/entity/Category.cfc:L128,L133]: `setCategoryIDPath` is the ONE generated
+  // CFML parity [model/entity/Category.cfc:L128, L133]: `setCategoryIDPath` is the one generated
   // setter the legacy component concretely invokes on itself, which is why it is the only setter
   // authored on the shipped class.
   it('round-trips through the one setter the legacy component calls on itself', () => {
@@ -749,32 +623,9 @@ describe('getCategoryIDPath is a plain accessor', () => {
   });
 });
 
-// --- path maintenance and the reversed hook ordering ----------------------
-
-// CFML parity [model/entity/Category.cfc:L126-L129,L131-L134]: both hooks call super FIRST and set
-// the path SECOND - the OPPOSITE ordering to PriceGroup.cfc:L206-L214 and
-// ProductType.cfc:L305-L313, which set the path BEFORE super. Genuine source behaviour, and must
-// NOT be normalised.
-//
-// VERBATIM, SO THE COMPARISON IS CHECKABLE HERE:
-//
-//   Category      [L126-L129]   super.preInsert();                                    // FIRST
-//                               setCategoryIDPath( buildIDPathList("parentCategory") ) // SECOND
-//   PriceGroup    [L206-L209]   setPriceGroupIDPath( buildIDPathList(...) );           // FIRST
-//                               super.preInsert();                                     // SECOND
-//   ProductType   [L305-L308]   setProductTypeIDPath( buildIDPathList(...) );          // FIRST
-//                               super.preInsert();                                     // SECOND
-//
-// THE DIVERGENCE IS SEMANTICALLY OBSERVABLE, which is why it may not be normalised: the framework's
-// `preInsert` THROWS when the entity is not persistable [org/Hibachi/HibachiEntity.cfc:L599-L607],
-// so for an entity carrying validation errors Category threw BEFORE `categoryIDPath` was assigned
-// while PriceGroup and ProductType had ALREADY assigned theirs - two observable end states from one
-// failure. Category is the sole outlier.
-//
-// THE SHIPPED NAMES ARE THE LEGACY NAMES: `preInsert()` and `preUpdate(oldData?)`,
-// repository-invoked at save time rather than ORM-fired. Because the `super` call is gone the ORDER
-// survives STRUCTURALLY: the repository does its audit and persistability work BEFORE invoking the
-// maintenance method.
+// CFML parity [model/entity/Category.cfc:L126-L129, L131-L134]: both hooks call super FIRST and
+// set the path SECOND - the OPPOSITE ordering to PriceGroup.cfc:L206-L214 and
+// ProductType.cfc:L305-L313, which set the path before super.
 describe('preInsert and preUpdate maintain the path under the legacy names', () => {
   it('exposes both hooks under their verbatim legacy names', () => {
     const members = shippedMemberNames();
@@ -810,24 +661,8 @@ describe('preInsert and preUpdate maintain the path under the legacy names', () 
   });
 
   // Every path INCLUDES SELF and is never empty, so it always has at least one element. Test
-  // hierarchies here are deliberately acyclic and shallow, which keeps these tests about ordering and
-  // contents. A cycle is a separate question and is asserted in its own block below.
-  //
-  // ★★★ THIS NOTE DESCRIBED THE OPPOSITE OF WHAT THAT BLOCK ASSERTS, AND THE CONTRADICTION IS A
-  // REVIEW FINDING. It read that "the legacy walk carries no cycle guard, but this port REFUSES one -
-  // `setParentCategory` will not close a cycle and the shared walk will not produce a path from one -
-  // the single documented divergence". Every clause of that is now false, and the cases it pointed at
-  // prove it: `accepts a descendant as its parent, closing a multi-level cycle`, `maintains the far
-  // side when it closes a cycle`, and `accepts a cycle through addChildCategory too`. The setter
-  // assigns whatever it is handed, exactly as [model/entity/Category.cfc:L101-L105] does; the shared
-  // walk reproduces [org/Hibachi/HibachiEntity.cfc:L314-L321] and follows a cycle forever; and no
-  // divergence is spent on this file at all. Both guards were removed as ADDITIONS to the source
-  // rather than reproductions of it - the reasoning is on `buildIdPathList` in
-  // src/domain/valueObjects/materializedIdPath.ts.
-  //
-  // The residual risk is therefore real and unguarded HERE, and is bounded only by the fact that
-  // nothing in the ported slice materializes a category ancestry: `Category` is a read-mostly leaf and
-  // its `categoryIDPath` is a persisted column this migration reads rather than recomputes.
+  // hierarchies here are deliberately acyclic and shallow, which keeps these tests about ordering
+  // and contents.
   it('always includes self, so a path is never empty of elements', () => {
     const root = aCategory({ categoryID: 'root-1' });
     const child = aCategory({ categoryID: 'child-1', parentCategory: root });
@@ -878,18 +713,15 @@ describe('preInsert and preUpdate maintain the path under the legacy names', () 
     expect(viaUpdate.getCategoryIDPath()).toBe('root-1,child-1');
   });
 
-  // CFML parity [model/entity/Category.cfc:L132-L133]: the legacy `preUpdate` forwards `oldData` to
-  // `super.preUpdate(argumentcollection=arguments)` and then rebuilds the path UNCONDITIONALLY, so
-  // no ported branch can depend on the snapshot.
+  // CFML parity [model/entity/Category.cfc:L132-L133]: the legacy `preUpdate` forwards `oldData`
+  // to `super.preUpdate(argumentcollection=arguments)` and then rebuilds the path UNCONDITIONALLY,
+  // so no ported branch can depend on the snapshot.
   it('ignores oldData entirely, as the legacy body does', () => {
     const root = aCategory({ categoryID: 'root-1' });
     const withSnapshot = aCategory({ categoryID: 'child-1', parentCategory: root });
     const withoutSnapshot = aCategory({ categoryID: 'child-1', parentCategory: root });
 
-    // The exported snapshot type models the prior persisted row column-for-column. It is a TYPE
-    // ALIAS rather than an interface precisely so it carries an implicit index signature and is
-    // therefore assignable to the shared `Readonly<Record<string, unknown>>` lifecycle contract
-    // with NO cast at the call site, which is what this test demonstrates.
+    // The exported snapshot type models the prior persisted row column-for-column.
     const priorRow: CategoryPreUpdateSnapshot = {
       categoryID: 'child-1',
       categoryIDPath: 'a,completely,different,path',
@@ -913,12 +745,7 @@ describe('preInsert and preUpdate maintain the path under the legacy names', () 
     expect(withSnapshot.getCategoryIDPath()).toBe(withoutSnapshot.getCategoryIDPath());
   });
 
-  // THE OBSERVABLE HALF OF THE ORDERING CONTRACT. `super.preInsert()` stood FIRST at
-  // [model/entity/Category.cfc:L127], and the base-class work it performed - the persistability
-  // check that throws [org/Hibachi/HibachiEntity.cfc:L599-L607], the createdDateTime /
-  // modifiedDateTime stamping [org/Hibachi/HibachiEntity.cfc:L609-L618] and the createdByAccount /
-  // modifiedByAccount assignment - is a REPOSITORY responsibility in the target; only its POSITION
-  // survives. So the audit columns are untouched by either hook.
+  // The observable half of the ordering contract.
   it('performs none of super\u2019s work: neither hook stamps an audit column', () => {
     const category = aCategory({ categoryID: 'category-1' });
 
@@ -960,7 +787,7 @@ describe('preInsert and preUpdate maintain the path under the legacy names', () 
     expect(unsaved.getCategoryIDPath()).toBe('');
   });
 
-  // Hydrating a row is NOT saving one, so neither hook may run from the constructor: rebuilding on
+  // Hydrating a row is not saving one, so neither hook may run from the constructor: rebuilding on
   // hydration would overwrite the value just read out of the database.
   it('is never invoked by the constructor, so hydration preserves the stored path', () => {
     const root = aCategory({ categoryID: 'root-1' });
@@ -1008,29 +835,9 @@ describe('preInsert and preUpdate maintain the path under the legacy names', () 
   });
 });
 
-// --- the bidirectional helpers - four, plus the member the guard calls ----
-
-// CFML parity [model/entity/Category.cfc:L90-L118]: the component declares EXACTLY FOUR
+// CFML parity [model/entity/Category.cfc:L90-L118]: the component declares EXACTLY four
 // bidirectional helpers - addChildCategory L93-L95, removeChildCategory L96-L98, setParentCategory
-// L101-L106 and removeParentCategory L107-L116 - its only behavioural methods outside the two
-// lifecycle hooks. All four are `public void function` and synchronous, and none reaches a
-// repository, a port, a clock or the network, so all four are void and sync here too.
-//
-// INVERSION CROSS-CHECK - VERDICT: CLEAN, ZERO INVERSIONS, checked in the verbatim CFML source and
-// again against the shipped class at runtime. `removeChildCategory` L97 delegates to
-// `removeParentCategory` and never to `setParentCategory`; `removeParentCategory` L111-L113
-// genuinely searches and deletes and never appends. Contrast [model/entity/Option.cfc:L129-L131]
-// and [model/entity/Option.cfc:L145-L147], where two `remove*` helpers each call an `add*` - real
-// inversions, preserved as defects there. Both pairs here are `CFML parity` notes.
-//
-// A CORRECTED EXPECTATION, PINNED TO THE SHIPPED MODULE. The far-side in-memory maintenance is
-// REPRODUCED IN FULL: [model/entity/Category.cfc:L104] appends this category to its parent's
-// `childCategories` under the L103 guard and [model/entity/Category.cfc:L111-L113] removes it
-// again, the near-side `parentCategory` maintained alongside on both paths, together with the
-// `hasChildCategory` member the guard calls - so `parent.getChildCategories()` and
-// `child.getParentCategory()` cannot disagree. Suppressing the far side would have produced a
-// SILENT INCONSISTENCY: `parent.addChildCategory(child)` would leave the parent's collection not
-// containing a child whose own `getParentCategory()` returned that parent.
+// L101-L106 and removeParentCategory L107-L116.
 describe('addChildCategory and removeChildCategory are pure delegations', () => {
   it('exposes exactly the four legacy helper names, plus the member the L103 guard calls', () => {
     const members = shippedMemberNames();
@@ -1042,9 +849,7 @@ describe('addChildCategory and removeChildCategory are pure delegations', () => 
 
     // CFML parity [model/entity/Category.cfc:L103]: `hasChildCategory` is CALLED there but never
     // DECLARED - it is the accessor ColdFusion generates for a collection carrying
-    // `singularname="childCategory"` [model/entity/Category.cfc:L66]. It survives because it is
-    // CONCRETELY CALLED, the whole test for authoring a dynamic-dispatch member; without it the
-    // L103 guard could not be ported.
+    // `singularname="childCategory"` [model/entity/Category.cfc:L66].
     expect(members).toContain('hasChildCategory');
   });
 
@@ -1061,8 +866,8 @@ describe('addChildCategory and removeChildCategory are pure delegations', () => 
     expect(idsOf(parent.getChildCategories())).toEqual(['child-1']);
   });
 
-  // CFML parity [model/entity/Category.cfc:L97]: the mirror, on the same terms, the inversion check
-  // passing at the call site - `arguments.childCategory.removeParentCategory( this )`.
+  // CFML parity [model/entity/Category.cfc:L97]: the mirror, on the same terms, the inversion
+  // check passing at the call site - `arguments.childCategory.removeParentCategory( this )`.
   it('removeChildCategory clears the near side and removes from the far side', () => {
     const parent = aCategory({ categoryID: 'parent-1' });
     const child = aCategory({ categoryID: 'child-1' });
@@ -1090,10 +895,7 @@ describe('addChildCategory and removeChildCategory are pure delegations', () => 
     expect(parent.getChildCategories()).toEqual([]);
   });
 
-  // THE 1-BASED TO 0-BASED INDEX CHANGE, ASSERTED WHERE IT BITES. CFML `arrayFind` returns a
-  // 1-BASED index or 0 for "not found", which is why [model/entity/Category.cfc:L112] guards with
-  // `index > 0`; `Array.prototype.findIndex` returns 0-BASED or -1, so the ported guard MUST be
-  // `!== -1`. Carrying `> 0` across would silently skip element 0, the FIRST child.
+  // The 1-BASED to 0-BASED index change, asserted where it bites.
   it('removes the FIRST child, which a carried-over `index > 0` guard would silently skip', () => {
     const parent = aCategory({ categoryID: 'parent-1' });
     const first = aCategory({ categoryID: 'child-1' });
@@ -1129,7 +931,7 @@ describe('addChildCategory and removeChildCategory are pure delegations', () => 
 });
 
 describe('setParentCategory maintains both sides under the L103 guard', () => {
-  // CFML parity [model/entity/Category.cfc:L102-L105]: BOTH statements are reproduced in the
+  // CFML parity [model/entity/Category.cfc:L102-L105]: both statements are reproduced in the
   // source's order - the near-side assignment at L102 runs FIRST and unconditionally, then the
   // guarded far-side append at L103-L105.
   it('assigns the near side unconditionally, before the guard runs', () => {
@@ -1170,8 +972,8 @@ describe('setParentCategory maintains both sides under the L103 guard', () => {
     expect(parent.getChildCategories()).toBe(hydratedChildren);
   });
 
-  // THE GUARD, FOR A SAVED ROW. `isNew() or !parentCategory.hasChildCategory( this )`
-  // short-circuits on `isNew()` FIRST.
+  // The guard, for a saved row. `isNew() or !parentCategory.hasChildCategory( this )`
+  // short-circuits on `isNew()` first.
   it('refuses a duplicate append for a SAVED category', () => {
     const parent = aCategory({ categoryID: 'parent-1' });
     const child = aCategory({ categoryID: 'child-1' });
@@ -1182,11 +984,9 @@ describe('setParentCategory maintains both sides under the L103 guard', () => {
     expect(idsOf(parent.getChildCategories())).toEqual(['child-1']);
   });
 
-  // THE SAME GUARD, FOR AN UNSAVED ROW - AND HERE IT APPENDS TWICE. CFML parity
   // [model/entity/Category.cfc:L103]: because `isNew()` is evaluated FIRST and short-circuits the
   // `or`, an UNSAVED category's membership is never tested and the append simply happens, every
-  // time it is called. Genuine ported source behaviour, NOT a port defect, and the short-circuit is
-  // also what makes it SAFE rather than merely permissive.
+  // time it is called.
   it('appends AGAIN for an UNSAVED category, because isNew() short-circuits the guard', () => {
     const parent = aCategory({ categoryID: 'parent-1' });
     const unsaved = aCategory();
@@ -1220,11 +1020,8 @@ describe('setParentCategory maintains both sides under the L103 guard', () => {
 
 describe('hasChildCategory compares by primary key', () => {
   // CFML parity [model/entity/Category.cfc:L103]: CFML's `arrayFind(array, component)` was
-  // REFERENCE identity, but under Hibernate reference identity WAS row identity because the session
-  // returned one instance per row. A driver-only stack has no session, so the two come apart: a
-  // literal reference comparison would keep the legacy's letter and lose its meaning, answering
-  // `false` for a row the array already holds and letting L103's guard append a DUPLICATE.
-  // Membership is by PRIMARY KEY, with a reference fallback for an unsaved row.
+  // REFERENCE identity, but under Hibernate reference identity was row identity because the
+  // session returned one instance per row.
   it('finds a DIFFERENT instance carrying the same primary key', () => {
     const parent = aCategory({ categoryID: 'parent-1' });
     const child = aCategory({ categoryID: 'child-1' });
@@ -1279,12 +1076,7 @@ describe('hasChildCategory compares by primary key', () => {
   });
 
   // JUDGMENT CALL: this case pins a consequence of that containment rule rather than any legacy
-  // behaviour, recorded as shipped reality rather than as parity or a defect. An UNSAVED candidate
-  // carries the key `''`, and so does every unsaved member, so the key comparison reports a match
-  // for an unsaved category that was never added. Not a legacy defect and no defect marker - the
-  // CFML compared references and would have answered `false` - and not reachable through the ported
-  // guard either, because `isNew()` short-circuits at [model/entity/Category.cfc:L103] before
-  // `hasChildCategory` is ever consulted for an unsaved row.
+  // behaviour, recorded as shipped reality rather than as parity or a defect.
   it('reports a match for ANY unsaved candidate once an unsaved member is present', () => {
     const parent = aCategory({ categoryID: 'parent-1' });
     const addedUnsaved = aCategory();
@@ -1309,11 +1101,9 @@ describe('hasChildCategory compares by primary key', () => {
 });
 
 describe('removeParentCategory branches on argument PRESENCE, not truthiness', () => {
-  // CFML parity [model/entity/Category.cfc:L107-L110]: the parameter is `any parentCategory` and is
-  // NOT `required`; the body probes `structKeyExists(arguments, "parentCategory")` and, when
-  // omitted, defaults it from `variables.parentCategory`. It is OPTIONAL here and the probe is an
-  // explicit `!== undefined` test - NEVER truthiness, which would also swallow a falsy argument
-  // where `structKeyExists` asks only whether the key was passed.
+  // CFML parity [model/entity/Category.cfc:L107-L110]: the parameter is `any parentCategory` and
+  // is not `required`; the body probes `structKeyExists(arguments, "parentCategory")` and, when
+  // omitted, defaults it from `variables.parentCategory`.
   //
   // This is the one asymmetry with the required-parameter `set*` counterpart.
   it('falls back to the currently-set parent when the argument is omitted', () => {
@@ -1338,9 +1128,10 @@ describe('removeParentCategory branches on argument PRESENCE, not truthiness', (
     expect(parent.getChildCategories()).toEqual([]);
   });
 
-  // THE UNCONDITIONAL CLEAR. CFML parity [model/entity/Category.cfc:L115]:
-  //   `structDelete(variables, "parentCategory")` sits OUTSIDE the `if(index > 0)` block at
-  //   L112-L114, so it runs on EVERY path - including where the far-side search found nothing.
+  // The unconditional clear.
+  // CFML parity [model/entity/Category.cfc:L115]: `structDelete(variables, "parentCategory")` sits
+  // outside the `if(index > 0)` block at L112-L114, so it runs on every path - including where the
+  // far-side search found nothing.
   it('clears the near side even when the far-side search finds nothing', () => {
     const realParent = aCategory({ categoryID: 'parent-real' });
     const strangerParent = aCategory({ categoryID: 'parent-stranger' });
@@ -1355,10 +1146,9 @@ describe('removeParentCategory branches on argument PRESENCE, not truthiness', (
     expect(strangerParent.getChildCategories()).toEqual([]);
   });
 
-  // CFML parity [model/entity/Category.cfc:L107-L116]: the method never verifies that an explicitly
-  // supplied argument IS this category's current parent, so it clears the near side anyway and
-  // searches the WRONG collection, leaving the real parent's stale link in place. Reproduced, not
-  // corrected.
+  // CFML parity [model/entity/Category.cfc:L107-L116]: the method never verifies that an
+  // explicitly supplied argument is this category's current parent, so it clears the near side
+  // anyway and searches the WRONG collection.
   it('leaves the real parent\u2019s stale link behind when the wrong parent is named', () => {
     const realParent = aCategory({ categoryID: 'parent-real' });
     const wrongParent = aCategory({ categoryID: 'parent-wrong' });
@@ -1372,10 +1162,9 @@ describe('removeParentCategory branches on argument PRESENCE, not truthiness', (
     expect(wrongParent.getChildCategories()).toEqual([]);
   });
 
-  // CFML parity [model/entity/Category.cfc:L108-L111]: with the argument omitted and no parent set,
-  // the legacy defaults `arguments.parentCategory` to a null `variables.parentCategory` and calls
-  // `getChildCategories()` on it at L111 - a runtime error BEFORE any index guard. Reproducing it
-  // as a throw is faithful; returning silently would invent a success path.
+  // CFML parity [model/entity/Category.cfc:L108-L111]: with the argument omitted and no parent
+  // set, the legacy defaults `arguments.parentCategory` to a null `variables.parentCategory` and
+  // calls `getChildCategories()` on it at L111.
   it('raises when the argument is omitted and no parent is set', () => {
     const orphan = aCategory({ categoryID: 'orphan-1' });
 
@@ -1418,14 +1207,9 @@ describe('removeParentCategory branches on argument PRESENCE, not truthiness', (
   });
 });
 
-// --- this entity carries no validation surface ----------------------------
-
 describe('the entity carries no validation surface', () => {
-  // CFML parity [model/validation/]: ABSENCE BY DESIGN, VERIFIED BY DIRECT ENUMERATION. The folder
-  // holds 96 `.json` files and Category.json DOES NOT EXIST. Category is one of exactly SIX
-  // deliberate absences across the in-scope set: Category, PromotionQualifier, PromotionApplied,
-  // PromotionAccount, Product_AddOption and Product_AddOptionGroup. Validation coverage is ported
-  // AS IT IS: completing a legacy gap would invent product behaviour.
+  // CFML parity [model/validation/]: absence by design, verified by direct enumeration. The folder
+  // holds 96 `.json` files and Category.json does not exist.
   it('exposes no validator, error collection or constraint accessor', () => {
     const members = shippedMemberNames();
 
@@ -1452,13 +1236,9 @@ describe('the entity carries no validation surface', () => {
   });
 });
 
-// --- request-scoped state - no subject and no collection is ever shared ---
-
 describe('every subject is independent', () => {
   // A warm Lambda container keeps module state alive between unrelated invocations, so the port
-  // makes every entity memo and every collection request-scoped. Two subjects built the same way
-  // must share nothing - in particular not the default `childCategories` array, which the class
-  // does not copy and which the accessor hands back live.
+  // makes every entity memo and every collection request-scoped.
   it('gives each subject its own collection instance', () => {
     const first = aCategory({ categoryID: 'category-1' });
     const second = aCategory({ categoryID: 'category-2' });
@@ -1493,38 +1273,12 @@ describe('every subject is independent', () => {
   });
 });
 
-// ===========================================================================
-// A CYCLIC PARENT CHAIN IS ACCEPTED, EXACTLY AS THE LEGACY SETTER ACCEPTS ONE
+// A cyclic parent chain is accepted, exactly as the legacy setter accepts one.
 //
-// NET-NEW coverage - `meta/tests/` holds no Category test, and there is no `model/validation/Category.json` either - pinning legacy PARITY rather than a divergence.
-// The legacy setter at [model/entity/Category.cfc:L101-L105] validates nothing before assigning, and the
-// legacy walk at [org/Hibachi/HibachiEntity.cfc:L314-L321] carries no visited set
-// and no bound. Both are reproduced: this setter assigns whatever it is handed,
-// and a looping chain climbs forever here exactly as it climbs forever there.
+// NET-NEW coverage - `meta/tests/` holds no Category test, and there is no
+// `model/validation/Category.json` either - pinning legacy PARITY rather than a divergence.
 //
-// ★ THIS BLOCK ONCE ASSERTED THE OPPOSITE, AND THE RECORD BELONGS HERE. It ran
-// under the heading "CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED" and pinned a
-// throw from `setParentCategory` plus a `CyclicIdPathError` from the shared walk. Both
-// guards have been removed: a port reproduces rather than improves, and the
-// project's deliberate-divergence budget is closed at three - the un-`var`'d
-// `discountAmount` [model/service/PromotionService.cfc:L1007], the `amountOff`
-// branch routed through `Money` [model/service/PromotionService.cfc:L998], and the
-// entity memo defects in `sku.ts`/`product.ts`. None is spent in this folder.
-//
-// WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT. Every test below asserts that
-// the ASSIGNMENT is accepted and that both sides of the link are maintained. NONE
-// of them builds a path from a cyclic graph, because that call does not return -
-// asserting non-termination would hang the suite rather than prove anything. The
-// absence of the removed guards is proven where it can be proven safely, in
-// `tests/unit/domain/valueObjects/materializedIdPath.test.ts`, by a counting
-// parent accessor that stops the walk long after either guard would have fired.
-//
-// NO ADAPTER MATERIALIZES A CATEGORY ANCESTRY, because nothing in the ported slice
-// reads one - `Category` is a read-mostly leaf here and `categoryIDPath` is a
-// persisted column this migration reads rather than rebuilds. So unlike
-// `productType.ts` and `priceGroup.ts`, whose sibling guards moved to their MySQL
-// adapters, this entity has no fetch-shape termination decision anywhere.
-// ===========================================================================
+// No adapter materializes a category ancestry, because nothing in the ported slice reads one.
 
 describe('Category - a cyclic parent chain is accepted, per legacy parity', () => {
   it('accepts a category as its own parent', () => {
@@ -1551,8 +1305,8 @@ describe('Category - a cyclic parent chain is accepted, per legacy parity', () =
   });
 
   it('maintains the far side when it closes a cycle, just as for any other parent', () => {
-    // The legacy guard at [model/entity/Category.cfc:L103] is a MEMBERSHIP test,
-    // not an acyclicity test.
+    // The legacy guard at [model/entity/Category.cfc:L103] is a MEMBERSHIP test, not an acyclicity
+    // test.
     const root = aCategory({ categoryID: 'cat-far-root' });
     const leaf = aCategory({ categoryID: 'cat-far-leaf' });
     leaf.setParentCategory(root);
@@ -1582,7 +1336,7 @@ describe('Category - a cyclic parent chain is accepted, per legacy parity', () =
     movable.setParentCategory(newRoot);
 
     expect(movable.getParentCategory()).toBe(newRoot);
-    // preInsert still builds a path, because this hierarchy is well-founded.
+    // PreInsert still builds a path, because this hierarchy is well-founded.
     movable.preInsert();
     expect(movable.getCategoryIDPath()).toBe('cat-new-root,cat-movable');
   });

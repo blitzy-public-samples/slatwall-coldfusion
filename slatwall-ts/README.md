@@ -3,8 +3,8 @@
 A TypeScript re-expression of a bounded **catalog + promotions/pricing** slice of **Slatwall 3.1.39**,
 targeting the AWS Lambda `nodejs20.x` runtime. The release is confirmed by `version.txt` in the
 repository root, which is the citable authority for it. The upstream project's `getslatwall.com` domain
-is named in the legacy `readme.md` and is **not linked here**: this file makes no claim about what that
-domain currently resolves to, and a link that has quietly changed hands is worse than none.
+is named in the legacy `readme.md` and is **not linked here**: domain control is outside this
+repository's evidence, so this file cites the legacy text rather than resolving the name.
 
 The legacy CFML application still lives in this repository, unchanged, in the directories beside
 this one. This subtree is additive: it lifts the business logic of six `*Service.cfc` components and
@@ -63,25 +63,24 @@ What that means in practice:
   `vitest.config.ts` pins `root` to this directory; `esbuild.config.mjs` pins `absWorkingDir` to it.
 - **Never run `prettier --write` or `eslint --fix` from the repository root.** There is no
   configuration up there to scope them, so they would rewrite the root `readme.md` and every legacy
-  `.json` under `model/validation/` — an immediate and severe scope violation, and one that a
-  reviewer sees as a hundred-file diff. `npm run format` and `npm run lint:fix` are safe **only**
-  because your working directory is this subtree.
-- **This subtree ships a committed `slatwall-ts/.gitignore`, and that is deliberate — it was
-  deliberately absent for one revision, and the reversal is recorded in the file itself.** It keeps
-  `node_modules/`, `dist/`, `build/`, `coverage/`, the tooling caches and a local `.env` out of the
-  index, while re-including `.env.example` so the committed environment contract stays tracked. It is
-  the thirteenth root file, which the plan's enumeration does not name and **no plan pattern
-  sanctions** — AAP 0.4.4's patterns are all trailing wildcards over directories, and the root is an
-  instance list of twelve. It is therefore admitted as **one exact, closed scope exception**, keyed by
-  this filename in `ROOT_SCOPE_EXCEPTIONS` and itemised in `recordedScopeAdditions`, both in
+  `.json` under `model/validation/` — an immediate and severe scope violation, and one that lands as a
+  hundred-file diff. `npm run format` and `npm run lint:fix` are safe **only** because your working
+  directory is this subtree.
+- **This subtree ships a committed `slatwall-ts/.gitignore`, and the fact that it is committed rather
+  than left to `.git/info/exclude` is the point.** An exclude file is per-clone and never travels, so a
+  fresh clone would carry no rules at all and a real `.env` holding `DB_PASSWORD` would be one
+  `git add` away from the index. The committed file keeps `node_modules/`, `dist/`, `build/`,
+  `coverage/`, the tooling caches and a local `.env` out of the index, while re-including
+  `.env.example` so the committed environment contract stays tracked. It is the thirteenth root file,
+  which the plan's enumeration does not name and **no plan pattern sanctions** — AAP 0.4.4's patterns
+  are all trailing wildcards over directories, and the root is an instance list of twelve. It is
+  therefore admitted as **one exact, closed scope exception**, keyed by this filename in
+  `ROOT_SCOPE_EXCEPTIONS` and itemised in `recordedScopeAdditions`, both in
   `tests/traceability/legacyTestMap.ts` and both asserted — so a later "the root is exactly twelve
   artifacts" tidy-up fails a test instead of quietly deleting your protection, and a _fourteenth_ root
-  file fails too until a plan owner rules on it. Ratifying the thirteenth into AAP 0.3.1 is still an
-  open plan-owner decision. The earlier position was that the enumeration forbade a thirteenth file
-  and that `.git/info/exclude` would do the job; a security review (SEC-G) rejected it, because that
-  exclude is per-clone and never travels: a fresh clone had no rules at all, so a real `.env` holding
-  `DB_PASSWORD` was one `git add` away from the index. Do not add a `.prettierignore` — the format
-  scripts pass explicit globs and need none.
+  file fails too until a plan owner rules on it. Ratifying the thirteenth into AAP 0.3.1 is an open
+  plan-owner decision. Do not add a `.prettierignore` — the format scripts pass explicit globs and need
+  none.
 - **Verify before you stage**, every time: `git status --porcelain` must show paths under
   `slatwall-ts/` and nothing else. This is the control, not the ignore rules — every ignore mechanism
   is advisory, because `git add -f` and an explicit `git add <path>` both defeat it. The porcelain
@@ -93,7 +92,7 @@ Not as ceremony — the CFML monolith is still the running system, and the in-sc
 consumed _by_ code this port does not touch. `model/service/OrderService.cfc`, explicitly out of
 scope, injects `priceGroupService` [`model/service/OrderService.cfc:L60`] and `promotionService`
 [`model/service/OrderService.cfc:L61`] among its sixteen collaborators. Those legacy services must
-keep working exactly as they do today, because the order pipeline calls into them. Inverting that
+keep working exactly as they are, because the order pipeline calls into them. Inverting that
 call direction at the boundary — rather than following it into the order aggregate — is what makes
 this slice independently deployable, and it is why the legacy files stay untouched instead of being
 migrated in place.
@@ -146,79 +145,55 @@ The committed `package-lock.json` is a real lockfile, not a placeholder: `lockfi
 every one of its resolved packages carries both a `resolved` URL and an `integrity` hash. No
 regeneration step is needed before `npm ci` will work.
 
-`typescript` is pinned at `5.9.3` and **must stay exactly pinned**. The registry's `latest` tag now
-resolves to a 7.x release, so any specifier that floats — a caret range, a tag, an unpinned
-reinstall — silently leaves the TypeScript 5.x line this port is bound to. The traceability suite
-asserts the `5.` prefix so the drift fails a test run instead of passing unnoticed.
+`typescript` is pinned at `5.9.3` and **must stay exactly pinned**. AAP 0.9.1 binds this port to the
+TypeScript 5.x line, and the registry's `latest` tag has already moved past it, so any specifier that
+floats — a caret range, a tag, an unpinned reinstall — leaves that line silently. The traceability
+suite asserts the `5.` prefix so the drift fails a test run instead of passing unnoticed.
 
-### Runtime lifecycle — an escalated plan decision
+### Runtime lifecycle — a frozen plan requirement
 
-> **This is a plan-level decision that has been escalated, not a defect this subtree claims to have
-> fixed.** The pinned Node 20 / Lambda `nodejs20.x` line was raised as **S-17**, re-raised as
-> **V-10**, raised a third time as **F46** (CWE-1104, _Use of Unmaintained Third-Party
-> Components_), raised a fourth time as **SEC-E** by the project-wide final security assessment,
-> which files it as HIGH and states its own required resolution as obtaining "a product/AAP
-> exception" _before_ migrating the coupled artifacts, and raised a **fifth** time as **S-01** by the
-> final element-by-element completeness review, which files it as MAJOR and asks for plan-owner
-> authorization to "migrate the coupled runtime, typings, engines, lockfile, bundler target, and
-> packaging evidence to a supported Lambda runtime" — the same precondition, named more precisely.
-> Five raisings and one unchanged answer is worth stating plainly: **the finding is not disputed, and
-> it is not closable here.** That precondition is the whole reason this record exists rather than a
-> code change: the exception is the plan owner's to grant, an agent may
-> not grant it to itself, and the AAP may not be edited to manufacture one. SEC-E also proposes a
-> successor line — Node 24, for support runway — which is recorded here as the reviewer's
-> recommendation and **not** adopted, because selecting the successor is the same plan-owner
-> decision.
->
-> AAP 0.1.1, 0.5.1 and 0.9.1 freeze this runtime line and its exact toolchain. Six artifacts state
-> the pin and therefore move together — `.nvmrc`, `engines.node`, `package-lock.json`, `@types/node`,
-> `target: 'node20'` in `esbuild.config.mjs`, and the `FROZEN_NODE_VERSION` constant the `A16`
-> traceability block asserts them all against. That sixth one is named explicitly because a migration
-> that changed only the first five would still fail the suite, and the failure would look like a
-> broken test rather than the last step of the change. `A16` fails a partial change by design:
-> flipping `.nvmrc` alone reports "`.nvmrc` drifted off the AAP-frozen Node line". Selecting a
-> successor runtime requires a plan-owner update rather than unilateral drift in executable build
-> configuration.
->
-> **The support status is no longer forward-looking, and saying so is the point of this revision.**
-> This record previously said only that lifecycle facts are "mutable and must be checked at the time
-> the decision is made", and declined to characterise the status at all. That was written while the
-> deprecation was still ahead of the project; read after it landed, an unqualified refusal to state
-> the status is misleading by omission — a reader could not tell from this record whether the frozen
-> line was still maintained. It is not. Node 20 has passed upstream end-of-life, and AWS Lambda has
-> deprecated `nodejs20.x`: the managed runtime no longer receives security patches, and functions on
-> it are no longer eligible for technical support. That much is **monotonic** — a runtime line does
-> not become un-deprecated — so stating it cannot go stale, which is why it is stated here and the
-> dates below are not.
->
-> **What is deliberately still not tabulated, and why.** The downstream restriction milestones —
-> when function _creation_ stops, and when function _updates_ stop — are reported **inconsistently
-> across published sources**, by a margin of months. A table here would manufacture a precision the
-> authorities do not agree on, and a dated verification stamp would rot into a false claim the first
-> time it went unrefreshed; `A16` asserts the absence of both shapes for that reason. F46 itself
-> cites an upstream end-of-life date that the AWS and Node.js lifecycle authorities do not
-> corroborate, which is the hazard demonstrated rather than argued.
->
-> So: treat the line as unmaintained today, and read the actual milestone dates — at the moment a
-> release or deployment decision is made — from the maintained
-> [AWS Lambda runtimes](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html) authority
-> and the [Node.js release schedule](https://github.com/nodejs/release#release-schedule), not from
-> this file. One consequence is worth stating because it is widely misread: Lambda does **not** block
-> invocations of a function on a deprecated runtime, so nothing already deployed stops working on a
-> milestone date. What lapses is patching, support eligibility, and eventually the ability to deploy
-> a change at all — which is what makes this a scheduling decision for the plan owner rather than an
-> outage.
->
-> **Why this subtree does not simply raise the pin.** The runtime is not an implementation detail
-> this port chose; it is a frozen requirement. AAP 0.5.1 records that "the runtime baseline is
-> Node.js 20.20.2 … matching the Lambda `nodejs20.x` runtime the prompt specifies", and that the
-> newer Node already present on the planning host "was deliberately not used, because the prompt
-> bounds the runtime at `20.x`". AAP 0.9.1 then makes "Node `20.x`, TypeScript `5.x`" a pass
-> condition of the toolchain-pinning gate. A unilateral bump here would fail that gate by
-> construction and would also invalidate the packaging evidence AAP 0.5.2 records, since the
-> CommonJS-vs-ESM bundle decision was validated against this runtime and driver pair and would need
-> re-proving on another. The review that raised F46 reaches the same conclusion, filing it as
-> requiring plan-owner authorization rather than silent code drift.
+The Node 20 / Lambda `nodejs20.x` line is not an implementation detail this subtree chose. AAP
+0.1.1, 0.5.1 and 0.9.1 freeze it: AAP 0.5.1 records that the runtime baseline is Node.js 20.20.2
+"matching the Lambda `nodejs20.x` runtime the prompt specifies", and that the newer Node already
+present on the planning host "was deliberately not used, because the prompt bounds the runtime at
+`20.x`"; AAP 0.9.1 then makes "Node `20.x`, TypeScript `5.x`" a pass condition of the
+toolchain-pinning gate. Raising the pin is therefore a plan-owner decision and not a change this
+subtree may make on its own: a unilateral bump fails that gate by construction, and it also
+invalidates the packaging evidence AAP 0.5.2 records, because the CommonJS-vs-ESM bundle decision was
+validated against this runtime and driver pair and would have to be re-proven on another.
+
+Six artifacts state the pin, so a migration moves all six together:
+
+- `.nvmrc`
+- `engines.node` in `package.json`
+- `package-lock.json`
+- `@types/node`
+- `target: 'node20'` in `esbuild.config.mjs`
+- the `FROZEN_NODE_VERSION` constant the `A16` traceability block asserts the other five against
+
+The sixth is named explicitly because a change to only the first five still fails the suite, and that
+failure reads as a broken test rather than as the last step of the change. `A16` rejects a partial
+change by design: flipping `.nvmrc` alone reports "`.nvmrc` drifted off the AAP-frozen Node line".
+
+**Support status.** AWS Lambda deprecated `nodejs20.x` on 2026-04-30, aligned with the upstream
+Node.js 20 end-of-life. Under the Lambda runtime deprecation policy, AWS _may no longer_ apply
+security patches or updates to a deprecated runtime, and functions using one are not eligible for
+technical support — that conditional is the policy's own wording and is quoted rather than hardened
+into an absolute here. Deprecation is monotonic, so treat the pinned line as unmaintained rather than
+as pending. Lambda does **not** block invocations of a function on a deprecated runtime, so nothing
+already deployed stops working on a milestone date; what lapses is patching, support eligibility, and
+eventually the ability to deploy a change at all. That is what makes the pin a scheduling decision
+for the plan owner rather than an outage.
+
+The downstream restriction milestones — when function _creation_ stops, and when function _updates_
+stop — are reported inconsistently across published sources, by a margin of months, and are
+deliberately not tabulated here. A table would manufacture a precision the authorities do not agree
+on, and a dated verification stamp would rot into a false claim the first time it went unrefreshed;
+`A16` asserts the absence of both shapes for that reason. Read the milestone dates at the moment a
+release or deployment decision is made, from the maintained
+[AWS Lambda runtimes](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html) authority
+and the [Node.js release schedule](https://github.com/nodejs/release#release-schedule), not from this
+file.
 
 ### Runtime dependencies
 
@@ -254,12 +229,11 @@ That is three runtime and ten development dependencies — **thirteen direct pac
 exactly what `package.json` and `package-lock.json` carry.
 
 **AAP 0.5.1 says "fourteen" and then enumerates thirteen. Its prose total is arithmetically
-inconsistent with its own table, and the table is the authority.** This paragraph used to reconcile
-the difference by counting the Node runtime as the fourteenth package; a review rejected that, and
-correctly — the plan describes Node separately, in the sentence immediately before the table ("the
-runtime baseline is Node.js 20.20.2 … with npm 10.8.2"), so counting it again turns a description
-into an inventory entry. There is no fourteenth package, none is inferred, and none may be added to
-make a total agree.
+inconsistent with its own table, and the table is the authority.** The Node runtime is not the
+fourteenth package: the plan describes it separately, in the sentence immediately before the table
+("the runtime baseline is Node.js 20.20.2 … with npm 10.8.2"), so counting it again would turn a
+description into an inventory entry. There is no fourteenth package, none is inferred, and none may be
+added to make a total agree.
 
 Every one of the thirteen is an exact version triple with no caret, tilde or wildcard. The
 traceability suite fails on any specifier that is not, and it deliberately writes down no total of
@@ -308,7 +282,7 @@ consumers — `build/` holds `.js` + `.d.ts` + maps for a type consumer, `dist/`
 
 **Why the two format scripts name globs instead of `.`, and why the globs are quoted.** Prettier 3
 defaults `--ignore-path` to `[.gitignore, .prettierignore]`. This subtree now ships the first of those
-(SEC-G — see the isolation invariant above) and deliberately no `.prettierignore`, and the scripts do
+(see the isolation invariant above) and deliberately no `.prettierignore`, and the scripts do
 **not** lean on either: a bare `prettier --check .` would walk `dist/`, `build/` and `coverage/` and
 fail on generated output the moment an ignore rule were narrowed or a directory appeared that no rule
 named. The scripts name their inputs explicitly instead, which is an allow-list rather than a
@@ -382,8 +356,8 @@ of every archive. The distinction matters because the two mechanisms fail differ
 `legalComments` would strip dependency notices, while dropping the archive entry would strip this
 port's own.
 
-That last setting is the audit trail, and an earlier revision of this section credited the wrong
-mechanism for it. The preserved-defect annotations this port is required to carry —
+That last setting is the audit trail, and it is worth being exact about which mechanism carries it.
+The preserved-defect annotations this port is required to carry —
 `// LEGACY-DEFECT [...]` and `// DELIBERATE DIVERGENCE [...]`, the format AAP 0.6.7 mandates — are
 ordinary line comments, and a bundler discards ordinary comments regardless of what `minify` is set
 to. The `.cjs.map` is what recovers them, and the recovery is what the build reports: run
@@ -396,11 +370,9 @@ this is not a claim that the map is disclosure-free or suitable for indiscrimina
 the build does guarantee is that no environment value is substituted into it: `src/lib/config.ts` is
 the only runtime reader of `process.env` under `src/**`, and esbuild uses no build-time `define`.
 
-A written TOTAL for those annotations is deliberately not restated in this file. An earlier revision
-claimed "141 markers across `src/**`"; a code review measured 142, and the change set that followed
-that review added one more. Read the count off `npm run bundle`, or off
-`grep -rc 'LEGACY-DEFECT \[' src/` — never off a paragraph, which is the lesson that one figure has now
-taught twice.
+A written TOTAL for those annotations is deliberately not restated in this file: the count moves every
+time a marker is added or re-keyed, so a paragraph stating it is wrong shortly after it is written.
+Read it off `npm run bundle`, or off `grep -rc 'LEGACY-DEFECT \[' src/`.
 
 `minify: false` is still set and still worth setting: an unminified artifact is diffable and its
 stack traces stay legible. It is simply not what carries the annotations.
@@ -432,13 +404,13 @@ deliberately **not** an alias of `npm run build`: AAP 0.5.2 and 0.9.1 define "de
 successful build **and package** step emitting Lambda-compatible artifacts, and the platform's unit of
 deployment is an archive, so a package step that emits none does not discharge the gate.
 
-Three properties of that stage are decisions rather than defaults, and each closes a finding:
+Three properties of that stage are decisions rather than defaults:
 
 - **No host utility, and no subprocess.** The archive is written by this repository's own code using
-  `node:zlib` (`deflateRawSync` for entry bodies, `crc32` for their checksums). An earlier revision
-  shelled out to a host-global `zip` executable, which made `npm run package` fail on a stock
-  container for reasons that had nothing to do with the code being packaged. `node:child_process` is
-  imported nowhere in `esbuild.config.mjs`, and `tests/traceability/legacyTestMap.ts` asserts that.
+  `node:zlib` (`deflateRawSync` for entry bodies, `crc32` for their checksums). Shelling out to a
+  host-global `zip` would make `npm run package` fail on a stock container for reasons that have
+  nothing to do with the code being packaged. `node:child_process` is imported nowhere in
+  `esbuild.config.mjs`, and `tests/traceability/legacyTestMap.ts` asserts that.
 - **The `.cjs` sits at the archive root, and the source map is not in the archive at all.** The
   runtime resolves a `<file>.handler` entry relative to the archive root, so a stored path would make
   the handler unresolvable. The maps embed the original TypeScript in full (`sourcesContent: true`),
@@ -526,8 +498,8 @@ read in exactly one place under `src/**`: `src/lib/config.ts` is the only module
 touch `process.env`, and it reads eighteen of the nineteen keys. It validates the whole set at once
 and reports **every** problem it finds rather than failing on the first one.
 
-Two consequences of that single-authority rule are worth stating precisely, because both were
-previously misdescribed here:
+Two consequences of that single-authority rule are worth stating precisely, because both are easy to
+state loosely and wrong when stated loosely:
 
 - **`LOG_LEVEL` is validated configuration like everything else.** `src/lib/logger.ts` reads no
   environment variable at all, and it declares **no imports whatsoever** — that is the property, not
@@ -548,9 +520,9 @@ previously misdescribed here:
 In Lambda these values arrive as native environment variables and `dotenv` never runs.
 
 **Under test**, `dotenv` loads a `.env` file from this directory if one is present. **A local
-non-test run loads nothing by itself** — and that distinction is a correction: this paragraph used to
-say "locally and under test", which overstated it. The only importer of `dotenv` in the whole subtree
-is `tests/setup.ts`, wired in by `vitest.config.ts` as a setup file; nothing under `src/**` imports
+non-test run loads nothing by itself** — the distinction is narrower than "locally and under test"
+suggests, and it matters. The only importer of `dotenv` in the whole subtree is `tests/setup.ts`,
+wired in by `vitest.config.ts` as a setup file; nothing under `src/**` imports
 it, and `src/lib/config.ts` reads whatever the process was actually given and refuses when a required
 value is absent. To invoke a handler locally, put the variables into the environment yourself:
 
@@ -562,8 +534,8 @@ node --env-file=.env <script>     # or let Node 20 load it for one process
 Either way that `.env` file is your own, it is never committed, and `.env.example` rather than `.env`
 is the artifact under version control.
 
-Where the contract comes from, so a reviewer can check it against the legacy source rather than take
-it on trust:
+Where the contract comes from, so it can be checked against the legacy source rather than taken on
+trust:
 
 - The datasource name, user, password and database type are the four values the legacy application
   published into its own scope at [`Application.cfc:L78-L87`] — `datasource`, `datasourceUsername`,
@@ -660,11 +632,11 @@ together — and the quota is **not adjustable**. A function whose configuration
 at `UpdateFunctionConfiguration`: the deployment never goes out, and no code in this subtree runs to
 explain why.
 
-Two variables used to be unbounded — `DB_TLS_CA` accepts inline PEM and `ECB_REFERENCE_RATES` an
-arbitrarily long rate list — so an otherwise valid environment could be undeployable. Every variable
-now carries a documented maximum in UTF-8 bytes, listed under **DELIVERY-SIZE CONTRACT** at the foot
-of [`.env.example`](./.env.example), and `src/lib/config.ts` refuses both an over-size **value** and
-an over-budget **set** at start-up. The maxima total 3781 bytes; with the 250 bytes of key names and
+Two variables invite an unbounded value — `DB_TLS_CA` accepts inline PEM and `ECB_REFERENCE_RATES` an
+arbitrarily long rate list — which is how an otherwise valid environment becomes undeployable. Every
+variable therefore carries a documented maximum in UTF-8 bytes, listed under **DELIVERY-SIZE
+CONTRACT** at the foot of [`.env.example`](./.env.example), and `src/lib/config.ts` refuses both an
+over-size **value** and an over-budget **set** at start-up. The maxima total 3781 bytes; with the 250 bytes of key names and
 one byte per entry reserved for overhead, the documented ceiling is **4050 of 4096** — 46 bytes of
 headroom.
 
@@ -719,20 +691,15 @@ subtree carries a **committed `slatwall-ts/.gitignore`** covering all four, with
 the environment contract itself stays tracked. It is a thirteenth root artifact that AAP 0.3.1's
 enumeration does not name, and — as the section above states — no AAP pattern admits a root file at
 all, so it is itemised and asserted in `tests/traceability/legacyTestMap.ts` as **one exact, closed
-SEC-G scope exception** rather than as a pattern-sanctioned addition, and rather than left to be
-discovered as drift.
+scope exception** rather than as a pattern-sanctioned addition, and rather than left to be discovered
+as drift.
 
-**It was absent for one revision, and the reasoning on both sides is worth keeping.** The earlier
-position was that the enumeration forbade a thirteenth root file, that the rules could live in this
-checkout's `.git/info/exclude`, and that "the guarantee is carried by verification instead of by an
-ignore rule, which is the stronger arrangement in any case: an ignore rule silences a warning,
-whereas the checks below actually prove nothing generated has been committed." The last clause is
-still true and the conclusion did not follow. `.git/info/exclude` is **per-clone and never
-committed**, so a fresh clone inherited nothing: a developer following this file's own instructions
-creates a real `.env` holding `DB_PASSWORD`, and `git add -A` stages it. A security review raised
-that as SEC-G (CWE-200/CWE-540) and required a committed mechanism. Both controls are in force now —
-the ignore rules stop the accident, and the porcelain check below still proves the outcome, because
-an ignore rule remains advisory in the face of `git add -f`.
+**Why the rules are committed rather than kept in `.git/info/exclude`.** That exclude file is
+per-clone and never committed, so a fresh clone inherits nothing: a developer following this file's own
+instructions creates a real `.env` holding `DB_PASSWORD`, and `git add -A` stages it. Verification
+alone does not cover that either — an ignore rule silences a warning while the porcelain check below
+proves the outcome, and both are needed, because an ignore rule remains advisory in the face of
+`git add -f`.
 
 #### Three startup refusals that make the transport posture real
 
@@ -782,14 +749,12 @@ order of preference:
 Two things hold either way:
 
 - **The gate is `git ls-files`.** `git ls-files slatwall-ts` must list only hand-authored sources —
-  the root artifacts, `src/**`, `tests/**`. The root is **thirteen** files today: the twelve AAP 0.3.1
-  enumerates plus `.gitignore`, admitted as the one recorded SEC-G scope exception described above.
-  (This sentence read "the twelve root artifacts" while the same document explained the thirteenth two
-  sections earlier; a review measured the contradiction. The frozen figure is twelve and the committed
-  figure is thirteen — both are stated, because stating only one of them is how the difference goes
-  missing.) If it ever names a path under `node_modules/`,
-  `dist/`, `build/` or `coverage/`, or names a `.env` that is not `.env.example`, that artifact has
-  been committed and must be removed from the index.
+  the root artifacts, `src/**`, `tests/**`. The root holds **thirteen** files: the twelve AAP 0.3.1
+  enumerates plus `.gitignore`, admitted as the one recorded scope exception described above. Both
+  figures are stated on purpose — the frozen figure is twelve and the committed figure is thirteen — so
+  that the difference cannot go missing behind whichever one a sentence happens to use. If it ever names
+  a path under `node_modules/`, `dist/`, `build/` or `coverage/`, or names a `.env` that is not
+  `.env.example`, that artifact has been committed and must be removed from the index.
 - **Check before staging, do not assume.** Run `git status --porcelain` and confirm only intended
   files under `slatwall-ts/` appear. Nothing generated is ever staged by name here; `git add`
   targets specific paths, never `.` or `-A` from the subtree root.
@@ -810,111 +775,84 @@ Two things hold either way:
 
 ---
 
-## Product-feed transport — a second escalated plan decision
+## Product-feed transport — a frozen contract, and what it does not cover
 
-> **This is a plan-level decision that has been escalated, not a defect this subtree claims to have
-> fixed.** The Google product feed emits `http://` origins at all five URL sites. It was raised as
-> **S-09**, re-raised as **V-12** (CWE-319, _Cleartext Transmission of Sensitive Information_), and
-> re-raised a third time as **F13 / SEC-01** by a whole-project integration review — which graded it
-> MINOR, called it the project's one residual vulnerability, judged the escalation itself **correctly
-> documented**, and required "a product owner [to] authorize an explicit divergence/AAP amendment"
-> before HTTPS is emitted. An earlier review had resolved it identically, in its own words:
-> "escalate, do not patch unilaterally". A further review re-raised it as **F49**, and the
-> project-wide final security assessment re-raised it a fifth time as **SEC-F**, grading it LOW and
-> conditioning its own required resolution on the same precondition: "**with explicit product
-> approval**, use a deployment-owned canonical HTTPS origin" and never infer the scheme from an
-> untrusted forwarding header. Five independent reviews, one conclusion.
->
-> **The half of SEC-F that is actionable without an amendment is already satisfied, and the half that
-> is not is the emitted literal.** No forwarding header — `X-Forwarded-Proto`, `Forwarded`,
-> `CloudFront-Forwarded-Proto` or any other — is read by the renderer, the feed handler or the
-> composition root, so the scheme cannot be steered by a request; and the authority beside it comes
-> from the deployment-owned allow-list below rather than from the `Host` the caller wrote. What
-> remains is the five `http://` prefixes themselves, which are the frozen legacy document.
->
-> The legacy template writes `http://#CGI.HTTP_HOST#` at the channel link, the channel description,
-> the item link, the item image link and each additional image link
-> [`integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24`], and never `https`.
-> AAP 0.1.1 requires preserving the Google product-feed integration contract **exactly**, AAP 0.8.1
-> freezes it, and AAP 0.6.7 permits exactly three divergences in this port — none of them this. So
-> changing the scheme would be a fourth divergence and needs an **AAP amendment**, not a remediation
-> pass. `src/integrations/google/rssFeedRenderer.ts` carries the full record beside the constant,
-> including the one-line edit that closes it once authorized.
->
-> **What already contains it, and how far.** Every emitted value is XML-escaped, and a deployment
-> that must publish `https` URLs terminates TLS in front of this service. The authority the scheme is
-> glued to is checked against a deployment-owned allow-list rather than taken on trust from the
-> request (`assertAllowedFeedHost`, finding S-15), and that check is **unconditional**: an absent or
-> empty `FEED_ALLOWED_HOSTS` trusts NO host, so the route answers no document rather than answering on
-> whatever authority the request carried. Configuration therefore decides whether the feed serves at
-> all, never which authority it trusts once it does — so there is no allow-all state left for the
-> containment to be conditional about.
->
-> **This paragraph said the opposite until a code review (CWE-346) corrected it, and the earlier
-> reasoning is worth recording because it was not frivolous.** It read: the check applies "**whenever
-> the deployment configured one**. With `FEED_ALLOWED_HOSTS` unset the feed answers on the authority
-> the request carries, which is exactly what the legacy did (`http://#CGI.HTTP_HOST#`, no allow-list
-> anywhere in the source) and is the behaviour restored so that an optional variable no longer silently
-> disables a capability the source publishes." The CFML parity claim is accurate — the legacy had no
-> allow-list at all — but parity with an unguarded legacy is not a licence to ship an unguarded target
-> when the guard already exists, and the "silently disables" worry is answered by making the variable
-> **required to serve the feed** and saying so in the environment contract rather than by defaulting it
-> open. An operator who has not configured an origin has not yet decided what origin the feed publishes,
-> and guessing from a request header is the decision this port must not make on their behalf.
->
-> The feed is machine-read by Google Merchant Center and carries the product names, images and prices
-> the store publishes anyway, which is why both reviews graded the remaining cleartext-scheme gap MINOR.
+The Google product feed emits `http://` origins at all five URL sites, and that is a plan-level
+constraint rather than a defect this subtree claims to have fixed.
 
----
+The legacy template writes `http://#CGI.HTTP_HOST#` at the channel link, the channel description, the
+item link, the item image link and each additional image link
+[`integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24`], and never `https`. AAP
+0.1.1 requires preserving the Google product-feed integration contract **exactly**, AAP 0.8.1 freezes
+it, and AAP 0.6.7 permits exactly three divergences in this port — none of them this. Changing the
+scheme is therefore a fourth divergence and needs an **AAP amendment**, not a remediation pass.
+`src/integrations/google/rssFeedRenderer.ts` owns the literal as `FEED_ORIGIN_SCHEME_PREFIX` and
+carries the reasoning beside it, including the one-line edit that closes this once authorized.
 
-## Product-feed availability — a third escalated plan decision, and one deployment obligation
+**Terminating TLS in front of the service does not make these links HTTPS.** A load balancer or CDN
+governs how a _client_ reaches this service and rewrites nothing inside a generated document. The
+scheme in every feed URL is a literal emitted by `rssFeedRenderer.ts`, so a fronted deployment still
+publishes `http://` origins in its feed body unless something downstream rewrites them. Nothing in the
+`DB_TLS_*` group bears on it either: that group protects this service's own connection to MySQL and
+never reaches the renderer.
 
-> **This is a plan-level decision that has been escalated, plus a requirement this subtree cannot
-> satisfy in code — not a defect it claims to have fixed.** The project-wide final security assessment
-> raised **SEC-C** (MEDIUM, CWE-400, _public resource exhaustion_): the product feed is recomputed in
-> full on every allowed-Host request — whole-catalog selection, the batched follow-up hydration and a
-> complete in-memory render — with no application cache, conditional validator, rate limit or
-> concurrency guard, and any network caller can repeat allowed-Host requests in parallel. **The
-> mechanism is accurate and is not disputed here.** Its required resolution was to "pre-generate/cache
-> the feed artifact, provide ETag/Last-Modified handling, enforce edge/WAF rate and concurrency limits,
-> and monitor duration/memory", and never to silently truncate the Merchant feed.
->
-> **Four of those five clauses are blocked by the plan, and the fifth was already satisfied.**
-> `src/handlers/productFeedHandler.ts` carries the clause-by-clause record beside the capacity block;
-> in short:
->
-> | Clause                                     | Why it is not implemented here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-> | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-> | Application cache / pre-generated artifact | A cached document is module-scope state on a warm container. AAP 0.6.5 requires every legacy component-level cache to become **request-scoped** because module state persists between unrelated requests and reproducing it "would be actively unsafe". The test is not a headcount — [Module-scope state, enumerated](#module-scope-state-enumerated) lists **five** bindings, and what they share is being expensive to build, request-**independent** and free of request data. A rendered catalog document would be the first holding business data derived from one caller’s request. It is also built from the request's **own** origin authority and pinned to the request's single instant, so retaining one would answer a caller on another caller’s authority and timestamp. That section’s own rule for a sixth binding — "a design decision to raise, not a local optimisation" — is what this section is. Pre-generation is a deployment activity, and AAP 0.2.2 excludes infrastructure as code. |
-> | ETag / Last-Modified / Cache-Control / 304 | This route's header ruling already names those three headers and conditional requests as HTTP semantics the source lacked, whose addition would invent a requirement (AAP 0.8.1) — and it has been applied: a code review **withdrew** `x-content-type-options` from this response under it, a hardening header with no behavioural consequence. Re-adding a validator family that changes what a consumer re-fetches reverses a settled decision. It would also buy nothing alone: a strong validator is computed from the document, so without the cache above a conditional request still pays for the whole selection and the whole render before it can answer 304.                                                                                                                                                                                                                                                                                                                                        |
-> | Rate and concurrency limits                | Assigned to the **edge/WAF** by the finding itself, and that tier is out of scope by AAP 0.2.2. A per-container counter is again module-scope state; a concurrency ceiling is a throughput figure, which AAP 0.8.1 forbids inventing — the clause under which the legacy runtime's own 60-, 45- and 30-second lock timeouts are noted and deliberately not implemented.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-> | Monitor duration and memory                | Already measured by the platform, per invocation. The served-feed line deliberately records no size, count or elapsed figure, and a suite asserts that it records none.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-> | Do not silently truncate                   | **Already satisfied.** A `MAX_FEED_SELECTION_ROWS` ceiling was removed from `src/integrations/google/googleFeedRepository.ts` by an earlier review for exactly this reason: a security goal does not license replacing a working feed with an error on correct data.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
->
-> **What already bounds the residual.** The route answers only for a `Host` in the deployment-owned
-> allow-list and fails closed — absent or empty `FEED_ALLOWED_HOSTS` trusts no host and the route
-> answers no document, so an unconfigured deployment has no exposure here. Per invocation the work is
-> one selection statement plus four **batched** follow-up statements — one round trip per feed, never
-> one per row — one pure render, one request scope, no duplicate buffer and nothing retained between
-> invocations. Capacity is characterized against the platform's own payload ceilings, and a catalog
-> past them fails visibly rather than shrinking.
->
-> **The deployment obligation, stated so it is not assumed.** Request rate limiting, request
-> concurrency limiting, a cache or CDN in front of `GET /feeds/google/products`, and duration and
-> memory alarms are **owned by the deployment**; this subtree ships no infrastructure by AAP mandate.
-> Closing the two blocked clauses inside this subtree needs an **AAP amendment** authorizing both a
-> second module-scope state exception and the HTTP validator family. Until then: escalate, do not patch
-> unilaterally.
->
-> **Raised again as S-02 (MAJOR, CWE-400), and the answer is unchanged.** The final
-> element-by-element completeness review measured the same three modules — the handler, the feed
-> repository and the feed service — and asked for the same five remedies under the same precondition,
-> "with explicit deployment/AAP authority", with the same prohibition on silent truncation. Nothing on
-> either side has moved, so nothing here moves. What a second independent raising does establish is
-> that the residual is not an oversight: two reviews have examined it, neither found a control this
-> subtree may add, and the decision that closes it belongs to a plan owner (authorizing the cache
-> exception and the validator family) or to a deployment (putting a cache, a rate limit and a
-> concurrency ceiling in front of the route). The finding stays **open**.
+**What is contained, and how.** No forwarding header — `X-Forwarded-Proto`, `Forwarded`,
+`CloudFront-Forwarded-Proto` or any other — is read by the renderer, the feed handler or the
+composition root, so the scheme cannot be steered by a request. Every emitted value is XML-escaped.
+And the authority the scheme is glued to is bounded: **the request selects which authorized host is
+served, and `FEED_ALLOWED_HOSTS` defines the authorized set.** `assertAllowedFeedHost` reads the
+request `Host`, normalizes it, and then requires membership in that list; the emitted origin is the
+normalized request host, admitted by configuration rather than supplied by it. That check is
+**unconditional** — an absent or empty `FEED_ALLOWED_HOSTS` authorizes no host, so the route answers
+no document rather than answering on whatever authority the request carried. Configuration therefore
+decides whether the feed serves at all, and constrains which authorities it will serve; it never
+leaves an allow-all state behind.
+
+Reproducing the legacy's request-derived host verbatim is what the allow-list rules out, and the
+reason is provenance rather than parity. CFML read `CGI.HTTP_HOST` from a request that had already
+reached a web server bound to hostnames the deployment owned, so the deployment constrained that value
+before the application saw it. An API Gateway proxy event carries whatever `Host` a client writes, so
+reading it without a list would let a caller choose the authority written into every link of a merchant
+feed that Google then fetches and follows.
+
+The residual is the five `http://` prefixes themselves. The feed is machine-read by Google Merchant
+Center and carries the product names, images and prices the store publishes anyway, which bounds what
+the cleartext scheme exposes — but it does not close it, and closing it is the plan owner's decision.
+
+## Product-feed availability — a bounded residual, and one deployment obligation
+
+`GET /feeds/google/products` recomputes the feed in full on every allowed-`Host` request:
+whole-catalog selection, the batched follow-up hydration, and a complete in-memory render, with no
+application cache, conditional validator, rate limit or concurrency guard. Any network caller may
+repeat allowed-`Host` requests in parallel. That mechanism is stated plainly because it is real, and
+it is a residual this subtree may not close in code.
+
+`src/handlers/productFeedHandler.ts` carries the clause-by-clause record beside its capacity block.
+In short, of the five controls that would close it, four are blocked by the plan and one is already
+satisfied:
+
+| Control                                    | Why it is not implemented here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Application cache / pre-generated artifact | A cached document is module-scope state on a warm container. AAP 0.6.5 requires every legacy component-level cache to become **request-scoped**, because module state persists between unrelated requests and reproducing it "would be actively unsafe". The bar is not a headcount: [Module-scope state, enumerated](#module-scope-state-enumerated) lists **five** bindings, and what they share is being expensive to build, request-**independent**, and free of request data. A rendered catalog document would be the first holding business data derived from one caller's request — it is built from that request's own origin authority and pinned to its single instant, so retaining one would answer a later caller on an earlier caller's authority and timestamp. Pre-generation is a deployment activity, and AAP 0.2.2 excludes infrastructure as code. |
+| ETag / Last-Modified / Cache-Control / 304 | This route's header ruling names those three headers and conditional requests as HTTP semantics the legacy source lacked, whose addition would invent a requirement (AAP 0.8.1). A validator family also buys nothing on its own: a strong validator is computed from the document, so without the cache above a conditional request still pays for the whole selection and the whole render before it can answer 304.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Rate and concurrency limits                | These belong to the edge/WAF tier, which AAP 0.2.2 places out of scope. A per-container counter is again module-scope state, and a concurrency ceiling is a throughput figure — which AAP 0.8.1 forbids inventing, the same clause under which the legacy runtime's own 60-, 45- and 30-second lock timeouts are noted and deliberately not implemented.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Monitor duration and memory                | Already measured by the platform, per invocation. The served-feed log line deliberately records no size, count or elapsed figure, and a suite asserts that it records none.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Never silently truncate                    | **Satisfied.** `src/integrations/google/googleFeedRepository.ts` applies no row ceiling to the feed selection: a security goal does not license replacing a working feed with an error, or with a short one, on correct data.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+
+**What bounds the residual.** The route answers only for a `Host` in the deployment-owned allow-list
+and fails closed — absent or empty `FEED_ALLOWED_HOSTS` authorizes no host and the route answers no
+document, so an unconfigured deployment has no exposure here. Per invocation the work is one selection
+statement plus four **batched** follow-up statements — one round trip per feed, never one per row — one
+pure render, one request scope, no duplicate buffer, and nothing retained between invocations. Capacity
+is characterized against the platform's own payload ceilings, and a catalog past them fails visibly
+rather than shrinking.
+
+**The deployment obligation, stated so it is not assumed.** Request rate limiting, request concurrency
+limiting, a cache or CDN in front of `GET /feeds/google/products`, and duration and memory alarms are
+**owned by the deployment**; this subtree ships no infrastructure by AAP mandate. Closing the two
+blocked controls inside this subtree needs an **AAP amendment** authorizing both a second module-scope
+state exception and the HTTP validator family. Until one exists, the residual is documented rather
+than patched.
 
 ---
 
@@ -946,27 +884,27 @@ not repositories, not handlers, not integrations, and not an outward package suc
 **No module exists beyond the plan's own file enumeration**, and `A20` asserts that against disk on
 every run: `src/**` holds exactly the eighty-nine modules AAP 0.3.1 enumerates.
 
-**Two used to, and this is the record of both being folded in.** A reviewer working from an older copy
-of this file will find them named here, so the destinations are stated rather than left to inference:
+Two capabilities a reader may expect to find as their own modules do not have one, so their
+destinations are stated here rather than left to inference:
 
-- `src/integrations/europeanCentralBankCurrencyConverter.ts` — the reference-rate adapter satisfying the
-  `CurrencyConverter` port. Its placement _beside the Google adapter_ made it read as a peer integration,
-  which a review recorded as a scope breach. The class now lives in `src/handlers/bootstrap.ts`, where
-  AAP 0.3.1 puts an implementation that has no adapter file of its own. The behaviour is unchanged: its
-  rates arrive as configuration (`ECB_REFERENCE_RATES`), and it opens no socket, because no HTTP client
-  or XML parser is in the pinned dependency set.
-- `src/lib/jsonDocumentKeys.ts` — the own-key guard that stops a `__proto__` member in parsed JSON from
-  reaching a lookup. It is now the boolean `containsPrototypeMemberKey` in `src/handlers/errorMapper.ts`,
-  beside the refusal vocabulary its two callers already imported. A security review required that shape
-  specifically: the guard's earlier form RETURNED the offending key's dotted path, assembled from the
-  caller's own ancestor key names, and that path reached both a 400 body and the log stream
-  (CWE-209/CWE-532). A predicate cannot leak what it does not construct.
+- The **reference-rate currency converter** satisfying the `CurrencyConverter` port is a class inside
+  `src/handlers/bootstrap.ts`, which is where AAP 0.3.1 puts an implementation with no adapter file of
+  its own. Placing it under `src/integrations/` beside the Google adapter would make it read as a
+  second, non-Google integration — a scope shape AAP 0.2.2 excludes. Its rates arrive as configuration
+  (`ECB_REFERENCE_RATES`), and it opens no socket, because no HTTP client or XML parser is in the
+  pinned dependency set.
+- The **own-key guard** that stops a `__proto__` member in parsed JSON from reaching a lookup is the
+  boolean `containsPrototypeMemberKey` in `src/handlers/errorMapper.ts`, beside the refusal vocabulary
+  its two callers already import. It is deliberately a predicate rather than a locator: returning the
+  offending key's dotted path would assemble caller-supplied ancestor key names into a value that
+  reaches both a 400 body and the log stream, and a predicate cannot leak what it does not construct.
 
-The boundary rule matches on the **layer a path sits in**, never on a list of known filenames, which is
-why both were policed before either was written down here and why neither move required a rule change.
+The boundary rule matches on the **layer a path sits in**, never on a list of known filenames, so
+neither placement depends on a rule naming it.
 
-That is not a review convention. `eslint.config.mjs` expresses it as `no-restricted-imports` pattern
-groups at severity `error`, so a violation is a **build failure**, and `tsconfig.json` declares no
+The rule is mechanical rather than conventional. `eslint.config.mjs` expresses it as
+`no-restricted-imports` pattern groups at severity `error`, so a violation is a **build failure**, and
+`tsconfig.json` declares no
 `paths` or `baseUrl` that a specifier could use to slip past it. Do not add an exception to the
 config, and do not reach around the rule from a test.
 
@@ -1078,13 +1016,11 @@ Four things about that surface are policy rather than accident, and each is stat
 - **`deleteProduct` answering `false` is a 200**, because that is the ported delete-context refusal
   [`model/service/ProductService.cfc:L317-L339`] working correctly rather than a failure.
 
-**This section listed three catalog operations until a code review found eleven missing.** The route was
-`GET`-only, and eleven AAP-0.4.2-mapped Product, Brand and Option actions had no transport at all —
-catalog persistence and the whole of `BrandService` were unreachable from Lambda. The stated ground was
-that the composition root published "no entity and no entity loader", which `RequestScope.entityLoaders`
-had contradicted since the price route was built. Retry semantics for the nine mutations are published
-per operation as data rather than as a mechanism; see the AAP 0.6.5 note in
-`src/handlers/catalogQueryHandler.ts` for why no response ledger was reintroduced.
+All fourteen operations are published deliberately: every Product, Brand and Option action AAP 0.4.2
+maps has a transport, so catalog persistence and the whole of `BrandService` are reachable rather than
+mapped-but-unroutable. The nine mutations are hydrated through `RequestScope.entityLoaders`, and their
+retry semantics are published per operation as data rather than as a mechanism — see the AAP 0.6.5 note
+in `src/handlers/catalogQueryHandler.ts` for why no response ledger backs them.
 
 ---
 
@@ -1162,24 +1098,19 @@ them:
   string instead of mutating a request context and deferring to a view. That is the declaration AAP
   0.4.2 freezes, and the port, the service and the handler all carry it verbatim.
 
-  **This bullet claimed the method was nullary until a code review measured it, and the claim had
-  argued itself into a contradiction.** It read: "That third one is **nullary**, and the absence of a
-  parameter is the design rather than an omission [...] A `criteria` parameter would be a
-  request-controlled surface where the port deliberately has none." Two things are true and one was
-  not. It is true that the legacy controller applied a fixed filter set — active SKU, active product,
-  published product, positive quantity available to sell — and read nothing from the request context
-  that selected rows. It is true that **no caller may narrow the selection**, and none can: those four
-  conditions are compiled into the statement and `fetchProductFeedRows()` is genuinely nullary. What
-  was false is that a parameter would therefore be request-controlled. `FeedCriteria` declares exactly
-  two members and neither is a filter — `feedHost`, the origin the five absolute-URL sites are built
-  from, and `now`, the single instant every sale-price effective-date range is evaluated against. Both
-  are **ambient request state the legacy read from the CFML engine** (`CGI.HTTP_HOST` and `now()`),
-  made explicit as an argument because transformation rule T6 removes ambient scope and there is none
-  here to read them from. Neither is caller-supplied: the composition root normalizes the host, checks
-  it against `FEED_ALLOWED_HOSTS`, pins the instant, and publishes the pair as
-  `RequestScope.feedCriteria` for the handler to forward whole. So the origin still comes from
-  configuration and never from the caller — that guarantee is unchanged — and the parameter is what
-  makes the two values visible in the contract instead of hidden in a closure.
+  The `criteria` parameter is **not** a selection surface, and it is worth saying why it exists at all.
+  No caller may narrow the feed: the legacy controller's four filters — active SKU, active product,
+  published product, positive quantity available to sell — are compiled into the statement, and
+  `fetchProductFeedRows()` is nullary. `FeedCriteria` declares exactly two members and neither is a
+  filter: `feedHost`, the origin the five absolute-URL sites are built from, and `now`, the single
+  instant every sale-price effective-date range is evaluated against. Both are **ambient request state
+  the legacy read from the CFML engine** (`CGI.HTTP_HOST` and `now()`), made explicit as an argument
+  because transformation rule T6 removes ambient scope and leaves nothing here to read them from. The
+  composition root normalizes the request `Host`, requires it to be a member of `FEED_ALLOWED_HOSTS`,
+  pins the instant, and publishes the pair as `RequestScope.feedCriteria` for the handler to forward
+  whole — so the request selects which authorized origin is served while configuration defines the
+  authorized set, and the parameter is what makes both values visible in the contract instead of hidden
+  in a closure.
 
 - **Five visibility widenings**, and no sixth. `getDiscountAmount` and the four qualification helpers
   are `private` in the legacy source and are exported here so they can be tested directly. Widening
@@ -1199,7 +1130,7 @@ justification against the plan before it is accepted, not a passing test run.
 1. **Promotion discount math and use-limit enforcement** [`model/service/PromotionService.cfc`]. The
    489-line `updateOrderAmountsWithPromotions` is decomposed into nine modules under
    `src/services/promotion/`, and the decomposition is structural only — the mutable usage ledger, the
-   two opposing insertion sorts, and the two-pass reward iteration all behave as they do today.
+   two opposing insertion sorts, and the two-pass reward iteration all behave as the legacy does.
 2. **The price-group and currency resolution cascade**
    [`model/service/PriceGroupService.cfc`, `model/entity/Sku.cfc:L269-L273`], including the
    five-level rate chain and the four-step currency cascade behind its eligibility gate.
@@ -1221,24 +1152,21 @@ Relatedly: the USD default is **not** hardcoded in the entity. It lives in a set
 `skuCurrency = {fieldType="select", defaultValue="USD"}` [`model/service/SettingService.cfc:L221`] —
 and is resolved through the settings port.
 
-A deployment that configures a different base currency keeps working, and that sentence is now
-**true of the composition root as well as of the entity**. It was not: for one revision
-`BootstrapSettingsProvider` was built from the declared defaults alone, `SwSetting` was never read for
-a general setting, and `setting('skuCurrency')` therefore answered the literal `USD` however the shop
-was configured. Code review recorded that as a critical money defect. The root now issues one eager,
-relationship-free read of `SwSetting` for the setting names it resolves — the legacy's own final probe
-[`model/service/SettingService.cfc:L490, L595-L608`] — and a configured row wins over its declared
-default.
+A deployment that configures a different base currency keeps working, and that holds in the composition
+root as well as in the entity: `BootstrapSettingsProvider` is not built from declared defaults alone.
+The root issues one eager, relationship-free read of `SwSetting` for the setting names it resolves — the
+legacy's own final probe [`model/service/SettingService.cfc:L490, L595-L608`] — and a configured row
+wins over its declared default. Without that read, `setting('skuCurrency')` would answer the literal
+`USD` however the shop was configured, which is a money defect rather than a cosmetic one.
 
-**That sentence said "the seven names the two settings contracts publish", and there is only one
-contract and there are only four names.** AAP 0.4.1 and 0.4.2 describe `settingsProvider.ts` as a
-"read-only accessor for exactly four keys" — `skuCurrency`, `skuEligibleCurrencies`,
-`globalURLKeyProduct` and `globalURLKeyProductType` — and a second port interface had grown beside it
-for the product-title template, taking the written total to seven. A code review found the second
-contract to be scope the plan does not authorize, and it is gone: the presentation settings the product
-entity needs are resolved **once** in the composition root and handed to the entity as a plain frozen
-value, which is the pattern `Sku.imageSettingValues` already used. So one contract, four keys, and the
-eager `SwSetting` read covers those four plus the presentation names the root resolves for itself. A row whose value is **empty** wins too, because the legacy sets
+**There is exactly one settings contract, and it publishes four names.** AAP 0.4.1 and 0.4.2 describe
+`settingsProvider.ts` as a "read-only accessor for exactly four keys" — `skuCurrency`,
+`skuEligibleCurrencies`, `globalURLKeyProduct` and `globalURLKeyProductType`. A second port interface
+for the product-title template would be scope the plan does not authorize, so there is none: the
+presentation settings the product entity needs are resolved **once** in the composition root and handed
+to the entity as a plain frozen value, which is the pattern `Sku.imageSettingValues` uses. The eager
+`SwSetting` read covers those four keys plus the presentation names the root resolves for itself. A row
+whose value is **empty** wins too, because the legacy sets
 `foundValue = true` in the same breath as the assignment [`model/service/SettingService.cfc:L525-L527`];
 for `skuEligibleCurrencies` that is the difference between a deliberately closed cascade gate
 [`model/entity/Sku.cfc:L373`] and a fully priced catalog.
@@ -1251,20 +1179,17 @@ the amount passes through **unconverted**, because that is exactly what
 The absence is recorded on the log stream for an operator, once per resolution, and it is never raised
 to a caller.
 
-**This paragraph described the empty-table case as a refusal, and a code review found the adapter
-throwing where its own port contract promised pass-through.** The removed text argued: "With **no table
-at all**, a conversion that needs a quote is **refused** rather than answered at par: an absent table is
-the legacy's cold-start failure state, where the swallowed fetch error is followed by a read of an
-unassigned variable [`model/service/CurrencyService.cfc:L104-L131`], and answering 1:1 there would
-publish base-currency numerals as foreign-currency prices invisibly." The hazard it names is real and the
-legacy line it cites is real. What made the conclusion untenable is where the throw landed: the SKU
-currency cascade's conversion step [`model/entity/Sku.cfc:L416-L428`] calls the converter for every
-eligible currency that has no explicit override, so an unconfigured rate table did not fail one
-conversion — it failed the whole `getCurrencyDetails()` build, and with it every price the SKU could
-answer for any currency, including the base one. An operator's missing configuration became a total
-pricing outage. Pass-through with an operator-visible log line is both the legacy behaviour and the
-AAP 0.4.2 contract, and the staleness signal `ECB_RATES_RETRIEVED_AT` exists to make the gap visible
-without weaponizing it.
+**An empty rate table passes through; it does not refuse.** Refusing is tempting, because an absent
+table is the legacy's cold-start failure state — a swallowed fetch error followed by a read of an
+unassigned variable [`model/service/CurrencyService.cfc:L104-L131`] — and answering 1:1 there publishes
+base-currency numerals as foreign-currency prices invisibly. The reason a throw is still wrong is where
+it would land: the SKU currency cascade's conversion step [`model/entity/Sku.cfc:L416-L428`] calls the
+converter for every eligible currency with no explicit override, so an unconfigured rate table would
+fail not one conversion but the whole `getCurrencyDetails()` build, and with it every price the SKU can
+answer for **any** currency including the base one. A missing configuration would become a total pricing
+outage. Pass-through with an operator-visible log line is both the legacy behaviour and the AAP 0.4.2
+contract, and the staleness signal `ECB_RATES_RETRIEVED_AT` exists to make the gap visible without
+weaponizing it.
 
 ### The cross-service ordering constraint
 
@@ -1272,9 +1197,8 @@ without weaponizing it.
 `PromotionService.updateOrderAmountsWithPromotions()`.
 
 The promotion pass reads price-group state that the price-group pass writes. Read the guard at
-[`model/service/PromotionService.cfc:L241-L252`] literally, because **this description was previously
-transposed here and the transposition is worth naming** — implementing the transposed wording would
-invert the discount on every price-group order:
+[`model/service/PromotionService.cfc:L241-L252`] literally rather than from a paraphrase — transposing
+its two branches inverts the discount on every price-group order:
 
 ```
 if( isNull(orderItem.getAppliedPriceGroup()) || reward.hasEligiblePriceGroup( orderItem.getAppliedPriceGroup() ) ) {
@@ -1291,7 +1215,7 @@ price. Only the `else` — an applied price group the reward does **not** treat 
 from `getSkuPrice()` and then subtracts the difference between the extended SKU price and the extended
 price, so the customer is not given the same saving twice. `src/services/promotionService.ts` reads
 `appliedPriceGroup` and asks `reward.hasEligiblePriceGroup(...)` in that order, for that reason, and
-the same inversion has been corrected in three docblocks in this subtree.
+three docblocks in this subtree state the same polarity.
 
 In the legacy system the ordering of the two passes held only because `OrderService` happened to call
 them in that sequence — it is nowhere stated and nothing enforced it. Here the composition root makes
@@ -1313,13 +1237,12 @@ and the split is what makes the claim checkable:
 | `AAP_SECONDARY_DEFECTS`           | **8**, frozen      | the same, plus `verbatimIdentifiers` for the four preserved misspellings     |
 | `SUPPLEMENTAL_TARGET_DISCOVERIES` | **open-ended** (4) | the same proof, across `src/**` and `tests/**`, with no length to break      |
 
-**That shape is a correction, and the previous sentence here was wrong.** This section used to claim
-`A25` "proves every one of the thirty individually". It did not: the register it read was a single
-thirty-row array holding entries 1–20 followed by ten rows labelled as secondary items, so entries
-**21–24 and 26–30 appeared nowhere at all** and entry 25 — the `getSalePricExpirationDateTime` typo,
-which the authority promotes out of the secondary list into the numbered set — was carried as a
-secondary row. Thirty rows, nine numbered entries unproven. A review measured it. Thirty numbered plus
-eight secondary is **thirty-eight** base entries, and all thirty-eight are now proven one at a time.
+**Three inventories rather than one, and the split is load-bearing.** A single thirty-row array
+cannot prove thirty numbered entries: filling it with entries 1–20 followed by ten rows labelled as
+secondary items leaves **21–24 and 26–30 proven nowhere**, and strands entry 25 — the
+`getSalePricExpirationDateTime` typo, which the authority promotes out of the secondary list into the
+numbered set — as a secondary row. Thirty numbered plus eight secondary is **thirty-eight** base
+entries, and all thirty-eight are proven one at a time.
 
 The third inventory exists for the same reason. `expect(length).toBe(30)` meant a discovery made
 tomorrow could be recorded only by editing the frozen base authority, so the gate discouraged recording
@@ -1379,10 +1302,10 @@ product decision rather than a code cleanup.
 
 #### One refusal that is deliberately _not_ counted as a fourth divergence
 
-`src/services/productService.ts` refuses an image path that escapes `product/default/`. That refusal
-has no counterpart in the legacy source, so a reviewer will reasonably ask whether it is a fourth
-divergence — and the answer is recorded rather than assumed, because getting it wrong in either
-direction is a real error.
+`src/services/productService.ts` refuses an image path that escapes `product/default/`. That refusal has
+no counterpart in the legacy source, which raises the fair question of whether it is a fourth divergence
+— so the classification is recorded rather than assumed, because getting it wrong in either direction is
+a real error.
 
 It is classified as a **security refusal on an out-of-scope stub path**
 [`model/service/ProductService.cfc:L241-L250`], and the reasoning is this: the AAP 0.6.7 budget is a
@@ -1408,11 +1331,10 @@ reference; a regression test named for the ticket documents the gap.
 The in-scope slice carries exactly five, measured by sweeping every in-scope `.cfc` and `.cfm` —
 [`model/service/PromotionService.cfc:L543`], [`model/dao/ProductDAO.cfc:L64`],
 [`model/dao/SkuDAO.cfc:L177`], [`model/service/CurrencyService.cfc:L81`] and
-[`model/entity/ProductType.cfc:L93`] — and each is carried forward in the module that owns it. A code
-review found three markers with no such antecedent and they are re-labelled for what they are: a
-`LEGACY-GAP`, an `EXCLUSION [AAP 0.9.5]`, and a "why it is not repaired" note on a reproduced defect.
-Inventing a TODO makes the five that mean something unreadable while announcing work this port never
-agreed to do.
+[`model/entity/ProductType.cfc:L93`] — and each is carried forward in the module that owns it. Anything
+without such an antecedent is labelled for what it actually is: a `LEGACY-GAP`, an
+`EXCLUSION [AAP 0.9.5]`, or a "why it is not repaired" note on a reproduced defect. Inventing a TODO
+makes the five that mean something unreadable while announcing work this port never agreed to do.
 
 The Google feed's `g:google_product_category` element is the sharpest example. It is emitted **empty**,
 exactly as the legacy template emits it, and it stays flagged — but the legacy line
@@ -1511,17 +1433,12 @@ holds **89** modules. The ledger declares **64 covered** (each paired with the s
 **25 exempt** (each a type-only module, or a runtime module that names the suite which exercises it),
 and the pending register is **empty** — 64 + 25 + 0 = 89. One of the 64 is a declared naming
 exception, where the suite name drops the module's `.sql` infix. Every one of those figures is derived
-from disk by the traceability suite, so this paragraph is a convenience and the assertions are the
-authority.
+from disk by the traceability suite, which is the authority; the figures here are a convenience.
 
-**Those five numbers were `91 / 66 / 25 / 0 / 91` here until a code review measured them.** The prose
-had gone stale in the shrink direction, which is the direction that is easy to miss: two modules named
-in an earlier revision of this file — `src/integrations/europeanCentralBankCurrencyConverter.ts` and
-`src/lib/jsonDocumentKeys.ts` — were folded into modules AAP 0.3.1 already enumerates, the converter
-into `src/handlers/bootstrap.ts` and the prototype-key guard into `src/handlers/errorMapper.ts`, and
-the written census was never re-derived. The lesson is the one this section already argues for
-everywhere else: `A20` asserts the module count against disk on every run, so trust the gate and read
-this paragraph as commentary.
+A written census goes stale most easily in the **shrink** direction — a capability folded into a module
+the plan already enumerates leaves the total one too high, and nothing about reading the paragraph
+reveals it. `A20` asserts the module count against disk on every run, so trust the gate and read the
+paragraph above as commentary.
 
 An empty pending register is a **measurement, not an achievement**: it records that every debt entered
 there — the composition root, the five capability entrypoints and the router — has been discharged, and
@@ -1563,7 +1480,7 @@ Two details in that table are easy to get wrong, so both are pinned:
 - The product URL assertion expects `/<globalURLKeyProduct>/nike-air-jorden/` with **both** a leading
   and a trailing slash, and the fixture string is retained exactly as the legacy test wrote it.
 
-The four cases inherited from `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L49-L68` are
+The four cases inherited from `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67` are
 `validate_as_save_for_a_new_instance_doesnt_pass`, `simple_representation_exists_and_is_simple`,
 `has_primary_id_property_name` and `defaults_are_correct`.
 
@@ -1642,35 +1559,32 @@ Out of scope, and not partially implemented here:
 - **Every integration adapter other than Google**, the **Taffy REST layer** under `frontend/api/`, and
   the **Mura CMS bridge**.
 
-  > **One thing here reads like a violation of that line and is not, because it has now been queried
-  > twice.** `src/handlers/bootstrap.ts` declares a class called
-  > `EuropeanCentralBankCurrencyConverter`, and a review recorded it as "a wired non-Google ECB
-  > adapter, contrary to explicit exclusions". The exclusion is real; this is not an instance of it.
+  > **`EuropeanCentralBankCurrencyConverter` reads like an instance of that exclusion and is not.**
+  > `src/handlers/bootstrap.ts` declares a class by that name, so the distinction is worth stating.
   >
   > `convertCurrency()` is **in scope by name** — AAP 0.2.1 admits `model/service/CurrencyService.cfc`
   > for exactly `getCurrencySmartList()` and `convertCurrency()`, because the SKU currency cascade calls
   > them — so the `currencyConverter` port must have an implementation. And the euro pivot is the
-  > **legacy service's own mechanism**, not a vendor this port went and chose:
+  > **legacy service's own mechanism**, not a vendor this port chose:
   > [`model/service/CurrencyService.cfc:L53`] declares `property name="europeanCentralBankRates"`,
-  > [`L85`] reads it, [`L100`] pivots with `amountInEUR * cbRates[...]`, and [`L104-L130`] fetches
+  > [`model/service/CurrencyService.cfc:L85`] reads it,
+  > [`model/service/CurrencyService.cfc:L100`] pivots with `amountInEUR * cbRates[...]`, and
+  > [`model/service/CurrencyService.cfc:L104-L130`] fetches
   > `eurofxref-daily.xml` and caches it daily. Naming the implementation after the rate source the
-  > source names is faithfulness; renaming it would erase the lineage a reviewer diffing the two
-  > surfaces needs.
+  > legacy names is faithfulness; renaming it would erase the lineage a diff of the two surfaces needs.
   >
   > The target is **strictly less** of an integration than the source: there is no `fetch`, no HTTP
   > client and no URL anywhere in it. The rate table arrives as configuration and is read once at
-  > composition, so the legacy's daily fetch is deliberately not ported. The half of that finding which
-  > was valid — the class living at a file of its own beside the Google adapter, where it genuinely did
-  > read as a peer integration — is fixed: that file is gone and the class sits in the composition root,
-  > where AAP 0.3.1 puts implementations that have no adapter file of their own.
+  > composition, so the legacy's daily fetch is deliberately not ported. The class also sits in the
+  > composition root rather than in a file of its own beside the Google adapter — where it genuinely
+  > would read as a peer integration — because AAP 0.3.1 puts implementations with no adapter file of
+  > their own there.
   >
-  > **A sentence here also claimed the conversion "now fails closed instead of pricing every foreign
-  > currency at the base numeral", and that behaviour was itself reverted.** A later code review found
-  > the adapter throwing where the `CurrencyConverter` port promised pass-through, and the blast radius
-  > was the whole SKU cascade rather than one conversion — see the currency-cascade section for the full
-  > reasoning. `convertCurrency` is a total function: an unavailable rate table passes the amount through
-  > unconverted and logs the gap for an operator, which is both the legacy behaviour
-  > [`model/service/CurrencyService.cfc:L100-L101`] and the AAP 0.4.2 contract.
+  > It does **not** fail closed on an unavailable rate table. `convertCurrency` is a total function: the
+  > amount passes through unconverted and the gap is logged for an operator, which is both the legacy
+  > behaviour [`model/service/CurrencyService.cfc:L100-L101`] and the AAP 0.4.2 contract. Throwing here
+  > would take out the whole SKU cascade rather than one conversion — see the currency-cascade section
+  > for that reasoning.
 
 - The **presentation subsystems** `admin/`, `frontend/`, `public/`, `assets/`, `templates/`, `tags/`
   and `custom/`, together with every vendored front-end library.
@@ -1686,9 +1600,11 @@ ported.**
 
 **Out-of-scope methods that live inside in-scope files stay out**, or become thin pass-throughs to
 stub ports rather than being made to work: `processProduct_addProductReview`
-[`model/service/ProductService.cfc:L157`], `processProduct_addSubscriptionTerm` [L173],
-`processProduct_uploadDefaultImage` [L235], `loadDataFromFile` [L65], and the subscription and
-content-access SKU-creation branches [`model/service/SkuService.cfc:L139-L202`].
+[`model/service/ProductService.cfc:L157`], `processProduct_addSubscriptionTerm`
+[`model/service/ProductService.cfc:L173`], `processProduct_uploadDefaultImage`
+[`model/service/ProductService.cfc:L235`], `loadDataFromFile`
+[`model/service/ProductService.cfc:L65`], and the subscription and content-access SKU-creation
+branches [`model/service/SkuService.cfc:L139-L202`].
 
 **There is no `CategoryService`, and none is invented.** `Category.cfc` declares
 `hb_serviceName="contentService"` **by design**, so category operations are served by the content
@@ -1738,11 +1654,10 @@ recognises exactly three claims:
   service principal may drive**, tested only through `principalHasServiceScope`. Absent, blank or
   non-string means **no capability is granted**.
 
-The third claim exists because a code review found (CWE-862/CWE-285) that `promotionApplication` was
-gated on `adminAccountFlag` while `catalogQuery` uses that same bit to admit ordinary **human** catalog
-administrators — so one claim was answering two different trust questions and every catalog
-administrator was also accepted as the promotion-pricing service. The two are now separate claims, and
-neither implies the other. This subtree still **issues no token, validates no signature and implements
+The third claim is separate from the second on purpose. `catalogQuery` uses `adminAccountFlag` to admit
+ordinary **human** catalog administrators, so gating `promotionApplication` on that same bit would make
+one claim answer two different trust questions and accept every catalog administrator as the
+promotion-pricing service. Neither claim implies the other. This subtree still **issues no token, validates no signature and implements
 no login**: it trusts the authorizer's output and nothing else.
 
 Each capability decides admission in **two** steps, and only the first is common to all of them:
@@ -1759,19 +1674,12 @@ occurred and nothing else.
 | `priceResolution`      | **Partly** — refused unless the requested operation is in `ANONYMOUS_PERMITTED_OPERATIONS`, which holds exactly one member: `calculateSkuPriceBasedOnCurrentAccount`. | **No.** All twelve of its operations are reads; the four price-group writes are withheld from the routed surface entirely rather than gated.                                                                                                                                                                                                                                                                |
 | `productFeed`          | **No — and it reads no principal at all.** The feed is machine-read by Google Merchant Center.                                                                        | **Origin, not identity.** What governs it is the configured `FEED_ALLOWED_HOSTS` allow-list, which fails closed — see the feed section.                                                                                                                                                                                                                                                                     |
 
-**Two sentences that used to sit here were wrong, and a code review was right about both.** They read
-"an unauthenticated deployment of these handlers admits everyone by construction" and
-"**`adminAccountFlag` is carried, not enforced as a role.** It is resolved and threaded into the request
-scope so a durable-write path can consult it; it is not a permission system, and no handler treats its
-absence as anything other than 'not an admin'."
-
-The first inverted its own conclusion: with no authorizer attached the claim set is EMPTY, so every row
-above that requires identity refuses every request. That fails **closed**, not open — as the first
-bullet below has always said two paragraphs later. The second was true of an earlier revision and is
-now the opposite of the code: `catalogQueryHandler` refuses an identified caller carrying no
-`adminAccountFlag` with a 403, before the operation selector is read and before any statement is
-prepared. The claim is _enforced_ on that capability, and treating its absence as merely informational
-is exactly the gap (CWE-862) that the finding closed.
+Two readings of that table are worth ruling out explicitly, because both are easy to reach and both are
+wrong. An unauthenticated deployment does **not** admit everyone: with no authorizer attached the claim
+set is empty, so every row requiring identity refuses every request, which fails closed. And
+`adminAccountFlag` is not merely carried for a later consumer to consult: `catalogQueryHandler` refuses
+an identified caller without it with a **403**, before the operation selector is read and before any
+statement is prepared.
 
 Two consequences worth stating plainly, because both are the deployment's responsibility and neither is
 this subtree's to discharge:
@@ -1782,15 +1690,16 @@ this subtree's to discharge:
   "identity required" row above then refuses every request — which fails closed, but is a
   misconfiguration rather than a working state.
 - **`adminAccountFlag` is a single boolean, not a role system.** It is enforced where the source puts
-  the operation behind `admin/` — today that is `catalogQuery`, in full — and it is threaded into the
+  the operation behind `admin/`, which is `catalogQuery` in full, and it is threaded into the
   request scope for consumers that need it. What this subtree does **not** have is per-operation
   permissions, roles or a policy engine: there is one administrative bit, and a capability either
   requires it or does not. Nothing here invents the permission subsystem the legacy `hb_permission`
   attributes hint at, because AAP 0.2.2 excludes the account module that would own it.
-- **`serviceScope` is a capability grant, not a role system either — and it is deliberately the
-  narrowest thing that answers the finding.** It names capabilities, not roles or actions; there is no
+- **`serviceScope` is a capability grant, not a role system either, and it is deliberately the narrowest
+  mechanism that separates a service principal from an administrator.** It names capabilities, not roles
+  or actions; there is no
   hierarchy, no wildcard, no expiry and no policy document, and the only tokens that mean anything are
-  the frozen capability names in `src/handlers/router.ts`. It grants exactly one route today,
+  the frozen capability names in `src/handlers/router.ts`. It grants exactly one route,
   `promotionApplication`. Populating it is the deployment's authorizer's job, exactly as the other two
   claims are: a deployment that omits it refuses that route and serves the other four unchanged, which
   fails closed.
@@ -1817,10 +1726,10 @@ no figure below is a target of any kind.
   | REST API — edge-optimized      | 29 s, not raisable                                                                                            |
 
   This subtree pins **none** of those: it authors no infrastructure, declares no API, and therefore
-  configures no timeout. An earlier revision of this bullet asserted a flat "API Gateway at 29
-  seconds", which was the edge-optimized REST figure stated as though it were universal.
-  Either way the conclusion is unchanged, because it never rested on the exact number: the bulk import
-  is out of scope, and the feed generator is in-memory and needs no extended budget.
+  configures no timeout. A flat "API Gateway at 29 seconds" is the edge-optimized REST figure and is not
+  universal, which is why the table above states three. The conclusion does not rest on the exact number
+  in any case: the bulk import is out of scope, and the feed generator is in-memory and needs no
+  extended budget.
 
 - **No `cfthread` usage exists anywhere in the in-scope slice** — the verified count across the
   in-scope entities, services, DAOs, process objects and the Google adapter is zero. The

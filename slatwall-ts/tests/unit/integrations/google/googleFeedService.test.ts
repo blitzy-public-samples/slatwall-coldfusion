@@ -1,111 +1,15 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - tests/unit/integrations/google/googleFeedService.test.ts
+// slatwall-ts - tests/unit/integrations/google/googleFeedService.test.ts.
 //
-// SUBJECT: src/integrations/google/googleFeedService.ts, the ORCHESTRATION third of the Google
-// product-feed adapter, whose one exported unit is `GoogleFeedService`. The class holds a row
-// source, a host, an instant and a renderer, and its one method performs two steps: read the rows,
-// then render them. So this suite is about SEQUENCE, FORWARDING and PASSTHROUGH - which
-// collaborator is reached, in what order, with which arguments, and what comes back unchanged. The
-// document's shape, the selection statement and the adapter contract's five inherited members
-// belong to the renderer's, the repository's and integration.test.ts's suites. The subject reaches
-// no database, network, Google endpoint, file, environment variable, setting, clock or application
-// wiring, so two hand-written doubles declared inline are the entire scaffolding: no spy, no
-// mocking library.
+// CFML parity [integrationServices/google/controllers/feed.cfc:L54-L56]: the legacy action was
+// PUBLIC and UNAUTHENTICATED - `this.publicMethods="product"` with both the admin-method and
+// secure-method lists empty - which is why authorization is asserted here rather than assumed.
 //
-// COVERAGE CLASSIFICATION: NET-NEW in its entirety, never to be presented as parity. The legacy
-// subsystem had a controller, a dead data-access component and a view but NO orchestrator, so there
-// is no legacy unit whose coverage this extends. Measured on disk: a case-insensitive search of
-// meta/ for `google` matches ZERO lines and one for `rss`, `productFeed` or `feed` matches ZERO
-// files, the only hits on the integration surface names being line 36 of each legacy test file -
-// the license special-exception clause, which covers nothing. Legacy coverage is extended by
-// exactly two suites, meta/tests/unit/entity/ProductTest.cfc and
-// meta/tests/unit/entity/BrandTest.cfc, and this is neither;
-// meta/tests/functional/admin/entity/ProductTest.cfc is an empty stub acknowledged rather than
-// counted.
-//
-// BEHAVIOURAL AUTHORITY: [integrationServices/google/controllers/feed.cfc], 74 lines, read in full;
-// supporting [integrationServices/google/controllers/main.cfc] (52 lines) and
-// [integrationServices/google/views/feed/product.cfm] (65 lines).
-//
-// JUDGMENT CALL: the method surface is RESHAPED, and this records the provenance.
-//   LEGACY  `public void function product(required struct rc)`
-//           [integrationServices/google/controllers/feed.cfc:L58]
-//   TARGET  `async generateProductFeed(criteria: FeedCriteria): Promise<string>`
-//   The legacy method RETURNED `void` AND PRODUCED ITS RESULT BY MUTATING `rc`: it
-//   assigned a SKU selection onto the FW/1 request context at [.../feed.cfc:L63] and
-//   let the framework resolve a view that read that key back at [.../product.cfm:L8],
-//   so the document string existed nowhere in that control flow. The target RETURNS
-//   THE DOCUMENT, and that inversion is the reshaping.
-//
-// VERIFIED ON DISK
-//     constructor(repository, renderFeed = renderGoogleProductFeed)
-//     async generateProductFeed(criteria: FeedCriteria): Promise<string>
-//   1. HOST AND INSTANT ARE MEMBERS OF THE METHOD ARGUMENT, NOT CONSTRUCTOR PARAMETERS,
-//      so every forwarding assertion below checks what the CRITERIA carried.
-//      QUOTE-THEN-REVISE: this entry used to read "HOST AND INSTANT ARE CONSTRUCTOR
-//      PARAMETERS, NOT METHOD PARAMETERS, so every forwarding assertion below checks what
-//      the CONSTRUCTOR was given. `ProductFeedPort` declares the capability with no
-//      parameters, matching exactly." AAP 0.4.2 freezes the ported method as
-//      `generateProductFeed(criteria: FeedCriteria)` and records the reshaping in that exact
-//      form; AAP 0.9.2 makes each row a parity gate and admits no fourth reshaping, so the
-//      zero-parameter form was one. `ProductFeedPort` declares the one parameter and this
-//      class matches it.
-//   2. THE RENDERER IS A DEFAULTED SECOND PARAMETER, defaulting to the real
-//      `renderGoogleProductFeed`. This suite ALWAYS injects a double: the default
-//      would make every case a document-shape assertion another suite owns.
-//   3. THE ROW SOURCE IS TYPED `GoogleProductFeedRowSource`, a one-method narrowing,
-//      NOT the repository class - whose private fields would admit only itself. The
-//      narrowing is what makes a structural double possible.
-//   4. `rssFeedRenderer.ts` IS NOT IMPORTED HERE. The collaborator type is
-//      `GoogleProductFeedRenderer`, declared by the subject's own module as
-//      `typeof renderGoogleProductFeed`, so the double's parameters are contextually
-//      typed and importing it would leave an unused binding under `noUnusedLocals`.
-//   5. THE MONETARY FIELDS ARE REQUIRED PROPERTIES WHOSE TYPE ADMITS ABSENCE:
-//      `readonly productPrice: Money | undefined`, not `productPrice?: Money`, so a
-//      complete row is constructible with `undefined` there - which is how the row
-//      factory below builds one WITHOUT naming the money value object.
-//
-// NOT PORTED, EACH OMISSION RECORDED WITH ITS LOCATOR
-//
-//   CFML parity [integrationServices/google/controllers/feed.cfc:L59-L60]: the layout
-//   suppression, `// Hide the layout` then `request.layout = false;`, is a CFML view
-//   concern with no target analogue.
-//
-//   CFML parity [integrationServices/google/controllers/feed.cfc:L62]: the legacy
-//   intent comment "Create the product feed" is carried onto the ordering group below,
-//   because that is precisely what the two orchestrated steps do.
-//
-//   CFML parity [integrationServices/google/controllers/feed.cfc:L63]: neither the SKU
-//   service that body reached for nor the framework selection object it produced is
-//   ported - building that selection is what the row source replaced.
-//
-//   CFML parity [integrationServices/google/controllers/main.cfc:L49-L52]: nothing to
-//   port, verified by reading it - 52 lines whose body is literally empty.
-//
-//   CFML parity [integrationServices/google/views/main/default.cfm:L50]: its 51 lines
-//   carry one paragraph telling an operator to point their Google Feed at
-//   `?slatAction=google:feed.product`, deployment prose rather than behaviour.
-//
-//   CFML parity [integrationServices/google/controllers/feed.cfc:L54-L56]: the legacy
-//   action was PUBLIC AND UNAUTHENTICATED, `this.publicMethods="product"` with the
-//   admin-method and secure-method lists empty. A FACT ABOUT THE SOURCE; no
-//   authentication is invented to compensate.
-//
-// FIXTURE PROVENANCE: [meta/tests/unit/Helper.cfc] is followed as a PATTERN and its MECHANISM
-// rejected. Kept: one named factory returning one obviously-fake subject, with per-case overrides
-// replacing individual fields. Rejected: that helper builds a persistent entity through the
-// object-relational mapper, saves it through an ambient service locator and flushes the mapper's
-// session, which is why every legacy "unit" test boots the real application, the mapper and the
-// container. No sibling fixture applies: none of the five produces a feed-row projection.
-// ---------------------------------------------------------------------------
+// CFML parity [integrationServices/google/controllers/feed.cfc:L59-L63]: the layout suppression
+// and the framework selection object the legacy body built have no target analogue; the row source
+// replaced the selection, and [integrationServices/google/controllers/main.cfc:L49-L52] and
+// [integrationServices/google/views/main/default.cfm:L50] carry no behaviour to port at all.
 
-// THREE NODE BUILT-INS APPEAR BELOW, AND SECTION 10 IS THE ONLY REASON. That section reads
-// this module's own source text to assert what it publishes, because a namespace import sees
-// only VALUES and two of the symbols that must stay out - an exported type alias and a
-// `declare const` brand - erase completely at compile time, so no runtime check could see
-// either one. The only other suite in this subtree that reads source,
-// `tests/traceability/legacyTestMap.ts`, reaches for exactly this trio in exactly this way.
-// Nothing else in this file touches the file system, and no case writes to it.
+// Three node built-ins appear below, read by the module-text cases in section 10.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -123,82 +27,35 @@ import type {
   FeedCriteria,
   ProductFeedPort,
 } from '../../../../src/domain/ports/productFeedPort.js';
-// NOTHING FROM `src/lib/config.js`. An intervening revision imported a `FeedUrlScheme` type from
-// there for a constructor argument that no longer exists; the subject holds no configuration edge.
-
-// ---------------------------------------------------------------------------
-// Fixed inputs
-//
-// Every value a case needs is a named constant. The module scope holds only these and the pure
-// factories below them, so no case can observe another case's effects.
-// ---------------------------------------------------------------------------
+// Nothing from `src/lib/config.js`: the subject takes no configuration argument and holds no
+// configuration edge.
 
 /**
  * The host handed to the subject, and a non-routable placeholder by design.
  *
- * `.invalid` is reserved precisely so that it can never resolve, which is the point: the
- * ported adapter performs no live Google call and needs no credentials, so a host reaches
- * this suite as an ordinary configured input and nothing is ever dialled. No real hostname,
- * address or endpoint appears in this file.
- *
- * ★ THIS WAS BRIEFLY A BRANDED VALUE MINTED THROUGH AN ALLOW-LIST FACTORY, AND IT IS A
- * PLAIN STRING LITERAL AGAIN. Two companions stood with it - a `FEED_HOST_TEXT` holding the
- * canonical spelling and an `ALLOWED_FEED_HOSTS` array to check candidates against - and
- * both are gone, because the subject's constructor takes a plain `string` and no allow-list
- * exists anywhere in the module under test. Section 10 holds that surface and carries the
- * record of why the allow-list was withdrawn rather than moved.
+ * `.invalid` is reserved precisely so that it can never resolve, which is the point: the ported
+ * adapter performs no live Google call and needs no credentials.
  */
 const FEED_HOST = 'feed.example.invalid';
 
 /**
  * The same placeholder wearing MIXED CASE, and nothing else.
  *
- * Used by one case to prove the host is forwarded BYTE-IDENTICALLY. The shipped module does
- * not parse, trim, lower-case, validate, prefix with a scheme or default the value it holds;
- * it hands the field to the renderer exactly as the constructor received it. This constant
- * is visibly non-canonical, so a subject that lower-cased its field could not pass.
+ * Used by one case to prove the host is forwarded byte-identically.
  *
- * ★★ THIS DOCBLOCK ONCE DESCRIBED THIS CONSTANT AS A PROBE OF "TWO CONTROLS THE SHIPPED
- * MODULE NOW CARRIES" - an allow-list factory that trimmed and lower-cased, and a
- * constructor check that accepted or refused without normalising. Neither control exists in
- * the module under test: together they were an unplanned host-policy subsystem, and section
- * 10 records why it was withdrawn rather than relocated. The paragraph above is what this
- * constant was originally named for, and it is accurate again.
- *
- * The observation that surrounded the withdrawn version was correct and is worth keeping:
- * `CGI.HTTP_HOST` was interpolated unchecked at five legacy sites
- * [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24], and an API
- * Gateway `Host` header is chosen by whoever sends the request rather than by the
- * deployment. What follows from that is an obligation on the composition root to supply a
- * CONFIGURED host, stated there and on the constructor parameter - not a policy this module
- * is authorised to enforce.
- *
- * Mixed case is SHAPE-VALID - a host's letters may be either case - so this value is also
- * accepted by the grammar the renderer still enforces, which section 10 asserts alongside
- * the values that grammar refuses.
+ * Module now carries" - an allow-list factory that trimmed and lower-cased, and a constructor
+ * check that accepted or refused without normalising.
  */
 const MIXED_CASE_FEED_HOST = 'Feed.EXAMPLE.invalid';
 
 /**
- * The placeholder wearing surrounding whitespace, which the SERVICE forwards untouched and
- * the RENDERER refuses.
+ * The placeholder wearing surrounding whitespace, which the SERVICE forwards untouched and the
+ * RENDERER refuses.
  *
- * Both halves matter, and holding them in one named constant is what makes the seam
- * legible. The service performs no check and no normalisation, so a padded value reaches
- * the renderer with its padding intact - section 3 asserts that. The renderer's grammar
- * refuses whitespace, leading, trailing or internal, and refuses by throwing, because a bad
- * origin poisons every URL in the document rather than one field - section 10 asserts that.
+ * Both halves matter, and holding them in one named constant is what makes the seam legible.
  *
- * ★ THIS DOCBLOCK ONCE SAID THE CONSTRUCTOR REFUSED THIS VALUE, AND THEN, ONE REVISION
- * LATER, THAT AN ALLOW-LIST FACTORY TRIMMED IT WHILE THE CONSTRUCTOR REFUSED IT. Neither
- * describes the shipped module: the constructor takes a plain string and inspects nothing.
- * The refusal did not lapse, it MOVED - from construction to render - and section 10 proves
- * it still arrives.
- *
- * It stays a named constant because it is the value whose handling differs most visibly
- * between the two layers, and because the legacy interpolated whatever the engine reported
- * and checked nothing at all [integrationServices/google/views/feed/product.cfm:L14, L15,
- * L22, L23, L24].
+ * It stays a named constant because it is the value whose handling differs most visibly between
+ * the two layers.
  */
 const PADDED_FEED_HOST = '  Feed.EXAMPLE.invalid  ';
 
@@ -208,55 +65,56 @@ const PADDED_FEED_HOST = '  Feed.EXAMPLE.invalid  ';
  * The subject holds an instant rather than reading a clock, which is what makes it deterministic;
  * nothing in this file consults the system clock.
  */
-// THERE IS NO FEED SCHEME CONSTANT, because the subject takes no scheme. An intervening revision
-// declared `const FEED_SCHEME: FeedUrlScheme = 'http'` here to feed a constructor argument that
-// accepted security finding S-09; the argument is removed and the scheme is the frozen legacy
-// literal owned by `src/integrations/google/rssFeedRenderer.ts`. The inversion is the trailing
-// block of this file.
 
 const FEED_INSTANT = new Date('2024-06-01T12:34:56.789Z');
 
-/** The wire form of {@link FEED_INSTANT}, for the no-mutation case. */
+/**
+ * The wire form of {@link FEED_INSTANT}, for the no-mutation case.
+ */
 const FEED_INSTANT_ISO = '2024-06-01T12:34:56.789Z';
 
 /**
  * What the double renderer returns, and what the subject must return unchanged.
  *
  * Deliberately hostile to an orchestrator that does one thing too many: it opens and closes with
- * whitespace, so a trim shows up; it carries `&`, `<`, `>` and `"` unescaped, so any re-encoding
- * shows up; and it is not well-formed markup, so any parse, validation or re-serialisation shows
- * up.
+ * whitespace, so a trim shows up; it carries `&`, `<`, `>` and `"` unescaped.
  */
 const RENDERED_FEED_SENTINEL = '  <<fake rendered feed>> & <not escaped> "verbatim"  ';
 
-/** A second, distinguishable document, for the cases that prove instances are independent. */
+/**
+ * A second, distinguishable document, for the cases that prove instances are independent.
+ */
 const ALTERNATE_FEED_SENTINEL = '<<second fake rendered feed, from a second instance>>';
 
-/** The ordered-log entry recorded when the row source is entered. */
+/**
+ * The ordered-log entry recorded when the row source is entered.
+ */
 const ROW_SOURCE_STEP = 'row source read';
 
-/** The ordered-log entry recorded when the renderer is entered. */
+/**
+ * The ordered-log entry recorded when the renderer is entered.
+ */
 const RENDERER_STEP = 'renderer invoked';
 
 /**
  * The one legal step sequence for a successful generation.
  *
  * "Create the product feed" [integrationServices/google/controllers/feed.cfc:L62]: the legacy
- * selected once and rendered once, in that order, for one request. Asserted as a whole array rather
- * than as two "was called" checks, which pass just as happily when the order is reversed - meaning
- * rows rendered before they were read.
+ * selected once and rendered once, in that order, for one request.
  */
 const READ_THEN_RENDER: readonly string[] = [ROW_SOURCE_STEP, RENDERER_STEP];
 
-/** The message carried by the row-source failure the propagation cases inject. */
+/**
+ * The message carried by the row-source failure the propagation cases inject.
+ */
 const ROW_SOURCE_FAILURE_MESSAGE = 'fake row source read failure';
 
-/** The message carried by the renderer failure the propagation cases inject. */
+/**
+ * The message carried by the renderer failure the propagation cases inject.
+ */
 const RENDERER_FAILURE_MESSAGE = 'fake renderer failure';
 
-// ---------------------------------------------------------------------------
-// Local types and the row factory
-// ---------------------------------------------------------------------------
+// Local types and the row factory.
 
 /**
  * The projection as it crosses the subject: opaque, and never inspected by it.
@@ -266,23 +124,12 @@ const RENDERER_FAILURE_MESSAGE = 'fake renderer failure';
 type FeedRows = readonly GoogleProductFeedRow[];
 
 /**
- * One row, with EVERY key present.
+ * One row, with every key present.
  *
- * Completeness is not a stylistic choice: the shipped projection declares all
- * twenty-three fields REQUIRED, several with a type that admits absence, so a
- * factory that omitted a key would not compile - see finding 5 in the header.
+ * The count was twenty-two and `brandID` is the twenty-third.
  *
- * ★ THE COUNT WAS TWENTY-TWO AND `brandID` IS THE TWENTY-THIRD. The renderer gates
- * `<g:brand>` on brand PRESENCE
- * [integrationServices/google/views/feed/product.cfm:L32] and the nullable name is
- * only the body, so presence needed a carrier of its own.
- * The three monetary fields are absent BY VALUE, which is how this suite builds a
- * complete row without naming the money value object: the subject performs no
- * monetary arithmetic, never reads a price, and would behave identically if every
- * price were present.
- *
- * The defaults are obviously fake, after the pattern in [meta/tests/unit/Helper.cfc],
- * and overrides replace individual fields per case.
+ * The defaults are obviously fake, after the pattern in `meta/tests/unit/Helper.cfc`, and
+ * overrides replace individual fields per case.
  */
 function makeFeedRow(overrides: Partial<GoogleProductFeedRow> = {}): GoogleProductFeedRow {
   return {
@@ -300,12 +147,6 @@ function makeFeedRow(overrides: Partial<GoogleProductFeedRow> = {}): GoogleProdu
     skuPrice: undefined,
     skuSalePrice: undefined,
     salePriceExpirationDateTime: undefined,
-    // The key and the name are two separate projection fields, because the legacy gates
-    // element fourteen on the ASSOCIATION and interpolates the name into its body
-    // [integrationServices/google/views/feed/product.cfm:L32]. `brandID` here is the
-    // key as the LEFT join resolved it, so it is present exactly when the association
-    // resolved, and it is the gate. This suite never exercises the brand element — it
-    // asserts orchestration — so the default simply models the ordinary matched row.
     brandID: 'fake-brand-id-1',
     brandName: 'Fake Brand',
     productCode: 'FAKE-PRODUCT-1',
@@ -319,7 +160,9 @@ function makeFeedRow(overrides: Partial<GoogleProductFeedRow> = {}): GoogleProdu
   };
 }
 
-/** One recorded renderer invocation, kept exactly as the subject supplied it. */
+/**
+ * One recorded renderer invocation, kept exactly as the subject supplied it.
+ */
 interface RecordedRendererCall {
   readonly rows: FeedRows;
   readonly feedHost: string;
@@ -329,32 +172,30 @@ interface RecordedRendererCall {
 /**
  * One case's subject plus the three records its doubles keep.
  *
- * The records are exposed through read-only array types over the very arrays the doubles append to,
- * so a case can watch them grow but cannot forge an entry.
+ * The records are exposed through read-only array types over the very arrays the doubles append
+ * to, so a case can watch them grow but cannot forge an entry.
  */
 interface FeedServiceHarness {
   readonly service: GoogleFeedService;
 
   /**
    * The one argument every case passes to `generateProductFeed`.
-   *
-   * ★★★ AAP 0.4.2 MAKES THE HOST AND THE INSTANT A METHOD ARGUMENT, NOT CONSTRUCTOR STATE.
-   * QUOTE-THEN-REVISE: the harness used to hand both to `new GoogleFeedService(...)` and every case
-   * then called `generateProductFeed()` with no argument. The mapping table freezes the ported
-   * signature as `generateProductFeed(criteria: FeedCriteria)` and AAP 0.9.2 gates on that row, so the
-   * pair is assembled here, ONCE, from the same two `FeedServiceHarnessOptions` members as before, and
-   * every case passes this value. What each case observes is unchanged: the same host and the same
-   * instant still arrive at the renderer.
    */
   readonly criteria: FeedCriteria;
 
-  /** Every collaborator entry, in the order the subject reached it. */
+  /**
+   * Every collaborator entry, in the order the subject reached it.
+   */
   readonly callLog: readonly string[];
 
-  /** One entry per row-source call, holding the arguments that call received. */
+  /**
+   * One entry per row-source call, holding the arguments that call received.
+   */
   readonly rowSourceCallArguments: readonly (readonly unknown[])[];
 
-  /** One entry per renderer call, holding what that call received. */
+  /**
+   * One entry per renderer call, holding what that call received.
+   */
   readonly rendererCalls: readonly RecordedRendererCall[];
 }
 
@@ -362,73 +203,46 @@ interface FeedServiceHarness {
  * How a case configures its doubles.
  *
  * `read` is required because every case decides what the read does - resolve, reject or stay
- * pending. The other three are optional and, under `exactOptionalPropertyTypes`, an unneeded one is
- * OMITTED rather than set `undefined`.
+ * pending.
  */
 interface FeedServiceHarnessOptions {
-  /** Invoked by the double row source; its result is what the subject awaits. */
+  /**
+   * Invoked by the double row source; its result is what the subject awaits.
+   */
   readonly read: () => Promise<FeedRows>;
 
-  /** Invoked by the double renderer to produce the document. Defaults to the sentinel. */
+  /**
+   * Invoked by the double renderer to produce the document. Defaults to the sentinel.
+   */
   readonly render?: (call: RecordedRendererCall) => string;
 
   /**
    * The host placed on {@link FeedServiceHarness.criteria}. Defaults to {@link FEED_HOST}.
    *
-   * QUOTE-THEN-REVISE: this used to read "The host given to the constructor". It is now a member of
-   * the method argument, per AAP 0.4.2; the option itself is unchanged.
-   *
-   * ★ A PLAIN `string`, WHICH IS THE SHIPPED CONTRACT'S OWN MEMBER TYPE. This was
-   * briefly a branded `TrustedFeedHost`, which meant a case could not hand the subject a
-   * value the withdrawn allow-list had not minted - and therefore could not probe what the
-   * subject does with an arbitrary host at all. The type is the contract's again.
+   * A plain `string`, which is the shipped contract's own member type.
    */
   readonly feedHost?: string;
 
-  /** The instant placed on {@link FeedServiceHarness.criteria}. Defaults to {@link FEED_INSTANT}. */
+  /**
+   * The instant placed on {@link FeedServiceHarness.criteria}. Defaults to {@link FEED_INSTANT}.
+   */
   readonly now?: Date;
 }
 
 /**
  * Builds one subject wired to two fresh doubles, and returns both plus their records.
  *
- * A FRESH subject and a FRESH pair of doubles per call, with the records created here and captured
- * by these closures alone. Nothing is reset between cases because nothing is shared, which is
- * stronger than resetting: there is no state to reset, no spy is installed, and there is nothing to
- * restore.
- *
  * JUDGMENT CALL: both collaborators arrive as explicit, typed CONSTRUCTOR arguments, and that is
- * the whole replacement for the legacy dependency mechanism. The legacy controller declared its
- * collaborators as component properties [integrationServices/google/controllers/feed.cfc:L51-L52]
- * which a convention-scanning container resolved at runtime by name; the target wires them
- * explicitly, so the graph is checked by the compiler rather than discovered by a scan, and
- * retiring that scan also retires the thirty-second first-scan lock the container took. This suite
- * is the proof: no container, service locator, registry, decorator or reflection facility appears
- * anywhere in it.
+ * the whole replacement for the legacy dependency mechanism.
  *
- * JUDGMENT CALL: the legacy's dead collaborator is NOT carried forward.
- *   [integrationServices/google/controllers/feed.cfc:L51] declares
-
- *   `property name="productService" type="any";`
-
- * and the method body NEVER READS IT; the only collaborator that body reaches for is the SKU
-
- * service at [.../feed.cfc:L63]. Interface parity binds the METHOD surface, not a collaborator
-
- * nothing calls, and carrying it would have forced an unused constructor argument on the
-
- * subject, so omitting it preserves parity rather than diverging from it.
-
+ * JUDGMENT CALL: the legacy's dead collaborator is not carried forward.
+ * [integrationServices/google/controllers/feed.cfc:L51] declares.
  */
 function makeFeedServiceHarness(options: FeedServiceHarnessOptions): FeedServiceHarness {
   const callLog: string[] = [];
   const rowSourceCallArguments: (readonly unknown[])[] = [];
   const rendererCalls: RecordedRendererCall[] = [];
   const render = options.render ?? ((): string => RENDERED_FEED_SENTINEL);
-
-  // The double row source, typed to the shipped one-method narrowing, which an object literal
-  // satisfies. The rest parameter captures whatever arrives, which is how a case proves the subject
-  // invents no argument for a query that declares none.
   const repository: GoogleProductFeedRowSource = {
     fetchProductFeedRows: (...args: readonly unknown[]): Promise<FeedRows> => {
       callLog.push(ROW_SOURCE_STEP);
@@ -446,9 +260,7 @@ function makeFeedServiceHarness(options: FeedServiceHarnessOptions): FeedService
     return render(call);
   };
 
-  // TWO ARGUMENTS, WHICH IS THE WHOLE CONSTRUCTOR: the row source and the renderer seam. The host and
-  // the instant are no longer constructor state, so an instance carries nothing request-scoped and the
-  // three-instance cases below can share one shape without sharing an origin.
+  // Two arguments, which is the whole constructor: the row source and the renderer seam.
   const service = new GoogleFeedService(repository, renderFeed);
 
   // FROZEN, because the subject must forward what it was handed rather than adjust it: a frozen
@@ -464,9 +276,8 @@ function makeFeedServiceHarness(options: FeedServiceHarnessOptions): FeedService
 /**
  * The one renderer call a case expects, narrowed rather than asserted.
  *
- * An indexed read answers `T | undefined` under `noUncheckedIndexedAccess`, and no postfix non-null
- * assertion appears in this file. Throwing a diagnostic on an unreadable shape beats coercing
- * `undefined` and failing three assertions later.
+ * An indexed read answers `T | undefined` under `noUncheckedIndexedAccess`, and no postfix
+ * non-null assertion appears in this file.
  */
 function soleRendererCall(harness: FeedServiceHarness): RecordedRendererCall {
   if (harness.rendererCalls.length !== 1) {
@@ -486,28 +297,18 @@ function soleRendererCall(harness: FeedServiceHarness): RecordedRendererCall {
 /**
  * Generates a feed through the declared port rather than through the class.
  *
- * Deliberately NOT `async`: it forwards the subject's promise instead of awaiting and re-wrapping
+ * Deliberately not `async`: it forwards the subject's promise instead of awaiting and re-wrapping
  * it, which keeps the returned promise the subject's own.
  */
 function generateThroughPort(port: ProductFeedPort, criteria: FeedCriteria): Promise<string> {
   return port.generateProductFeed(criteria);
 }
 
-// ---------------------------------------------------------------------------
-// 1. The declared contract
-//
-// Interface parity is the acceptance contract, and here the parity proof is an assignment the
-// compiler either accepts or rejects.
-// ---------------------------------------------------------------------------
+// The declared contract.
 
 describe('GoogleFeedService - the declared contract', () => {
   it('is assignable to the feed-generation port with no cast and no assertion', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([]) });
-
-    // THIS LINE IS THE PARITY PROOF. A plain annotated binding: no `as`, no `satisfies` standing in
-    // for a real mismatch, no structural adapter between. It compiles only because the class's one
-    // method matches the port's one declared capability exactly - same name, same arity, same
-    // return type.
     const port: ProductFeedPort = harness.service;
 
     await expect(generateThroughPort(port, harness.criteria)).resolves.toBe(RENDERED_FEED_SENTINEL);
@@ -525,9 +326,8 @@ describe('GoogleFeedService - the declared contract', () => {
   });
 
   it('implements a port that declares exactly one capability', () => {
-    // A compile-time exhaustiveness check: if the port ever declared a second member, `keyof` would
-    // widen and the second binding would stop compiling. A runtime key count could not see this,
-    // because an interface emits no runtime value.
+    // A compile-time exhaustiveness check: if the port ever declared a second member, `keyof`
+    // would widen and the second binding would stop compiling.
     type PortCapabilityNames = keyof ProductFeedPort;
     const soleCapabilityName: PortCapabilityNames = 'generateProductFeed';
     const exactlyOneCapability: 'generateProductFeed' = soleCapabilityName;
@@ -535,24 +335,16 @@ describe('GoogleFeedService - the declared contract', () => {
     expect(exactlyOneCapability).toBe('generateProductFeed');
   });
 
-  it('declares that capability with exactly ONE parameter, the criteria (F26)', () => {
+  it('declares that capability with exactly ONE parameter, the criteria', () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([]) });
 
-    // ★★★ QUOTE-THEN-REVISE. This case used to read "declares that capability with no parameters at
-    // all" and assert `boundGenerate.length` was 0, with the comment "zero is the shipped parameter
-    // count, matching the port and the legacy action". AAP 0.4.2 freezes the ported method as
-    // `generateProductFeed(criteria: FeedCriteria)`, records that reshaping in that exact form, and
-    // AAP 0.9.2 admits no fourth reshaping - so the zero-parameter arity was the divergence, not the
-    // contract. ONE is now the shipped count, and it is asserted rather than assumed.
-    //
-    // Bound so the reference carries its receiver rather than dangling. A bound function reports the
-    // arity of what it wraps, less any pre-applied argument, and nothing is pre-applied here.
+    // Bound so the reference carries its receiver rather than dangling.
     const boundGenerate: (criteria: FeedCriteria) => Promise<string> =
       harness.service.generateProductFeed.bind(harness.service);
 
     expect(boundGenerate.length).toBe(1);
 
-    // AND IT IS ONE, NOT TWO. A second parameter would mean a selection surface had been added
+    // And it is one, not two. A second parameter would mean a selection surface had been added
     // alongside the criteria, which the four invariant filters forbid.
     expect(harness.service.generateProductFeed.length).toBe(1);
   });
@@ -569,14 +361,6 @@ describe('GoogleFeedService - the declared contract', () => {
     expect(typeof (await pending)).toBe('string');
   });
 });
-
-// ---------------------------------------------------------------------------
-// 2. The step sequence
-//
-// "Create the product feed" [integrationServices/google/controllers/feed.cfc:L62]. Read, then
-// render, with the whole log asserted as one array every time - a pair of "was it called" checks
-// cannot tell the correct order from the reverse of it.
-// ---------------------------------------------------------------------------
 
 describe('GoogleFeedService - the step sequence', () => {
   it('reads the rows and then renders them, in that order', async () => {
@@ -622,7 +406,7 @@ describe('GoogleFeedService - the step sequence', () => {
     const pending = harness.service.generateProductFeed(harness.criteria);
 
     // The row source was entered synchronously, an async body running to its first await, and the
-    // renderer has NOT been reached: a subject that rendered without awaiting would already have
+    // renderer has not been reached: a subject that rendered without awaiting would already have
     // logged it here.
     expect(harness.callLog).toEqual([ROW_SOURCE_STEP]);
 
@@ -641,9 +425,7 @@ describe('GoogleFeedService - the step sequence', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 3. What each collaborator receives
-// ---------------------------------------------------------------------------
+// What each collaborator receives.
 
 describe('GoogleFeedService - what each collaborator receives', () => {
   it('invokes the row source with no arguments', async () => {
@@ -676,17 +458,7 @@ describe('GoogleFeedService - what each collaborator receives', () => {
 
     await harness.service.generateProductFeed(harness.criteria);
 
-    // ★ THIS CASE BRIEFLY ASSERTED THE OPPOSITE OF ITS OWN TITLE. It minted a host
-    // through an allow-list factory, asserted that the factory had trimmed and lower-cased
-    // the value, and then asserted that what the renderer received was NOT the bytes the
-    // case supplied. The factory is gone - it was part of an unplanned host-policy
-    // subsystem, and section 10 records why it was withdrawn rather than relocated - so the
-    // title is accurate again: the subject holds what it was handed and hands it on.
-    //
-    // A padded host is deliberately the probe. It is the value most likely to be silently
-    // tidied by a well-meaning field initialiser, and it is also a value the RENDERER
-    // refuses, which section 10 asserts. The two together are the whole seam: this module
-    // does not inspect the host, and the grammar is still enforced one layer down.
+    // This case briefly asserted the opposite of its own title.
     expect(soleRendererCall(harness).feedHost).toBe(PADDED_FEED_HOST);
   });
 
@@ -697,12 +469,6 @@ describe('GoogleFeedService - what each collaborator receives', () => {
     });
 
     await harness.service.generateProductFeed(harness.criteria);
-
-    // Casing is the second way a field initialiser quietly normalises, and it is separable
-    // from padding: a subject could trim without lower-casing, or lower-case without
-    // trimming, and one assertion covering both would not say which. Mixed case is also
-    // SHAPE-VALID, so this value proves the pass-through without borrowing the previous
-    // case's refusal.
     expect(soleRendererCall(harness).feedHost).toBe(MIXED_CASE_FEED_HOST);
   });
 
@@ -733,12 +499,10 @@ describe('GoogleFeedService - what each collaborator receives', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 4. The document comes back untouched
+// The document comes back untouched.
 //
-// The reshaping's whole substance is that the caller receives the document, so what arrives must be
-// the renderer's string and nothing else.
-// ---------------------------------------------------------------------------
+// The reshaping's whole substance is that the caller receives the document, so what arrives must
+// be the renderer's string and nothing else.
 
 describe('GoogleFeedService - the document comes back untouched', () => {
   it('resolves to the renderer string verbatim, whitespace and all', async () => {
@@ -746,8 +510,8 @@ describe('GoogleFeedService - the document comes back untouched', () => {
 
     const document = await harness.service.generateProductFeed(harness.criteria);
 
-    // Exact equality against a sentinel that opens and closes with whitespace: no trim, no wrapper,
-    // no envelope, no re-encoding, no compression and no pretty-printing.
+    // Exact equality against a sentinel that opens and closes with whitespace: no trim, no
+    // wrapper, no envelope, no re-encoding, no compression and no pretty-printing.
     expect(document).toBe(RENDERED_FEED_SENTINEL);
     expect(document.startsWith('  ')).toBe(true);
     expect(document.endsWith('  ')).toBe(true);
@@ -783,19 +547,16 @@ describe('GoogleFeedService - the document comes back untouched', () => {
     const document = await harness.service.generateProductFeed(harness.criteria);
 
     // The double renderer emits no Google reference at all, so any occurrence here could only have
-    // been added by the subject. There is none: the ported adapter makes no live call, holds no
-    // endpoint and needs no credentials.
+    // been added by the subject.
     expect(document).not.toMatch(/google/i);
     expect(document).toBe(RENDERED_FEED_SENTINEL);
   });
 });
 
-// ---------------------------------------------------------------------------
-// 5. A feed with no qualifying rows
+// A feed with no qualifying rows.
 //
 // A zero-row feed is an ORDINARY OUTCOME, not an error and not an empty string: the legacy loop
 // over an empty record set still produced a complete document.
-// ---------------------------------------------------------------------------
 
 describe('GoogleFeedService - a feed with no qualifying rows', () => {
   it('still invokes the renderer when the read yields nothing', async () => {
@@ -838,12 +599,7 @@ describe('GoogleFeedService - a feed with no qualifying rows', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 6. Failure propagates in both directions
-//
-// Nothing is caught and nothing is defaulted. Swallowing a read failure would return a document
-// silently omitting products a merchant is advertising, which is worse than returning none.
-// ---------------------------------------------------------------------------
+// Failure propagates in both directions.
 
 describe('GoogleFeedService - failure propagates in both directions', () => {
   it('propagates a read failure to the caller', async () => {
@@ -942,12 +698,10 @@ describe('GoogleFeedService - failure propagates in both directions', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 7. Constructor injection, and no hidden state anywhere
+// Constructor injection, and no hidden state anywhere.
 //
 // The collaborators arrive through the constructor and nowhere else: no module-level instance to
 // share, no lazy collaborator to memoise, no cached document to serve.
-// ---------------------------------------------------------------------------
 
 describe('GoogleFeedService - constructor injection and no hidden state', () => {
   it('keeps two instances independent, so neither holds shared module state', async () => {
@@ -966,8 +720,8 @@ describe('GoogleFeedService - constructor injection and no hidden state', () => 
       ALTERNATE_FEED_SENTINEL,
     );
 
-    // Each instance reached only its own collaborators. A module-level row source or renderer would
-    // have crossed here.
+    // Each instance reached only its own collaborators. A module-level row source or renderer
+    // would have crossed here.
     expect(soleRendererCall(first).rows).toBe(firstRows);
     expect(soleRendererCall(second).rows).toBe(secondRows);
     expect(first.callLog).toEqual(READ_THEN_RENDER);
@@ -1038,59 +792,21 @@ describe('GoogleFeedService - constructor injection and no hidden state', () => 
 
     const document = await harness.service.generateProductFeed(harness.criteria);
 
-    // Both observable effects trace back to an injected double: the rows the renderer saw came from
-    // the double row source, and the document is the one the double renderer returned. Had the
-    // subject built either, neither identity would hold.
+    // Both observable effects trace back to an injected double: the rows the renderer saw came
+    // from the double row source, and the document is the one the double renderer returned.
     expect(soleRendererCall(harness).rows).toBe(rows);
     expect(document).toBe(RENDERED_FEED_SENTINEL);
   });
 });
 
-// ---------------------------------------------------------------------------
-// 8. The surface takes EXACTLY ONE argument, and it admits no invented input beyond it
+// The surface takes EXACTLY one argument, and it admits no invented input beyond it.
 //
-// ★★★ QUOTE-THEN-REVISE, AND THE HEADING ITSELF WAS THE DEFECT. This section used to be titled "The
-// surface admits no invented input" and opened:
-//
-//   "JUDGMENT CALL: NO CRITERIA TYPE EXISTS, AND NONE IS INVENTED HERE. Settled by reading
-//    [integrationServices/google/controllers/feed.cfc:L58-L73] [...] The legacy action took no
-//    caller-supplied narrowing whatsoever and `ProductFeedPort` matches that with no parameters.
-//    Declaring a named-but-empty criteria type would invent a requirement the source does not
-//    supply, so this suite declares none and asserts that the shipped surface rejects one."
-//
-// A code review found the description stale rather than wrong-headed, and the distinction matters.
-// The READING of the legacy is exact and is kept below: every reference to the request context at
-// [integrationServices/google/controllers/feed.cfc:L58-L73] is a WRITE - the selection assigned onto
-// it at L63, then joins and the four conditions at L68-L72 - and NOTHING is read back out, the
-// selection factory taking no arguments at all. So the legacy took no caller narrowing, and the four
-// conditions are INVARIANTS of the feed rather than defaults of a query, enforced in the row source
-// and pinned by that module's suite.
-//
-// WHAT CHANGED IS THE ARGUMENT COUNT, AND IT CHANGED FOR A REASON THAT IS NOT CALLER NARROWING. AAP
-// 0.4.2 freezes the ported signature as `generateProductFeed(criteria: FeedCriteria)`, and
-// {@link FeedCriteria} carries exactly two members - `feedHost` and `now`. Neither is a filter: the
-// host is the origin the five URL sites are built from, which the legacy read per-request from
-// `CGI.HTTP_HOST` and which security review S-15 moved behind a deployment-owned allow-list, and the
-// instant is the single clock reading every sale-price effective-date range in the document is
-// evaluated against. Both are AMBIENT REQUEST STATE the legacy read from the engine, made explicit
-// as an argument because there is no ambient request scope here to read them from - transformation
-// rule T6, applied to the one place a feed needs it. So the surface is NOT nullary, and the assertion
-// worth making is the one below: exactly one argument, of exactly that shape, and no narrowing of any
-// kind admitted alongside it.
-//
+// "judgment call: no criteria type exists, and none is invented here.
 // The two cases below are COMPILE-TIME assertions. Each `@ts-expect-error` exists solely to assert a
-// deliberate type failure: were the surface ever widened to accept what is passed, the directive would
-// become unused and the typecheck gate would fail.
-// ---------------------------------------------------------------------------
 
 describe('GoogleFeedService - the surface takes one criteria argument and no narrowing', () => {
   it('declares exactly one parameter, and it is the two-member criteria', async () => {
     const harness = makeFeedServiceHarness({ read: () => Promise.resolve([makeFeedRow()]) });
-
-    // ★★ THE ARITY AND THE SHAPE ARE BOTH DERIVED, so a signature change is a compile error rather
-    // than a stale comment - which is precisely the failure mode a code review found in the sentence
-    // this replaced. `Parameters<>` reads the arity off the shipped method and `keyof` reads the
-    // member set off the shipped type; neither is restated as a literal.
     const parameterCount: 1 = 1 satisfies Parameters<
       GoogleFeedService['generateProductFeed']
     >['length'];
@@ -1099,8 +815,8 @@ describe('GoogleFeedService - the surface takes one criteria argument and no nar
     const declaredMembers: readonly (keyof FeedCriteria)[] = ['feedHost', 'now'];
     expect([...declaredMembers].sort()).toEqual(['feedHost', 'now']);
 
-    // And the one argument is genuinely required: the criteria the harness supplies is forwarded and
-    // the document comes back.
+    // And the one argument is genuinely required: the criteria the harness supplies is forwarded
+    // and the document comes back.
     await expect(harness.service.generateProductFeed(harness.criteria)).resolves.toBe(
       RENDERED_FEED_SENTINEL,
     );
@@ -1109,20 +825,9 @@ describe('GoogleFeedService - the surface takes one criteria argument and no nar
   });
 
   it('declares the criteria as REQUIRED, so no call may omit it', () => {
-    // ★★ A PURE COMPILE-TIME ASSERTION, AND IT IS DELIBERATELY NOT AN INVOCATION. What is guaranteed
-    // here is the TYPE: a call that omits the criteria does not compile. A run-time claim would be
-    // dishonest, because a JavaScript caller bypassing the types reaches a body that reads
-    // `criteria.feedHost` and gets whatever that produces - which is not a contract and must not be
-    // asserted as one. So nothing is called.
-    //
-    // ★★★ REQUIREDNESS IS CHECKED THROUGH THE TUPLE LENGTH, and no `@ts-expect-error` on a nullary
-    // CALL would do it. A one-parameter function is assignable to a zero-parameter function type in
-    // TypeScript - fewer parameters is always safe - so such a directive would go unused and report
-    // itself. `Parameters<F>` distinguishes the two cases exactly: a REQUIRED parameter gives the
-    // tuple `[FeedCriteria]` whose `length` is `1`, while an OPTIONAL one gives `[FeedCriteria?]`
-    // whose `length` is `0 | 1`. Pinning it to `1` is therefore what fails the moment `criteria`
-    // becomes optional - which is the revision that would re-introduce an implicit host and an
-    // implicit clock, and the one the stale description a code review found had left unguarded.
+    // A pure compile-time assertion, and it is deliberately not an invocation. What is guaranteed
+    // here is the type: a call that omits the criteria does not compile.
+    // REQUIREDNESS IS CHECKED THROUGH THE TUPLE LENGTH, and no `@ts-expect-error` on a nullary
     type FeedCallParameters = Parameters<GoogleFeedService['generateProductFeed']>;
     const requiredArity: FeedCallParameters['length'] = 1;
     const optionalWouldWiden: 1 = requiredArity;
@@ -1133,15 +838,9 @@ describe('GoogleFeedService - the surface takes one criteria argument and no nar
   it('rejects an options bag, a filter toggle, paging and every other narrowing', () => {
     // Stands in for the whole forbidden set at once: the include-inactive, include-unpublished,
     // include-out-of-stock and minimum-quantity switches, a filter array, a predicate, paging, a
-    // sort, a locale, a currency selector, a format discriminator, a destination, a since-marker, a
-    // chunk size, a callback, a streaming shape and a cancellation handle. The criteria is a closed
-    // two-member type, so it refuses all of them identically - and a gateway event and invocation
-    // context with them.
-    //
-    // Asserted against the PARAMETER TYPE rather than by calling, for the reason above and for one
-    // more: reading the parameter type off the method means this case cannot drift from the signature
-    // even if the criteria type is renamed.
+    // sort, a locale.
     const invented: Parameters<GoogleFeedService['generateProductFeed']>[0] = {
+      // That are required are absent.
       // @ts-expect-error - `includeInactive` is not a member of FeedCriteria, and the two members
       // that are required are absent.
       includeInactive: true,
@@ -1152,8 +851,7 @@ describe('GoogleFeedService - the surface takes one criteria argument and no nar
 
   it('rejects an EXTRA member alongside an otherwise valid criteria', () => {
     // The sharper probe: both required members are present and correct, so the only thing wrong is
-    // the third. Excess-property checking is what refuses it, which is what keeps the criteria a
-    // closed contract rather than a bag that happens to carry two known keys.
+    // the third.
     const extended: Parameters<GoogleFeedService['generateProductFeed']>[0] = {
       feedHost: FEED_HOST,
       now: FEED_INSTANT,
@@ -1165,12 +863,9 @@ describe('GoogleFeedService - the surface takes one criteria argument and no nar
   });
 
   it('rejects an asynchronous renderer, so the renderer is synchronous by contract', () => {
-    // Why this matters to the await discipline: the subject awaits the read and does NOT await the
+    // Why this matters to the await discipline: the subject awaits the read and does not await the
     // renderer, which is only correct because the renderer contract returns a string rather than a
     // promise - asserted here.
-    //
-    // The declaration is kept on ONE line deliberately: the directive suppresses only the line
-    // after it, so splitting the initialiser would report itself unused.
     const feedDocument = RENDERED_FEED_SENTINEL;
     // @ts-expect-error - a promise-returning renderer is not assignable: the contract returns string.
     const asyncRenderer: GoogleProductFeedRenderer = () => Promise.resolve(feedDocument);
@@ -1179,19 +874,16 @@ describe('GoogleFeedService - the surface takes one criteria argument and no nar
   });
 });
 
-// ---------------------------------------------------------------------------
-// 9. Nothing else happens
+// Nothing else happens.
 //
 // Selection belongs to the row source and presentation to the renderer, so anything added here
-// would duplicate behaviour in two places - and a second filter could silently contradict the
-// invariant the row source enforces.
-// ---------------------------------------------------------------------------
+// would duplicate behaviour in two places.
 
 describe('GoogleFeedService - nothing else happens', () => {
   it('applies no filtering, forwarding even rows the selection invariants would exclude', async () => {
     // Every row here fails one of the four selection conditions the row source enforces at
-    // [integrationServices/google/controllers/feed.cfc:L68-L72], so none could ever arrive from the
-    // real one. A filter re-applied here would be a second place for the rule to drift.
+    // [integrationServices/google/controllers/feed.cfc:L68-L72], so none could ever arrive from
+    // the real one.
     const rows: FeedRows = [
       makeFeedRow({ skuID: 'fake-sku-id-inactive-sku', skuActiveFlag: false }),
       makeFeedRow({ skuID: 'fake-sku-id-inactive-product', productActiveFlag: false }),
@@ -1237,8 +929,8 @@ describe('GoogleFeedService - nothing else happens', () => {
     const call = soleRendererCall(harness);
 
     // The same array object, which makes element identity automatic: no copy, slice, spread or
-    // projection in between. Asserted on the elements too, so the guarantee is explicit rather than
-    // inferred.
+    // projection in between. Asserted on the elements too, so the guarantee is explicit rather
+    // than inferred.
     expect(call.rows).toBe(rows);
     expect(call.rows.every((row, index) => row === rows[index])).toBe(true);
     expect(call.rows).toEqual([firstRow, secondRow]);
@@ -1283,49 +975,16 @@ describe('GoogleFeedService - nothing else happens', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 10. The narrow surface, and where the host obligations actually live
+// The narrow surface, and where the host obligations actually live.
 //
-// NET-NEW COVERAGE, declared as such per AAP 0.6.6. There is no legacy antecedent: the
-// legacy interpolated `CGI.HTTP_HOST` unchecked at five sites
-// [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24] and published
-// nothing resembling a module surface for a suite to hold.
-//
-// ★ TWO TIERS STOOD HERE FOR ONE REVISION AND HAVE BEEN REPLACED BY THIS ONE. They were
 // "toTrustedFeedHost - the allow-listed authority the feed URLs are built from" and
-// "GoogleFeedService - feed origin validation", together roughly 540 lines exercising an
-// exported `UntrustedFeedHostError`, a branded `TrustedFeedHost` type, an allow-list mint and
-// a second private copy of the renderer's host grammar reached through the constructor. That
-// header argued that "this is the one place in this migration where the
-// reproduce-rather-than-repair rule is deliberately not applied, and the reason is that it is
-// a security boundary rather than a behaviour."
-//
-// THE ARGUMENT IS COHERENT AND THE SUBJECT MODULE WAS NOT AUTHORISED TO HOLD IT. Its
-// authoring authority excludes an allow-list BY NAME - together with an API key, a token
-// check, a signature check and a rate limit - because the legacy endpoint is public and
-// unauthenticated as a matter of verified source fact
-// [integrationServices/google/controllers/feed.cfc:L54-L56], and authorization, if a
-// deployment wants it, is an API Gateway concern owned OUTSIDE this subtree. A suite that
-// exercises an unauthorised surface is the thing that makes that surface look settled, so
-// those cases went with it rather than staying behind to vouch for it.
-//
-// WHAT THIS TIER ASSERTS INSTEAD, and why it is not a reduction in real coverage:
-//   1. The EXPORTED SURFACE is exactly the three symbols the plan permits, read from the
-//      module's own `export` lines for the erasure reason given at the imports.
-//   2. None of the eight withdrawn host-policy symbols is DECLARED at all, exported or not,
-//      so the subsystem cannot return module-privately either.
-//   3. The constructor takes a PLAIN STRING - asserted by the compiler, not by prose - and
-//      performs no check, so no origin policy can hide inside it.
-//   4. The host GRAMMAR is still enforced, by the renderer, and it still THROWS. Every
-//      malformed host the withdrawn constructor guard refused is still refused; the refusal
-//      MOVED from construction to render, and these cases prove it arrives.
-//   5. The residual risk - a well-formed but untrusted host is accepted end to end - is
-//      asserted rather than only argued, because it is the honest consequence of the removal
-//      and a reader deserves to find it pinned rather than reasoned about.
-// ---------------------------------------------------------------------------
+// "GoogleFeedService - feed origin validation", together roughly 540 lines exercising an exported
+// `UntrustedFeedHostError`.
 
 describe('GoogleFeedService - the module surface, which is the finding this tier holds', () => {
-  /** The module whose published surface these cases read. */
+  /**
+   * The module whose published surface these cases read.
+   */
   const SUBJECT_MODULE_PATH = 'src/integrations/google/googleFeedService.ts';
 
   /**
@@ -1345,10 +1004,14 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
     'enum',
   ];
 
-  /** Identifier characters, spelled out so no regular expression is needed to trim a token. */
+  /**
+   * Identifier characters, spelled out so no regular expression is needed to trim a token.
+   */
   const IDENTIFIER_CHARACTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_$';
 
-  /** Line openings that introduce a declaration, exported or module-private. */
+  /**
+   * Line openings that introduce a declaration, exported or module-private.
+   */
   const DECLARATION_LINE_PREFIXES: readonly string[] = [
     'export ',
     'declare ',
@@ -1366,11 +1029,8 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
   /**
    * The eight symbols the withdrawn host-policy subsystem consisted of.
    *
-   * Named individually rather than pattern-matched, so a reader sees exactly which subsystem
-   * these cases exist to keep out. Three were EXPORTS - the error class, the branded type and
-   * the mint - and five were module-private supports for them: the brand symbol, the
-   * allow-list authority, the second copy of the renderer's grammar, its length bound and the
-   * constructor guard that used them.
+   * Named individually rather than pattern-matched, so a reader sees exactly which subsystem these
+   * cases exist to keep out.
    */
   const WITHDRAWN_HOST_POLICY_SYMBOLS: readonly string[] = [
     'UntrustedFeedHostError',
@@ -1383,7 +1043,9 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
     'assertConfiguredFeedHost',
   ];
 
-  /** Re-export forms that would publish a symbol without declaring one. */
+  /**
+   * Re-export forms that would publish a symbol without declaring one.
+   */
   const REEXPORT_FORMS: readonly string[] = [
     'export {',
     'export type {',
@@ -1391,10 +1053,14 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
     'export * ',
   ];
 
-  /** A host carrying both a scheme and a path, which the renderer's grammar refuses. */
+  /**
+   * A host carrying both a scheme and a path, which the renderer's grammar refuses.
+   */
   const SCHEME_AND_PATH_HOST = 'https://attacker.example.invalid/attacker-path';
 
-  /** A host that is perfectly well formed and belongs to nobody this deployment trusts. */
+  /**
+   * A host that is perfectly well formed and belongs to nobody this deployment trusts.
+   */
   const UNTRUSTED_WELL_FORMED_HOST = 'attacker.example.invalid';
 
   function subjectModuleSource(): string {
@@ -1431,8 +1097,8 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
       );
       const identifier = named === undefined ? '' : leadingIdentifier(named);
 
-      // A diagnostic rather than a silent skip: an export line this reader cannot parse is a
-      // gap in the gate, and a gap that fails loudly is the only kind worth having.
+      // A diagnostic rather than a silent skip: an export line this reader cannot parse is a gap
+      // in the gate, and a gap that fails loudly is the only kind worth having.
       if (identifier.length === 0) {
         throw new Error(`could not read an exported symbol name from the line: ${line}`);
       }
@@ -1460,9 +1126,7 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
       expect(source.split('\n').filter((line) => line.startsWith(form))).toStrictEqual([]);
     }
 
-    // E7 - one principal exported unit per file plus CO-LOCATED SUPPORTING TYPES. The class is
-    // the principal unit; the renderer collaborator type and the one-method row-source
-    // narrowing are its supporting types, and both are consumed by this suite's own doubles.
+    // E7 - one principal exported unit per file plus co-located supporting types.
     expect([...exportedSymbolNames(source)].sort()).toStrictEqual([
       'GoogleFeedService',
       'GoogleProductFeedRenderer',
@@ -1473,8 +1137,8 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
   it('★ declares no host-policy symbol under any of the eight names it once used', () => {
     const declared = declarationLines(subjectModuleSource());
 
-    // ANTI-VACUITY: the reader finds real declarations in this module, so the eight empty
-    // results below are absences rather than a scan that matched nothing at all.
+    // ANTI-VACUITY: the reader finds real declarations in this module, so the eight empty results
+    // below are absences rather than a scan that matched nothing at all.
     expect(declared.some((line) => line.includes('GoogleFeedService'))).toBe(true);
     expect(declared.some((line) => line.includes('GoogleProductFeedRowSource'))).toBe(true);
 
@@ -1484,18 +1148,12 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
   });
 
   it('★ takes the host as a plain string and performs no check on it', async () => {
-    // The compile-time half. A plain string literal is assignable to the criteria's `feedHost`,
-    // which a branded type would reject outright - so the member type is asserted by the compiler
-    // and this line stops compiling if the brand comes back.
-    //
-    // QUOTE-THEN-REVISE: this used to read the CONSTRUCTOR's second parameter,
-    // `ConstructorParameters<typeof GoogleFeedService>[1]`. The host is a member of the AAP 0.4.2
-    // method argument now, so the type under test moved with it; the claim is unchanged.
+    // The compile-time half.
     const plainStringIsAssignable: FeedCriteria['feedHost'] = UNTRUSTED_WELL_FORMED_HOST;
     expect(plainStringIsAssignable).toBe(UNTRUSTED_WELL_FORMED_HOST);
 
-    // The runtime half. A value the RENDERER refuses is accepted by the SUBJECT without
-    // complaint, which is the positive statement that no origin policy survives in here.
+    // The runtime half. A value the RENDERER refuses is accepted by the SUBJECT without complaint,
+    // which is the positive statement that no origin policy survives in here.
     expect(() =>
       makeFeedServiceHarness({
         read: () => Promise.resolve([makeFeedRow()]),
@@ -1518,10 +1176,9 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
   });
 
   it('★ the host grammar is still enforced, by the renderer, and it still throws', () => {
-    // Every one of these was refused by the withdrawn constructor guard, and every one is
-    // still refused: emptiness, whitespace-only, a scheme, a path, credentials, a query, a
-    // fragment, internal whitespace, a header-splitting payload, a leading dot, an empty
-    // label, a leading hyphen, a padded value and a value past the length bound.
+    // Every one of these was refused by the withdrawn constructor guard, and every one is still
+    // refused: emptiness, whitespace-only, a scheme, a path, credentials, a query, a fragment,
+    // internal whitespace.
     for (const malformed of [
       '',
       '   ',
@@ -1540,22 +1197,13 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
     ]) {
       expect(() => renderGoogleProductFeed([], malformed, FEED_INSTANT)).toThrow();
     }
-
-    // ANTI-VACUITY: the two hosts this suite uses throughout are ACCEPTED, so the loop above
-    // is not passing because the renderer refuses everything it is handed. Mixed case is
-    // shape-valid and proves the grammar is a grammar rather than an equality check.
     expect(() => renderGoogleProductFeed([], FEED_HOST, FEED_INSTANT)).not.toThrow();
     expect(() => renderGoogleProductFeed([], MIXED_CASE_FEED_HOST, FEED_INSTANT)).not.toThrow();
   });
 
   it('★ a well-formed but untrusted host is accepted end to end, which is the residual risk', async () => {
     // Stated as a case rather than only as a comment, because it is the honest consequence of
-    // withdrawing the allow-list and a reader deserves to find it asserted. A well-formed
-    // authority nobody configured passes the grammar, is not inspected by the service, and is
-    // passed through by the composition root. PROVENANCE is therefore an obligation on the
-    // caller - documented on the constructor parameter and on the composition root's input -
-    // and, if a deployment wants it enforced, an API Gateway concern owned outside this
-    // subtree.
+    // withdrawing the allow-list and a reader deserves to find it asserted.
     const harness = makeFeedServiceHarness({
       read: () => Promise.resolve([makeFeedRow()]),
       feedHost: UNTRUSTED_WELL_FORMED_HOST,
@@ -1570,24 +1218,6 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
   });
 });
 
-// ---------------------------------------------------------------------------
-// The URL scheme is NOT this class's to hold (S-09, declined)
-//
-// Finding S-09 (MEDIUM, CWE-319) asked for the feed's URL scheme to become a deployment-owned
-// value instead of the literal the legacy hardcoded. An intervening revision accepted it, and this
-// block asserted the service's part in it: that it accepted a scheme, held it beside the host, and
-// forwarded it to the renderer unchanged.
-//
-// ★★ THAT ACCEPTANCE IS REVERSED AND THESE CASES ARE ITS INVERSION, kept rather than deleted so
-// the reversal is executed and not merely narrated. AAP 0.1.1 requires preserving "the Google
-// product-feed integration contract exactly", AAP 0.8.1 freezes it, and AAP 0.6.7 admits exactly
-// three divergences in this port - none of them this. The scheme is the frozen `http://` literal
-// owned by `src/integrations/google/rssFeedRenderer.ts`; this class holds only the AUTHORITY half
-// of the origin, whose ALLOW-LIST is genuinely deployment-owned under finding S-15.
-//
-// NET-NEW COVERAGE per AAP 0.6.6.
-// ---------------------------------------------------------------------------
-
 describe('GoogleFeedService - the scheme is not held, forwarded or chosen (S-09 declined)', () => {
   it('★★ hands the renderer THREE arguments: rows, the host, and the instant', async () => {
     const harness = makeFeedServiceHarness({
@@ -1597,10 +1227,6 @@ describe('GoogleFeedService - the scheme is not held, forwarded or chosen (S-09 
     await harness.service.generateProductFeed(harness.criteria);
 
     const call = soleRendererCall(harness);
-
-    // Reflected rather than type-asserted: a removed field is invisible to a typed comparison once
-    // the type is gone, so the recorded call's own key set is what proves the argument list
-    // narrowed. `rows`, `feedHost` and `now`, and nothing between the host and the instant.
     expect(Object.keys(call)).toStrictEqual(['rows', 'feedHost', 'now']);
   });
 
@@ -1613,10 +1239,7 @@ describe('GoogleFeedService - the scheme is not held, forwarded or chosen (S-09 
 
     const call = soleRendererCall(harness);
 
-    // `FEED_HOST` IS THE PLAIN LITERAL, and it is what the harness puts on the criteria. This read
-    // `FEED_HOST_TEXT` while a branded `TrustedFeedHost` constant stood beside a raw-text
-    // companion; the brand, its mint and the companion were all withdrawn with the constructor
-    // guard, so there is one constant again and it is this one.
+    // `FEED_HOST` is the plain literal, and it is what the harness puts on the criteria.
     expect(call.feedHost).toBe(FEED_HOST);
 
     // And the scheme is nowhere on the criteria either, so it cannot be forwarded by accident.
@@ -1625,12 +1248,8 @@ describe('GoogleFeedService - the scheme is not held, forwarded or chosen (S-09 
   });
 
   it('★ will not COMPILE with a scheme, which is what stops the member creeping back', () => {
-    // THE TYPE-LEVEL HALF OF THE REVERSAL, moved with its subject. The earlier revision put the
     // `@ts-expect-error` on a positional CONSTRUCTOR argument, because the scheme had briefly been
-    // one. AAP 0.4.2 makes the per-request values a `FeedCriteria` argument, so a scheme could only
-    // creep back as a MEMBER of that type - and that is what this case now refuses.
     // `@ts-expect-error` fails the build if the error stops being reported, so it cannot rot into a
-    // no-op the way a commented-out assertion would.
     const criteriaWithScheme: FeedCriteria = {
       feedHost: FEED_HOST,
       now: FEED_INSTANT,
@@ -1644,11 +1263,6 @@ describe('GoogleFeedService - the scheme is not held, forwarded or chosen (S-09 
   });
 
   it('★ constructs from ONE argument, leaving the renderer to its default', () => {
-    // ★★★ QUOTE-THEN-REVISE. This case used to read "constructs from THREE arguments" and reason
-    // that "the shipped constructor is `(repository, feedHost, now, renderFeed?)`, so a
-    // three-argument construction is complete". Under AAP 0.4.2 the host and the instant are the
-    // METHOD argument, so the constructor is `(repository, renderFeed?)` and ONE argument is
-    // complete - which is what the class contract block's `@example` now shows.
     const service = new GoogleFeedService({
       fetchProductFeedRows: (): Promise<FeedRows> => Promise.resolve([]),
     });

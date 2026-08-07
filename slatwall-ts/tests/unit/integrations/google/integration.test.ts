@@ -1,47 +1,11 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - tests/unit/integrations/google/integration.test.ts
+// slatwall-ts - tests/unit/integrations/google/integration.test.ts.
 //
 // SUBJECT: src/integrations/google/integration.ts - the `GoogleIntegration` adapter, ported from
-// [integrationServices/google/Integration.cfc:L49-L79] - and, THROUGH that adapter, the five-member
-// contract declared in src/integrations/integrationInterface.ts. There is deliberately no separate
-// suite for the contract: a contract is type declarations with no runtime footprint, so the honest
-// way to assert it is to bind a real implementation to it, with no cast, and let the compiler do the
-// work.
+// [integrationServices/google/Integration.cfc:L49-L79] - and, THROUGH that adapter.
 //
-// COVERAGE CLASSIFICATION: NET-NEW. `meta/tests/` holds nothing for the integration surface, so
-// presenting this suite as parity would be false.
+// The last two are the base defaults, and `getAdminNavbarHTML` is not a contract member at all.
 //
-// EIGHT ADAPTER MEMBERS AGAINST A FIVE-MEMBER CONTRACT, which is the distinction the suite turns on.
-// [integrationServices/IntegrationInterface.cfc:L50-L89] declares five members;
-// [integrationServices/BaseIntegration.cfc:L49] supplies defaults WITHOUT implementing the
-// interface, which is how a component satisfies the contract while declaring fewer methods than the
-// contract has. So the adapter answers eight questions, and what is asserted is that each answers
-// what the CFML answered, whichever component answered it:
-//
-//     init()                  -> the receiver  [integrationServices/google/Integration.cfc:L51-L53]
-//     getIntegrationTypes()   -> 'fw1'         [integrationServices/google/Integration.cfc:L55-L57]
-//     getDisplayName()        -> 'Google'      [integrationServices/google/Integration.cfc:L59-L61]
-//     getSettings()           -> {}            [integrationServices/google/Integration.cfc:L63-L65]
-//     getIntegratedSettings() -> one entry     [integrationServices/google/Integration.cfc:L67-L71]
-//     getSettingOptions(name) -> nothing       [integrationServices/google/Integration.cfc:L73-L77]
-//     getEventHandlers()      -> []            [integrationServices/BaseIntegration.cfc:L67-L69]
-//     getAdminNavbarHTML()    -> ''            [integrationServices/BaseIntegration.cfc:L71-L73]
-//
-// The last two are the base defaults, and `getAdminNavbarHTML` is not a contract member at all. None
-// of the eight is asynchronous: no legacy body reaches a DAO or the ORM, so awaiting one would
-// assert a signature the port does not have.
-//
-// FEED GENERATION IS NOT ASSERTED HERE, because the legacy component holds no feed logic. The
-// entrypoint is a controller member [integrationServices/google/controllers/feed.cfc:L58], the query
-// lives in [integrationServices/google/model/dao/FeedDAO.cfc:L52-L75] and the rendering in
-// [integrationServices/google/views/feed/product.cfm:L11-L65]. The integration contract by itself
-// therefore cannot carry the feed, and this file imports none of the ported replacements.
-//
-// The adapter declares no constructor parameter and no field, reads no configuration and no clock,
-// and makes no outbound call, so this suite needs no double, fixture module, container, environment
-// or server: every subject is built with a bare `new` inside the case that reads it, and nothing is
-// held at module scope.
-// ---------------------------------------------------------------------------
+// Feed generation is not asserted here, because the legacy component holds no feed logic.
 
 import { describe, expect, it } from 'vitest';
 
@@ -69,10 +33,8 @@ describe('the adapter constructs with no argument and carries no state', () => {
   });
 
   it('exposes exactly the eight ported members, and no ninth', () => {
-    // CFML parity [integrationServices/google/Integration.cfc:L51-L77]: six members are declared on
-    // the component and two more arrive from the base component, which is eight and not nine. The
-    // names are the legacy CFML names verbatim, in camelCase, which lets a reviewer diff the two
-    // surfaces directly; the list is alphabetised to match the census.
+    // CFML parity [integrationServices/google/Integration.cfc:L51-L77]: six members are declared
+    // on the component and two more arrive from the base component, which is eight and not nine.
     const surface = Object.getOwnPropertyNames(GoogleIntegration.prototype)
       .filter((member) => member !== 'constructor')
       .sort();
@@ -132,8 +94,8 @@ describe('the five-member contract is satisfied, and the compiler is what proves
 
   it('leaves the inherited navbar default off the contract, where the source left it', () => {
     // CFML parity [integrationServices/IntegrationInterface.cfc:L50-L89]: the <cfinterface>
-    // declares five members and `getAdminNavbarHTML` is not among them, so the ported contract must
-    // not carry it either.
+    // declares five members and `getAdminNavbarHTML` is not among them, so the ported contract
+    // must not carry it either.
     // @ts-expect-error `getAdminNavbarHTML` is a non-interface base default declared at [integrationServices/BaseIntegration.cfc:L71-L73], so it must not be a key of the ported contract. Adding it would misstate what the legacy interface required of its implementors.
     const navbarIsNotAContractMember: keyof IntegrationInterface = 'getAdminNavbarHTML';
     const asPlainString: string = navbarIsNotAContractMember;
@@ -169,9 +131,8 @@ describe('init() hands back the very instance it was called on', () => {
     const adapter = new GoogleIntegration();
 
     // CFML parity [integrationServices/google/Integration.cfc:L51-L53]: the legacy body
-    //   `return this;`
-    // so identity is the contract - deep equality would pass against any second instance and would
-    // prove nothing.
+    // `return this;` so identity is the contract - deep equality would pass against any second
+    // instance and would prove nothing.
     expect(adapter.init()).toBe(adapter);
   });
 
@@ -206,15 +167,7 @@ describe('getIntegrationTypes() answers one scalar value from a four-value vocab
     const adapter = new GoogleIntegration();
 
     // JUDGMENT CALL: 'fw1' is carried over verbatim, even though reading the vocabulary's own
-    // descriptions argues for 'custom'. The vocabulary describes `fw1` as an integration that may
-    // contribute custom views [integrationServices/IntegrationInterface.cfc:L70] and `custom` as
-    // the choice for hooking events with no views
-    // [integrationServices/IntegrationInterface.cfc:L71], so on the descriptions alone neither fits
-    // a feed. THE SOURCE IS AUTHORITATIVE AND IT SAYS `"fw1"`
-    // [integrationServices/google/Integration.cfc:L55-L57]. Interface parity is the acceptance
-    // contract, and the legacy engine keys view resolution off this value - which is why the feed
-    // subsystem has views at all - so the tidier reading would silently change how the platform
-    // classifies this adapter.
+    // descriptions argues for 'custom'.
     const declared: IntegrationType = adapter.getIntegrationTypes();
 
     expect(declared).toBe('fw1');
@@ -238,10 +191,6 @@ describe('getIntegrationTypes() answers one scalar value from a four-value vocab
   it('admits no fifth member for the product feed that the vocabulary never had', () => {
     // JUDGMENT CALL: the four-value vocabulary is not widened with a product-feed member, and no
     // feed method is added to the contract to compensate.
-    // [integrationServices/IntegrationInterface.cfc:L68-L71] documents four values and not one
-    // describes a feed, so the integration contract by itself cannot carry the feed. That is why
-    // feed generation is a separate domain port, implemented by the feed service, the feed
-    // repository and the renderer.
 
     // @ts-expect-error 'productFeed' is deliberately absent from the four documented values at [integrationServices/IntegrationInterface.cfc:L68-L71], so it must not be assignable to the ported union.
     const notAVocabularyMember: IntegrationType = 'productFeed';
@@ -254,11 +203,7 @@ describe('getIntegrationTypes() answers one scalar value from a four-value vocab
 
   it('does not widen to the base component empty-string default', () => {
     // JUDGMENT CALL: the base component's empty-string answer is not a fifth vocabulary value, and
-    // the ported union must never admit it. [integrationServices/BaseIntegration.cfc:L59-L61]
-    // returns `""`, a placeholder for an adapter that has not answered yet rather than a
-    // classification, and admitting it would leave every consumer's exhaustive handling of the
-    // union permanently incomplete. The Google component overrides the member, so it is unreachable
-    // here.
+    // the ported union must never admit it.
 
     // @ts-expect-error The base component answers the empty string [integrationServices/BaseIntegration.cfc:L59-L61], which is a placeholder rather than a vocabulary value, so it must not be assignable to the ported union.
     const baseDefaultIsNotAVocabularyMember: IntegrationType = '';
@@ -284,17 +229,11 @@ describe('getDisplayName() answers Google, and the component tag disagrees with 
   it("answers exactly 'Google'", () => {
     const adapter = new GoogleIntegration();
 
-    // THE METHOD IS AUTHORITATIVE, which is why this assertion reads 'Google'. `getDisplayName()`
-    // is the contract member [integrationServices/IntegrationInterface.cfc:L56-L61] and every
-    // caller wanting a display name calls it; the tag attribute is component metadata no in-scope
-    // caller consults, so following the method reproduces observable behaviour exactly while
-    // following the attribute would change it. The attribute's value appears in the marker below
-    // and nowhere else: no member returns it, no assertion expects it.
+    // The method is authoritative, which is why this assertion reads 'Google'.
     //
     // LEGACY-DEFECT [integrationServices/google/Integration.cfc:L49]: the component tag declares
     // displayname="USA epay", copied from the USAePay payment adapter, while getDisplayName() at
     // L59-L61 answers "Google".
-    //
     // Preserved deliberately; do not fix without a product decision.
     expect(adapter.getDisplayName()).toBe('Google');
     expect(adapter.getDisplayName()).toHaveLength(6);
@@ -321,9 +260,8 @@ describe('getSettings() answers an empty map, which is never the integrated payl
     const adapter = new GoogleIntegration();
 
     // CFML parity [integrationServices/google/Integration.cfc:L63-L65]: the legacy body
-    //   `return {};`
-    // an empty struct is a legitimate answer here rather than a missing one, because this adapter
-    // contributes no setting of its own.
+    // `return {};` an empty struct is a legitimate answer here rather than a missing one, because
+    // this adapter contributes no setting of its own.
     const settings: Record<string, SettingDefinition> = adapter.getSettings();
 
     expect(settings).toStrictEqual({});
@@ -401,19 +339,11 @@ describe('getIntegratedSettings() answers one entry carrying one evidenced field
 describe('getSettingOptions() answers nothing, whatever it is asked', () => {
   it('answers nothing for the very setting name the source tests', () => {
     const adapter = new GoogleIntegration();
-
-    // Reproduced exactly, and this is the case that proves it: asking with the name the source
-    // itself tests still yields nothing. Populating the options would invent a feature, because the
-    // component carries no source for what those values would be. An empty array would be worse,
-    // silently converting "this member never answers" into "this setting has no options". Raising
-    // would turn a quiet non-answer into an error.
     const options: string[] | undefined = adapter.getSettingOptions('productGoogleProductType');
 
     // LEGACY-DEFECT [integrationServices/google/Integration.cfc:L73-L77]: getSettingOptions
     // declares returntype="array", its single conditional branch has an empty body, and the
-    // function contains no return statement anywhere, so it answers null for every input -
-    // including the one setting name it tests.
-    //
+    // function contains no return statement anywhere, so it answers null for every input.
     // Preserved deliberately; do not fix without a product decision.
     expect(options).toBeUndefined();
   });
@@ -429,9 +359,7 @@ describe('getSettingOptions() answers nothing, whatever it is asked', () => {
 
     // CFML parity [integrationServices/google/Integration.cfc:L74]: CFML `eq` is case-insensitive,
     // so the legacy engine matched this spelling just as readily, and the ported comparison goes
-    // through the CFML equality helper to keep that true. The point is the pairing - the match is
-    // preserved AND the answer is still nothing - so what is asserted is the answer, not which
-    // branch ran.
+    // through the CFML equality helper to keep that true.
     expect(adapter.getSettingOptions('PRODUCTGOOGLEPRODUCTTYPE')).toBeUndefined();
   });
 
@@ -519,8 +447,9 @@ describe('getAdminNavbarHTML() answers an empty string, and is no part of the co
   it('answers the empty string', () => {
     const adapter = new GoogleIntegration();
 
-    // CFML parity [integrationServices/BaseIntegration.cfc:L71-L73]: the base body is `return '';`,
-    // and the Google component declines the member, so the empty string is the legacy answer.
+    // CFML parity [integrationServices/BaseIntegration.cfc:L71-L73]: the base body is
+    // `return '';`, and the Google component declines the member, so the empty string is the
+    // legacy answer.
     const markup: string = adapter.getAdminNavbarHTML();
 
     expect(markup).toBe('');

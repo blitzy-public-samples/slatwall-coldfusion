@@ -1,16 +1,6 @@
 // slatwall-ts - unit suite for `src/domain/entities/roundingRule.ts`.
 //
-// NET-NEW coverage: no legacy test component constructs a RoundingRule. The scope is the three
-// behaviours [model/entity/RoundingRule.cfc] declares over the `SwRoundingRule` row - the pure
-// delegation of `roundValue()` [model/entity/RoundingRule.cfc:L66-L68], the three direction options
-// [model/entity/RoundingRule.cfc:L70-L76], and `hasExpressionWithListOfNumericValuesOnly()`, which
-// no line of CFML calls because [model/validation/RoundingRule.json:L4] names it by string
-// [model/entity/RoundingRule.cfc:L78-L86].
-//
-// The decimal-string rounding algorithm is NOT exercised here: it lives at
-// [model/service/RoundingRuleService.cfc:L88-L175] and its measured outputs are characterized by the
-// service-tier suite. Every amount below is handed to the collaborator double by the test and comes
-// back unchanged.
+// NET-NEW coverage: no legacy test component constructs a RoundingRule.
 
 import { describe, expect, it } from 'vitest';
 
@@ -31,11 +21,7 @@ interface RecordedRoundValueCall {
  *
  * The single method mirrors [model/service/RoundingRuleService.cfc:L84-L86] -
  * `roundValueByRoundingRule(required any value, required any roundingRule)` - with the two `any`
- * parameters narrowed to `Money` and `RoundingRule`, which is the shape
- * src/domain/entities/roundingRule.ts:L419-L421 declares without `export`. Because the name cannot
- * be imported, structural typing carries the contract: `RoundingRuleService` structurally satisfies
- * it with its own `roundValueByRoundingRule(value: Money, rule: RoundingRule): Money`, and this
- * double satisfies it the same way.
+ * parameters narrowed to `Money` and `RoundingRule`.
  */
 interface RecordingValueRounder {
   roundValueByRoundingRule(value: Money, rule: RoundingRule): Money;
@@ -44,15 +30,13 @@ interface RecordingValueRounder {
 }
 
 /**
- * Builds a recording double that answers with the supplied amounts in order, repeating the last one
- * once they run out.
+ * Builds a recording double that answers with the supplied amounts in order, repeating the last
+ * one once they run out.
  *
  * Scripting the answers is what makes "delegates on every call" observable: two calls can be given
- * two DIFFERENT answers, so a memoizing entity is caught returning the first answer twice rather
- * than merely calling once. With no scripted answer it replies `Money.zero`, for a subject that
- * never calls `roundValue`.
+ * two DIFFERENT answers.
  *
- * @param results - the answers to hand back, in call order.
+ * @param results the answers to hand back, in call order.
  */
 function aValueRounder(...results: readonly Money[]): RecordingValueRounder {
   const calls: RecordedRoundValueCall[] = [];
@@ -77,13 +61,10 @@ type AttachedPriceGroupRate = RoundingRuleInit['priceGroupRates'][number];
  * One materialized `SwPriceGroupRate` row, as an OPAQUE placeholder.
  *
  * JUDGMENT CALL: the delete-context rule this exists to exercise is
- *   `"priceGroupRates": [{"contexts":"delete","maxCollection":0}]`
- * at [model/validation/RoundingRule.json:L6]. It reads a COLLECTION COUNT and nothing else, so the
- * element's identity is irrelevant and no assertion inspects it. `PriceGroupRate` carries private
- * fields and is therefore nominal, so no object literal can satisfy it; one narrowly-scoped TYPE
- * ASSERTION through `unknown`, confined here, is the honest minimum.
+ * `"priceGroupRates": [{"contexts":"delete","maxCollection":0}]` at
+ * [model/validation/RoundingRule.json:L6].
  *
- * @param priceGroupRateID - an identifier for legibility in failure output.
+ * @param priceGroupRateID an identifier for legibility in failure output.
  */
 function anAttachedPriceGroupRate(priceGroupRateID: string): AttachedPriceGroupRate {
   return { priceGroupRateID } as unknown as AttachedPriceGroupRate;
@@ -93,15 +74,10 @@ function anAttachedPriceGroupRate(priceGroupRateID: string): AttachedPriceGroupR
  * Builds the rule under test, fresh, with every unspecified column absent.
  *
  * `roundingRuleID` defaults to `''` because that is what the source declares:
- *   `unsavedvalue="" default=""`
- * at [model/entity/RoundingRule.cfc:L52], so the default subject is an UNSAVED row and `isNew()`
- * answers honestly for it. `priceGroupRates` defaults to `[]`, so `.length` is always a legal
- * question. Every optional slot is typed `?: T | undefined` so a test can pass `undefined` OUT LOUD
- * where the absence is the thing asserted, which `exactOptionalPropertyTypes` makes a distinct
- * type.
+ * `unsavedvalue="" default=""` at [model/entity/RoundingRule.cfc:L52].
  *
- * @param init - the columns to populate.
- * @param valueRounder - the collaborator to inject; a recording double by default.
+ * @param init the columns to populate.
+ * @param valueRounder the collaborator to inject; a recording double by default.
  */
 function aRoundingRule(
   init: {
@@ -146,14 +122,9 @@ const DELETE_CONTEXT_MAX_COLLECTION = 0;
  * [model/validation/RoundingRule.json:L6] means "refuse to delete a rounding rule that price-group
  * rates still reference".
  *
- * THIS IS A SUITE-LOCAL RESTATEMENT AND NOT PRODUCTION ENFORCEMENT. In CFML the rule consulted a
- * live Hibernate lazy collection, so it blocked whenever child rows existed; here it can only
- * consult what a repository chose to materialize, which is why
- * src/domain/entities/roundingRule.ts:L601-L614 rules that real enforcement must be a row-count
- * query owned by the repository. What this function and its three tests establish is narrower: the
- * entity hands the rule the input it needs, without a count of its own.
+ * This is a suite-local restatement and not production enforcement.
  *
- * @param rule - the rule a delete is being attempted on.
+ * @param rule the rule a delete is being attempted on.
  * @returns whether the collection is within the declared bound.
  */
 function satisfiesDeleteContextRule(rule: RoundingRule): boolean {
@@ -162,29 +133,7 @@ function satisfiesDeleteContextRule(rule: RoundingRule): boolean {
 
 /**
  * Every member `RoundingRule.prototype` carries, sorted - the interface-parity contract in
- * executable form. Twelve are the legacy CFML names verbatim: the four `accessors=true` getters over
- * [model/entity/RoundingRule.cfc:L52-L55], the two audit timestamp getters [L58, L60], the two opaque
- * account-column getters [L59, L61], the collection getter [L64] and the three declared methods
- * [L66-L86].
- *
- * ★★ THE REMAINING NINE ARE FRAMEWORK MEMBERS THE PORTED SERVICE CONCRETELY CALLS, and the list grew
- * from ONE to nine in one revision, so the reason is recorded here rather than inferred. `isNew` was
- * always among them [model/service/RoundingRuleService.cfc:L57]. The other eight arrived together
- * because `saveRoundingRule` reproduces `super.save`
- * [org/Hibachi/HibachiService.cfc:L133-L169] - and that method has THREE steps, not one:
- *
- *   * `populate` [L145] needs a setter per populatable column, so `setRoundingRuleName`,
- *     `setRoundingRuleExpression` and `setRoundingRuleDirection` are the three ORM-generated setters
- *     over [model/entity/RoundingRule.cfc:L53-L55]. The four audit properties declare
- *     `hb_populateEnabled="false"` [L57-L60] and get none, and `roundingRuleID` is UUID-minted [L52].
- *   * `validate` [L150] records failures through `addError`, and the flush gate [L153] and the return
- *     [L167] read them back - so the five-member error register of
- *     [org/Hibachi/HibachiTransient.cfc:L30-L64] is here: `addError`, `getError`, `getErrors`,
- *     `hasError`, `hasErrors`.
- *
- * Code review recorded both absences as defects of exactly the kind this list exists to make visible:
- * with no setters the payload was never applied, and with no register a refused save was
- * indistinguishable from a successful one.
+ * executable form.
  */
 const PORTED_PUBLIC_SURFACE: readonly string[] = [
   'addError',
@@ -219,11 +168,7 @@ const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
   'clearAttributeCache',
   'getAttributeValue',
   'getSimpleRepresentation',
-  // `validate` STAYS UNPORTED even though the error register it wrote into does not. The register is
-  // five small members with no framework behind them; `validate` is metadata-driven dispatch over
-  // `model/validation/*.json` through `HibachiValidationService`, and the ported services transcribe
-  // the rules they need instead - `collectSaveContextErrors` in
-  // `src/services/roundingRuleService.ts`. So the RULES are reproduced and the DISPATCHER is not.
+  // `validate` STAYS UNPORTED even though the error register it wrote into does not.
   'validate',
   'preInsert',
   'preUpdate',
@@ -236,13 +181,7 @@ const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
 ];
 
 describe('roundValue delegates, and does nothing else', () => {
-  // CFML parity [model/entity/RoundingRule.cfc:L66-L68]: the body is one statement,
-  //
-  //   return getService("roundingRuleService").roundValueByRoundingRule(
-  //       value=arguments.value, roundingRule=this);
-  //
-  // so the whole of this method's behaviour is the crossing. That lookup - the only `getService(`
-  // site in the component - is now the injected collaborator.
+  // So the whole of this method's behaviour is the crossing.
 
   it('hands the collaborator the value it was given, and this rule as the rule', () => {
     const answer = Money.fromDecimalString('8.25');
@@ -348,18 +287,8 @@ describe('roundValue delegates, and does nothing else', () => {
 
 describe('getRoundingRuleDirectionOptions', () => {
   it('returns exactly the three legacy options, in source order, with both fields', () => {
-    // CFML parity [model/entity/RoundingRule.cfc:L70-L76], the literal VERBATIM:
-    //
-    //   return [
-    //       {value="Closest", name="Round to Closest"},
-    //       {value="Up", name="Only Round Up"},
-    //       {value="Down", name="Only Round Down"}
-    //   ];
-    //
     // Order is the order the entries appear in the admin select, and the struct keys stay `value`
-    // and `name` rather than being renamed, so this shape diffs straight against the CFC. Typing
-    // the expectation through the shipped `RoundingRuleDirectionOption` checks the three `value`
-    // strings against the exported union at compile time too.
+    // and `name` rather than being renamed, so this shape diffs straight against the CFC.
     const expected: readonly RoundingRuleDirectionOption[] = [
       { value: 'Closest', name: 'Round to Closest' },
       { value: 'Up', name: 'Only Round Up' },
@@ -417,11 +346,8 @@ describe('getRoundingRuleDirectionOptions', () => {
 
 describe('getRoundingRuleDirection returns the persisted string, un-narrowed', () => {
   // CFML parity [model/entity/RoundingRule.cfc:L55]: the column is a bare `ormtype="string"` with
-  // no check constraint and no enumeration, and [model/validation/RoundingRule.json:L5] requires it
-  // on save WITHOUT constraining its value. So a validated `'Sideways'` is persisted happily
-  // and then reaches the rounding switch, where it matches no case and falls through. Only the
-  // first half is this entity's: the accessor neither rejects nor narrows. The fall-through is
-  // service-side.
+  // no check constraint and no enumeration, and [model/validation/RoundingRule.json:L5] requires
+  // it on save without constraining its value.
 
   it('round-trips a value that is absent from the option list, without throwing', () => {
     const subject = aRoundingRule({ roundingRuleDirection: 'Sideways' });
@@ -463,34 +389,8 @@ describe('getRoundingRuleDirection returns the persisted string, un-narrowed', (
   });
 });
 
-// ---------------------------------------------------------------------------
-// hasExpressionWithListOfNumericValuesOnly
-//
-// CFML parity [model/entity/RoundingRule.cfc:L78-L86], the body VERBATIM:
-//
-//   for(var i=1; i<=listLen(getRoundingRuleExpression()); i++) {
-//       var thisValue = listGetAt(getRoundingRuleExpression(), i);
-//       if((len(thisValue) - find(".", thisValue)) != 2 || !isNumeric(thisValue)) {
-//           return false;
-//       }
-//   }
-//   return true;
-//
-// The condition at L81 is the whole test, and it is NOT the "two decimal places" rule it resembles.
-// CFML's `find(".", v)` answers a 1-BASED POSITION, or 0 when the substring is absent, and the
-// arithmetic is built on that 0, so the real rule is "exactly two characters after the dot, OR a
-// bare two-character numeric". Each row re-derives it:
-//
-//   '.99'     len 3, dot at 1  -> 3 - 1 = 2  and numeric -> ACCEPT
-//   '0.99'    len 4, dot at 2  -> 4 - 2 = 2  and numeric -> ACCEPT
-//   '9.99'    len 4, dot at 2  -> 4 - 2 = 2  and numeric -> ACCEPT
-//   '0.00'    len 4, dot at 2  -> 4 - 2 = 2  and numeric -> ACCEPT
-//   '.95,.99' two elements, each 3 - 1 = 2   and numeric -> ACCEPT
-//   '.9'      len 2, dot at 1  -> 2 - 1 = 1                -> REJECT
-//   '999'     len 3, no dot    -> 3 - 0 = 3                -> REJECT
-//   '0.999'   len 5, dot at 2  -> 5 - 2 = 3                -> REJECT
-//   '99'      len 2, no dot    -> 2 - 0 = 2  and numeric -> ACCEPT (defect, see below)
-// ---------------------------------------------------------------------------
+// '.99' len 3, dot at 1 -> 3 - 1 = 2 and numeric -> ACCEPT '0.99' len 4, dot at 2 -> 4 - 2 = 2 and
+// numeric -> ACCEPT '9.99' len 4, dot at 2 -> 4 - 2 = 2 and numeric -> ACCEPT '0.00' len.
 
 describe('hasExpressionWithListOfNumericValuesOnly accepts', () => {
   it('a leading-point two-decimal expression', () => {
@@ -547,14 +447,9 @@ describe('hasExpressionWithListOfNumericValuesOnly rejects', () => {
 describe('hasExpressionWithListOfNumericValuesOnly: preserved legacy behaviour', () => {
   it('accepts a bare two-digit expression, which is not a two-decimal value at all', () => {
     // LEGACY-DEFECT [model/entity/RoundingRule.cfc:L78-L86]: the predicate accepts "99" because
-    //   len - find(".") == 2
-    // when no decimal point is present, yielding a fractional derived power of 10^(2-3) = 0.1.
+    // len - find(".") == 2 when no decimal point is present, yielding a fractional derived power
+    // of 10^(2-3) = 0.1.
     // Preserved deliberately; do not fix without a product decision.
-    //
-    // The service derives its step as `var rrPower = 1 * (10 ^ (len(rr)-3));`
-    // [model/service/RoundingRuleService.cfc:L95], so a two-character element drives a FRACTIONAL
-    // power. Nothing prevents that - not this predicate, and not the column, which is free text
-    // with no format constraint [model/entity/RoundingRule.cfc:L54].
     expect(expressionIsAccepted('99')).toBe(true);
   });
 
@@ -562,46 +457,38 @@ describe('hasExpressionWithListOfNumericValuesOnly: preserved legacy behaviour',
     // LEGACY-DEFECT [model/entity/RoundingRule.cfc:L78-L86]: the predicate accepts "-.99" because
     // len 4 minus find(".") 2 is 2 and CFML isNumeric("-.99") is true, so a NEGATIVE rounding
     // candidate passes a test whose purpose is to admit only currency-shaped values.
-    //
     // Preserved deliberately; do not fix without a product decision.
     expect(expressionIsAccepted('-.99')).toBe(true);
   });
 
   it('accepts a positively signed two-decimal expression on the same arithmetic', () => {
-    // LEGACY-DEFECT [model/entity/RoundingRule.cfc:L78-L86]: the sign is counted by len() and never
-    // inspected, so "+.99" passes for exactly the reason "-.99" does - the condition tests
+    // LEGACY-DEFECT [model/entity/RoundingRule.cfc:L78-L86]: the sign is counted by len() and
+    // never inspected, so "+.99" passes for exactly the reason "-.99" does - the condition tests
     // character positions, not numeric range.
-    //
     // Preserved deliberately; do not fix without a product decision.
     expect(expressionIsAccepted('+.99')).toBe(true);
   });
 
   it('returns true for an empty expression', () => {
     // CFML parity [model/entity/RoundingRule.cfc:L79]: `listLen('')` is 0, so the loop body never
-    // executes and control falls through to `return true` at L85. Vacuous satisfaction is division
-    // of labour rather than a hole: the separate `"required":true` rule in the same entry
-    // [model/validation/RoundingRule.json:L4] rejects an empty value.
+    // executes and control falls through to `return true` at L85.
     expect(expressionIsAccepted('')).toBe(true);
   });
 
   it('returns true for a list of nothing but delimiters', () => {
-    // CFML parity [model/entity/RoundingRule.cfc:L79]: CFML lists CONTRIBUTE NO ELEMENT for an
+    // CFML parity [model/entity/RoundingRule.cfc:L79]: CFML lists contribute no element for an
     // empty run between delimiters, so `listLen(',,,')` is 0 - the empty case again.
     expect(expressionIsAccepted(',,,')).toBe(true);
   });
 
   it('returns true when the column is null, without throwing', () => {
-    // The shipped predicate does NOT throw for an absent expression: it normalizes at
-    // src/domain/entities/roundingRule.ts:L1034 (`this.roundingRuleExpression ?? ''`) and answers
+    // The shipped predicate does not throw for an absent expression: it normalizes at
+    // src/domain/entities/roundingRule.ts (`this.roundingRuleExpression ?? ''`) and answers
     // exactly as the empty case does.
     //
     // CFML parity [model/entity/RoundingRule.cfc:L79]: `listLen()` requires a string, and the
     // legacy engines coerce a null argument to `''` before counting, which yields 0 - so the same
     // `true`.
-    //
-    // REACHABILITY CAVEAT: `roundingRuleExpression` is `"required":true` in the `save` context
-    // [model/validation/RoundingRule.json:L4], so a validly saved rule cannot carry a null one;
-    // this path is reachable only by invoking the predicate on a hydrated row.
     const subject = aRoundingRule({ roundingRuleExpression: undefined });
 
     expect(subject.getRoundingRuleExpression()).toBeUndefined();
@@ -611,13 +498,12 @@ describe('hasExpressionWithListOfNumericValuesOnly: preserved legacy behaviour',
 });
 
 describe('hasExpressionWithListOfNumericValuesOnly: untrimmed list elements', () => {
-  // CFML parity [model/entity/RoundingRule.cfc:L80-L81]: `listGetAt` hands back the element EXACTLY
-  // as written, padding included, and the two halves of the condition disagree about that padding -
-  // `len()` counts the space and `find()`'s position shifts with it, while `isNumeric()` tolerates
-  // it. The asymmetry is CFML's.
+  // CFML parity [model/entity/RoundingRule.cfc:L80-L81]: `listGetAt` hands back the element
+  // EXACTLY as written, padding included, and the two halves of the condition disagree about that
+  // padding - `len()` counts the space and `find()`'s position shifts with it.
 
   it('accepts an element with a leading space', () => {
-    // `' .99'`: len 4, dot at 2 -> 2, and CFML judges it numeric, space and all.
+    // `'.99'`: len 4, dot at 2 -> 2, and CFML judges it numeric, space and all.
     expect(expressionIsAccepted('.95, .99')).toBe(true);
   });
 
@@ -628,17 +514,8 @@ describe('hasExpressionWithListOfNumericValuesOnly: untrimmed list elements', ()
 });
 
 describe('the four validation-schema properties', () => {
-  // [model/validation/RoundingRule.json], VERBATIM and complete - four properties, no more:
-  //
-  //   "roundingRuleName":       [{"contexts":"save","required":true}]
-  //   "roundingRuleExpression": [{"contexts":"save","required":true,
-  //                               "method":"hasExpressionWithListOfNumericValuesOnly"}]
-  //   "roundingRuleDirection":  [{"contexts":"save","required":true}]
-  //   "priceGroupRates":        [{"contexts":"delete","maxCollection":0}]
-  //
-  // NONE of the four is ENFORCED by the entity: requiredness and schema validation live at the
-  // SERVICE tier. The entity owes the schema the three save-context columns carried faithfully and
-  // unvalidated, the named predicate, and the collection the delete rule counts.
+  // None of the four is ENFORCED by the entity: requiredness and schema validation live at the
+  // SERVICE tier.
 
   it('carries all three save-context columns without validating any of them', () => {
     const subject = aRoundingRule({
@@ -661,12 +538,7 @@ describe('the four validation-schema properties', () => {
   it('exposes the predicate under the exact name the schema invokes by string', () => {
     // CFML parity [model/validation/RoundingRule.json:L4]: the `"method"` key names a member by
     // STRING, which the legacy framework resolved through dynamic invocation. The port resolves it
-    // by NAME ON THE CLASS, so the spelling is part of the contract.
-    //
-    // One of exactly FIVE declaratively invoked validators across the in-scope entity slice:
-    // `getPromotionCodesDeletableFlag` [model/validation/Promotion.json], `hasUniquePromotionCode`
-    // [model/validation/PromotionCode.json], this one, and `hasOneOptionPerOptionGroup` plus
-    // `hasUniqueOptions` [model/validation/Sku.json].
+    // by NAME on the CLASS, so the spelling is part of the contract.
     const subject = aRoundingRule({ roundingRuleExpression: '.99' });
 
     expect(Object.getOwnPropertyNames(RoundingRule.prototype)).toContain(
@@ -677,12 +549,8 @@ describe('the four validation-schema properties', () => {
   });
 
   it('does validate the expression shape on save, through that predicate', () => {
-    // CFML parity [model/validation/RoundingRule.json:L4]: the expression IS validated on save, by
-    // the custom method named above. Only the ENTITY-LEVEL property is unconstrained:
-    //   `property name="roundingRuleExpression" ormtype="string";`
-    // at [model/entity/RoundingRule.cfc:L54] carries no length, no pattern and no
-    // `hb_formFieldType`, so "no format constraint" is true of the column and false of the save
-    // path, and both halves are asserted here.
+    // CFML parity [model/validation/RoundingRule.json:L4]: the expression is validated on save, by
+    // the custom method named above.
     expect(expressionIsAccepted('0.999')).toBe(false);
     expect(aRoundingRule({ roundingRuleExpression: '0.999' }).getRoundingRuleExpression()).toBe(
       '0.999',
@@ -737,9 +605,6 @@ describe('structural parity with the SwRoundingRule row', () => {
   // CFML parity [model/entity/RoundingRule.cfc:L49]: the component declaration carries
   // `entityname="SlatwallRoundingRule" table="SwRoundingRule"`, plus
   // `hb_serviceName="roundingRuleService"` and the literal four-character `hb_permission="this"`.
-  // Those names are the SCHEMA CONTRACT and the legacy admin's routing metadata, kept as INERT DOC
-  // TEXT rather than runtime members - so these assertions test what the module exposes instead of
-  // inventing accessors for them.
 
   it('exposes exactly the thirteen ported members, and no more', () => {
     const members = Object.getOwnPropertyNames(RoundingRule.prototype)
@@ -760,11 +625,8 @@ describe('structural parity with the SwRoundingRule row', () => {
 
   it('declares no remoteID, because the source declares none', () => {
     // Most siblings carry one immediately before the audit run:
-    //   `property name="remoteID" ormtype="string";`
-    // appears at [model/entity/PriceGroupRate.cfc:L58] and again at
-    // [model/entity/PromotionApplied.cfc:L64], and this entity does not carry it. All 99 source
-    // lines of [model/entity/RoundingRule.cfc] mention it ZERO times, so inventing the column would
-    // breach schema continuity.
+    // `property name="remoteID" ormtype="string";` appears at
+    // [model/entity/PriceGroupRate.cfc:L58] and again at [model/entity/PromotionApplied.cfc:L64].
     const subject = aRoundingRule({ roundingRuleID: 'rr-1' });
 
     expect(Object.getOwnPropertyNames(RoundingRule.prototype)).not.toContain('getRemoteID');
@@ -782,13 +644,7 @@ describe('structural parity with the SwRoundingRule row', () => {
   it('is new when the identifier is the empty string', () => {
     // CFML parity [model/entity/RoundingRule.cfc:L52]: `unsavedvalue="" default=""` is what makes
     // the empty string LOAD-BEARING, and the framework chain resolved to exactly this test -
-    // `isNew()` [org/Hibachi/HibachiEntity.cfc:L707-L709] returns `getNewFlag()`, which is
-    // `getPrimaryIDValue() == ""` [org/Hibachi/HibachiEntity.cfc:L571-L576].
-    //
-    // This is the one assertion carried over in substance from
-    // [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67], whose `defaults_are_correct()`
-    // asserted `isNew()` with an empty primary id value, authored here against the members the port
-    // ships.
+    // `isNew()` [org/Hibachi/HibachiEntity.cfc:L707-L709] returns `getNewFlag()`.
     const fresh = aRoundingRule();
 
     expect(fresh.getRoundingRuleID()).toBe('');
@@ -871,19 +727,8 @@ describe('the audit columns', () => {
 });
 
 describe('the Hibachi base class is documented, not reproduced', () => {
-  // CFML parity [org/Hibachi/HibachiEntity.cfc:L565]: the legacy component extended
-  // `HibachiEntity`, whose `onMissingMethod` dispatcher SYNTHESISED members from property metadata
-  // (`get<Prop>Options`, `get<Prop>SmartList`, `get<Prop>Struct`, `get<Prop>Count`, `has<Prop>` and
-  // the EAV `get<AttributeCode>` branch) and threw for anything else:
-  //
-  //   throw('You have called a method #arguments.missingMethodName#() which does not exists
-  //          in the #getClassName()# entity.');
-  //
   // The EAV branch [org/Hibachi/HibachiEntity.cfc:L559] is guarded on
-  // `hasProperty("attributeValues")`, which this entity declares none of, so even in CFML an
-  // unknown `getX()` here fell through to that throw. The port has no dynamic dispatch, so an
-  // unknown member is a COMPILE error and at run time simply absent - which is why these assertions
-  // check absence, not a thrown message.
+  // `hasProperty("attributeValues")`, which this entity declares none of.
 
   it('ships none of the framework members the dispatcher and base class supplied', () => {
     const members = Object.getOwnPropertyNames(RoundingRule.prototype);
@@ -907,26 +752,19 @@ describe('the Hibachi base class is documented, not reproduced', () => {
   });
 });
 
-// ===========================================================================
-// The error register, invoked directly on this entity
-// ===========================================================================
+// The error register, invoked directly on this entity.
 //
-// ★★★ ADDED BECAUSE A MECHANICAL INVENTORY FOUND THESE MEMBERS NAMED BUT NEVER CALLED HERE. A code
-// review reported that "nine public methods have no invocation in any test AST", which is a sharper
-// question than whether a name appears somewhere: a method mentioned only in a comment is a method
-// nothing exercises. The register's behaviour WAS covered - through the service suites, where a refused
-// save is observed - but not at the entity that declares it, so the per-entity contract rested on
-// another tier's assertions. Gate `A24` now requires an actual invocation.
+// Review reported that "nine public methods have no invocation in any test AST".
 //
-// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees and
-// that the save-refusal semantics depend on: a MISS yields an empty array rather than undefined,
-// messages ACCUMULATE under one name rather than replacing, and lookup is CASE-INSENSITIVE while the
-// key remembers the case it was FIRST written with.
+// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees
+// and that the save-refusal semantics depend on: a MISS yields an empty array rather than
+// undefined.
 
 describe('RoundingRule: the inherited error register', () => {
   it('returns an empty array for a name that was never recorded, never undefined', () => {
-    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent name
-    // has to be safe to iterate - `undefined` here would turn a clean validation pass into a crash.
+    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent
+    // name has to be safe to iterate - `undefined` here would turn a clean validation pass into a
+    // crash.
     const subject = aRoundingRule({ roundingRuleID: 'rr-errors-1' });
 
     expect(subject.getError('noSuchRule')).toStrictEqual([]);
@@ -935,8 +773,8 @@ describe('RoundingRule: the inherited error register', () => {
   });
 
   it('★★ accumulates messages under one name instead of replacing them', () => {
-    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after the
-    // first, which is how a partially invalid entity comes to look like a singly invalid one.
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after
+    // the first, which is how a partially invalid entity comes to look like a singly invalid one.
     const subject = aRoundingRule({ roundingRuleID: 'rr-errors-1' });
 
     subject.addError('urlTitle', 'is required');
@@ -949,7 +787,7 @@ describe('RoundingRule: the inherited error register', () => {
   it('★★ looks a name up case-insensitively, and keeps the case it was first written with', () => {
     // CFML struct keys are case-insensitive, so `getError('URLTITLE')` must find what `addError`
     // recorded as `urlTitle` - while [org/Hibachi/HibachiErrors.cfc:L14-L31] REMEMBERS the first
-    // spelling, so the published key is the one the first write used.
+    // spelling.
     const subject = aRoundingRule({ roundingRuleID: 'rr-errors-1' });
 
     subject.addError('urlTitle', 'first');

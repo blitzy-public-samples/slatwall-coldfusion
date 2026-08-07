@@ -1,116 +1,76 @@
-// ---------------------------------------------------------------------------
-// THE SUBTREES THIS FILE NAMES, AND WHAT EACH ONE OWNS
-//
-// The commentary below reasons about the layers it polices by name, and every
-// path it names exists on the branch - so each mention describes real code that
-// this configuration is currently enforcing against, never an intention:
-//
-//   src/domain/promotionEngine  engine type contracts
-//   src/handlers/bootstrap.ts   composition root (wiring)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // slatwall-ts - ESLint flat configuration
 //
-// This file carries the single most important mechanical guarantee in the
-// subtree. The target architecture is ports-and-adapters (hexagonal) with a
-// strictly domain-inward dependency flow, and the `no-restricted-imports`
-// block below is what makes that flow a BUILD FAILURE rather than a
-// code-review convention: `src/domain/**` may not import from
-// `src/repositories/**`, `src/handlers/**` or `src/integrations/**`.
-//
-// WHY THAT RULE IS NOT THEORETICAL
-// The legacy CFML slice violated the boundary constantly, through two
-// mechanisms this port removes outright:
-//
-//   T1 - DI/1 convention scan. Each service declared its collaborators as
-//        `property name="xService";` at the top of the component and a runtime
-//        bean-factory scan resolved them. `model/service/ProductService.cfc`
-//        declares eight of them at L52-L60 (productDAO, skuDAO,
-//        productTypeDAO, dataService, contentService, skuService,
-//        subscriptionService, optionService). In the target every collaborator
-//        is an explicit, compile-checked constructor argument wired once in
-//        `src/handlers/bootstrap.ts`. No runtime scan, no service locator.
-//
-//   T2 - `getService("xService")` locators embedded INSIDE entities. This is
-//        precisely a domain file reaching outward. Re-measured by grep over the
-//        legacy tree, distinguishing occurrences from lines because two calls
-//        can share a line: 205 OCCURRENCES on 204 SOURCE LINES across
-//        `model/entity/*.cfc`, 19 of them in `model/entity/Sku.cfc` alone -
-//        including
-//        [model/entity/Sku.cfc:L258] reaching `promotionService`,
-//        [model/entity/Sku.cfc:L371,L418,L422,L425] reaching `currencyService`
-//        from inside the currency cascade, [model/entity/Sku.cfc:L262,L266,
-//        L437] reaching `priceGroupService`, [model/entity/Sku.cfc:L569,L594]
-//        reaching `skuService`, and [model/entity/Product.cfc:L367,L519]
-//        reaching `productService` and `promotionService`. Every one of those
-//        becomes a constructor-injected port declared in
-//        `src/domain/ports/`. The lint rule is what makes the CFML equivalent
-//        impossible in TypeScript.
-//
+// This file carries the subtree's single most important mechanical guarantee.
+// The target architecture is ports-and-adapters (hexagonal) with a strictly
+// domain-inward dependency flow, and the `no-restricted-imports` block below is
+// what makes that flow a BUILD FAILURE rather than a code-review convention:
+// `src/domain/**` may not import from `src/repositories/**`,
+// `src/handlers/**` or `src/integrations/**`.
+
+// WHY THAT RULE IS NOT THEORETICAL. The legacy CFML slice crossed the boundary
+// through two mechanisms this port removes outright.
+
+//   T1 - DI/1 convention scan. Each service declared collaborators as
+//        `property name="xService";` and a runtime bean-factory scan resolved
+//        them; `model/service/ProductService.cfc:L52-L60` declares eight. In the
+//        target every collaborator is an explicit, compile-checked constructor
+//        argument wired once in `src/handlers/bootstrap.ts`.
+
+//   T2 - `getService("xService")` locators embedded INSIDE entities, which is a
+//        domain file reaching outward. Measured over the legacy tree, counting
+//        occurrences rather than lines because two calls can share one: 205
+//        occurrences on 204 source lines across `model/entity/*.cfc`, 19 of them
+//        in `model/entity/Sku.cfc` alone - among them
+//        [model/entity/Sku.cfc:L258] reaching `promotionService` and
+//        [model/entity/Sku.cfc:L371, L418, L422, L425] reaching
+//        `currencyService` from inside the currency cascade. Each becomes a
+//        constructor-injected port under `src/domain/ports/`, and this rule is
+//        what makes the CFML equivalent impossible in TypeScript.
+
 // TOOLCHAIN (exact pins; see package.json - no caret ranges anywhere)
-//   eslint 10.8.0, typescript-eslint 8.65.0, typescript 5.9.3, prettier 3.9.6
+//   eslint 10.8.0, typescript-eslint 8.65.0, typescript 5.9.3, prettier 3.9.6,
 //   Node 20.20.2 (`.nvmrc`). eslint 10 declares an engine requirement on the
-//   20.19+ line, which is the specific reason the runtime baseline is 20.20.2
-//   rather than an earlier 20.x release.
-//
-// NO THIRD-PARTY ESLINT PLUGINS. The dependency set is fixed at the thirteen
-// exactly-pinned packages package.json declares - 3 runtime and 10 development,
-// no caret ranges anywhere. Every guarantee below is therefore expressed
-// with ESLint core rules plus the `typescript-eslint` rule sets only - no
-// import-resolution plugin, no Prettier bridge preset, no opinionated rule
-// pack. Where a guarantee would normally need a plugin (layer boundaries, the
-// no-barrel policy) it is expressed with core `no-restricted-imports`
-// patterns instead.
-//
-// Two consequences of that constraint are worth stating, because they explain
-// choices that would otherwise look odd:
-//   * `@eslint/js` is not a dependency of eslint 10 and is not installed, so
-//     the `eslint:recommended` preset is unavailable. The core rules this
-//     config wants are therefore enumerated explicitly below.
+//   20.19+ line, which is why the runtime baseline is 20.20.2 rather than an
+//   earlier 20.x release.
+
+// NO THIRD-PARTY ESLINT PLUGINS. The dependency set is the thirteen
+// exactly-pinned packages package.json declares, so every guarantee below is
+// expressed with ESLint core rules plus the `typescript-eslint` rule sets only.
+// Where a guarantee would normally take a plugin - layer boundaries, the
+// no-barrel policy - it is expressed with core `no-restricted-imports` patterns.
+// Two consequences explain choices that would otherwise look odd:
+//   * `@eslint/js` is not a dependency of eslint 10 and is not installed, so the
+//     `eslint:recommended` preset is unavailable and the core rules this config
+//     wants are enumerated explicitly below.
 //   * the `globals` package is not installed either, so the Node global set is
-//     declared inline. Only Node globals are declared - never browser or DOM
-//     globals: this is a headless backend service and the presentation
-//     subsystems (admin/, frontend/, public/, assets/) are out of scope.
-//
-// CONSUMERS
-//   npm run lint         -> `eslint .`            (cwd is this subtree)
-//   npm run verify       -> typecheck + lint + format:check + test
-//
-// ISOLATION INVARIANT
-// This is the ONLY ESLint configuration in the repository, and it lives inside
-// `slatwall-ts/`. Flat-config `files`/`ignores` resolve relative to this
-// file's directory, and `npm run lint` runs with this subtree as its working
-// directory, so ESLint never walks the untouched CFML tree (admin/, assets/,
-// config/, custom/, frontend/, integrationServices/, meta/, model/, org/,
-// public/, tags/, templates/). There is deliberately no root configuration, and
-// lint scope is expressed inside this flat config rather than delegated: the
-// subtree DOES carry a committed `slatwall-ts/.gitignore` (restored under the
-// project-wide security assessment, so a fresh clone protects `.env` and the
-// generated artifact directories), but ESLint 10's flat config does not consult
-// Git ignore semantics for lint scope, so `globalIgnores` below states the same
-// generated paths in the vocabulary ESLint actually reads. The two are held in
-// agreement by review rather than by inheritance - see the `globalIgnores` note.
-// Never run the auto-fixer from the repository root.
-//
-// FORMATTING IS NOT OWNED HERE. Prettier 3.9.6 owns it, via
-// `prettier --check .` against `.prettierrc.json`. This config enables ZERO
-// layout rules. If a conflict ever appears, delete the ESLint rule - never
-// loosen Prettier.
-//
-// NOTE ON PROJECT RULES: no user-specified rules were provided for this
-// project (the rules source returns "No user rules provided."). Their absence
-// is not licence to lower the bar and no rule has been invented to fill the
-// gap; the enterprise-standard practices this file implements are listed in
+//     declared inline - Node globals only, never browser or DOM globals, since
+//     this is a headless backend service and the presentation subsystems are out
+//     of scope.
+
+// ISOLATION INVARIANT. This is the ONLY ESLint configuration in the repository
+// and it lives inside `slatwall-ts/`. Flat-config `files`/`ignores` resolve
+// relative to this file's directory and `npm run lint` runs with this subtree as
+// its working directory, so ESLint never walks the untouched CFML tree. There is
+// deliberately no root configuration. The subtree also carries a committed
+// `slatwall-ts/.gitignore`, but ESLint 10's flat config does not consult Git
+// ignore semantics for lint scope, so `globalIgnores` below restates the same
+// generated paths in the vocabulary ESLint actually reads; the two are held in
+// agreement by review rather than by inheritance. Never run the auto-fixer from
+// the repository root.
+
+// FORMATTING IS NOT OWNED HERE. Prettier 3.9.6 owns it via `prettier --check`
+// against `.prettierrc.json`, and this config enables ZERO layout rules. If a
+// conflict ever appears, delete the ESLint rule - never loosen Prettier.
+
+// PROJECT RULES. No user-specified rules were provided for this project. Their
+// absence is not licence to lower the bar and no rule has been invented to fill
+// the gap; the enterprise-standard practices this file implements are stated in
 // the block comment above each config object.
-// ---------------------------------------------------------------------------
 
 import { globalIgnores } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 
-// ---------------------------------------------------------------------------
 // Layer-boundary vocabulary
-// ---------------------------------------------------------------------------
 
 /**
  * The three outward layers `src/domain/**` may never reach.
@@ -136,24 +96,16 @@ const OUTWARD_LAYERS = ['repositories', 'handlers', 'integrations'];
 /**
  * Build the specifier patterns that catch one outward layer.
  *
- * ESLint 10 matches `no-restricted-imports` pattern groups with the `ignore`
- * package using gitignore semantics, constructed as
- * `ignore({ allowRelativePaths: true, ignorecase: true }).add(group)`. Two
- * properties of that matcher drive the shape below and were verified against
- * the matcher directly rather than assumed:
- *
- *   * A pattern containing a slash before its last segment is ANCHORED. So
- *     `../repositories/*` matches `../repositories/x.js` but NOT
- *     `../../repositories/mysql/connection.js`, and `*` never crosses a `/`.
- *   * `**` does cross `/` and is unanchored, so `**\/<layer>/**` catches every
- *     relative-traversal depth (`../`, `../../`, `../../../src/...`), the
- *     rooted form (`src/<layer>/...`) and, because matching is
- *     case-insensitive by default, casing variants too.
- *
- * The bare `**\/<layer>` entry catches a directory-only specifier such as
- * `'../../repositories'`. The two explicit relative forms are redundant
- * against the `**` patterns but are kept because they document the exact
- * shapes a domain module would most plausibly be tempted to write.
+ * ESLint 10 matches these pattern groups with gitignore semantics, and two
+ * properties of that matcher drive the shape below. A pattern with a slash before
+ * its last segment is ANCHORED, so `../repositories/*` does not match
+ * `../../repositories/mysql/connection.js` and `*` never crosses a `/`. `**` does
+ * cross `/` and is unanchored, so the `**` forms catch every relative-traversal
+ * depth, the rooted `src/<layer>/...` form, and - matching being
+ * case-insensitive - casing variants. The bare `**\/<layer>` entry catches a
+ * directory-only specifier. The two explicit relative forms are redundant against
+ * the `**` patterns and are kept because they document the shapes a domain module
+ * is most likely to write.
  */
 const outwardLayerPatterns = (layer) => [
   `**/${layer}`,
@@ -165,23 +117,17 @@ const outwardLayerPatterns = (layer) => [
 const OUTWARD_LAYER_PATTERNS = OUTWARD_LAYERS.flatMap(outwardLayerPatterns);
 
 /**
- * Packages the domain must not know about either. A layer boundary that only
- * policed first-party paths would still let an entity import the MySQL driver
- * directly, which is the same violation by another route.
+ * Packages the domain must not know about either. A boundary that policed only
+ * first-party paths would still let an entity import the MySQL driver directly,
+ * which is the same violation by another route: `mysql2` belongs to
+ * `src/repositories/**`, `dotenv` to `src/lib/config.ts` and the test tier,
+ * `aws-lambda` and `@types/aws-lambda` to `src/handlers/**`, and no AWS SDK
+ * client belongs in the domain at all.
  *
- *   mysql2            - the database driver; belongs to src/repositories/**
- *   dotenv            - environment loading; belongs to src/lib/config.ts and
- *                       the test tier. Lambda injects env vars natively.
- *   aws-lambda        - the runtime's event and handler types; these belong to
- *   @types/aws-lambda   src/handlers/**. The bare `aws-lambda` entry already
- *                       matches the scoped types package, but both are listed
- *                       so the intent survives a future refactor.
- *   @aws-sdk/**       - no AWS SDK client belongs in the domain.
- *
- * `decimal.js` and `zod` are deliberately NOT restricted: `decimal.js` backs
- * the Money value object, which is the sole arithmetic surface in the target,
- * and `zod` backs the ported declarative validation schemas. Node builtins are
- * not restricted either - the parity helpers may legitimately use them.
+ * `decimal.js` and `zod` are deliberately NOT restricted - the first backs the
+ * Money value object, the sole arithmetic surface in the target, and the second
+ * backs the ported validation schemas. Node builtins are not restricted either,
+ * since the parity helpers legitimately use them.
  */
 const OUTWARD_PACKAGE_PATTERNS = [
   'mysql2',
@@ -194,28 +140,19 @@ const OUTWARD_PACKAGE_PATTERNS = [
 /**
  * Barrel / index re-export specifiers, forbidden subtree-wide.
  *
- * WHAT THIS ENFORCES, STATED AS NARROWLY AS IT IS TRUE: no barrel and no index
- * re-export anywhere in the subtree. Making the IMPORT side mechanical is what
- * stops a barrel appearing by accident - if nothing may import `.../index.*`,
- * nothing has a reason to create one - and the effect is that every import names
- * the exact module that declares the symbol, which keeps each regenerated file's
- * diff minimal and reviewable during the refine loop.
+ * Mechanising the IMPORT side is what stops a barrel appearing by accident: if
+ * nothing may import `.../index.*`, nothing has a reason to create one, and every
+ * import then names the exact module declaring the symbol.
  *
- * WHAT IT DOES NOT ENFORCE, AND WHY THAT IS NOT A GAP. The plan's phrasing pairs
- * "no barrels" with "one exported unit per file", and only the first half is
- * mechanised here. The second half is not the tree's actual shape: 60 of the 89
- * modules under `src/` declare more than one top-level export, and that is
- * correct rather than a violation - a module owning a behaviour also publishes
- * the types of its inputs and results, the frozen constants it is the authority
- * for, and its error classes, all of which belong beside it and nowhere else.
- * `src/handlers/router.ts` is the plain case: one route table, one resolver, and
- * the two types that describe them.
- *
- * The operative standard is therefore ONE COHESIVE UNIT PER FILE with no
- * re-export indirection, and it is stated that way rather than as a count no
- * rule checks. A `max-exports`-style rule is deliberately NOT configured: it
- * would fail two thirds of a tree whose layout the plan itself enumerates
- * file by file.
+ * The plan pairs "no barrels" with "one exported unit per file", and only the
+ * first half is mechanised here - deliberately. Most modules under `src/` declare
+ * more than one top-level export, and that is correct rather than a violation: a
+ * module owning a behaviour also publishes the types of its inputs and results,
+ * the frozen constants it is the authority for, and its error classes, none of
+ * which belong anywhere else. The operative standard is therefore ONE COHESIVE
+ * UNIT PER FILE with no re-export indirection, and a `max-exports`-style rule is
+ * not configured because it would fail most of a tree whose layout the plan
+ * itself enumerates file by file.
  */
 const BARREL_PATTERNS = [
   '**/index.ts',
@@ -264,7 +201,6 @@ const BARREL_GROUP = { group: BARREL_PATTERNS, message: BARREL_MESSAGE };
 const DOMAIN_LAYER_GROUP = { group: OUTWARD_LAYER_PATTERNS, message: DOMAIN_LAYER_MESSAGE };
 const DOMAIN_PACKAGE_GROUP = { group: OUTWARD_PACKAGE_PATTERNS, message: DOMAIN_PACKAGE_MESSAGE };
 
-// ---------------------------------------------------------------------------
 // Node 20 global set
 //
 // Declared inline because the `globals` package is not part of the fixed
@@ -279,7 +215,6 @@ const DOMAIN_PACKAGE_GROUP = { group: OUTWARD_PACKAGE_PATTERNS, message: DOMAIN_
 // `"type": "module"` and tsconfig uses NodeNext, so source is ESM and those
 // identifiers genuinely do not exist at runtime. The Lambda ARTIFACT is
 // CommonJS, but that is an esbuild output format, not a source dialect.
-// ---------------------------------------------------------------------------
 
 const NODE_ESM_GLOBALS = {
   AbortController: 'readonly',
@@ -333,7 +268,6 @@ const NODE_ESM_GLOBALS = {
   WritableStream: 'readonly',
 };
 
-// ---------------------------------------------------------------------------
 // Curated ESLint core rules
 //
 // `eslint:recommended` ships in `@eslint/js`, which is not a dependency of
@@ -345,14 +279,13 @@ const NODE_ESM_GLOBALS = {
 //      rejects, and it does not contradict a compiler option
 //      `tsconfig.json` deliberately leaves off.
 //   2. It cannot fire on a legacy defect that this port reproduces on purpose.
-//      Behaviour preservation extends to defects: a method that throws today
-//      throws in the target, and a discount limit enforced against the wrong
-//      key stays enforced against the wrong key. A lint rule that forces such
-//      a site to be rewritten would change money.
+//      Behaviour preservation extends to defects: a method that throws in the
+//      legacy throws in the target, and a discount limit enforced against the
+//      wrong key stays enforced against the wrong key. A lint rule that forces
+//      such a site to be rewritten would change money.
 //
 // The rules that failed filter 2 are named, with the site that disqualifies
 // them, in the "RULES DELIBERATELY NOT ENABLED" register further down.
-// ---------------------------------------------------------------------------
 
 const CORE_CORRECTNESS_RULES = {
   // CFML `eq` comparisons are case-insensitive and loosely typed; TypeScript is
@@ -361,7 +294,7 @@ const CORE_CORRECTNESS_RULES = {
   // visible at each site instead of invisible.
   eqeqeq: ['error', 'always'],
 
-  // --- Real defects the compiler does not catch ---------------------------
+  // Real defects the compiler does not catch
   'no-cond-assign': ['error', 'always'],
   'no-compare-neg-zero': 'error',
   'no-constant-binary-expression': 'error',
@@ -383,7 +316,7 @@ const CORE_CORRECTNESS_RULES = {
   'use-isnan': 'error',
   'valid-typeof': 'error',
 
-  // --- Constructs with no legitimate use anywhere in this port ------------
+  // Constructs with no legitimate use anywhere in this port
   'no-async-promise-executor': 'error',
   'no-caller': 'error',
   'no-eval': 'error',
@@ -403,38 +336,26 @@ const CORE_CORRECTNESS_RULES = {
   'symbol-description': 'error',
 };
 
-// ---------------------------------------------------------------------------
 // Escape-hatch policy
 //
 // The type gate is absolute: `tsc --noEmit` under the maximal strict profile
 // must report zero errors, with no `any`, no `@ts-ignore`, and no
 // `@ts-expect-error` outside a test that deliberately asserts a type failure.
-// ---------------------------------------------------------------------------
 
 /**
  * Production posture: EVERY suppression comment is forbidden outright.
  *
- * `@ts-expect-error` is banned here rather than merely required to carry a
- * description, because the type gate quoted above admits exactly one exception
- * and it is not "a described suppression in production source" - it is "a test
- * that deliberately asserts a type failure". Allowing a described suppression in
- * `src/**` would have made the gate conditional on prose, and prose does not
- * type-check: a ten-character justification is trivially satisfiable and buys
- * nothing, while the compiler error it silences is exactly the signal this
- * project cannot afford to lose. Null semantics decide money here
- * ([model/entity/Sku.cfc:L269-L273] has no `else` and no fallback, so
- * substituting a value for the absent case would silently sell products for
- * free), and a suppression comment is the one construct that can hide that class
- * of mistake from `tsc`.
+ * `@ts-expect-error` is banned rather than allowed with a description, because
+ * the type gate admits one exception and it is "a test that asserts a type
+ * failure", not "a described suppression in production source". Null semantics
+ * decide money here - [model/entity/Sku.cfc:L269-L273] has no `else` and no
+ * fallback, so substituting a value for the absent case would silently sell
+ * products for free - and a suppression is the one construct that can hide that
+ * from `tsc`. Handle the absent case explicitly instead.
  *
- * `ts-check` stays `false` - permitting `@ts-check` is harmless, since every
- * `.ts` file is type-checked unconditionally and the directive only ever adds
- * checking to a JavaScript file. `minimumDescriptionLength` is deliberately
- * absent: no directive in this object resolves to `'allow-with-description'`
- * any more, so the option would be dead configuration.
- *
- * Handle the absent case explicitly instead of suppressing the diagnostic. The
- * ONLY relaxation in this file is the test tier below.
+ * `ts-check` stays `false` because `@ts-check` only ever adds checking to a
+ * JavaScript file. `minimumDescriptionLength` is absent because no directive here
+ * resolves to `'allow-with-description'`. The ONLY relaxation is the test tier.
  */
 const BAN_TS_COMMENT_PRODUCTION = [
   'error',
@@ -465,21 +386,18 @@ const BAN_TS_COMMENT_TESTS = [
 /**
  * Unused-variable posture.
  *
- * `args: 'none'` is load-bearing, not laziness. Interface parity is this
- * project's acceptance contract: public method signatures are carried over from
- * CFML verbatim, parameter names included, so that a reviewer can diff the two
- * surfaces method by method. That guarantees genuinely unused parameters -
- * `Sku.getPriceByPromotion(promotion)` is ported as a throwing stub because the
- * legacy body calls a method that does not exist [model/entity/Sku.cfc:L258],
- * and the stub ports standing in for out-of-scope branches accept arguments
- * they never read. Renaming those parameters to `_promotion` to satisfy a lint
- * rule would break the parity contract, so parameters are exempt outright.
+ * `args: 'none'` is load-bearing. Interface parity is the acceptance contract, so
+ * public signatures carry the legacy CFML parameter names verbatim, which
+ * guarantees genuinely unused parameters: `Sku.getPriceByPromotion(promotion)` is
+ * a throwing stub because the legacy body calls a method that does not exist
+ * [model/entity/Sku.cfc:L258], and the stub ports standing in for out-of-scope
+ * branches accept arguments they never read. Renaming them to `_promotion` would
+ * break parity, so parameters are exempt outright and `tsconfig.json` omits
+ * `noUnusedParameters` for the same reason.
  *
- * `tsconfig.json` omits `noUnusedParameters` for exactly this reason; this
- * setting keeps ESLint aligned with that decision instead of re-imposing it.
  * Unused *locals* remain errors here and under `noUnusedLocals` in tsc, which
- * is what catches the legacy defect class where a value is computed and then
- * discarded [model/entity/Sku.cfc:L512-L522].
+ * catches the legacy defect class where a value is computed and then discarded
+ * [model/entity/Sku.cfc:L512-L522].
  */
 const NO_UNUSED_VARS_TS = [
   'error',
@@ -494,133 +412,110 @@ const NO_UNUSED_VARS_TS = [
   },
 ];
 
-// ---------------------------------------------------------------------------
 // RULES DELIBERATELY NOT ENABLED
 //
-// This register is as load-bearing as the boundary rule itself. Each entry is
-// something a reviewer might expect to find here, absent for a specific and
-// binding reason. Enabling any of them converts a deliberate, documented
-// porting decision into a lint error.
-//
-//  1. IDENTIFIER-SHAPE RULES - the typescript-eslint identifier naming rule,
-//     the core camel-case rule and the core identifier-pattern rules.
-//     Interface parity is the acceptance contract, so public method names are
-//     the legacy CFML names verbatim. Several preserved identifiers read as
-//     typos and MUST lint clean:
-//       orderItemQulifiedDiscounts      [model/service/PromotionService.cfc:L82-L133]
-//       promotionPeriod.promtionRewards [model/entity/PromotionReward.cfc:L49]
+// Each entry below is a rule a reader might expect here, absent for a binding
+// reason. Enabling any of them turns a documented porting decision into a lint
+// error. Entries are separate blocks so each can be read on its own.
+
+//  1. IDENTIFIER-SHAPE RULES - the typescript-eslint naming rule, core
+//     camel-case and the core identifier-pattern rules. Interface parity is the
+//     acceptance contract, so public method names are the legacy CFML names
+//     verbatim, and five preserved identifiers read as typos yet MUST lint clean:
+//       orderItemQulifiedDiscounts      [model/service/PromotionService.cfc:L142]
+//       promotionPeriod.promtionRewards [model/entity/PromotionReward.cfc:L57]
 //       singlularname on productReviews [model/entity/Product.cfc:L76]
 //       subsciptionUsageBenefit         [model/entity/PriceGroup.cfc:L168]
-//       getSalePricExpirationDateTime() [model/entity/Product.cfc:L614-L622]
-//     The `hb_*`-prefixed metadata strings and the `rbKey` / `hb_rbKey` /
-//     `hb_nullRBKey` resource-bundle identifiers are likewise preserved
-//     verbatim as string constants so the legacy admin can still resolve them.
-//
-//  2. THE CORE RULE THAT FLAGS TODO AND FIXME COMMENTS. Carrying source TODOs
-//     forward is binding: known legacy TODOs are ported as explicitly flagged
-//     TODOs and are never silently completed. The return/exchange branch at
-//     [model/service/PromotionService.cfc:L542-L544] is ported verbatim, still
-//     does nothing, and keeps its `issue #1766` reference; the empty
-//     `g:google_product_category` element in the feed stays empty and stays
-//     flagged. The uniform preserved-defect marker must also lint clean:
-//         // LEGACY-DEFECT [<path>:<locator>]: <description>.
-//         // Preserved deliberately; do not fix without a product decision.
-//
-//  3. `no-empty` AND `no-empty-function` AT ERROR SEVERITY. Preserved no-ops
-//     are legitimate: the issue #1766 branch does nothing by design, and
+//       getSalePricExpirationDateTime() [model/entity/Product.cfc:L618]
+//     The `hb_*` metadata strings and the `rbKey` / `hb_rbKey` / `hb_nullRBKey`
+//     resource-bundle identifiers are preserved verbatim as string constants for
+//     the same reason.
+
+//  2. THE CORE RULE THAT FLAGS TODO AND FIXME COMMENTS. Known legacy TODOs are
+//     carried forward as flagged TODOs and never silently completed: the
+//     return/exchange branch at [model/service/PromotionService.cfc:L542-L544]
+//     is ported verbatim, still does nothing, and keeps its `issue #1766`
+//     reference. The two-line preserved-defect marker AAP 0.6.7 mandates - a
+//     `LEGACY-DEFECT` line carrying a legacy locator, followed by its
+//     do-not-fix trailer - must lint clean for the same reason.
+
+//  3. `no-empty` AND `no-empty-function` AT ERROR SEVERITY. Preserved no-ops are
+//     legitimate: the issue #1766 branch does nothing by design, and
 //     `getSettingOptions` in the Google adapter has an empty conditional body
-//     that is precisely why it returns null while declaring an array return
-//     type [integrationServices/google/Integration.cfc:L73-L77].
-//
-//  4. SIZE AND SHAPE LIMITS - no `max-` family rule and no branch-count rule.
-//     The ported promotion engine reproduces the behaviour of a 489-line legacy
-//     function [model/service/PromotionService.cfc:L58-L546] across nine
-//     modules, and it deliberately contains loop constructs whose ordering is
-//     load-bearing: two insertion sorts running in opposite directions (one
-//     descending by discount amount, one ascending by discount-per-use) and a
-//     two-pass ordered iteration that must reproduce the legacy behaviour on an
-//     empty reward collection. An arbitrary size limit would force
+//     that is precisely why it returns null while declaring an array return type
+//     [integrationServices/google/Integration.cfc:L73-L77].
+
+//  4. SIZE AND SHAPE LIMITS - no `max-` family rule, no branch-count rule. The
+//     ported promotion engine reproduces a 489-line legacy function
+//     [model/service/PromotionService.cfc:L58-L546] across nine modules, and its
+//     loop constructs are load-bearing: two insertion sorts running in opposite
+//     directions, and a two-pass iteration that must reproduce the legacy
+//     behaviour on an empty reward collection. A size limit would force
 //     restructuring that changes money.
-//
-//  5. `no-restricted-syntax`. Two reasons. First, a syntax ban on `throw`
-//     inside an apparently unreachable stub would reject
-//     `Sku.getPriceByPromotion()`, which is ported as a throwing stub because
-//     the legacy body calls `calculateSkuPriceBasedOnPromotion` and that method
-//     does not exist [model/entity/Sku.cfc:L258] - reproduced as a throwing
-//     stub with its TODO, not invented. Second, a syntax guard against raw
-//     float arithmetic on monetary values would also reject the legitimate
-//     integer arithmetic in the SKU cartesian-product odometer
-//     [model/service/SkuService.cfc:L109-L121] and the string-length arithmetic
-//     the rounding algorithm depends on
+
+//  5. `no-restricted-syntax`. A ban on `throw` inside an apparently unreachable
+//     stub would reject `Sku.getPriceByPromotion()`, ported as a throwing stub
+//     because the legacy body calls a method that does not exist
+//     [model/entity/Sku.cfc:L258]. A guard against raw float arithmetic would
+//     reject the legitimate integer arithmetic in the SKU cartesian-product
+//     odometer [model/service/SkuService.cfc:L109-L121] and the string-length
+//     arithmetic the rounding algorithm depends on
 //     [model/service/RoundingRuleService.cfc:L88-L175]. The single-arithmetic-
-//     surface standard is enforced by the Money value object and decimal.js
-//     themselves, plus review - not by pattern-matching syntax.
-//
-//  6. EVERY FORMATTING RULE, and every `stylistic` preset from
-//     typescript-eslint. Prettier 3.9.6 owns formatting through
-//     `prettier --check .`. That covers indentation, quote style, statement
-//     terminators and trailing separators. If a conflict ever surfaces, remove
-//     the ESLint rule; never loosen Prettier.
-//
-//  7. ANY BLANKET BAN ON DEFAULT EXPORTS. The import standard is named imports
-//     only, with no default export except where a third-party module mandates
-//     one - and `eslint.config.mjs`, `esbuild.config.mjs` and
-//     `vitest.config.ts` all mandate one. A blanket ban would reject this very
-//     file. The standard is upheld by review, not by a rule that would have to
-//     carve out its own configuration.
-//
+//     surface standard is enforced by the Money value object, not by syntax.
+
+//  6. EVERY FORMATTING RULE, and every typescript-eslint `stylistic` preset.
+//     Prettier 3.9.6 owns formatting. If a conflict surfaces, remove the ESLint
+//     rule; never loosen Prettier.
+
+//  7. ANY BLANKET BAN ON DEFAULT EXPORTS. The standard is named imports only,
+//     with no default export except where a third-party module mandates one -
+//     and `eslint.config.mjs`, `esbuild.config.mjs` and `vitest.config.ts` all
+//     mandate one, so a blanket ban would reject this very file.
+
 //  8. ANY RULE THAT REQUIRES OR REWARDS BARREL FILES. The opposite is
-//     configured: `BARREL_PATTERNS` forbids importing `.../index.*` anywhere in
-//     the subtree, which makes the no-barrel half of the standard mechanical
-//     from the import side. The "one exported unit per file" half is NOT
-//     mechanised, and no `max-exports`-style rule is enabled, because 60 of the
-//     89 modules under `src/` legitimately publish a behaviour together with the
+//     configured: `BARREL_PATTERNS` forbids importing `.../index.*` anywhere,
+//     which mechanises the no-barrel half of the standard from the import side.
+//     The "one exported unit per file" half is not mechanised, because most
+//     modules under `src/` legitimately publish a behaviour together with the
 //     types, constants and errors that belong beside it - see the
-//     `BARREL_PATTERNS` docblock for the full reasoning. (Both figures read 91
-//     until a code review measured the tree; `A20` in
-//     `tests/traceability/legacyTestMap.ts` asserts the module count against disk
-//     on every run, so that gate is the authority and these two are commentary.)
-//
-//  9. `no-fallthrough`. `tsconfig.json` deliberately omits
+//     `BARREL_PATTERNS` docblock. `A20` in
+//     `tests/traceability/legacyTestMap.ts` asserts the module census against
+//     disk, so that gate is the authority for any count.
+
+//  9. `no-fallthrough` and `no-unreachable`. `tsconfig.json` deliberately omits
 //     `noFallthroughCasesInSwitch` because legacy defects are reproduced rather
-//     than repaired; enabling the lint equivalent would re-impose exactly the
-//     check that was deliberately declined. `no-unreachable` stays off for the
-//     same reason - the missing `return` at [model/entity/Product.cfc:L598]
-//     lets execution fall through to `return 0`, and that is the preserved
-//     behaviour.
-//
+//     than repaired, and the lint equivalents would re-impose exactly the check
+//     that was declined - the missing `return` at
+//     [model/entity/Product.cfc:L598] lets execution fall through to `return 0`,
+//     and that is the preserved behaviour.
+
 // 10. `no-await-in-loop`. The ported bulk paths await per item by design:
 //     `processProduct_updateSkus` iterates and saves per SKU
 //     [model/service/ProductService.cfc:L216-L233], and `createSkus` runs an
 //     odometer over the full cartesian product of option groups
-//     [model/service/SkuService.cfc:L109-L121]. Sequencing is intentional
-//     there, not an oversight.
-//
-// 11. `no-unmodified-loop-condition` and `no-dupe-else-if`. Each would fire on
-//     a preserved defect: `deletePriceGroup` loops over a collection snapshot
-//     that is never re-read [model/service/PriceGroupService.cfc:L461-L470],
-//     and the shipping-address-zones clause re-tests `hasShippingMethod`
-//     instead of testing the zone condition
-//     [model/service/PromotionService.cfc:L703]. Both are reproduced with a
-//     `LEGACY-DEFECT` annotation rather than repaired.
-//
+//     [model/service/SkuService.cfc:L109-L121].
+
+// 11. `no-unmodified-loop-condition` and `no-dupe-else-if`. Each fires on a
+//     preserved defect: `deletePriceGroup` loops over a collection snapshot that
+//     is never re-read [model/service/PriceGroupService.cfc:L461-L470], and the
+//     shipping-address-zones clause re-tests `hasShippingMethod` instead of the
+//     zone condition [model/service/PromotionService.cfc:L703].
+
 // 12. `@typescript-eslint/no-unnecessary-condition`, and therefore the
-//     `strictTypeChecked` preset that enables it. The port keeps defensive
-//     checks that the type system can prove redundant because the legacy
-//     checks are observable behaviour - `getListPriceByCurrencyCode` performs a
-//     SECOND key-existence test and returns null even for a currency present in
-//     the map [model/entity/Sku.cfc:L275-L285]. Deleting that test would change
-//     what the method returns. The base is `recommendedTypeChecked`, with the
-//     strict rules that carry no preservation risk added individually.
-//
+//     `strictTypeChecked` preset that enables it. Defensive checks the type
+//     system can prove redundant are observable behaviour here:
+//     `getListPriceByCurrencyCode` performs a SECOND key-existence test and
+//     returns null even for a currency present in the map
+//     [model/entity/Sku.cfc:L275-L285], so deleting it changes what the method
+//     returns. The base is `recommendedTypeChecked`, with the strict rules that
+//     carry no preservation risk added individually.
+
 // 13. `no-console`. `src/lib/logger.ts` writes structured JSON to stdout, which
 //     Lambda captures natively - that is the logging design, chosen so no
 //     logging dependency is needed - and `esbuild.config.mjs` reports build
 //     results the same way.
-// ---------------------------------------------------------------------------
 
 export default tseslint.config(
-  // -------------------------------------------------------------------------
   // Never linted. Dependencies, the esbuild bundle output, the tsc declaration
   // output, coverage reports, tooling caches, and generated declaration files.
   // Mirrors `tsconfig.json`'s `exclude` and the four generated-artifact classes
@@ -633,7 +528,6 @@ export default tseslint.config(
   // deliberately name the same generated paths - the ignore file so a fresh
   // clone cannot stage a build product or a `.env`, this entry so the linter
   // does not walk one.
-  // -------------------------------------------------------------------------
   globalIgnores([
     'node_modules/**',
     'dist/**',
@@ -643,10 +537,8 @@ export default tseslint.config(
     '**/*.d.ts',
   ]),
 
-  // -------------------------------------------------------------------------
   // Universal linter options. A stale or unnecessary suppression comment is
   // itself an escape hatch, so both forms are errors rather than warnings.
-  // -------------------------------------------------------------------------
   {
     name: 'slatwall-ts/linter-options',
     linterOptions: {
@@ -655,32 +547,23 @@ export default tseslint.config(
     },
   },
 
-  // -------------------------------------------------------------------------
   // TypeScript, type-aware.
   //
-  // `projectService: true` hands parsing to the TypeScript project service,
-  // which resolves each file against the nearest `tsconfig.json`. That is this
-  // subtree's base config, whose `include` spans `src/**/*.ts`,
-  // `tests/**/*.ts` and `vitest.config.ts` - so type-aware linting covers the
-  // whole subtree, application code and test tier alike.
+  // `projectService: true` resolves each file against the nearest
+  // `tsconfig.json` - this subtree's base config, whose `include` spans
+  // `src/**/*.ts`, `tests/**/*.ts` and `vitest.config.ts` - so type-aware linting
+  // covers application code and test tier alike.
+
+  // Type information is not optional. The `no-unsafe-*` family keeps untyped data
+  // from leaking out of the driver boundary, and `no-floating-promises` /
+  // `await-thenable` / `require-await` police the async boundary, a documented
+  // contract: a method is async if and only if its legacy body reached the DAO or
+  // the ORM. Without type information those rules do not run.
   //
-  // Type information is not optional here. The rules that depend on it are the
-  // ones that matter most to this port: the `no-unsafe-*` family keeps
-  // untyped data from leaking out of the driver boundary, and
-  // `no-floating-promises` / `await-thenable` / `require-await` police the
-  // async boundary, which is a documented contract - a method becomes async if
-  // and only if its legacy body reached the DAO or the ORM, while methods that
-  // only traverse already-materialised associations or perform pure arithmetic
-  // stay synchronous. Without type information those rules simply do not run.
-  //
-  // One consequence is deliberate and must not be "fixed" by loosening this
-  // block: a `.ts` file that the base `tsconfig.json` does not include fails to
-  // parse here, with "was not found by the project service". That is the
-  // intended outcome, because a source file the typecheck gate never sees is a
-  // hole in the type gate. The remedy is to add the file to `include` in
-  // `tsconfig.json` so `tsc --noEmit` covers it too - never to add an
-  // `allowDefaultProject` escape hatch, and never to drop `projectService`.
-  // -------------------------------------------------------------------------
+  // One consequence must not be "fixed" by loosening this block: a `.ts` file the
+  // base `tsconfig.json` does not include fails to parse here. That file is a hole
+  // in the type gate, so add it to `include` in `tsconfig.json` - never add an
+  // `allowDefaultProject` escape hatch, and never drop `projectService`.
   {
     name: 'slatwall-ts/typescript',
     files: ['**/*.ts'],
@@ -697,12 +580,12 @@ export default tseslint.config(
     rules: {
       ...CORE_CORRECTNESS_RULES,
 
-      // --- Escape-hatch policy -------------------------------------------
+      // Escape-hatch policy
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/ban-ts-comment': BAN_TS_COMMENT_PRODUCTION,
       '@typescript-eslint/no-unused-vars': NO_UNUSED_VARS_TS,
 
-      // --- Import discipline ---------------------------------------------
+      // Import discipline
       // Type-only imports must be marked so nothing type-only survives into
       // the Lambda bundle. `separate-type-imports` keeps the type import on
       // its own statement, and `no-import-type-side-effects` rejects the
@@ -725,7 +608,6 @@ export default tseslint.config(
     },
   },
 
-  // -------------------------------------------------------------------------
   // Application source: no non-null assertions.
   //
   // `tsconfig.json` sets `strict`, `noUncheckedIndexedAccess` and
@@ -736,7 +618,6 @@ export default tseslint.config(
   // silently sell products for free. A `!` assertion is the one construct that
   // silences precisely those compiler checks, so it is banned in `src/**`.
   // Handle the absent case explicitly instead.
-  // -------------------------------------------------------------------------
   {
     name: 'slatwall-ts/no-escape-hatches',
     files: ['src/**/*.ts'],
@@ -745,7 +626,6 @@ export default tseslint.config(
     },
   },
 
-  // -------------------------------------------------------------------------
   // THE DOMAIN LAYER BOUNDARY. This is the reason this file exists.
   //
   // `src/domain/**` holds the entity classes, the Money / CurrencyCode /
@@ -762,7 +642,6 @@ export default tseslint.config(
   // Both groups are restated here, together with the barrel group, because
   // ESLint resolves a rule from the LAST matching config block only; options
   // from earlier blocks are replaced rather than merged.
-  // -------------------------------------------------------------------------
   {
     name: 'slatwall-ts/domain-layer-boundary',
     files: ['src/domain/**/*.ts'],
@@ -775,7 +654,6 @@ export default tseslint.config(
     },
   },
 
-  // -------------------------------------------------------------------------
   // Test tier. The only relaxations in this config, both narrow and both
   // justified:
   //
@@ -789,7 +667,6 @@ export default tseslint.config(
   // behaviour - the verified `roundValue` cases, the promotion decomposition,
   // the five-level price-group cascade, the four-step currency cascade - are
   // held to the same strictness as the code they guard.
-  // -------------------------------------------------------------------------
   {
     name: 'slatwall-ts/tests',
     files: ['tests/**/*.ts'],
@@ -799,7 +676,6 @@ export default tseslint.config(
     },
   },
 
-  // -------------------------------------------------------------------------
   // Build tooling (`eslint.config.mjs`, `esbuild.config.mjs`).
   //
   // These are plain Node ESM scripts, not compiled input - `tsconfig.json`
@@ -807,7 +683,6 @@ export default tseslint.config(
   // NOT matched by the type-aware block above, and no type-aware rule is
   // registered for them. They still get the curated core rules and the
   // no-barrel policy.
-  // -------------------------------------------------------------------------
   {
     name: 'slatwall-ts/tooling',
     files: ['**/*.mjs'],

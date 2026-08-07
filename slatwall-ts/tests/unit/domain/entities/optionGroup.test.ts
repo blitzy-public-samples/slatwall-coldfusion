@@ -1,86 +1,13 @@
-// --------------------------------------------------------------------------
 // slatwall-ts - characterization suite pinning `src/domain/entities/optionGroup.ts`
 //
-// `getOptions(orderby, sortType, direction)` is the only real behaviour on this entity, and it
-// OVERRIDES the collection accessor: [model/entity/OptionGroup.cfc:L73-L79] delegates its sort
-// branch to `getService("hibachiUtilityService").sortObjectArray(...)`, verified verbatim at
-// [model/service/HibachiUtilityService.cfc:L514-L531]. That utility is framework code the port does
-// not ship as a module, but its results are returned straight out of a public entity method, so its
-// OBSERVABLE behaviour is part of the contract. CHARACTERIZATION in the strict sense: the legacy
-// behaviour is pinned INCLUDING its defects. Four properties, each traced:
-//
-//   1. The composed struct key is `"<rendered value>.<randRange(1,100)>"`
-//      [model/service/HibachiUtilityService.cfc:L518-L523], so the RANDOM SUFFIX participates
-//      in the ordering and breaks ties non-deterministically.
-//   2. Two elements whose value AND draw collide share one key and the later assignment
-//      overwrites the earlier, so the returned array is SHORTER than the input
-//      [model/service/HibachiUtilityService.cfc:L523].
-//   3. `arraySort(keyArray, sorttype, direction)`
-//      [model/service/HibachiUtilityService.cfc:L526]: `'text'`, the default declared at
-//      [model/entity/OptionGroup.cfc:L73], is CASE-SENSITIVE; only `'textnocase'` folds.
-//   4. `'numeric'` orders by the WHOLE composed key, so integers are ordered by their random
-//      tails, and a non-numeric key raises exactly as `arraySort` raises.
-//
 // Two failure contracts are pinned alongside them: an `orderby` naming no accessor raised through
-// `evaluate()` [model/service/HibachiUtilityService.cfc:L523], and a non-numeric key raised inside
-// `arraySort` [model/service/HibachiUtilityService.cfc:L526]. Neither degrades to unsorted or
-// re-ordered data.
+// `evaluate()` [model/service/HibachiUtilityService.cfc:L523].
 //
-// --- 100% net-new coverage - never to be presented as parity ----------------
-//
-// All 32 `.cfc` files under `meta/tests/` return ZERO hits for `OptionGroup`, `getOptions` and
-// `sortObjectArray`. The only legacy suites extended anywhere in this port are
-// [meta/tests/unit/entity/BrandTest.cfc] and [meta/tests/unit/entity/ProductTest.cfc], and
-// [meta/tests/functional/admin/entity/ProductTest.cfc] is an empty stub contributing zero coverage.
-// Presenting this file as parity would fail the traceability gate.
-//
-// DETERMINISM. The legacy tie-break is `randRange(1,100)`. The entity accepts the random source
-// through its constructor - `optionSortTieBreaker` - leaving `getOptions`'s public signature
-// untouched while making the preserved non-determinism characterizable. Every suite supplies a
-// scripted source; one deliberately exercises the DEFAULT source and asserts only what holds for
-// every draw. No database, clock, environment variable or network is reached here.
-//
-// --- four inherited descriptions corrected against the source ---------------
-//
-//   1. `sortType='text'` was called case-INSENSITIVE. It is case-SENSITIVE:
-//      [model/service/HibachiUtilityService.cfc:L526] calls `arraySort(keyArray,"text",...)`
-//      and CFML compares by code unit. `'textnocase'` is the ONLY folding mode.
-//   2. An unsupported `orderby` was called unsorted-returning. It RAISES, through `evaluate()`
-//      at [model/service/HibachiUtilityService.cfc:L523].
-//   3. `orderby=''` was called "simply taking the sort branch". It does take it -
-//      [model/entity/OptionGroup.cfc:L74] branches on `structKeyExists`, not truthiness - and
-//      the observable consequence is the raise in (2).
-//   4. `sortOrder` was called `undefined`-representable. It is NOT:
-//      [model/entity/OptionGroup.cfc:L58] declares `required="true"`. Contrast
-//      [model/entity/Option.cfc:L56], which omits `required` and IS nullable.
-//
-// Two counts differ from the inherited figure: `model/validation/` holds 96 `.json` files, and the
-// in-scope split is 15 PRESENT / 6 ABSENT - `model/validation/OptionGroup.json` exists and is one
-// of three an earlier inventory omitted, with `SkuCurrency.json` and `RoundingRule.json`.
-//
-// --- three members are verifiably absent, and absence is asserted, not assumed -----
-//
-//   * `getOptionsSmartList()` [model/entity/OptionGroup.cfc:L81-L83] - `HibachiSmartList` is a
-//     framework query-builder artifact replaced by typed repository queries (AAP 0.6.2).
-//   * `isNew()` - it belongs to the unported base [org/Hibachi/HibachiEntity.cfc:L571-L576] and
-//     is called on an `Option` [model/entity/Option.cfc:L94], never on an OptionGroup.
-//   * `getSimpleRepresentation()` - never declared here, so the inherited legacy assertion at
-//     [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58] is EXPLAINED rather than
-//     forced onto a surface that does not have it.
-//
-// --- divergence budget: zero ------------------------------------------------
-//
-// Exactly ONE `LEGACY-DEFECT` marker appears below, on the colliding-key element loss, matching the
-// single marker the module carries. The lexicographic ordering of an integer column, the
-// capitalized `variables.Options` read and the empty-string sort branch are `CFML parity` notes:
-// verified source behaviour, not defects.
+// Exactly one `LEGACY-DEFECT` marker appears below, on the colliding-key element loss, matching
+// the single marker the module carries.
 //
 // JUDGMENT CALL: two module branches are left unexercised on purpose - the text-mode comparator's
-// equal-key tie and the map-lookup `undefined` guard. Both are defensive code the surrounding
-// construction makes unreachable: the composed key carries a distinct suffix, and every key read
-// back was written by the same pass. Reaching them would mean fabricating a state the production
-// path cannot produce. Left unreached, and said so plainly.
-// --------------------------------------------------------------------------
+// equal-key tie and the map-lookup `undefined` guard.
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -122,15 +49,9 @@ function anOption(init: {
  * A scripted stand-in for `randRange(1,100)`: hands back the supplied draws in order, then repeats
  * the last one so a longer input cannot run it dry.
  *
- * JUDGMENT CALL: a hand-written closure rather than `vi.fn()` or a spy. P3 prefers inline in-memory
- * doubles, and the tie-breaker is a constructor-injected random SOURCE - not a port - so there is
- * nothing to intercept for any case that supplies one.
- *
- * THE ONE PLACE `vi` IS USED, AND WHY IT HAS TO BE. Two cases exercise the DEFAULT source, which is
- * `Math.random` reached inside the entity rather than a constructor argument, so scripting it is the
- * only way to make those cases deterministic - and a code review required exactly that in place of
- * the 200 sampled draws they used to run. `restoreMocks` is enabled in `vitest.config.ts`, so the
- * spy is restored after every test without an `afterEach` here.
+ * JUDGMENT CALL: a hand-written closure rather than `vi.fn()` or a spy. P3 prefers inline
+ * in-memory doubles, and the tie-breaker is a constructor-injected random SOURCE - not a port - so
+ * there is nothing to intercept for any case that supplies one.
  */
 function scriptedTieBreaker(...draws: readonly number[]): OptionSortTieBreaker {
   let cursor = 0;
@@ -150,10 +71,8 @@ function scriptedTieBreaker(...draws: readonly number[]): OptionSortTieBreaker {
  * `optionSortTieBreaker: undefined` is the deliberate statement "use the legacy `randRange(1,100)`
  * source", which is what the production hydration path does.
  *
- * JUDGMENT CALL: freshness (A2) is delivered by invoking this pure factory inside every single test
- * rather than by assigning a shared subject in `beforeEach`. There is then no describe-scope
- * subject and no module-level mutable binding for one test to leak into the next - which matters
- * most for the copy-versus-in-place assertions, where a reused subject would mask a mutation.
+ * JUDGMENT CALL: freshness (A2) is delivered by invoking this pure factory inside every single
+ * test rather than by assigning a shared subject in `beforeEach`.
  */
 function aGroup(options: Option[], optionSortTieBreaker?: OptionSortTieBreaker): OptionGroup {
   return new OptionGroup({
@@ -179,20 +98,10 @@ function aGroup(options: Option[], optionSortTieBreaker?: OptionSortTieBreaker):
  * the association rather than the sort.
  *
  * Kept separate from {@link aGroup} deliberately: `aGroup` fixes the columns so a sort suite reads
- * as being about ordering and nothing else, while this one varies them so a column assertion says
- * exactly which column it is about.
+ * as being about ordering and nothing else.
  *
  * Every slot is written `?: T | undefined` rather than `?: T` because `exactOptionalPropertyTypes`
- * is enabled, and a suite must be able to state "this column hydrated as ABSENT" explicitly rather
- * than by omission.
- *
- * `imageGroupFlag` is typed as the structural union `cfBoolean` accepts rather than by importing
- * that module's `CfBooleanInput` alias: `src/lib/**` is outside this suite's permitted import
- * surface, and the union is the same contract either way.
- *
- * `??` is used for the two non-nullable slots and is correct for both: it falls back only on
- * `null`/`undefined`, so `optionGroupID: ''` stays `''` - which the unsaved-row suite depends on -
- * and `sortOrder: 0` stays `0`.
+ * is enabled.
  */
 function aGroupWithColumns(init: {
   readonly optionGroupID?: string | undefined;
@@ -227,7 +136,9 @@ function aGroupWithColumns(init: {
   });
 }
 
-/** The `optionID` of every element, in the order the sort returned them. */
+/**
+ * The `optionID` of every element, in the order the sort returned them.
+ */
 function idsOf(options: readonly Option[]): readonly string[] {
   return options.map((option) => option.getOptionID());
 }
@@ -235,10 +146,10 @@ function idsOf(options: readonly Option[]): readonly string[] {
 /**
  * Every own member name on the class prototype, for the absence assertions.
  *
- * JUDGMENT CALL: absence is proved by scanning the prototype rather than by writing
+ * JUDGMENT CALL: absence is proved by scanning the prototype rather than by writing start failing
+ * and would spend P1's strictness allowance on a member that must simply never exist.
  * `@ts-expect-error` against a call to the missing member. A prototype scan is a RUNTIME proof that
  * keeps holding if someone later adds the member back, whereas `@ts-expect-error` would itself
- * start failing and would spend P1's strictness allowance on a member that must simply never exist.
  */
 function prototypeMembers(): readonly string[] {
   return Object.getOwnPropertyNames(OptionGroup.prototype);
@@ -246,8 +157,7 @@ function prototypeMembers(): readonly string[] {
 
 describe('getOptions with no argument', () => {
   // [model/entity/OptionGroup.cfc:L74-L75]: the branch is on PRESENCE, so the no-argument call
-  // returns `variables.Options` untouched - it does not sort, does not copy-and-reorder, and never
-  // reaches the utility at all.
+  // returns `variables.Options` untouched - it does not sort, does not copy-and-reorder.
   it('returns the materialized association itself, in hydration order', () => {
     const first = anOption({ optionID: 'a', optionName: 'Small', sortOrder: 3 });
     const second = anOption({ optionID: 'b', optionName: 'Large', sortOrder: 1 });
@@ -273,56 +183,30 @@ describe('getOptions with no argument', () => {
   });
 });
 
-// =========================================================================================
-// SECURITY REVIEW DISPOSITION - RAISED AS S-13 (INSECURE RANDOMNESS), ACCEPTED AS RAISED.
-//
-// The review flagged the `Math.random` draw behind this entity's tie-breaker and required:
-// "No security remediation required; keep it outside token/ID decisions." Both halves were
-// then VERIFIED rather than assumed, and the verification is recorded here because a
-// constraint no test states is a constraint the next edit can breach silently.
-//
-// WHAT WAS MEASURED ACROSS THE WHOLE SOURCE TREE:
-//   * `Math.random` has exactly ONE runtime site - the tie-breaker this file exercises.
-//   * EVERY identifier generator draws from `node:crypto`'s `randomUUID` instead: those in
-//     `promotionCode.ts`, `skuService.ts`, and the price-group, product, product-type,
-//     promotion and SKU repositories. None of them can reach `Math.random`.
-//   * So the "outside token/ID decisions" requirement already holds, and the two cases
-//     below pin what this entity's randomness IS, so that it stays a sort input.
-//
-// WHY THE DRAW IS NOT UPGRADED TO A CSPRNG: it reproduces `randRange(1,100)` at
-// [model/service/HibachiUtilityService.cfc:L521], whose ordering AND whose key-collision
-// element loss are preserved behaviour. A CSPRNG would change no observable property and
-// would put `node:crypto` inside a domain entity to buy nothing.
-// =========================================================================================
-describe('the DEFAULT tie-breaking source (S-13)', () => {
-  /** Two options that tie on name, so ONLY the random draw can order them. */
+// `Math.random` has exactly one runtime site - the tie-breaker this file exercises. * every
+// identifier generator draws from `node:crypto`'s `randomUUID` instead: those in
+// `promotionCode.ts`, `skuService.ts`, and the price-group, product.
+describe('the DEFAULT tie-breaking source', () => {
+  /**
+   * Two options that tie on name, so only the random draw can order them.
+   */
   const tiedPair = (): Option[] => [
     anOption({ optionID: 'first', optionName: 'Red' }),
     anOption({ optionID: 'second', optionName: 'Red' }),
   ];
 
   it('★★ IS the random source, proven by SCRIPTING the entropy rather than sampling it', () => {
-    // ★ THIS IS AN EMPIRICAL CHECK, NOT A RESTATEMENT OF THE ANNOTATION. `aGroup` passes
-    // `optionSortTieBreaker: undefined`, which is the deliberate statement "use the legacy
-    // random source", so this reaches the default `randRange(1,100)` implementation for real.
-    //
-    // ★★★ AND IT IS NOW DETERMINISTIC. This case used to draw 200 real samples and assert
-    // `observed.size > 1`. A code review rejected that, correctly: a probabilistic assertion can
-    // fail without anything being wrong, it says nothing about WHICH outcomes are possible, and 200
-    // iterations of a sort is a cost paid for no additional evidence. Stubbing the entropy proves
-    // MORE with one draw pair each: the default consults `Math.random` once per element, and the
-    // SAME data in the SAME order comes back in the OPPOSITE order when only the draws swap - which
-    // a constant default could not produce, and which sampling could only suggest.
+    // This is an empirical check, not a restatement of the annotation.
     const random = vi.spyOn(Math, 'random');
 
-    // 0.08 -> floor(8) + 1 = 9, and 0.99 -> floor(99) + 1 = 100. The key is `{VALUE}.{DRAW}` sorted
-    // as TEXT, so `Red.100` precedes `Red.9`.
+    // 0.08 -> floor(8) + 1 = 9, and 0.99 -> floor(99) + 1 = 100. The key is `{VALUE}.{DRAW}`
+    // sorted as TEXT, so `Red.100` precedes `Red.9`.
     random.mockReturnValueOnce(0.08).mockReturnValueOnce(0.99);
 
     expect(idsOf(aGroup(tiedPair()).getOptions('optionName'))).toEqual(['second', 'first']);
     expect(random).toHaveBeenCalledTimes(2);
 
-    // Swap ONLY the draws. Same options, same order, same sort arguments.
+    // Swap only the draws. Same options, same order, same sort arguments.
     random.mockReset();
     random.mockReturnValueOnce(0.99).mockReturnValueOnce(0.08);
 
@@ -331,18 +215,9 @@ describe('the DEFAULT tie-breaking source (S-13)', () => {
   });
 
   it('produces only outcomes the legacy algorithm can produce, collision included', () => {
-    // ★ THE THIRD OUTCOME IS THE PRESERVED DEFECT, AND IT IS ADMITTED ON PURPOSE. When both
-    // elements draw the SAME number of the 100 available, they compose the SAME struct key
-    // and the later assignment overwrites the earlier - so the sort returns ONE element and
-    // the other is silently dropped. That is legacy behaviour this port preserves, so a
-    // single-element result is legitimate here and is enumerated rather than treated as a
-    // failure. Nothing outside these three shapes may ever appear.
-    //
-    // ★★★ ENUMERATED RATHER THAN SAMPLED. The earlier form ran 200 real draws and checked each
-    // outcome against a set of four permitted strings - which could pass while never once reaching
-    // the collision it exists to admit, and which asserted only that nothing illegitimate appeared.
-    // Scripting the entropy covers the outcome space exhaustively instead: two draws either differ
-    // one way, differ the other way, or collide, and each row below names the exact result.
+    // Elements draw the same number of the 100 available, they compose the same struct key and the
+    // later assignment overwrites the earlier - so the sort returns one element and the other is
+    // silently dropped.
     const random = vi.spyOn(Math, 'random');
     const outcomeFor = (first: number, second: number): string => {
       random.mockReset();
@@ -356,15 +231,11 @@ describe('the DEFAULT tie-breaking source (S-13)', () => {
     expect(outcomeFor(0.08, 0.99)).toBe('second,first');
     expect(outcomeFor(0.99, 0.08)).toBe('first,second');
 
-    // ★ THE COLLISION, REACHED ON PURPOSE RATHER THAN HOPED FOR. Equal draws compose one key, the
-    // later assignment overwrites the earlier, and the sort returns ONE element - the preserved
-    // legacy defect this block admits.
+    // The collision, reached on purpose rather than hoped for.
     expect(outcomeFor(0.41, 0.41)).toBe('second');
 
-    // AND THE DERIVATION IS PINNED AT A BUCKET BOUNDARY, which is what makes the three rows above an
-    // exhaustive account rather than three arbitrary points. `floor(r * 100) + 1` puts 0.410 and
-    // 0.419 in the SAME bucket - so they collide - while 0.409 and 0.410 fall either side of it and
-    // do not. The same holds at both ends of the inclusive 1..100 range.
+    // And the derivation is pinned at a bucket boundary, which is what makes the three rows above
+    // an exhaustive account rather than three arbitrary points.
     expect(outcomeFor(0.41, 0.419)).toBe('second');
     expect(outcomeFor(0.409, 0.41)).toBe('first,second');
     expect(outcomeFor(0, 0.009)).toBe('second');
@@ -387,9 +258,6 @@ describe('the DEFAULT tie-breaking source (S-13)', () => {
 });
 
 describe("the default sortType 'text' is CASE-SENSITIVE", () => {
-  // [model/service/HibachiUtilityService.cfc:L526]: `arraySort(keyArray,"text",...)`. This is the
-  // property whose loss would silently re-order a mixed-case option list, and the legacy default is
-  // `'text'` [model/entity/OptionGroup.cfc:L73].
   const mixedCase = (): Option[] => [
     anOption({ optionID: 'lower-apple', optionName: 'apple' }),
     anOption({ optionID: 'upper-zulu', optionName: 'Zulu' }),
@@ -462,8 +330,8 @@ describe("sortType 'textnocase' is the ONLY case-insensitive mode", () => {
 });
 
 describe('the composed struct key carries the random tie-break', () => {
-  // [model/service/HibachiUtilityService.cfc:L518-L523]: the key format is `{VALUE}.{RAND NUMBER}`,
-  // and the key - not the value - is what gets sorted.
+  // [model/service/HibachiUtilityService.cfc:L518-L523]: the key format is
+  // `{VALUE}.{RAND NUMBER}`, and the key - not the value - is what gets sorted.
   it('breaks a tie by the drawn number, textually', () => {
     const options = [
       anOption({ optionID: 'first', optionName: 'Red' }),
@@ -510,12 +378,9 @@ describe('the composed struct key carries the random tie-break', () => {
 });
 
 describe('a colliding struct key silently loses an element - PRESERVED DEFECT', () => {
-  // LEGACY-DEFECT [model/service/HibachiUtilityService.cfc:L523]: two elements whose rendered value
-  // and drawn number both match write the SAME struct key, and the second assignment overwrites the
-  // first. The source comment at L518-L520 shows the random suffix exists to make this unlikely;
-  // with only 100 values to draw from it is not impossible. Pinned here so nobody "fixes" it into a
-  // stable, length-preserving sort.
-  //
+  // LEGACY-DEFECT [model/service/HibachiUtilityService.cfc:L523]: two elements whose rendered
+  // value and drawn number both match write the same struct key, and the second assignment
+  // overwrites the first.
   // Preserved deliberately; do not fix without a product decision.
   it('returns FEWER elements than it received when value and draw both collide', () => {
     const options = [
@@ -570,10 +435,9 @@ describe('a colliding struct key silently loses an element - PRESERVED DEFECT', 
 });
 
 describe("sortType 'numeric' orders by the composed key, random tail included", () => {
-  // [model/service/HibachiUtilityService.cfc:L523,L526]: under `numeric` the random suffix becomes
-  // the FRACTIONAL PART of the key, so two integers with the same value are ordered by their draws,
-  // and - more surprising - the draw can never reorder DIFFERENT integers because it only ever adds
-  // a fraction.
+  // [model/service/HibachiUtilityService.cfc:L523, L526]: under `numeric` the random suffix
+  // becomes the FRACTIONAL PART of the key, so two integers with the same value are ordered by
+  // their draws, and - more surprising.
   it('orders integer values ascending', () => {
     const options = [
       anOption({ optionID: 'third', sortOrder: 3 }),
@@ -695,8 +559,7 @@ describe('an unsupported orderby RAISES rather than degrading', () => {
 
   it('opens the message with the legacy terminal sentence, typo included', () => {
     // [org/Hibachi/HibachiEntity.cfc:L565] is the sentence `errorMapper` recognises by anchored
-    // template, so the grammatical error in the source - "does not exists" - is load-bearing and
-    // must be reproduced byte-for-byte.
+    // template, so the grammatical error in the source - "does not exists".
     const group = aGroup([anOption({ optionID: 'a' })]);
 
     expect(() => group.getOptions('nonsense')).toThrow(
@@ -706,8 +569,7 @@ describe('an unsupported orderby RAISES rather than degrading', () => {
 
   it('RESOLVES a case-variant spelling, because CFML method names are case-insensitive', () => {
     // [model/service/HibachiUtilityService.cfc:L523] resolved the accessor through
-    // `evaluate("...get#property#()...")`, and CFML method names are case-insensitive, so
-    // `orderby="optionname"` reached the one generated `getOptionName()` accessor and SORTED.
+    // `evaluate("...get#property#()...")`, and CFML method names are case-insensitive.
     const lower = aGroup(
       [
         anOption({ optionID: 'b', optionName: 'Small' }),
@@ -733,8 +595,7 @@ describe('an unsupported orderby RAISES rather than degrading', () => {
 
 describe('every readable property is reachable', () => {
   // The readable set is the complete list of Option's SCALAR persistent properties, so each one is
-  // exercised at least once - a property that cannot actually be read would otherwise be an
-  // accessor mismatch waiting to surface at runtime.
+  // exercised at least once.
   it('sorts by optionID, optionCode, remoteID and createdDateTime', () => {
     const early = new Date('2019-01-01T00:00:00.000Z');
     const late = new Date('2021-01-01T00:00:00.000Z');
@@ -837,7 +698,7 @@ describe('the sort never mutates the materialized association', () => {
 
 describe('the DEFAULT random source is the legacy randRange(1,100)', () => {
   // This is the one suite that exercises the production source, so it asserts only what holds for
-  // EVERY possible draw.
+  // every possible draw.
   it('orders distinct values correctly regardless of the draw', () => {
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const group = aGroup([
@@ -862,9 +723,6 @@ describe('the DEFAULT random source is the legacy randRange(1,100)', () => {
   });
 
   it('draws only from the inclusive range 1..100, as randRange(1,100) does', () => {
-    // Observed indirectly and without reaching into the module: an integer draw in 1..100 makes the
-    // composed key for an EMPTY value read as a number in (0.01, 1], so a numeric sort against a
-    // populated row of 1 must place the absent row first on every attempt.
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const group = aGroup([
         anOption({ optionID: 'populated', sortOrder: 1 }),
@@ -877,7 +735,7 @@ describe('the DEFAULT random source is the legacy randRange(1,100)', () => {
 });
 
 describe("the default 'text' sort orders the INTEGER sortOrder column LEXICOGRAPHICALLY", () => {
-  // CFML parity [model/entity/OptionGroup.cfc:L73]: `sortType` defaults to `'text'` and NOT to a
+  // CFML parity [model/entity/OptionGroup.cfc:L73]: `sortType` defaults to `'text'` and not to a
   // numeric mode, so ordering by `sortOrder` - declared `ormtype="integer"` at
   // [model/entity/Option.cfc:L56] - compares the column's RENDERED TEXT.
   const nineAndTen = (): Option[] => [
@@ -898,7 +756,7 @@ describe("the default 'text' sort orders the INTEGER sortOrder column LEXICOGRAP
   });
 
   it("orders 9 before 10 under 'numeric', which is the discriminator", () => {
-    // The SAME data under the SAME draw, differing only in sort type.
+    // The same data under the same draw, differing only in sort type.
     const result = aGroup(nineAndTen(), scriptedTieBreaker(50)).getOptions('sortOrder', 'numeric');
 
     expect(idsOf(result)).toEqual(['nine', 'ten']);
@@ -929,18 +787,9 @@ describe("the default 'text' sort orders the INTEGER sortOrder column LEXICOGRAP
   });
 });
 
-// --- structural, column and association contract ----------------------------
-//
-// Everything above pins the SORT. Everything below pins the rest of the surface: the
-// capitalized-binding hazard, the omitted smart list, the two-tier `sortOrder` requirement, the
-// boolean coercion, the shared code pattern, the delete gate's input, the bidirectional helpers,
-// and the structural facts inherited from a base class that is deliberately not ported.
-
 describe('the capitalized `variables.Options` read is normalised to ONE binding', () => {
-  // CFML parity [model/entity/OptionGroup.cfc:L70,L75,L77]: the property is declared lowercase
-  // `options` at L70, yet BOTH branches read `variables.Options` with a capital `O`. CFML scope
-  // keys are case-insensitive, so the two spellings named ONE variable there; TypeScript
-  // identifiers are not, so the port normalises to the DECLARED spelling.
+  // CFML parity [model/entity/OptionGroup.cfc:L70, L75, L77]: the property is declared lowercase
+  // `options` at L70, yet both branches read `variables.Options` with a capital `O`.
   it('exposes exactly one collection accessor, and it is named getOptions', () => {
     const members = prototypeMembers();
 
@@ -963,7 +812,7 @@ describe('the capitalized `variables.Options` read is normalised to ONE binding'
 
   it('hands back the LIVE association on the no-orderby path, which the far side mutates through', () => {
     // [model/entity/Option.cfc:L95] does `arrayAppend(arguments.optionGroup.getOptions(), this)`,
-    // so this array must BE the association and must stay mutable in content.
+    // so this array must be the association and must stay mutable in content.
     const options: Option[] = [];
     const group = aGroupWithColumns({ options });
 
@@ -976,10 +825,7 @@ describe('the capitalized `variables.Options` read is normalised to ONE binding'
 
 describe('getOptionsSmartList is OMITTED, not overlooked', () => {
   // CFML parity [model/entity/OptionGroup.cfc:L81-L83]: the legacy member returned
-  // `getPropertySmartList(propertyName="options")`. The legacy declaration was REDUNDANT even in
-  // CFML: `onMissingMethod` at [org/Hibachi/HibachiEntity.cfc:L507-L565] already synthesised any
-  // `getXXXSmartList()` into the same call, so L81-L83 only restated what the dispatcher would have
-  // done.
+  // `getPropertySmartList(propertyName="options")`.
   it('declares no getOptionsSmartList member', () => {
     expect(prototypeMembers()).not.toContain('getOptionsSmartList');
   });
@@ -1003,13 +849,9 @@ describe('getOptionsSmartList is OMITTED, not overlooked', () => {
 });
 
 describe('sortOrder is required by the ORM and unmentioned by the validation schema', () => {
-  // CFML parity [model/entity/OptionGroup.cfc:L58, model/validation/OptionGroup.json]: the property
-  // carries ORM-level `required="true"` with NO default, yet the validation schema never mentions
-  // `sortOrder` at all - it constrains only `optionGroupName`, `optionGroupCode` and `options`. The
-  // shipped field is a required `number`, and the reason is load-bearing rather than stylistic -
-  // [model/dao/SkuDAO.cfc:L195-L197] weights its ORDER BY with
-  //   POWER(10, <next> - SwOptionGroup.sortOrder)
-  // so a NULL exponent would scramble the sorted-SKU ordering.
+  // CFML parity [model/entity/OptionGroup.cfc:L58, model/validation/OptionGroup.json]: the
+  // property carries ORM-level `required="true"` with no default, yet the validation schema never
+  // mentions `sortOrder` at all - it constrains only `optionGroupName`.
   it('always answers a number, never undefined', () => {
     const sortOrder: number = aGroupWithColumns({ sortOrder: 7 }).getSortOrder();
 
@@ -1026,7 +868,7 @@ describe('sortOrder is required by the ORM and unmentioned by the validation sch
   });
 
   it("keeps Option's own sortOrder NULLABLE, which is the declared asymmetry", () => {
-    // [model/entity/Option.cfc:L56] declares `sortContext="optionGroup"` and NO `required`, so the
+    // [model/entity/Option.cfc:L56] declares `sortContext="optionGroup"` and no `required`, so the
     // two entities genuinely differ on this column and the port preserves the difference rather
     // than harmonising it.
     expect(anOption({ optionID: 'absent' }).getSortOrder()).toBeUndefined();
@@ -1042,13 +884,7 @@ describe('sortOrder is required by the ORM and unmentioned by the validation sch
 });
 
 describe('getImageGroupFlag coerces the persisted column with CFML boolean semantics', () => {
-  // CFML parity [model/entity/OptionGroup.cfc:L57]: `ormtype="boolean" default="0"`. WHAT DEPENDS
-  // ON IT: [model/entity/Sku.cfc:L134] reads `if(option.getOptionGroup().getImageGroupFlag())`
-  // inside `generateImageFileName()`, so an inverted flag does not merely flip a boolean - it
-  // changes the filename a SKU resolves its image by. CFML parity on the DEFAULT ITSELF, annotated
-  // and never normalised: this column declares `default="0"`, as `Sku.activeFlag` and
-  // `Promotion.activeFlag` do, whereas `Category.restrictAccessFlag`,
-  // `Category.allowProductAssignmentFlag` and `Product.activeFlag` declare NO default.
+  // CFML parity [model/entity/OptionGroup.cfc:L57]: `ormtype="boolean" default="0"`.
   it("answers false for the column's own default of '0'", () => {
     expect(aGroupWithColumns({ imageGroupFlag: '0' }).getImageGroupFlag()).toBe(false);
     expect(aGroupWithColumns({ imageGroupFlag: 0 }).getImageGroupFlag()).toBe(false);
@@ -1093,30 +929,10 @@ describe('getImageGroupFlag coerces the persisted column with CFML boolean seman
 });
 
 describe('ENTITY_CODE_PATTERN is the optionGroupCode format constraint', () => {
-  // CFML parity [model/validation/OptionGroup.json:L4], verified verbatim:
+  // Only the FORMAT half of the rule lives in the constant.
   //
-  //   "optionGroupCode": [{"contexts":"save","required":true,"unique":true,
-  //                        "regex":"^[a-zA-Z0-9-_.|:~^]+$"}]
-  //
-  // ONE DECLARATION SITE, THREE CONSUMERS. The identical regex appears in exactly three in-scope
-  // schemas - `optionGroupCode` [model/validation/OptionGroup.json:L4], `optionCode`
-  // [model/validation/Option.json:L3] and `productCode` [model/validation/Product.json:L10] - and
-  // the three strings are byte-identical, verified by extracting every `"regex"` value under
-  // `model/validation/` and counting three occurrences. It is declared ONCE, in
-  // `src/domain/entities/optionGroup.ts`, and IMPORTED here. It is never re-declared in this file,
-  // never routed through a barrel and never through a shared `types.ts` - this port has no barrel
-  // at all.
-  //
-  // Only the FORMAT half of the rule lives in the constant. `required` belongs to the ported zod
-  // schema at the SERVICE tier and `unique` needs the database, so neither is asserted here and no
-  // zod assertion belongs in this file.
-  //
-  // A COUNT CORRECTED BY RE-COUNTING: `model/validation/OptionGroup.json` EXISTS, and it is one of
-  // three in-scope schemas an earlier inventory omitted - with `SkuCurrency.json` and
-  // `RoundingRule.json`. The verified in-scope split is 15 PRESENT / 6 ABSENT, and
-  // `model/validation/` holds 96 `.json` files in total. The six genuine absences are unchanged and
-  // are NOT expanded: Category, PromotionQualifier, PromotionApplied, PromotionAccount,
-  // Product_AddOption and Product_AddOptionGroup.
+  // A count corrected by re-counting: `model/validation/OptionGroup.json` exists, and it is one of
+  // three in-scope schemas an earlier inventory omitted.
   it('is exactly the schema regex, source and flags alike', () => {
     expect(ENTITY_CODE_PATTERN.source).toBe('^[a-zA-Z0-9-_.|:~^]+$');
     expect(ENTITY_CODE_PATTERN.flags).toBe('');
@@ -1189,8 +1005,8 @@ describe('ENTITY_CODE_PATTERN is the optionGroupCode format constraint', () => {
   });
 
   it('is the constraint on the code this entity actually exposes', () => {
-    // The entity does not enforce the pattern - the service tier does - so what is asserted here is
-    // that the exposed value and the constraint agree, not that the accessor rejects anything.
+    // The entity does not enforce the pattern - the service tier does - so what is asserted here
+    // is that the exposed value and the constraint agree, not that the accessor rejects anything.
     const valid = aGroupWithColumns({ optionGroupCode: 'shirt-size' });
     const code = valid.getOptionGroupCode();
 
@@ -1201,12 +1017,9 @@ describe('ENTITY_CODE_PATTERN is the optionGroupCode format constraint', () => {
 });
 
 describe('the delete gate on `options` is maxCollection 0', () => {
-  // CFML parity [model/validation/OptionGroup.json:L5]:
-  //   "options": [{"contexts":"delete","maxCollection":0}]
-  // A group may be deleted only while it holds NO options. A TENSION RECORDED RATHER THAN RESOLVED:
-  // [model/entity/OptionGroup.cfc:L70] also declares `cascade="all-delete-orphan"`, which would
-  // delete the options WITH the group, while `maxCollection: 0` refuses the delete while any option
-  // exists.
+  // CFML parity [model/validation/OptionGroup.json:L5]: "options":
+  // [{"contexts":"delete","maxCollection":0}] A group may be deleted only while it holds no
+  // options.
   it('counts an empty association as zero, which the gate permits', () => {
     expect(aGroupWithColumns({ options: [] }).getOptions()).toHaveLength(0);
   });
@@ -1237,31 +1050,8 @@ describe('the delete gate on `options` is maxCollection 0', () => {
 });
 
 describe('addOption and removeOption delegate to the far side', () => {
-  // CFML parity [model/entity/OptionGroup.cfc:L91-L97], verified verbatim:
-  //
-  //   // Options (one-to-many)
-  //   public void function addOption(required any option) {
-  //       arguments.option.setOptionGroup( this );
-  //   }
-  //   public void function removeOption(required any option) {
-  //       arguments.option.removeOptionGroup( this );
-  //   }
-  //
-  // INVERSION CROSS-CHECK VERDICT: CLEAN. `add*` delegates to the far side's `set*` and `remove*`
-  // delegates to the far side's `remove*`, which is the pattern as intended. The verdict is stated
-  // explicitly - as required either way - because the sibling entity does NOT get it right:
-  // [model/entity/Option.cfc:L129-L131] and [model/entity/Option.cfc:L145-L147] each have a
-  // `remove*` calling `addExcludedOption(this)`, so asking to remove ADDS. Those are preserved
-  // defects owned by `option.test.ts`. This entity has none to preserve, and that absence is a
-  // verified fact rather than an assumption.
-  //
-  // Neither helper touches the collection directly. The far side reaches back through
-  // `getOptions()` and mutates it - `arrayAppend` at [model/entity/Option.cfc:L95],
-  // `arrayFind`/`arrayDeleteAt` at L102-L105 - which is exactly why the no-orderby branch must hand
-  // back the live array.
-  //
-  // `OptionGroup` declares NO inclusion or exclusion inverse association, so none is invented here.
-  // The four that exist on `Option` [model/entity/Option.cfc:L66-L70] belong to `option.test.ts`.
+  // `OptionGroup` declares no inclusion or exclusion inverse association, so none is invented
+  // here.
   it("addOption sets the far side's group and appends to the association", () => {
     const option = anOption({ optionID: 'a', optionName: 'Large' });
     const group = aGroupWithColumns({ optionGroupID: 'og-7', options: [] });
@@ -1286,7 +1076,7 @@ describe('addOption and removeOption delegate to the far side', () => {
   it('removes the FIRST element correctly, which a 1-based index guard would skip', () => {
     // [model/entity/Option.cfc:L102-L103] guards CFML's 1-based `arrayFind` with `index > 0`; the
     // ported guard must be `!== -1`, or element 0 - the very one `getOptions('sortOrder')` orders
-    // first - would silently never be removed.
+    // first.
     const first = anOption({ optionID: 'first' });
     const second = anOption({ optionID: 'second' });
     const group = aGroupWithColumns({ options: [] });
@@ -1299,9 +1089,9 @@ describe('addOption and removeOption delegate to the far side', () => {
   });
 
   it('is idempotent for a saved row already in the group', () => {
-    // [model/entity/Option.cfc:L94] guards the append with
-    //   if(isNew() or !arguments.optionGroup.hasOption( this ))
-    // so a saved row that is already a member is not appended twice.
+    // [model/entity/Option.cfc:L94] guards the append with if(isNew() or
+    // !arguments.optionGroup.hasOption( this )) so a saved row that is already a member is not
+    // appended twice.
     const option = anOption({ optionID: 'a', optionName: 'Large' });
     const group = aGroupWithColumns({ options: [] });
 
@@ -1313,9 +1103,7 @@ describe('addOption and removeOption delegate to the far side', () => {
 
   it('decides membership by PRIMARY KEY, not by object identity', () => {
     // Hibernate's session made reference identity and row identity the same test; a driver-only
-    // stack has no session, so containment is decided on the key. A `hasOption` that answered false
-    // for a row it already holds would make [model/entity/Option.cfc:L94]'s guard append a
-    // DUPLICATE.
+    // stack has no session, so containment is decided on the key.
     const hydratedOnce = anOption({ optionID: 'a', optionName: 'Large' });
     const hydratedAgain = anOption({ optionID: 'a', optionName: 'Large' });
     const group = aGroupWithColumns({ options: [hydratedOnce] });
@@ -1333,11 +1121,9 @@ describe('addOption and removeOption delegate to the far side', () => {
   });
 
   it('still matches by key inside the unsaved-row branch, so a saved member is found', () => {
-    // The containment probe switches to its reference-fallback branch when EITHER side is unsaved -
+    // The containment probe switches to its reference-fallback branch when either side is unsaved
     // here because the association itself holds an unsaved row - and the key comparison survives
-    // inside that branch. Were it dropped, a saved row would stop being found the moment any
-    // unsaved sibling joined the group, and [model/entity/Option.cfc:L94]'s guard would then append
-    // a DUPLICATE of it.
+    // inside that branch.
     const savedMember = anOption({ optionID: 'a', optionName: 'Large' });
     const group = aGroupWithColumns({
       options: [anOption({ optionID: '' }), savedMember],
@@ -1348,9 +1134,9 @@ describe('addOption and removeOption delegate to the far side', () => {
   });
 
   it('cannot tell two unsaved rows apart, which is why the isNew guard runs FIRST', () => {
-    // CFML parity [model/entity/Option.cfc:L94]: the guard is
-    //   if(isNew() or !arguments.optionGroup.hasOption( this ))
-    // and the ORDER of those two operands is load-bearing.
+    // CFML parity [model/entity/Option.cfc:L94]: the guard is if(isNew() or
+    // !arguments.optionGroup.hasOption( this )) and the ORDER of those two operands is
+    // load-bearing.
     const memberUnsaved = anOption({ optionID: '' });
     const strangerUnsaved = anOption({ optionID: '' });
     const group = aGroupWithColumns({ options: [memberUnsaved] });
@@ -1368,8 +1154,7 @@ describe('addOption and removeOption delegate to the far side', () => {
 
   it('appends two DISTINCT unsaved rows, because the isNew guard short-circuits', () => {
     // Every unsaved option shares the empty primary key, so a key comparison alone cannot separate
-    // them. `isNew()` is evaluated FIRST at [model/entity/Option.cfc:L94] and short-circuits the
-    // containment probe, which is what lets two unsaved rows both join the group.
+    // them.
     const firstUnsaved = anOption({ optionID: '' });
     const secondUnsaved = anOption({ optionID: '' });
     const group = aGroupWithColumns({ options: [] });
@@ -1435,8 +1220,8 @@ describe('addOption and removeOption delegate to the far side', () => {
   });
 
   it('keeps the ordering declared on the association out of the helpers', () => {
-    // [model/entity/OptionGroup.cfc:L70] declares `orderby="sortOrder"`, which is a HIBERNATE-LEVEL
-    // instruction honoured by the producing repository, not by these helpers.
+    // [model/entity/OptionGroup.cfc:L70] declares `orderby="sortOrder"`, which is a
+    // HIBERNATE-LEVEL instruction honoured by the producing repository, not by these helpers.
     const group = aGroupWithColumns({ options: [] });
 
     group.addOption(anOption({ optionID: 'later', sortOrder: 9 }));
@@ -1449,10 +1234,6 @@ describe('addOption and removeOption delegate to the far side', () => {
 
 /**
  * The members this entity is intended to expose, in declaration order.
- *
- * Written out rather than derived, so that a member disappearing from the module fails here instead
- * of quietly shrinking a derived list to match. Every name is the legacy CFML name VERBATIM in
- * camelCase, because interface parity is the acceptance contract.
  */
 const INTENDED_PUBLIC_SURFACE = [
   'getOptionGroupID',
@@ -1475,14 +1256,7 @@ const INTENDED_PUBLIC_SURFACE = [
 
 describe('structural facts, and the base class that is deliberately not ported', () => {
   // The legacy component extends `HibachiEntity` [model/entity/OptionGroup.cfc:L49], a three-level
-  // chain ending at `Slatwall.org.Hibachi.HibachiEntity`. TABLE CONTINUITY:
-  // [model/entity/OptionGroup.cfc:L49] declares
-  //   entityname="SlatwallOptionGroup" table="SwOptionGroup"
-  // and the physical table name is preserved verbatim - no migration, no rename, no new column.
-  // EMPTY BANNER PAIRS, PRESERVED AS SOURCE WARTS AND NEVER NORMALISED:
-  // [model/entity/OptionGroup.cfc:L85]/[L87] `Non-Persistent Property Methods`, [L101]/[L103]
-  // `Overridden Methods`, and [L105]/[L107] `ORM Event Hooks` are all present-but-empty. Only the
-  // `Bidirectional Helper Methods` pair at [L89]/[L99] contains anything.
+  // chain ending at `Slatwall.org.Hibachi.HibachiEntity`.
   it('exposes every member of the intended public surface as a function', () => {
     const group = aGroupWithColumns({});
 
@@ -1545,9 +1319,7 @@ describe('structural facts, and the base class that is deliberately not ported',
 
   it('hosts no isNew(), because it belongs to the unported framework base', () => {
     // CFML parity [org/Hibachi/HibachiEntity.cfc:L571-L576]: the base defined `getNewFlag()` as
-    // `getPrimaryIDValue() == ""` and `isNew()` on top of it. The base is not ported, and a
-    // repository-wide census finds `isNew()` called on an `Option` [model/entity/Option.cfc:L94]
-    // and never on an OptionGroup - so it is not authored here.
+    // `getPrimaryIDValue() == ""` and `isNew()` on top of it.
     expect(prototypeMembers()).not.toContain('isNew');
     expect(prototypeMembers()).not.toContain('getNewFlag');
   });
@@ -1577,9 +1349,9 @@ describe('structural facts, and the base class that is deliberately not ported',
   });
 
   it('reduces the out-of-scope Account associations to opaque ids', () => {
-    // CFML parity [model/entity/OptionGroup.cfc:L65,L67]: both are
-    //   cfc="Account" fieldtype="many-to-one"
-    // and the whole account module is out of scope, so each collapses to its foreign-key id.
+    // CFML parity [model/entity/OptionGroup.cfc:L65, L67]: both are cfc="Account"
+    // fieldtype="many-to-one" and the whole account module is out of scope, so each collapses to
+    // its foreign-key id.
     const group = aGroupWithColumns({
       createdByAccountID: 'acct-1',
       modifiedByAccountID: 'acct-2',
@@ -1593,7 +1365,7 @@ describe('structural facts, and the base class that is deliberately not ported',
 
   it('exposes remoteID, which is a real schema difference rather than boilerplate', () => {
     // CFML parity [model/entity/OptionGroup.cfc:L61]: `property name="remoteID" ormtype="string";`
-    // under its own `// Remote properties` banner, and with NO `hint` attribute - unlike
+    // under its own `// Remote properties` banner, and with no `hint` attribute - unlike
     // [model/entity/Category.cfc:L73], which documents its own remoteID.
     expect(aGroupWithColumns({ remoteID: 'legacy-42' }).getRemoteID()).toBe('legacy-42');
     expect(aGroupWithColumns({}).getRemoteID()).toBeUndefined();
@@ -1610,12 +1382,7 @@ describe('structural facts, and the base class that is deliberately not ported',
     // CFML parity [org/Hibachi/HibachiEntity.cfc:L507-L565]: `onMissingMethod` synthesised eleven
     // member patterns - `hasUniqueOrNullXXX`, `hasUniqueXXX`, `hasAnyXXX`, `getXXXAssignedIDList`,
     // `getXXXID`, `getXXXOptions`, `getXXXOptionsSmartList`, `getXXXSmartList`, `getXXXStruct`,
-    // `getXXXCount` and the attribute getter - and threw at L565 for anything else. The target has
-    // NO dynamic dispatch AT ALL: no `Proxy`, no index signature, no string dispatch, and
-    // `OptionGroup` declares no `attributeValues` collection, so it never had an EAV read path for
-    // the attribute-getter branch to serve. Only the patterns a caller CONCRETELY invokes are
-    // authored, which is why `hasOption` exists - it is called at [model/entity/Option.cfc:L94] -
-    // and the rest do not.
+    // `getXXXCount` and the attribute getter.
     const members = prototypeMembers();
 
     expect(members).toContain('hasOption');
@@ -1647,17 +1414,12 @@ describe('structural facts, and the base class that is deliberately not ported',
   });
 
   it('takes exactly one constructor parameter, so no collaborator port can be hiding in a second', () => {
-    // [model/entity/OptionGroup.cfc:L77] is the component's ONLY `getService(` site -
-    // `hibachiUtilityService.sortObjectArray`. `hibachiUtilityService` is not ported (AAP 0.5.3)
-    // and there is NO fourteenth port: the port ledger is locked at 13. The sort is reproduced in
-    // memory instead, justified by FIDELITY to the legacy result, defects included.
     expect(OptionGroup.length).toBe(1);
   });
 
   it('sorts with no collaborator supplied at all, proving no port was ever required', () => {
-    // Built through the column factory, which passes `optionSortTieBreaker: undefined`
-    // - the deliberate statement "use the legacy `randRange(1,100)` source". Distinct
-    // values order deterministically whatever the draw, so this holds unconditionally.
+    // Built through the column factory, which passes `optionSortTieBreaker: undefined` - the
+    // deliberate statement "use the legacy `randRange(1,100)` source".
     const group = aGroupWithColumns({
       options: [
         anOption({ optionID: 'z', optionName: 'Zulu' }),
@@ -1669,8 +1431,8 @@ describe('structural facts, and the base class that is deliberately not ported',
   });
 
   it('holds no memoized non-persistent accessor, because the source declares none', () => {
-    // The `Non-Persistent Property Methods` banner [model/entity/OptionGroup.cfc:L85-L87] is empty,
-    // so this entity has none of the memo-poisoning defects that `Sku` and `Product` carry.
+    // The `Non-Persistent Property Methods` banner [model/entity/OptionGroup.cfc:L85-L87] is
+    // empty, so this entity has none of the memo-poisoning defects that `Sku` and `Product` carry.
     const group = aGroupWithColumns({ optionGroupName: 'Shirt Size', imageGroupFlag: '1' });
 
     expect(group.getOptionGroupName()).toBe('Shirt Size');

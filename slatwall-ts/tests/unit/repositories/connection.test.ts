@@ -1,80 +1,6 @@
 /**
- * Characterization tests for `src/repositories/mysql/connection.ts` - its transactional
- * surface, its audit-actor gate, its placeholder guards and its pool lifecycle.
- *
- * ****************************************************************************
- * ** WHAT THIS SUITE COVERS, STATED FIRST BECAUSE THE CLAIM USED TO BE WRONG. **
- * **                                                                        **
- * ** A code review measured `tests/traceability/legacyTestMap.ts` labelling  **
- * ** ALL of `connection.ts` covered while this file tested only the          **
- * ** transactional executor and the tuple/batch helpers. Audit and stamp     **
- * ** resolution, `sqlUpdateAssignment`, placeholder admission, pool          **
- * ** acquisition, prepared-executor creation and `closeConnectionPool` had   **
- * ** no direct closure at all - the ledger asserted coverage this file did   **
- * ** not provide. Every one of those exports is now exercised behaviourally  **
- * ** below, and the ledger entry states what is pinned rather than implying  **
- * ** the whole module.                                                      **
- * **                                                                        **
- * ** AND IT STAYS A UNIT SUITE. NO REAL POOL IS BUILT AND NO SOCKET IS EVER  **
- * ** OPENED. Two mechanisms, and both are stated plainly rather than         **
- * ** implied. First, the REFUSAL cases need nothing at all: the module       **
- * ** resolves the configured dialect and refuses a non-MySQL one BEFORE it   **
- * ** reaches `createPool`, so a stubbed environment naming Oracle10g proves  **
- * ** the refusal, and one with an empty `DB_HOST` proves the configuration   **
- * ** refusal that precedes even that. Second, the ACCEPTED path replaces the **
- * ** driver's pool factory for this file - `createPool` is the one runtime   **
- * ** member the subject imports from `mysql2/promise` - so acquisition,      **
- * ** memoization, executor binding and `closeConnectionPool` are all         **
- * ** observed against a recording stand-in. That replacement is also what    **
- * ** makes "refused before any pool was constructed" a WITNESSED fact rather **
- * ** than an inference from reading the source.                              **
- * **                                                                        **
- * ** No case depends on any ambient `DB_*` value: each sets every variable   **
- * ** it needs, so the file passes on a bare checkout and on a machine        **
- * ** configured for a live probe alike, and each clears the module memo and  **
- * ** the configuration memo on both sides.                                   **
- * ****************************************************************************
- *
- * ****************************************************************************
- * ** WHY THIS FILE EXISTS.                                                  **
- * **                                                                        **
- * ** `connection.ts` had NO direct coverage of any kind before this suite.   **
- * ** That was tolerable while the executor was two read/write methods whose  **
- * ** behaviour the six repository suites exercised indirectly through their  **
- * ** own recording doubles. It stopped being tolerable when `transaction`    **
- * ** was added, because `transaction` is the first method here that owns a   **
- * ** RESOURCE LIFECYCLE - acquire, begin, commit or roll back, release -     **
- * ** and every one of those steps is a place where a mistake is invisible    **
- * ** until production. A repository double cannot cover it: the doubles      **
- * ** implement `transaction` themselves, so they characterize their own      **
- * ** stand-in rather than the real thing.                                    **
- * **                                                                        **
- * ** NET-NEW COVERAGE, and declared as such. There is no legacy antecedent:  **
- * ** the ORM opened `cftransaction` implicitly and the legacy suite has no   **
- * ** test for it. Per AAP 0.6.6 this is flagged as net-new rather than       **
- * ** presented as parity.                                                   **
- * ****************************************************************************
- *
- * The five properties most worth guarding, because each one is a silent
- * production failure rather than a visible one:
- *
- *   1. STATEMENTS INSIDE THE UNIT GO TO THE CONNECTION, NOT THE POOL. This is
- *      the whole point. `pool.execute` picks an arbitrary pooled connection per
- *      call, so a statement that escapes to the pool commits immediately and
- *      survives the rollback that was supposed to undo it.
- *   2. THE ORIGINAL FAILURE SURVIVES A FAILING ROLLBACK. When cleanup also
- *      fails, the caller must still see why the WORK failed. Masking it with the
- *      rollback's error is how a diagnosable bug becomes an undiagnosable one.
- *   3. THE CONNECTION IS ALWAYS RELEASED. A connection leaked on an error path
- *      is one the pool never hands out again, so a recurring failure exhausts
- *      the pool across warm invocations and the symptom appears far from the
- *      cause.
- *   4. NESTING JOINS RATHER THAN NESTS. MySQL implicitly commits on a second
- *      `START TRANSACTION`, so a nested implementation would commit an outer
- *      unit of work halfway through.
- *   5. PARAMETER CHECKING STILL APPLIES INSIDE A TRANSACTION. The bind-time
- *      guarantee that replaced `<cfqueryparam>` must not have a hole in it just
- *      because the statement is transactional.
+ * Characterization tests for `src/repositories/mysql/connection.ts` - its transactional surface,
+ * its audit-actor gate, its placeholder guards and its pool lifecycle.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -107,42 +33,39 @@ import type {
 /**
  * The driver's pool factory, replaced for this file.
  *
- * ★★★ WHY THE MODULE IS MOCKED AT ALL, WHEN NOTHING HERE WANTS A POOL. Precisely because nothing
- * here wants one. `getConnectionPool` is asserted to refuse a non-MySQL dialect and an unsatisfied
- * environment BEFORE it constructs anything, and the only way to witness "before" rather than infer
- * it from the source is to observe that the factory was never called. It doubles as this file's
- * safety net: if any case ever did reach construction, the call is recorded here instead of a real
- * `mysql2` pool being built inside a unit suite.
+ * Why the module is mocked at all, when nothing here wants a pool.
  *
- * `createPool` is the ONE runtime member `src/repositories/mysql/connection.ts` imports from
- * `mysql2/promise` [src/repositories/mysql/connection.ts:L165]; everything else it takes from the
- * driver is a type, which is erased. The replacement is therefore complete rather than partial.
- *
- * Hoisted because `vi.mock` is hoisted above the imports it replaces.
+ * `createPool` is the one runtime member `src/repositories/mysql/connection.ts` imports from
+ * `mysql2/promise` `src/repositories/mysql/connection.ts`; everything else it takes from the
+ * driver is a type.
  */
 const { driverCreatePool } = vi.hoisted(() => ({ driverCreatePool: vi.fn() }));
 
 vi.mock('mysql2/promise', () => ({ createPool: driverCreatePool }));
 
-// ---------------------------------------------------------------------------
-// A fake pool, recording the lifecycle
-// ---------------------------------------------------------------------------
+// A fake pool, recording the lifecycle.
 
-/** One recorded interaction, in the order it happened. */
+/**
+ * One recorded interaction, in the order it happened.
+ */
 type Interaction =
   | { readonly on: 'pool'; readonly step: 'execute'; readonly sql: string }
   | { readonly on: 'pool'; readonly step: 'getConnection' }
   | { readonly on: 'connection'; readonly step: 'execute'; readonly sql: string }
   | { readonly on: 'connection'; readonly step: 'begin' | 'commit' | 'rollback' | 'release' };
 
-/** Which lifecycle call, if any, the fake connection should fail. */
+/**
+ * Which lifecycle call, if any, the fake connection should fail.
+ */
 interface FailurePlan {
   readonly onBegin?: Error;
   readonly onCommit?: Error;
   readonly onRollback?: Error;
 }
 
-/** What a data-modifying statement reports, standing in for a `ResultSetHeader`. */
+/**
+ * What a data-modifying statement reports, standing in for a `ResultSetHeader`.
+ */
 interface FakeHeader {
   readonly affectedRows: number;
   readonly warningStatus: number;
@@ -150,13 +73,6 @@ interface FakeHeader {
 
 /**
  * Whether the driver would answer this statement with a header instead of rows.
- *
- * NOT A CONVENIENCE - it is what the real driver does. `execute` resolves to
- * `[rows, fields]` for a result-set statement and `[ResultSetHeader, fields]` for
- * a data-modifying one, so the FIRST TUPLE ELEMENT IS A DIFFERENT SHAPE depending
- * on the statement kind. A fake that always answered with rows would let
- * `executeMutation` read `affectedRows` off an array and see `undefined`, which is
- * a fault in the fake rather than in the subject.
  */
 function isMutation(sql: string): boolean {
   return /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql);
@@ -165,11 +81,7 @@ function isMutation(sql: string): boolean {
 /**
  * A pool that records every interaction and returns canned driver results.
  *
- * The cast to `Pool` is deliberate and confined to this helper. `Pool` is a wide
- * driver interface and the executor touches exactly two of its members -
- * `execute` and `getConnection` - so implementing the remainder would add dozens
- * of unreachable stubs whose only effect is to obscure which members actually
- * matter. Narrowing here states that surface explicitly instead.
+ * The cast to `Pool` is deliberate and confined to this helper.
  */
 function makeFakePool(
   rows: readonly unknown[] = [],
@@ -230,14 +142,12 @@ function makeFakePool(
   };
 }
 
-/** The lifecycle steps only, as a readable sequence for order assertions. */
+/**
+ * The lifecycle steps only, as a readable sequence for order assertions.
+ */
 function stepsOf(log: readonly Interaction[]): string[] {
   return log.map((entry) => `${entry.on}.${entry.step}`);
 }
-
-// ---------------------------------------------------------------------------
-// The happy path
-// ---------------------------------------------------------------------------
 
 describe('createPoolExecutor - transaction, committed path', () => {
   it('acquires a connection, begins, runs the work, commits, then releases - in that order', async () => {
@@ -270,9 +180,9 @@ describe('createPoolExecutor - transaction, committed path', () => {
   });
 
   it('★★ sends every statement issued through `tx` to the CONNECTION, never to the pool', async () => {
-    // PROPERTY 1, and the reason this method exists. A statement that reached
-    // `pool.execute` would run on an arbitrary other connection, outside the
-    // transaction, where it commits immediately and survives a rollback.
+    // PROPERTY 1, and the reason this method exists. A statement that reached `pool.execute` would
+    // run on an arbitrary other connection, outside the transaction, where it commits immediately
+    // and survives a rollback.
     const { pool, log } = makeFakePool([{ priceGroupID: 'pg-1' }]);
     const executor = createPoolExecutor(pool);
 
@@ -316,8 +226,8 @@ describe('createPoolExecutor - transaction, committed path', () => {
   });
 
   it('reports affectedRows and warningStatus from a transactional mutation', async () => {
-    // The fake's canned result stands in for a `ResultSetHeader`, so the two
-    // fields the port exposes are read off it and nothing else is invented.
+    // The fake's canned result stands in for a `ResultSetHeader`, so the two fields the port
+    // exposes are read off it and nothing else is invented.
     const { pool } = makeFakePool([], {}, { affectedRows: 3, warningStatus: 0 });
     const executor = createPoolExecutor(pool);
 
@@ -329,10 +239,6 @@ describe('createPoolExecutor - transaction, committed path', () => {
     expect(Object.isFrozen(result)).toBe(true);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Failure paths
-// ---------------------------------------------------------------------------
 
 describe('createPoolExecutor - transaction, failing path', () => {
   it('rolls back and re-throws the original failure when the work throws', async () => {
@@ -366,8 +272,7 @@ describe('createPoolExecutor - transaction, failing path', () => {
   });
 
   it('★★ preserves the ORIGINAL failure when the rollback ALSO fails', async () => {
-    // PROPERTY 2. Cleanup failing is not the caller's problem; the work failing
-    // is. Swapping these is how a diagnosable bug becomes an undiagnosable one.
+    // PROPERTY 2. Cleanup failing is not the caller's problem; the work failing is.
     const rollbackFailure = new Error('connection already gone');
     const { pool, log } = makeFakePool([], { onRollback: rollbackFailure });
     const executor = createPoolExecutor(pool);
@@ -385,8 +290,8 @@ describe('createPoolExecutor - transaction, failing path', () => {
   });
 
   it('★★ releases the connection even when the work throws', async () => {
-    // PROPERTY 3. A leaked connection is never handed out again, so a recurring
-    // failure exhausts the pool and the symptom surfaces far from the cause.
+    // PROPERTY 3. A leaked connection is never handed out again, so a recurring failure exhausts
+    // the pool and the symptom surfaces far from the cause.
     const { pool, log } = makeFakePool();
     const executor = createPoolExecutor(pool);
 
@@ -446,15 +351,11 @@ describe('createPoolExecutor - transaction, failing path', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Nesting
-// ---------------------------------------------------------------------------
-
 describe('createPoolExecutor - transaction joins rather than nests', () => {
   it('★★ does not begin a second transaction when `tx.transaction` is called', async () => {
-    // PROPERTY 4. MySQL implicitly COMMITS on a second `START TRANSACTION`, so a
-    // nested implementation would commit the outer unit halfway through - the
-    // exact failure this is shaped to make impossible.
+    // PROPERTY 4. MySQL implicitly COMMITS on a second `START TRANSACTION`, so a nested
+    // implementation would commit the outer unit halfway through - the exact failure this is
+    // shaped to make impossible.
     const { pool, log } = makeFakePool();
     const executor = createPoolExecutor(pool);
 
@@ -514,15 +415,12 @@ describe('createPoolExecutor - transaction joins rather than nests', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The bind-time guarantee still holds inside a transaction
-// ---------------------------------------------------------------------------
+// The bind-time guarantee still holds inside a transaction.
 
 describe('createPoolExecutor - parameter checking inside a transaction', () => {
   it('★ refuses an unbindable parameter on a transactional read, before sending it', async () => {
     // PROPERTY 5. This is the guarantee `<cfqueryparam>` provided
-    // [model/dao/PriceGroupDAO.cfc:L65]; a transactional statement must not be a
-    // hole in it.
+    // [model/dao/PriceGroupDAO.cfc:L65]; a transactional statement must not be a hole in it.
     const { pool, log } = makeFakePool();
     const executor = createPoolExecutor(pool);
 
@@ -570,9 +468,7 @@ describe('createPoolExecutor - parameter checking inside a transaction', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The non-transactional surface is unchanged
-// ---------------------------------------------------------------------------
+// The non-transactional surface is unchanged.
 
 describe('createPoolExecutor - the non-transactional surface still goes through the pool', () => {
   it('routes a plain read through pool.execute and acquires no connection', async () => {
@@ -606,27 +502,17 @@ describe('createPoolExecutor - the non-transactional surface still goes through 
 
     expect(Object.keys(executor).sort()).toEqual(['execute', 'executeMutation', 'transaction']);
     expect(Object.isFrozen(executor)).toBe(true);
-
-    // The executor handed to a unit of work carries the same three, so a
-    // repository cannot tell the two apart by shape.
     const innerKeys = await executor.transaction((tx) => Promise.resolve(Object.keys(tx).sort()));
 
     expect(innerKeys).toEqual(['execute', 'executeMutation', 'transaction']);
   });
 });
 
-// --- S-12: multi-row tuple bodies are bounded before they are allocated --------
-
-describe('sqlTuplePlaceholderList - the multi-row VALUES guard (S-12)', () => {
+describe('sqlTuplePlaceholderList - the multi-row VALUES guard', () => {
   // Two link-table writers built a `VALUES` body by repeating a two-placeholder tuple once per
-  // collection member, validating neither the count nor the width before allocating. The member
-  // count originates in a caller-supplied collection, so it decided the size of one allocation.
+  // collection member, validating neither the count nor the width before allocating.
   //
-  // WHY THESE TESTS LIVE HERE RATHER THAN IN THE TWO REPOSITORY SUITES. Those suites assert the
-  // statement each adapter emits for a realistic membership, and they pass UNCHANGED after this
-  // fix - which is the point: for every real collection the emitted SQL is byte-identical. The
-  // behaviour that is new is what happens at and beyond the boundary, and that belongs to the
-  // shared builder rather than being asserted twice against two callers.
+  // Why these tests live here rather than in the two repository suites.
 
   it('renders one tuple per row, parentheses included', () => {
     expect(sqlTuplePlaceholderList(2, 1)).toBe('(?, ?)');
@@ -670,25 +556,11 @@ describe('sqlTuplePlaceholderList - the multi-row VALUES guard (S-12)', () => {
   });
 
   it('★★ VALIDATES BEFORE ALLOCATING, which is the entire point of the guard', () => {
-    // `Number.MAX_SAFE_INTEGER` passes `Number.isSafeInteger`, so the ONLY thing standing between
-    // this call and a multi-gigabyte allocation is the range check preceding it. A guard placed
-    // after `new Array(rowCount)` would already have committed the memory it exists to refuse, so
-    // this case is the difference between a rejected request and a dead container.
+    // `Number.MAX_SAFE_INTEGER` passes `Number.isSafeInteger`, so the only thing standing between
+    // this call and a multi-gigabyte allocation is the range check preceding it.
     //
-    // ★★★ HOW THAT IS PROVEN, AND WHY IT IS NO LONGER A STOPWATCH. This case used to assert
-    // `Date.now() - started < 1000`, which a code review correctly read as an INVENTED
-    // NON-FUNCTIONAL REQUIREMENT: AAP 0.8.1 forbids asserting a latency figure the legacy system
-    // never stated, and a wall-clock bound is also the one assertion here that a loaded CI host can
-    // fail without anything being wrong. The structural evidence replaces it.
-    //
-    // THE SIGNATURE OF A COMPARISON IS THAT ITS OUTCOME DOES NOT DEPEND ON MAGNITUDE. One row above
-    // the ceiling, a thousand times the ceiling and the largest integer JavaScript can represent
-    // exactly are refused IDENTICALLY - same error class, same name, same dimension - and each
-    // reports back the value it was given. An implementation that allocated first could not produce
-    // that: `new Array(Number.MAX_SAFE_INTEGER)` throws a `RangeError` naming an invalid array
-    // length, and a merely large count would exhaust the heap instead of returning a typed refusal.
-    // So the assertions below distinguish "refused by the range check" from "died in the
-    // allocation" without measuring anything.
+    // The ceiling, a thousand times the ceiling and the largest integer JavaScript can represent
+    // exactly are refused IDENTICALLY - same error class, same name, same dimension.
     const refusals = [
       SQL_TUPLE_ROW_LIMIT + 1,
       SQL_TUPLE_ROW_LIMIT * 1000,
@@ -713,9 +585,8 @@ describe('sqlTuplePlaceholderList - the multi-row VALUES guard (S-12)', () => {
     ]);
 
     // And the width dimension is guarded the same way, in the same order: a call that is out of
-    // range on BOTH dimensions is refused on the WIDTH, because that check comes first
-    // [src/repositories/mysql/connection.ts:L943-L954]. Guard ORDER is observable through which
-    // dimension the refusal names, so it needs no timing either.
+    // range on both dimensions is refused on the WIDTH, because that check comes first
+    // `src/repositories/mysql/connection.ts`.
     try {
       sqlTuplePlaceholderList(MAX_TUPLE_ROW_WIDTH + 1, Number.MAX_SAFE_INTEGER);
       expect.unreachable('both dimensions are out of range, so this must be refused');
@@ -737,18 +608,15 @@ describe('sqlTuplePlaceholderList - the multi-row VALUES guard (S-12)', () => {
   });
 
   it('keeps its own limits consistent with the protocol placeholder ceiling', () => {
-    // The derived invariant the module asserts once at load, restated here against the two exported
-    // constants so that raising either without re-checking the product fails a test as well as an
-    // import. 65,535 is the two-byte placeholder count of `COM_STMT_PREPARE_OK`.
     expect(MAX_TUPLE_ROW_WIDTH * SQL_TUPLE_ROW_LIMIT).toBeLessThanOrEqual(65535);
   });
 });
 
-describe('chunkTupleRows - batching without refusing legitimate writes (S-12)', () => {
+describe('chunkTupleRows - batching without refusing legitimate writes', () => {
   it('returns one batch when the collection fits, so real writes emit one statement', () => {
     // The property that makes the ceiling safe to impose: every realistic membership - a SKU's
-    // option rows are one per option group, a rate's exclusion lists are curated by hand - yields a
-    // single batch, and therefore exactly the statement the adapter emitted before this fix.
+    // option rows are one per option group, a rate's exclusion lists are curated by hand - yields
+    // a single batch.
     expect(chunkTupleRows(['a'])).toStrictEqual([['a']]);
     expect(chunkTupleRows(['a', 'b', 'c'])).toStrictEqual([['a', 'b', 'c']]);
   });
@@ -779,8 +647,8 @@ describe('chunkTupleRows - batching without refusing legitimate writes (S-12)', 
   });
 
   it('every batch is a shape the tuple builder will accept', () => {
-    // The two halves have to agree: a batch the chunker produced but the builder refused would turn
-    // a large write into a runtime failure instead of several statements.
+    // The two halves have to agree: a batch the chunker produced but the builder refused would
+    // turn a large write into a runtime failure instead of several statements.
     const rows = Array.from({ length: SQL_TUPLE_ROW_LIMIT * 2 + 7 }, (_unused, index) => index);
 
     for (const batch of chunkTupleRows(rows)) {
@@ -793,20 +661,18 @@ describe('chunkTupleRows - batching without refusing legitimate writes (S-12)', 
   });
 });
 
-// ===========================================================================
 // The audit-actor gate, and the two helpers that keep it from being restated.
-//
-// NET-NEW COVERAGE. The legacy gate lived in `HibachiEntity.preInsert` and
-// `preUpdate` and had no test; this is the ported gate, not a parity claim.
-// ===========================================================================
 
 describe('resolveAuditActorAccountID - the legacy persisted-account AND admin-flag gate', () => {
-  /** An actor that passes both halves of the gate. */
+  /**
+   * An actor that passes both halves of the gate.
+   */
   const stampingActor: AuditActorContext = { accountID: 'account-42', adminAccountFlag: true };
 
   it('stamps the account when it is persisted AND carries the admin flag', () => {
-    // Both conditions of [org/Hibachi/HibachiEntity.cfc:L628] and [:L633] hold, so the write is
-    // attributed - and the identifier comes back unchanged rather than normalised.
+    // Both conditions of [org/Hibachi/HibachiEntity.cfc:L628] and
+    // [org/Hibachi/HibachiEntity.cfc:L633] hold, so the write is attributed - and the identifier
+    // comes back unchanged rather than normalised.
     expect(resolveAuditActorAccountID(stampingActor)).toBe('account-42');
   });
 
@@ -819,8 +685,8 @@ describe('resolveAuditActorAccountID - the legacy persisted-account AND admin-fl
   });
 
   it('refuses an admin with no persisted account, which is the legacy new-account case', () => {
-    // `getAccount().isNew()` handed back an empty object with no identifier to stamp; modelling the
-    // absence directly is what replaces that object.
+    // `getAccount().isNew()` handed back an empty object with no identifier to stamp; modelling
+    // the absence directly is what replaces that object.
     expect(resolveAuditActorAccountID({ adminAccountFlag: true })).toBe(undefined);
     expect(resolveAuditActorAccountID({ accountID: undefined, adminAccountFlag: true })).toBe(
       undefined,
@@ -829,8 +695,7 @@ describe('resolveAuditActorAccountID - the legacy persisted-account AND admin-fl
 
   it('★ refuses an EMPTY-STRING account identifier, which is not the same as an absent one', () => {
     // A distinct arm of the gate, and the one a caller reaches by accident: an empty string is a
-    // present-but-meaningless identifier, and binding it would write a foreign key to '' rather than
-    // leaving the column unattributed.
+    // present-but-meaningless identifier.
     expect(resolveAuditActorAccountID({ accountID: '', adminAccountFlag: true })).toBe(undefined);
   });
 
@@ -845,8 +710,7 @@ describe('resolveAuditActorAccountID - the legacy persisted-account AND admin-fl
 describe('sqlUpdateAssignment - COALESCE for the audit columns, a plain bind for every other', () => {
   it('★★ resolves each audit column against ITS OWN STORED VALUE rather than binding null over it', () => {
     // The whole reason this is SQL rather than TypeScript: a refused gate binds null, and a plain
-    // `?` would then DESTROY an attribution the legacy preserved, because Hibernate rewrote the
-    // loaded value unchanged when the setter was never reached.
+    // `?` would then DESTROY an attribution the legacy preserved.
     expect(sqlUpdateAssignment('createdByAccountID')).toBe(
       'createdByAccountID = COALESCE(?, createdByAccountID)',
     );
@@ -875,10 +739,7 @@ describe('sqlUpdateAssignment - COALESCE for the audit columns, a plain bind for
 
   it('matches the column name EXACTLY, which is why the roster is exported rather than retyped', () => {
     // Recorded behaviour rather than a latent defect: every statement in this port spells its
-    // columns in the one canonical casing the entity metadata uses, and each takes the name from
-    // `AUDIT_ACTOR_COLUMNS` or from that metadata. A differently-cased spelling would therefore be a
-    // caller defect, and it takes the plain arm - which this case pins so the comparison's
-    // case-sensitivity is a stated property instead of a surprise.
+    // columns in the one canonical casing the entity metadata uses.
     expect(sqlUpdateAssignment('CreatedByAccountID')).toBe('CreatedByAccountID = ?');
   });
 });
@@ -918,11 +779,9 @@ describe('resolveStampedModifiedByAccountID - the TypeScript mirror of that COAL
   });
 });
 
-// ===========================================================================
 // Placeholder admission: the protocol ceiling, and the IN-list body.
-// ===========================================================================
 
-describe('isPreparablePlaceholderCount - the two-byte protocol ceiling, checkable EARLY (F17)', () => {
+describe('isPreparablePlaceholderCount - the two-byte protocol ceiling, checkable EARLY', () => {
   it('states the ceiling as the protocol fact it is', () => {
     // `COM_STMT_PREPARE_OK` reports a placeholder count in a two-byte little-endian field, so this
     // is the most any statement can carry. It is not a capacity target and must not become one.
@@ -939,8 +798,7 @@ describe('isPreparablePlaceholderCount - the two-byte protocol ceiling, checkabl
   it('★ accepts ZERO, because a statement carrying no placeholders is preparable', () => {
     // The asymmetry against `sqlPlaceholderList` below is deliberate and is the reason both exist:
     // this is a feasibility test on a statement's width, while rendering an EMPTY list would emit
-    // the unparseable `IN ()`. A caller checks feasibility early and still short-circuits an empty
-    // collection itself.
+    // the unparseable `IN ()`.
     expect(isPreparablePlaceholderCount(0)).toBe(true);
     expect(() => sqlPlaceholderList(0)).toThrow(/placeholder count/u);
   });
@@ -955,9 +813,8 @@ describe('isPreparablePlaceholderCount - the two-byte protocol ceiling, checkabl
   });
 
   it('★★ is a test on the COUNT alone, so nothing it admits is trimmed, sorted or deduplicated', () => {
-    // The property that keeps the guard from changing which rows a statement matches: the number of
-    // members decides feasibility, and the members themselves are never touched by it. A list of
-    // duplicates and a list of distinct values of the same length are equally preparable.
+    // The property that keeps the guard from changing which rows a statement matches: the number
+    // of members decides feasibility, and the members themselves are never touched by it.
     expect(isPreparablePlaceholderCount(['a', 'a', 'a'].length)).toBe(true);
     expect(isPreparablePlaceholderCount(['a', 'b', 'c'].length)).toBe(true);
     expect(sqlPlaceholderList(3)).toBe('?, ?, ?');
@@ -966,7 +823,8 @@ describe('isPreparablePlaceholderCount - the two-byte protocol ceiling, checkabl
 
 describe('sqlPlaceholderList - the IN-list body, and its guard order', () => {
   it('renders one placeholder per bound value, without the surrounding parentheses', () => {
-    // The parentheses stay in the caller's own SQL, so the predicate reads as SQL at the call site.
+    // The parentheses stay in the caller's own SQL, so the predicate reads as SQL at the call
+    // site.
     expect(sqlPlaceholderList(1)).toBe('?');
     expect(sqlPlaceholderList(2)).toBe('?, ?');
     expect(sqlPlaceholderList(4)).toBe('?, ?, ?, ?');
@@ -981,7 +839,7 @@ describe('sqlPlaceholderList - the IN-list body, and its guard order', () => {
   });
 
   it('refuses zero, which would render the unparseable IN () rather than an empty predicate', () => {
-    // The legacy branched the same way at model/dao/PromotionDAO.cfc:L121 and :L125, so the caller
+    // The legacy branched the same way at model/dao/PromotionDAO.cfc:L121 and:L125, so the caller
     // owns the short-circuit and this refusal is what stops it being forgotten.
     try {
       sqlPlaceholderList(0);
@@ -993,11 +851,6 @@ describe('sqlPlaceholderList - the IN-list body, and its guard order', () => {
   });
 
   it('★★ REFUSES BY COMPARISON RATHER THAN BY TRAVERSAL, at every magnitude above the ceiling', () => {
-    // The same structural evidence the tuple builder gets, and for the same reason: no wall-clock
-    // bound appears here, because a latency figure would be an invented requirement (AAP 0.8.1).
-    // Identical refusals across three magnitudes are what a range check produces; an implementation
-    // that allocated first would throw a RangeError for the largest and exhaust the heap for the
-    // middle one.
     const refusals = [
       MAX_PLACEHOLDER_COUNT + 1,
       MAX_PLACEHOLDER_COUNT * 1000,
@@ -1046,22 +899,14 @@ describe('sqlPlaceholderList - the IN-list body, and its guard order', () => {
   });
 });
 
-// ===========================================================================
 // The pool lifecycle - refusals only, so no pool is ever built.
-//
-// EVERY CASE SETS THE WHOLE ENVIRONMENT IT NEEDS. `tests/setup.ts` states that no
-// test may depend on a `.env` file or on any DB_* value being set, and these cases
-// honour that in the stronger direction too: because each names DB_DIALECT itself,
-// the refusal is reached whether the host has a live datasource configured or not.
-// ===========================================================================
 
 describe('getConnectionPool and getPreparedStatementExecutor - refusal before construction', () => {
   /**
    * The five variables that have no default, with `DB_DIALECT` chosen by the caller.
    *
-   * A dialect this port does not implement is what makes the case hermetic:
-   * `getConnectionPool` resolves the dialect and calls `assertMySqlDialect` BEFORE
-   * `createPool`, so nothing here can construct a pool or open a socket.
+   * A dialect this port does not implement is what makes the case hermetic: `getConnectionPool`
+   * resolves the dialect and calls `assertMySqlDialect` before `createPool`.
    */
   const stubDatabaseEnvironment = (dialect: string, host = '127.0.0.1'): void => {
     vi.stubEnv('DB_HOST', host);
@@ -1072,9 +917,6 @@ describe('getConnectionPool and getPreparedStatementExecutor - refusal before co
   };
 
   beforeEach(() => {
-    // `appConfig` memoizes the process-environment read, so the memo is cleared on the way in as
-    // well as on the way out: a sibling file that ran earlier in this worker must not be able to
-    // hand a configuration to a case here, and a case here must not leave one behind.
     appConfig.reset();
   });
 
@@ -1085,9 +927,7 @@ describe('getConnectionPool and getPreparedStatementExecutor - refusal before co
 
   it('★★ REFUSES A NON-MYSQL DIALECT, naming the site, before any pool is constructed', () => {
     // The legacy host could not make this mistake: it probed the live datasource for its product
-    // name [config/configORM.cfm:L3]. Replacing the probe with configuration is what creates the
-    // possibility of a MySQL driver pool being opened against a dialect that is not MySQL - which
-    // would connect successfully and then fail on statement syntax deep inside a repository.
+    // name [config/configORM.cfm:L3].
     stubDatabaseEnvironment('Oracle10g');
 
     try {
@@ -1097,11 +937,6 @@ describe('getConnectionPool and getPreparedStatementExecutor - refusal before co
       expect((error as Error).name).toBe('UnsupportedDialectError');
       expect((error as Error).message).toContain('Oracle10g');
     }
-
-    // ★★ AND "BEFORE ANY POOL IS CONSTRUCTED" IS OBSERVED RATHER THAN ASSUMED. The driver's pool
-    // factory is the mocked module member above, so this is a direct witness: the refusal happened
-    // and `createPool` was never reached. Asserting only the thrown error would leave the ORDER to
-    // be read out of the source, and a revision that built the pool first would still throw.
     expect(driverCreatePool).not.toHaveBeenCalled();
   });
 
@@ -1121,9 +956,8 @@ describe('getConnectionPool and getPreparedStatementExecutor - refusal before co
   });
 
   it('★★ refuses an UNSATISFIED ENVIRONMENT before it ever reaches the dialect check', () => {
-    // The hard stop the legacy `<cfdbinfo>` failure produced [config/configORM.cfm] is preserved:
-    // nothing substitutes a default, retries, or degrades. An empty DB_HOST is a present-but-invalid
-    // value, which is the shape a misconfigured deployment actually has.
+    // The hard stop the legacy `<cfdbinfo>` failure produced `config/configORM.cfm` is preserved:
+    // nothing substitutes a default, retries, or degrades.
     stubDatabaseEnvironment('MySQL', '');
 
     try {
@@ -1137,7 +971,7 @@ describe('getConnectionPool and getPreparedStatementExecutor - refusal before co
 
   it('★ propagates that refusal through the executor accessor, which is the composition seam', () => {
     // `getPreparedStatementExecutor` is the one line the composition root uses, so a misconfigured
-    // deployment must fail THERE rather than handing back an executor whose first statement dies.
+    // deployment must fail there rather than handing back an executor whose first statement dies.
     stubDatabaseEnvironment('Oracle10g');
 
     expect(() => getPreparedStatementExecutor()).toThrow(/Oracle10g/u);
@@ -1151,7 +985,7 @@ describe('getConnectionPool and getPreparedStatementExecutor - refusal before co
       getPreparedStatementExecutor();
       expect.unreachable('a non-MySQL dialect must be refused');
     } catch (error) {
-      // The site string is what tells an operator WHICH arm refused, rather than leaving them to
+      // The site string is what tells an operator which arm refused, rather than leaving them to
       // guess between a pool, a statement fragment and a repository.
       expect((error as Error).message.toLowerCase()).toContain('pool');
     }
@@ -1165,8 +999,7 @@ describe('closeConnectionPool - safe in an unconditional cleanup hook', () => {
 
   it('★ resolves and does nothing when no pool was ever created', () => {
     // The state a refused acquisition leaves behind, and the state this block runs in: nothing was
-    // ever constructed, so there is nothing to end. A harness that calls this in an `afterAll` must
-    // not fail because the run never touched a database.
+    // ever constructed, so there is nothing to end.
     return expect(closeConnectionPool()).resolves.toBeUndefined();
   });
 
@@ -1176,9 +1009,8 @@ describe('closeConnectionPool - safe in an unconditional cleanup hook', () => {
   });
 
   it('★★ leaves the module rebuildable rather than permanently closed', async () => {
-    // The memoized bindings are cleared BEFORE the close is awaited, which is what lets a harness
-    // close and reopen. Observable without a pool: after closing, an acquisition still runs the
-    // guards from the top rather than reporting an already-closed pool.
+    // The memoized bindings are cleared before the close is awaited, which is what lets a harness
+    // close and reopen.
     await closeConnectionPool();
 
     vi.stubEnv('DB_HOST', '127.0.0.1');
@@ -1198,14 +1030,6 @@ describe('closeConnectionPool - safe in an unconditional cleanup hook', () => {
 describe('getConnectionPool and getPreparedStatementExecutor - the accepted path', () => {
   /**
    * A pool the driver factory can hand back, recording only what this block asserts.
-   *
-   * WHY A FAKE IS ENOUGH, AND WHY IT IS NOT A COMPROMISE. What the accepted path decides is
-   * WIRING, not driver behaviour: which object the module memoizes, how many times it asks the
-   * factory for one, which pool the executor it hands the composition root is bound to, and what
-   * `closeConnectionPool` does to it. Every one of those is observable through the object the
-   * factory returned, and a real `mysql2` pool would add a socket without adding a single
-   * assertion. Statement behaviour against a real driver result shape is covered by the
-   * transactional blocks above, which use the richer fake at the top of this file.
    */
   const makeAcquirableFakePool = (): {
     readonly pool: Pool;
@@ -1254,7 +1078,7 @@ describe('getConnectionPool and getPreparedStatementExecutor - the accepted path
 
   it('★★ hands back the pool the driver built, and builds exactly ONE for the container', () => {
     // The module-scope pool is the sanctioned exception AAP 0.6.5 describes: it survives warm
-    // invocations on purpose, so a second acquisition must NOT construct a second pool.
+    // invocations on purpose, so a second acquisition must not construct a second pool.
     const { pool } = makeAcquirableFakePool();
     driverCreatePool.mockReturnValue(pool);
 
@@ -1275,7 +1099,7 @@ describe('getConnectionPool and getPreparedStatementExecutor - the accepted path
     expect(getPreparedStatementExecutor()).toBe(executor);
     expect(driverCreatePool).toHaveBeenCalledTimes(1);
 
-    // Bound to THAT pool, proven by where the statement lands rather than by identity alone.
+    // Bound to that pool, proven by where the statement lands rather than by identity alone.
     await executor.execute('SELECT 1 FROM SwSku WHERE skuID = ?', ['sku-1']);
 
     expect(executed).toStrictEqual(['SELECT 1 FROM SwSku WHERE skuID = ?']);
@@ -1305,7 +1129,7 @@ describe('getConnectionPool and getPreparedStatementExecutor - the accepted path
 
     expect(first.ends()).toBe(1);
 
-    // Rebuildable rather than permanently closed: the memo was cleared BEFORE the close was
+    // Rebuildable rather than permanently closed: the memo was cleared before the close was
     // awaited, so a harness that closes and reopens gets a NEW pool rather than the ended one.
     const second = makeAcquirableFakePool();
     driverCreatePool.mockReturnValue(second.pool);

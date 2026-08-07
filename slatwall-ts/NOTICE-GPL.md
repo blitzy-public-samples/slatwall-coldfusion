@@ -52,9 +52,10 @@ License, Version 3, 29 June 2007 already ships with this distribution at the rep
 
 Duplicating those terms inside this subtree would add nothing and would make this notice
 unreviewable. `GNU_V3_Copy.txt` is the operative text; read it there. For information about the
-upstream project, including commercial licensing, `readme.md` directs readers to the historical
-upstream address `www.getslatwall.com`. It is recorded here as historical text rather than as a live
-link: the host no longer resolves in DNS, and no substitute destination is asserted in its place.
+upstream project, including commercial licensing, `readme.md` directs readers to the upstream address
+`www.getslatwall.com`. It is reproduced here as the text the legacy notice carries, and deliberately
+not as a live link: whether that name still points at the project is outside this repository's
+evidence, and no substitute destination is asserted in its place.
 
 ## Combined works
 

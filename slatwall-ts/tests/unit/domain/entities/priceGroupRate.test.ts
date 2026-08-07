@@ -1,112 +1,13 @@
-// ---------------------------------------------------------------------------
 // slatwall-ts - unit suite for `src/domain/entities/priceGroupRate.ts`
 //
-// The `SwPriceGroupRate` row [model/entity/PriceGroupRate.cfc:L49] and every behaviour the 284-line
-// component declares over it. Four carry real risk and take most of the space:
-//
-//   1. `getAppliesTo()` [model/entity/PriceGroupRate.cfc:L95-L174] - eighty lines of string
-//      assembly with FIVE outcomes, hardcoded English labels, six pluralised fragments in a fixed
-//      order, and a `Replace` that only ever replaces the FIRST comma. This suite's centrepiece.
-//   2. `getAmountFormatted()` [L262-L268] - a two-branch formatter whose percentage branch is RAW
-//      CFML concatenation, so trailing zeros are DROPPED and a stored `12.50` renders `"12.5%"`.
-//   3. `getDisplayName()` [L274-L276] with `getSimpleRepresentationPropertyName()` [L270-L272]:
-//      two `" - "` separators, three nullable reads, one raise, two empty-string folds, and a
-//      returned property name spelled with a CAPITAL D.
-//   4. `getAmountTypeOptions()` [L87-L93] - UNCONDITIONAL, always exactly three, and the third
-//      row's display key disagrees with its stored value on purpose.
+// `getAppliesTo()` [model/entity/PriceGroupRate.cfc:L95-L174] - eighty lines of string assembly
+// with five outcomes, hardcoded English labels, six pluralised fragments in a fixed order.
 //
 // Alongside them: the four owner-side bidirectional pairs and their asymmetric guards, the
 // primary-key containment probes, the `''`-keyed `isNew()`, the nullable `roundingRule`, the audit
-// columns, the three exclusion collections nothing reads, and the framework members not shipped.
+// columns.
 //
-// HARD BOUNDARY - THE CASCADE AND THE ROUNDING ALGORITHM ARE NOT TESTED HERE. This entity is the
-// LEAF the cascade resolves to, so it is easy to reach one tier out. Two bodies of behaviour are
-// cited below and asserted NOWHERE in this file:
-//
-//   * THE FIVE-LEVEL CASCADE [model/service/PriceGroupService.cfc:L140-L181], re-read in full: it
-//     consults `hasSku()` and `getGlobalFlag()` on a rate, delegates to the product and
-//     product-type variants, and recurses into the parent at [L174] through the PRODUCT variant
-//     rather than the SKU one. Owned by `tests/unit/services`.
-//   * THE AMOUNT-TYPE STRATEGY [model/service/PriceGroupService.cfc:L316-L340], where ONLY the
-//     `percentageOff` branch applies the rounding rule [L321-L330] while `amountOff` [L331] and
-//     `amount` [L334] skip it, and the `switch` has no `default:` case at all. Also owned there.
-//
-// NO ASSERTION BELOW COMPUTES OR EXPECTS A ROUNDED AMOUNT; the ten-row characterization table for
-// `roundValue` belongs to `tests/unit/services/roundingRuleService`. The one rounding-adjacent
-// assertion proves the opposite of rounding: that holding a `roundingRule` does not invoke it. SQL
-// is likewise out - `model/dao/PriceGroupDAO.cfc:L52-L100`, the subscription-table reach-through
-// behind account price-group resolution, belongs to `tests/integration`.
-//
-// COVERAGE IS 100% NET-NEW, never to be presented as parity. Measured: a case-insensitive search of
-// all 32 `.cfc` files under `meta/tests/` for `priceGroupRate` returns ZERO hits, and one for
-// `appliesTo` returns ZERO hits. The only legacy suites extended anywhere in this port are
-// [meta/tests/unit/entity/BrandTest.cfc] and [meta/tests/unit/entity/ProductTest.cfc], neither of
-// which touches this entity, and [meta/tests/functional/admin/entity/ProductTest.cfc] is an EMPTY
-// STUB contributing zero coverage, so there is nothing here to extend. Of the four cases
-// [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67] gave every legacy entity suite for
-// free, two rest on framework members this port does not ship on an entity; one is INAPPLICABLE
-// HERE - `simple_representation_exists_and_is_simple` [L56-L58] asserts
-// `isSimpleValue(getSimpleRepresentation())`, but this entity's simple representation resolves
-// through `getDisplayName()`, which dereferences `getPriceGroup()` with NO null guard [L275], so on
-// a fresh instance it RAISES and the throw is asserted instead; and one, `defaults_are_correct`
-// [L64-L67], has its `isNew()` half authored below.
-//
-// VERIFIED CORRECTIONS - WHERE THE SOURCE DISAGREED, THE SOURCE WON. Every locator quoted here was
-// re-read against the CFC and every expectation measured against the shipped module. Six:
-//
-//   1. `getAmountFormatted()` [model/entity/PriceGroupRate.cfc:L262-L268] uses RAW CONCATENATION
-//      `getAmount() & "%"`, NOT `formatValue(..., "percentage")` - that is what makes trailing
-//      zeros disappear. The sibling [model/entity/PromotionReward.cfc:L401-L407] is the one calling
-//      `formatValue` with `"percentage"`; the two must not be conflated.
-//   2. Only ONE of the three exclusion link tables is abbreviated:
-//      `SwPriceGrpRateExclProductType` [L75]. `SwPriceGroupRateExclProduct` [L76] and
-//      `SwPriceGroupRateExclSku` [L77] are spelled out in full.
-//   3. NONE of the six many-to-many collections declares `type="array"` [L71-L77], unlike
-//      [model/entity/PromotionReward.cfc:L74, L86, L87] and
-//      [model/entity/PromotionQualifier.cfc:L83, L84], which do.
-//   4. `amountType` [L55] carries `hb_formFieldType="select"` and NO `hb_formatType="rbKey"`,
-//      unlike [model/entity/PromotionReward.cfc:L62].
-//   5. `getAmountRepresentation()` DOES NOT EXIST on this component - confirmed by reading all 284
-//      lines - even though [model/service/PriceGroupService.cfc:L243] calls it.
-//   6. `Sku` NEWNESS IS NOT DERIVED FROM AN EMPTY KEY in the shipped port:
-//      `src/domain/entities/sku.ts` takes an explicit `isNew` hydration flag, so
-//      `new Sku({ skuID: '' }).isNew()` is `false` and an unsaved SKU needs
-//      `{ skuID: '', isNew: true }`. `Product` and `ProductType` DO derive newness from an empty
-//      key. Measured directly; the guard-polarity assertions depend on it.
-//
-// Two import corrections against this file's own brief, for the same reason. `PriceGroup`,
-// `Product`, `ProductType`, `RoundingRule` and `Sku` are imported AS VALUES: each is a class with
-// private fields, so it is nominally typed, and the far side of every bidirectional helper has to
-// be a real instance whose live `getPriceGroupRates()` array the assertion can inspect. And
-// `src/lib/cfml/numberFormat.ts` is deliberately NOT imported though it would be permitted - every
-// formatting expectation is a LITERAL string, because re-deriving one with the helper the subject
-// uses would assert only that the helper equals itself.
-//
-// No database, network, filesystem, environment variable, credential, clock or timer. Every subject
-// and far side is built fresh inside the test that uses it: no module-level mutable value, no
-// shared subject, no `beforeEach`, no spy to restore. That discipline is load-bearing rather than
-// ceremonial - `getAppliesTo()` reads SIX live collections, so a shared subject would leak
-// membership from one grammar path into the next. `tests/setup.ts` pins the process to UTC, every
-// date literal is an explicit UTC ISO-8601 string, and no epoch value appears. Every monetary value
-// is constructed through `Money`, the only literals in a monetary position are decimal strings, and
-// `decimal.js` is never imported.
-//
-// THIS SUITE SPENDS ZERO OF THE MIGRATION'S DELIBERATE DIVERGENCES. Two defects carry the two-line
-// `LEGACY-DEFECT` marker:
-//
-//   D45 - the first-comma-only `Replace` at [model/entity/PriceGroupRate.cfc:L132] and [L158], the
-//         one this suite is required to mark, reproduced on BOTH halves of the grammar; and
-//   D25 - the duplicate far-side append that [L183]'s `isNew() or !hasPriceGroupRate(this)` guard
-//         performs for an unsaved rate, marked because the suite reproduces its consequence.
-//
-// Everything else is a `CFML parity` note, a `LEGACY-NOTE` or a `JUDGMENT CALL`. The three casing
-// hazards (`skusList`/`SkusList`, `excludedProductTypesList`/`excludedproductTypesList`,
-// `displayName`/`DisplayName`) are PORTING HAZARDS, NOT authorized divergences: each resolves to a
-// single TypeScript binding with behaviour unchanged. The three project-wide divergences are all
-// sibling-owned - the un-`var`'d `discountAmount` and the `amountOff` raw-float gap in
-// `src/services`, and the entity memo fixes in `sku.test.ts` and `product.test.ts`. A fourth is
-// forbidden and none is taken here.
-// ---------------------------------------------------------------------------
+// Everything else is a `CFML parity` note, a `LEGACY-NOTE` or a `JUDGMENT CALL`.
 
 import { describe, expect, it } from 'vitest';
 
@@ -120,52 +21,18 @@ import { Sku } from '../../../../src/domain/entities/sku.js';
 import { Money } from '../../../../src/domain/valueObjects/money.js';
 import { makePriceGroupFixtures } from '../../../fixtures/priceGroupFixtures.js';
 
-// --- Documented contract constants -----------------------------------------
-
 /**
  * The resource-bundle key `getAppliesTo()` returns UNRESOLVED on its global short-circuit.
  *
  * CFML parity [model/entity/PriceGroupRate.cfc:L106-L108]: `getGlobalFlag()` early-returns
- * `rbKey('admin.pricegroup.edit.priceGroupRateAppliesToAllProducts')` BEFORE any list assembly.
- * JavaRB is not ported per AAP 0.5.3, so the key is emitted verbatim as an inert string and NO
- * English substitute is invented - that would fabricate a translation the legacy looks up itself.
+ * `rbKey('admin.pricegroup.edit.priceGroupRateAppliesToAllProducts')` before any list assembly.
  */
 const APPLIES_TO_ALL_PRODUCTS_RB_KEY = 'admin.pricegroup.edit.priceGroupRateAppliesToAllProducts';
 
-// C5 SCHEMA CONTINUITY: the six physical link-table names from
-// [model/entity/PriceGroupRate.cfc:L71-L77] ARE the schema contract - including that ONLY
-// `excludedProductTypes` [L75] abbreviates `Group` to `Grp` while [L76] and [L77] spell it in full.
-// They are deliberately NOT held in a constant here: a constant declared in this file can only ever
-// be compared with the same literals, which says nothing about the port. The contract is checked
-// against the frozen declarations AND the shipped source in tests/traceability/legacyTestMap.ts
-// block A20, which also proves each of the six collections is published as an accessor.
-
 /**
  * Every member the port ships, asserted as an exact set so a widening fails here.
- *
- * ★ THE ELEVEN `set*` MEMBERS ARE FRAMEWORK-GENERATED, NOT HAND-WRITTEN. `accessors=true`
- * [model/entity/PriceGroupRate.cfc:L49] makes the CFML engine emit a `set<Property>` for every
- * declared property, and each one below is published because a line of `savePriceGroupRate`
- * [model/service/PriceGroupService.cfc:L404, L430, L437-L442] invokes it - INCLUDING [L404], whose
- * `super.save(entity=..., data=...)` populates every submitted persistent property before validating
- * [org/Hibachi/HibachiService.cfc:L145, L150].
- *
- * ★★ THREE OF THEM ARRIVED IN ONE REVISION AND THE REASON IS RECORDED HERE. This note used to read:
- * "The generated setters with NO in-scope caller - `setAmountType`, `setRemoteID`, `setRoundingRule`
- * and the four audit setters - are deliberately absent." That was wrong about the first three,
- * because [L404]'s populate step IS an in-scope caller of every populatable setter, and code review
- * measured the consequence: `amountType` carries `{"contexts":"save","required":true}`
- * [model/validation/PriceGroupRate.json], so with no setter for it NO PAYLOAD COULD EVER PRODUCE A
- * VALID RATE. The FOUR AUDIT SETTERS remain absent, and correctly so: each of those properties
- * declares `hb_populateEnabled="false"` [model/entity/PriceGroupRate.cfc:L61-L64], which is the
- * framework's own instruction that populate must skip them.
  */
 const PORTED_PUBLIC_SURFACE = [
-  // ★★ THE FIVE-MEMBER ERROR REGISTER, ported from [org/Hibachi/HibachiTransient.cfc:L30-L64].
-  // `savePriceGroupRate` [model/service/PriceGroupService.cfc:L397-L459] reaches persistence, and
-  // `HibachiService.save` [org/Hibachi/HibachiService.cfc:L151-L167] records a refused save's rules on
-  // the ENTITY, skips the flush, and returns that entity - so a port with no register could not report
-  // a refusal at all. Code review recorded that silence across this whole save tier.
   'addError',
   'addProduct',
   'addProductType',
@@ -218,29 +85,33 @@ const PORTED_PUBLIC_SURFACE = [
   'setSkus',
 ] as const;
 
-/** Explicit UTC instant for `createdDateTime`; never `new Date()`. */
+/**
+ * Explicit UTC instant for `createdDateTime`; never `new Date()`.
+ */
 const CREATED_DATE_TIME_UTC = '2024-06-01T00:00:00.000Z';
 
-/** A second explicit UTC instant, deliberately later than the first. */
+/**
+ * A second explicit UTC instant, deliberately later than the first.
+ */
 const MODIFIED_DATE_TIME_UTC = '2024-06-15T12:30:00.000Z';
 
-/** A persisted rate: a non-empty key, so `isNew()` is false. */
+/**
+ * A persisted rate: a non-empty key, so `isNew()` is false.
+ */
 const SAVED_RATE_ID = 'pgr-saved';
 
-/** The `unsavedvalue=""` key from [model/entity/PriceGroupRate.cfc:L52]. */
+/**
+ * The `unsavedvalue=""` key from [model/entity/PriceGroupRate.cfc:L52].
+ */
 const UNSAVED_RATE_ID = '';
 
-// --- Fresh subjects and fresh far sides - functions, never shared literals -----
-//
 // `getAppliesTo()` reads six live collections, so one shared subject would leak membership across
 // the five grammar paths.
 
 /**
  * The constructor's own parameter type, derived rather than restated.
  *
- * JUDGMENT CALL: `ConstructorParameters` instead of hand-copying the seventeen fields. A copy would
- * rot silently the day the module gains or renames one; this becomes a compile error at exactly
- * that moment, and `tests/fixtures/priceGroupFixtures.ts` already uses the technique.
+ * JUDGMENT CALL: `ConstructorParameters` instead of hand-copying the seventeen fields.
  */
 type PriceGroupRateInit = ConstructorParameters<typeof PriceGroupRate>[0];
 
@@ -254,42 +125,50 @@ function aRate(overrides: Partial<PriceGroupRateInit> = {}): PriceGroupRate {
   });
 }
 
-/** `Product` derives newness from an empty key, so a non-empty one is saved. */
+/**
+ * `Product` derives newness from an empty key, so a non-empty one is saved.
+ */
 function aProduct(productID = 'prd-1'): Product {
   return new Product({ productID });
 }
 
-/** A saved product type. */
+/**
+ * A saved product type.
+ */
 function aProductType(productTypeID = 'ptp-1'): ProductType {
   return new ProductType({ productTypeID });
 }
-
-/** A saved SKU. */
 function aSku(skuID = 'sku-1'): Sku {
   return new Sku({ skuID });
 }
 
 /**
- * An UNSAVED SKU. Correction 6: `src/domain/entities/sku.ts` takes an explicit hydration flag, so
- * `{ skuID: '' }` alone would report `isNew()` false. The flag is what makes it unsaved.
+ * An UNSAVED SKU. `src/domain/entities/sku.ts` takes an explicit hydration flag, so `{ skuID: '' }`
+ * alone reports `isNew()` false.
  */
 function anUnsavedSku(): Sku {
   return new Sku({ skuID: '', isNew: true });
 }
 
-/** Distinct saved products, keyed by index. */
+/**
+ * Distinct saved products, keyed by index.
+ */
 function products(count: number): Product[] {
   return Array.from({ length: count }, (_unused, index) => aProduct(`prd-${String(index + 1)}`));
 }
 
-/** `count` distinct saved product types. */
+/**
+ * `count` distinct saved product types.
+ */
 function productTypes(count: number): ProductType[] {
   return Array.from({ length: count }, (_unused, index) =>
     aProductType(`ptp-${String(index + 1)}`),
   );
 }
 
-/** `count` distinct saved SKUs. */
+/**
+ * `count` distinct saved SKUs.
+ */
 function skus(count: number): Sku[] {
   return Array.from({ length: count }, (_unused, index) => aSku(`sku-${String(index + 1)}`));
 }
@@ -323,10 +202,7 @@ function aPriceGroup(
  * A price group PRESENT on the rate but whose own nullable name is genuinely absent.
  *
  * JUDGMENT CALL: a separate factory rather than `aPriceGroup(undefined)`, because JavaScript
- * applies a default parameter to an explicitly-passed `undefined`, so `aPriceGroup(undefined)`
- * would quietly hand back the NAMED group and the empty-string fold at
- * [model/entity/PriceGroupRate.cfc:L275] would never be exercised. That separates the ONE
- * dereferenced null that raises from the three concatenated nulls that fold.
+ * applies a default parameter to an explicitly-passed `undefined`.
  */
 function aPriceGroupWithNoName(): PriceGroup {
   return new PriceGroup({
@@ -346,16 +222,16 @@ function aPriceGroupWithNoName(): PriceGroup {
   });
 }
 
-/** One crossing of the rounding boundary, as recorded. */
+/**
+ * One crossing of the rounding boundary, as recorded.
+ */
 interface RecordedRoundValueCall {
   readonly value: Money;
   readonly rule: RoundingRule;
 }
 
 /**
- * A rounding rule that RECORDS every `roundValue` crossing instead of performing one. The count
- * staying at zero across the entity's whole surface is what turns "this entity never rounds" from a
- * claim into a measurement.
+ * A rounding rule that RECORDS every `roundValue` crossing instead of performing one.
  */
 function aRecordingValueRounder(): {
   readonly calls: readonly RecordedRoundValueCall[];
@@ -373,7 +249,9 @@ function aRecordingValueRounder(): {
   };
 }
 
-/** The recorder paired with the rule that holds it. */
+/**
+ * The recorder paired with the rule that holds it.
+ */
 function aRoundingRuleWithRecorder(): {
   readonly rule: RoundingRule;
   readonly recorder: ReturnType<typeof aRecordingValueRounder>;
@@ -397,14 +275,9 @@ function aRoundingRuleWithRecorder(): {
   return { rule, recorder };
 }
 
-// --- getAppliesTo path 1 of 5: the global short-circuit ---------------------
-
 describe('getAppliesTo path 1 of 5: the global short-circuit', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L106-L108]: getGlobalFlag() early-returns the raw
-  // rbKey 'admin.pricegroup.edit.priceGroupRateAppliesToAllProducts' BEFORE any list assembly. This
-  // is a BEHAVIOURAL early return, not a shortcut taken to save work: it is the branch that decides
-  // what an administrator reads about a global rate, and the nine locals seeded at [L96-L104] are
-  // abandoned unread when it fires.
+  // rbKey 'admin.pricegroup.edit.priceGroupRateAppliesToAllProducts' before any list assembly.
 
   it('returns the resource-bundle key itself, unresolved', () => {
     const subject = aRate({ globalFlag: true });
@@ -413,8 +286,9 @@ describe('getAppliesTo path 1 of 5: the global short-circuit', () => {
   });
 
   it('returns the key even with all six collections populated, leaking no count', () => {
-    // The short-circuit is at [L106], BEFORE the including branch at [L110] and the excluding
-    // branch at [L135].
+    // The short-circuit is at [model/entity/PriceGroupRate.cfc:L106], before the including branch
+    // at [model/entity/PriceGroupRate.cfc:L110] and the excluding branch at
+    // [model/entity/PriceGroupRate.cfc:L135].
     const subject = aRate({
       globalFlag: true,
       products: products(2),
@@ -434,7 +308,7 @@ describe('getAppliesTo path 1 of 5: the global short-circuit', () => {
     expect(appliesTo).not.toContain('SKU');
     expect(appliesTo).not.toContain(',');
     expect(appliesTo).not.toContain(' and ');
-    // The key carries no digit at all, so a leaked count of ANY of the six collections would be
+    // The key carries no digit at all, so a leaked count of any of the six collections would be
     // visible as one.
     for (const digit of ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']) {
       expect(appliesTo).not.toContain(digit);
@@ -443,9 +317,7 @@ describe('getAppliesTo path 1 of 5: the global short-circuit', () => {
 
   it('fires for every column value CFML would have read as true', () => {
     // CFML parity [model/entity/PriceGroupRate.cfc:L53]: `ormType="boolean" default="false"` is a
-    // declaration about rows the ORM inserts, NOT a guarantee about rows already in the table, so
-    // the port resolves the column through the CFML boolean coercion rather than through a bare
-    // truthiness test.
+    // declaration about rows the ORM inserts, not a guarantee about rows already in the table.
     for (const globalFlag of [true, 1, '1', 'true', 'TRUE', 'yes'] as const) {
       expect(aRate({ globalFlag }).getAppliesTo()).toBe(APPLIES_TO_ALL_PRODUCTS_RB_KEY);
     }
@@ -467,12 +339,11 @@ describe('getAppliesTo path 1 of 5: the global short-circuit', () => {
   });
 });
 
-// --- getAppliesTo path 2 of 5: neither half ---------------------------------
-
 describe('getAppliesTo path 2 of 5: neither including nor excluding', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L98, L173]: `finalString` is seeded to `""` at
-  // [L98], both assembly guards at [L162] and [L166] are skipped when their halves are empty, and
-  // [L173] returns that seed.
+  // [model/entity/PriceGroupRate.cfc:L98], both assembly guards at
+  // [model/entity/PriceGroupRate.cfc:L162] and [model/entity/PriceGroupRate.cfc:L166] are skipped
+  // when their halves are empty, and [model/entity/PriceGroupRate.cfc:L173] returns that seed.
 
   it('returns the empty string, and does not throw', () => {
     const subject = aRate();
@@ -482,8 +353,9 @@ describe('getAppliesTo path 2 of 5: neither including nor excluding', () => {
 
   it('returns the empty string when the constructor omitted every collection', () => {
     // A repository that did not fetch the six joins must present empty arrays, never undefined -
-    // which is what makes the `arrayLen(...)` guards at [L111], [L114], [L117], [L136], [L139] and
-    // [L142] safe to reproduce as plain length reads.
+    // which is what makes the `arrayLen(...)` guards at [model/entity/PriceGroupRate.cfc:L111],
+    // [model/entity/PriceGroupRate.cfc:L114], [model/entity/PriceGroupRate.cfc:L117],
+    // [model/entity/PriceGroupRate.cfc:L136].
     const subject = aRate();
 
     expect(subject.getProducts()).toStrictEqual([]);
@@ -503,13 +375,12 @@ describe('getAppliesTo path 2 of 5: neither including nor excluding', () => {
   });
 });
 
-// --- getAppliesTo path 3 of 5: including only -------------------------------
-
 describe('getAppliesTo path 3 of 5: including only', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L162-L164]:
-  //   `finalString = "Including: " & including`,
-  // and the `". "` separator at [L168] lives inside `if(len(excluding))` at [L166], so it can never
-  // be appended when the excluding half is empty.
+  // `finalString = "Including: " & including`, and the `". "` separator at
+  // [model/entity/PriceGroupRate.cfc:L168] lives inside `if(len(excluding))` at
+  // [model/entity/PriceGroupRate.cfc:L166], so it can never be appended when the excluding half is
+  // empty.
 
   it('prefixes exactly "Including: " with no trailing separator', () => {
     const subject = aRate({ products: products(2) });
@@ -553,18 +424,17 @@ describe('getAppliesTo path 3 of 5: including only', () => {
 
   it('emits no stray leading delimiter before the first fragment', () => {
     // CFML parity [model/entity/PriceGroupRate.cfc:L120-L128]: accumulation goes through
-    // `ListAppend`, which emits NO leading delimiter into an empty list.
+    // `ListAppend`, which emits no leading delimiter into an empty list.
     const subject = aRate({ skus: skus(3) });
 
     expect(subject.getAppliesTo()).toBe('Including: 3 SKUs');
   });
 });
 
-// --- getAppliesTo path 4 of 5: excluding only -------------------------------
-
 describe('getAppliesTo path 4 of 5: excluding only', () => {
-  // CFML parity [model/entity/PriceGroupRate.cfc:L166-L171]: the `". "` at [L168] is nested inside
-  // `if(len(including))`, so an excluding-only rate gets NO leading separator.
+  // CFML parity [model/entity/PriceGroupRate.cfc:L166-L171]: the `". "` at
+  // [model/entity/PriceGroupRate.cfc:L168] is nested inside `if(len(including))`, so an
+  // excluding-only rate gets no leading separator.
 
   it('prefixes exactly "Excluding: " with no leading separator', () => {
     const subject = aRate({ excludedProducts: products(1) });
@@ -610,11 +480,10 @@ describe('getAppliesTo path 4 of 5: excluding only', () => {
   });
 });
 
-// --- getAppliesTo path 5 of 5: both halves ----------------------------------
-
 describe('getAppliesTo path 5 of 5: both halves', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L166-L171]: the `". "` separator is emitted on
-  // THIS PATH ONLY, because [L167-L169] requires BOTH halves to be non-empty.
+  // this PATH only, because [model/entity/PriceGroupRate.cfc:L167-L169] requires both halves to be
+  // non-empty.
 
   it('joins the two clauses with exactly one ". " separator, in that order', () => {
     const subject = aRate({ products: products(2), excludedSkus: skus(3) });
@@ -652,8 +521,7 @@ describe('getAppliesTo path 5 of 5: both halves', () => {
 
   it('produces the same golden string through the shared price-group fixture graph', () => {
     // The fixture's `appliesToIncludingAndExcludingRate` is the only rate in that graph carrying
-    // all six collections, and it is fed entirely from overrides - so this is an independent
-    // construction route to the same contract.
+    // all six collections, and it is fed entirely from overrides.
     const fixtures = makePriceGroupFixtures({
       productLevelRateProducts: products(2),
       productTypeLevelRateProductTypes: productTypes(1),
@@ -670,7 +538,7 @@ describe('getAppliesTo path 5 of 5: both halves', () => {
   });
 
   it('reports nothing about the two halves when the global flag is set as well', () => {
-    // Path 1 wins over path 5.
+    // Path 1 wins over path.
     const subject = aRate({
       globalFlag: true,
       products: products(2),
@@ -681,19 +549,14 @@ describe('getAppliesTo path 5 of 5: both halves', () => {
   });
 });
 
-// --- getAppliesTo: the hardcoded English labels and the plural boundary -----
-
 describe('getAppliesTo pluralization: the include collections', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L112, L115, L118]: the pluraliser is
-  // `IIF(arrayLen(...) GT 1, DE('s'), DE(''))`, so the boundary is STRICTLY GREATER THAN ONE:
-  // exactly one is singular, two or more plural. `DE()` exists only because `IIF` evaluates its
-  // branches as expressions, so what is asserted is the resulting STRING.
+  // `IIF(arrayLen(...) GT 1, DE('s'), DE(''))`, so the boundary is strictly greater than one:
+  // exactly one is singular, two or more plural.
   //
   // CFML parity [model/entity/PriceGroupRate.cfc:L112-L118, L163, L168, L170]: the labels are
   // HARDCODED ENGLISH, not resource-bundle keys: `"Product"`, `"Product Type"`, `"SKU"`,
-  // `"Including: "`, `"Excluding: "` and the `". "` joiner are all literals. Only the global branch
-  // at [L107] localises. Introducing keys for these would fabricate a mechanism this method does
-  // not have, so every expectation below is the literal English, verbatim.
+  // `"Including: "`, `"Excluding: "` and the `". "` joiner are all literals.
 
   it('says "1 Product" for one product and "2 Products" for two', () => {
     expect(aRate({ products: products(1) }).getAppliesTo()).toBe('Including: 1 Product');
@@ -711,7 +574,8 @@ describe('getAppliesTo pluralization: the include collections', () => {
 
   it('says "1 SKU" for one SKU and "2 SKUs" for two, pluralising with a lowercase s', () => {
     // The noun is UPPERCASE and the plural marker is a LOWERCASE `s` - `"SKUs"`, never `"SKUS"`.
-    // That falls out of [L118] appending the same `DE('s')` branch used for the other two nouns.
+    // That falls out of [model/entity/PriceGroupRate.cfc:L118] appending the same `DE('s')` branch
+    // used for the other two nouns.
     expect(aRate({ skus: skus(1) }).getAppliesTo()).toBe('Including: 1 SKU');
     expect(aRate({ skus: skus(2) }).getAppliesTo()).toBe('Including: 2 SKUs');
     expect(aRate({ skus: skus(2) }).getAppliesTo()).not.toContain('SKUS');
@@ -772,27 +636,11 @@ describe('getAppliesTo pluralization: the exclude collections', () => {
   });
 });
 
-// --- getAppliesTo: the preserved first-comma-only Replace (defect D45) ------
-
 describe('getAppliesTo: the preserved first-comma-only Replace, including half', () => {
-  // LEGACY-DEFECT [model/entity/PriceGroupRate.cfc:L132]: the comment at [L130] says "Replace all
-  // commas with " and "." but CFML `Replace()` called with THREE arguments defaults to scope
-  // "once", so only the FIRST comma becomes " and " and a three-collection phrase keeps its second
-  // comma.
-  //
+  // LEGACY-DEFECT [model/entity/PriceGroupRate.cfc:L132]: the comment at
+  // [model/entity/PriceGroupRate.cfc:L130] says "Replace all commas with " and "." but CFML
+  // `Replace()` called with three arguments defaults to scope "once".
   // Preserved deliberately; do not fix without a product decision.
-  //
-  // THE DIRECT CONTROL PROVING INTENT: [model/entity/ProductType.cfc:L292] writes
-  // `replace(getProductTypeIDPath(),",","','","all")` with the fourth argument SPELLED OUT, which
-  // would be unnecessary if the default were already "all". Two more sites do the same:
-  //   `Replace(urlTitle, "[ ]+", "-", "all")` in model/service/BrandService.cfc and in
-  //   model/service/ProductService.cfc.
-  //
-  // THE IMPLEMENTATION CHOICE IS THE DEFECT. The port reproduces it with a STRING pattern,
-  //   `String.prototype.replace(',', ' and ')`
-  // which is also first-occurrence-only, so the assertions below pin the surviving comma
-  // POSITIVELY. A test expecting " and " twice would be asserting the repaired behaviour and must
-  // never be written.
 
   it('leaves the second comma in place when all three include collections are populated', () => {
     const subject = aRate({
@@ -834,7 +682,7 @@ describe('getAppliesTo: the preserved first-comma-only Replace, including half',
   });
 
   it('looks entirely correct with only two collections, which is how the defect survived', () => {
-    // With two fragments the list holds exactly ONE comma, so one replacement is enough and the
+    // With two fragments the list holds exactly one comma, so one replacement is enough and the
     // output is indistinguishable from a correct implementation.
     expect(aRate({ products: products(2), productTypes: productTypes(3) }).getAppliesTo()).toBe(
       'Including: 2 Products and 3 Product Types',
@@ -855,16 +703,10 @@ describe('getAppliesTo: the preserved first-comma-only Replace, including half',
 });
 
 describe('getAppliesTo: the preserved first-comma-only Replace, excluding half', () => {
-  // LEGACY-DEFECT [model/entity/PriceGroupRate.cfc:L158]: the comment at [L156] says "Replace all
-  // commas with " and "." but CFML `Replace()` called with THREE arguments defaults to scope
-  // "once", so only the FIRST comma becomes " and " and a three-collection phrase keeps its second
-  // comma. This is character-for-character the same code as the including half at [L132] and it
-  // fails identically.
-  //
+  // LEGACY-DEFECT [model/entity/PriceGroupRate.cfc:L158]: the comment at
+  // [model/entity/PriceGroupRate.cfc:L156] says "Replace all commas with " and "." but CFML
+  // `Replace()` called with three arguments defaults to scope "once".
   // Preserved deliberately; do not fix without a product decision.
-  //
-  // Asserted separately rather than assumed to follow, because a port that repaired one site and
-  // not the other would still pass a test that only looked at the other.
 
   it('leaves the second comma in place when all three exclude collections are populated', () => {
     const subject = aRate({
@@ -925,22 +767,14 @@ describe('getAppliesTo: the preserved first-comma-only Replace, excluding half',
   });
 });
 
-// --- The three case-insensitivity hazards -----------------------------------
-
 describe('the three CFML case-insensitivity hazards', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L101/L118, L103/L149, L82/L271]: three
-  // case-insensitivity hazards. `skusList`/`SkusList` and
-  // `excludedProductTypesList`/`excludedproductTypesList` are ONE variable each in CFML, whose
-  // identifiers are case-insensitive; the non-persistent property is declared lowercase
-  // `displayName` at [L82] while `getSimpleRepresentationPropertyName()` returns the capital-D
-  // `"DisplayName"` at [L271]. Also recorded, and likewise never normalised:
-  // [model/entity/PriceGroupRate.cfc] spells the ORM type attribute `ormType` with a capital T on
-  // [L53], [L54] and [L55] but `ormtype` in lowercase on [L52], [L58], [L61] and [L63].
+  // case-insensitivity hazards.
 
   it('reaches the SKU fragment despite the skusList / SkusList split at L101 and L118', () => {
-    // The hazard: [L101] declares `skusList`, and [L118], [L126] and [L127] all write and read
-    // `SkusList`. Had the port carried both spellings, the [L126] guard would have tested an
-    // always-empty second binding and the SKU fragment would never have been appended.
+    // The hazard: [model/entity/PriceGroupRate.cfc:L101] declares `skusList`, and
+    // [model/entity/PriceGroupRate.cfc:L118], [model/entity/PriceGroupRate.cfc:L126] and
+    // [model/entity/PriceGroupRate.cfc:L127] all write and read `SkusList`.
     const subject = aRate({ skus: skus(2) });
 
     expect(subject.getAppliesTo()).toBe('Including: 2 SKUs');
@@ -953,9 +787,8 @@ describe('the three CFML case-insensitivity hazards', () => {
   });
 
   it('reaches the excluded-product-type fragment despite the L103 / L149 split', () => {
-    // The hazard: [L103] declares `excludedProductTypesList` and [L140] assigns it, both with a
-    // capital P, while the [L149] guard reads `excludedproductTypesList` with a LOWERCASE p and
-    // [L150] appends the capital-P spelling again.
+    // The hazard: [model/entity/PriceGroupRate.cfc:L103] declares `excludedProductTypesList` and
+    // [model/entity/PriceGroupRate.cfc:L140] assigns it, both with a capital P.
     const subject = aRate({ excludedProductTypes: productTypes(2) });
 
     expect(subject.getAppliesTo()).toBe('Excluding: 2 Product Types');
@@ -972,10 +805,8 @@ describe('the three CFML case-insensitivity hazards', () => {
   });
 
   it('returns the capital-D property name while the accessor is spelled getDisplayName', () => {
-    // The third hazard is the only one of the three that is a DATA CONTRACT rather than an internal
-    // local, which is why it is preserved verbatim instead of normalised: the framework builds a
-    // method name out of the returned string, so `"DisplayName"` is what resolves to
-    // `getDisplayName()`.
+    // The third hazard is the only one of the three that is a DATA CONTRACT rather than an
+    // internal local.
     const subject = aRate({ priceGroup: aPriceGroup('Wholesale') });
 
     expect(subject.getSimpleRepresentationPropertyName()).toBe('DisplayName');
@@ -985,14 +816,10 @@ describe('the three CFML case-insensitivity hazards', () => {
   });
 });
 
-// --- getAmountTypeOptions and the closed amount-type vocabulary -------------
-
 describe('getAmountTypeOptions', () => {
-  // CFML parity [model/entity/PriceGroupRate.cfc:L87-L93]: the body is a bare `return [ ... ]` of
-  // three struct literals with NO conditional of any kind, so the same three options come back for
-  // every rate in every state. CFML parity [model/entity/PriceGroupRate.cfc:L89-L91]: the three
-  // `name` values are RESOURCE-BUNDLE KEYS, not display text - `rbKey("define.percentageOff")` and
-  // its two siblings.
+  // CFML parity [model/entity/PriceGroupRate.cfc:L87-L93]: the body is a bare `return [... ]` of
+  // three struct literals with no conditional of any kind, so the same three options come back for
+  // every rate in every state.
 
   it('returns exactly the three legacy options, in source order, with both fields', () => {
     const subject = aRate();
@@ -1005,9 +832,9 @@ describe('getAmountTypeOptions', () => {
   });
 
   it('is UNCONDITIONAL: the same three options whatever the rate holds', () => {
-    // CONTRAST [model/entity/PromotionReward.cfc:L120-L133], whose `getAmountTypeOptions()` IS
-    // conditional - `if(getRewardType() == "order")` returns only TWO options and drops
-    // `define.fixedAmount`, while every other reward type returns all three.
+    // CONTRAST [model/entity/PromotionReward.cfc:L120-L133], whose `getAmountTypeOptions()` is
+    // conditional - `if(getRewardType() == "order")` returns only two options and drops
+    // `define.fixedAmount`.
     const states: readonly PriceGroupRate[] = [
       aRate(),
       aRate({ amountType: 'percentageOff' }),
@@ -1030,10 +857,9 @@ describe('getAmountTypeOptions', () => {
 
   it('carries a third row whose display key disagrees with its stored value', () => {
     // CFML parity [model/entity/PriceGroupRate.cfc:L91]: the third row is
-    //   {name=rbKey("define.fixedAmount"), value="amount"}
-    // This is a REAL DATA CONTRACT, not a slip to tidy: `amount` is the literal the service's
-    // `switch` compares against [model/service/PriceGroupService.cfc:L334], so renaming the value
-    // to agree with its own label would silently break the pricing dispatch.
+    // {name=rbKey("define.fixedAmount"), value="amount"} This is a real data contract, not a slip
+    // to tidy: `amount` is the literal the service's `switch` compares against
+    // [model/service/PriceGroupService.cfc:L334].
     const [, , fixedAmount] = aRate().getAmountTypeOptions();
 
     expect(fixedAmount.name).toBe('define.fixedAmount');
@@ -1078,11 +904,8 @@ describe('getAmountTypeOptions', () => {
 
 describe('PriceGroupRateAmountType is a closed union of exactly three values', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L55]: `amountType` is a plain `ormType="string"`
-  // column with `hb_formFieldType="select"` and NO check constraint, so narrowing a hydrated value
-  // to the published vocabulary belongs at the repository boundary. CFML parity
-  // [model/entity/PriceGroupRate.cfc:L55]: note the asymmetry with
-  // [model/entity/PromotionReward.cfc:L62], which declares `hb_formatType="rbKey"` on ITS
-  // `amountType` while this one declares only `hb_formFieldType="select"`.
+  // column with `hb_formFieldType="select"` and no check constraint, so narrowing a hydrated value
+  // to the published vocabulary belongs at the repository boundary.
 
   it('names the three values, in source order', () => {
     const fixtures = makePriceGroupFixtures();
@@ -1098,9 +921,7 @@ describe('PriceGroupRateAmountType is a closed union of exactly three values', (
 
   it('reports undefined for a null column rather than substituting a default', () => {
     // CFML parity [model/entity/PriceGroupRate.cfc:L55]: the column declares no `default=`, so an
-    // unset `amountType` is genuinely absent. Substituting one of the three would hand the
-    // service's defaultless `switch` [model/service/PriceGroupService.cfc:L321-L336] a branch the
-    // row never chose.
+    // unset `amountType` is genuinely absent.
     expect(aRate().getAmountType()).toBeUndefined();
   });
 
@@ -1111,10 +932,10 @@ describe('PriceGroupRateAmountType is a closed union of exactly three values', (
 
     expect(fixtures.unrecognisedAmountTypeColumnValue).toBe('flatRate');
 
-    // @ts-expect-error out-of-vocabulary column string, not assignable without a cast
     // `PriceGroupRateAmountType` is closed at the three values published by
     // `getAmountTypeOptions()` [model/entity/PriceGroupRate.cfc:L87-L93], and no cast is available
     // here, which is the point.
+    // @ts-expect-error out-of-vocabulary column string, not assignable without a cast
     const rejected: PriceGroupRateAmountType = fixtures.unrecognisedAmountTypeColumnValue;
 
     expect(rejected).toBe('flatRate');
@@ -1129,21 +950,10 @@ describe('PriceGroupRateAmountType is a closed union of exactly three values', (
   });
 });
 
-// --- getAmountFormatted -----------------------------------------------------
-
 describe('getAmountFormatted: the percentage branch drops trailing zeros', () => {
-  // CFML parity [model/entity/PriceGroupRate.cfc:L262-L268]: `getAmountFormatted` branches ONLY on
-  // `percentageOff`, which uses RAW CFML string concatenation with a literal `"%"`:
-  //   return getAmount() & "%"
-  // at [L264], so trailing zeros are DROPPED and a stored `12.50` renders `"12.5%"`. `amountOff`
-  // and `amount` both fall through to `formatValue(getAmount(),"currency")` at [L266] and keep two
-  // decimal places. CONTRAST [model/entity/PromotionReward.cfc:L401-L407], which calls
-  // `formatValue(getAmount(), "percentage")` on its percentage branch instead - a different
-  // mechanism with different rounding. The two must never be conflated, and this entity's method
-  // sits inside the "Overridden Methods" banner [L260/L278] rather than under a "Custom Formatting
-  // Methods" banner of its own, unlike [model/entity/PromotionReward.cfc:L399/L409]. JUDGMENT CALL:
-  // every expectation below is a LITERAL string rather than a value re-derived by importing
-  // `cfNumberToString()` and calling it here.
+  // CFML parity [model/entity/PriceGroupRate.cfc:L262-L268]: `getAmountFormatted` branches only on
+  // `percentageOff`, which uses RAW CFML string concatenation with a literal `"%"`: return
+  // getAmount() & "%" at [model/entity/PriceGroupRate.cfc:L264].
 
   it('renders a stored 12.50 as "12.5%", not "12.50%"', () => {
     const subject = aRate({
@@ -1198,20 +1008,9 @@ describe('getAmountFormatted: the percentage branch drops trailing zeros', () =>
   });
 
   it('takes the percentage branch for a mis-cased stored amountType', () => {
-    // CFML parity [model/entity/PriceGroupRate.cfc:L263]: the legacy test is `==`, which on strings
-    // is CASE-INSENSITIVE in CFML, so a rate stored as `'PercentageOff'` renders as a PERCENTAGE
-    // there. `SwPriceGroupRate.amountType` is a plain `ormType="string"` column with no check
-    // constraint, so that spelling is a state the column can genuinely hold - and the repository
-    // reader hands back the PERSISTED BYTES rather than a canonical member, precisely so that saving
-    // a loaded rate cannot rewrite the column. `PriceGroupRateAmountType` therefore promises
-    // membership up to case, NOT an exact spelling, and this case pins that the formatter agrees.
-    //
-    // An exact comparison sent this to the CURRENCY branch instead, rendering `"12.50"` where the
-    // legacy renders `"12.5%"` - a percentage silently presented as an amount of money.
-    //
-    // The cast is what lets the test supply the spelling the DATABASE can hold rather than only the
-    // spellings the union spells; it stands in for the repository boundary, which is the only
-    // production path that can produce such a value.
+    // CFML parity [model/entity/PriceGroupRate.cfc:L263]: the legacy test is `==`, which on
+    // strings is case-insensitive in CFML, so a rate stored as `'PercentageOff'` renders as a
+    // percentage there.
     const subject = aRate({
       amount: Money.fromDecimalString('12.50'),
       amountType: 'PercentageOff' as PriceGroupRateAmountType,
@@ -1222,8 +1021,9 @@ describe('getAmountFormatted: the percentage branch drops trailing zeros', () =>
   });
 
   it('still falls through to the currency branch for a value outside the vocabulary', () => {
-    // Folding case widened WHICH spellings reach the percentage branch; it did not open the
-    // vocabulary. A genuinely unrecognised value still takes [L266], exactly as before.
+    // Folding case widened which spellings reach the percentage branch; it did not open the
+    // vocabulary. A genuinely unrecognised value still takes
+    // [model/entity/PriceGroupRate.cfc:L266], exactly as before.
     const subject = aRate({
       amount: Money.fromDecimalString('12.50'),
       amountType: 'somethingElse' as PriceGroupRateAmountType,
@@ -1235,8 +1035,7 @@ describe('getAmountFormatted: the percentage branch drops trailing zeros', () =>
   it('renders a bare "%" when the amount column is null', () => {
     // CFML parity [model/entity/PriceGroupRate.cfc:L264]: the legacy concatenates `getAmount()`
     // with no null guard, and CFML concatenation of a null operand yields the EMPTY STRING rather
-    // than raising, so the percent sign survives alone. `0` is never substituted: `amount` declares
-    // no default at [L54], and a zero would read as a real zero-percent discount.
+    // than raising, so the percent sign survives alone.
     const subject = aRate({ amountType: 'percentageOff' });
 
     expect(subject.getAmount()).toBeUndefined();
@@ -1244,7 +1043,8 @@ describe('getAmountFormatted: the percentage branch drops trailing zeros', () =>
   });
 
   it('reaches the percentage branch on an exact, case-sensitive match', () => {
-    // CFML `==` at [L263] compares strings case-INSENSITIVELY, while the port compares with `===`.
+    // CFML `==` at [model/entity/PriceGroupRate.cfc:L263] compares strings case-INSENSITIVELY,
+    // while the port compares with `===`.
     expect(
       aRate({
         amount: Money.fromDecimalString('9'),
@@ -1256,8 +1056,9 @@ describe('getAmountFormatted: the percentage branch drops trailing zeros', () =>
 
 describe('getAmountFormatted: every other branch is two-decimal currency', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L265-L267]: the `else` covers `amountOff`,
-  // `amount` AND an absent or unrecognised amount type - the strict comparison at [L263] simply
-  // fails for anything that is not the exact string `"percentageOff"`.
+  // `amount` and an absent or unrecognised amount type - the strict comparison at
+  // [model/entity/PriceGroupRate.cfc:L263] simply fails for anything that is not the exact string
+  // `"percentageOff"`.
 
   it('renders amountOff with two decimal places', () => {
     const subject = aRate({
@@ -1291,8 +1092,8 @@ describe('getAmountFormatted: every other branch is two-decimal currency', () =>
 
   it('falls through to the currency branch when the amount type is absent', () => {
     // CFML parity [model/entity/PriceGroupRate.cfc:L263]: the comparison is against the single
-    // literal `"percentageOff"`, so ANY other state - including a null column - takes the `else` at
-    // [L265-L267].
+    // literal `"percentageOff"`, so any other state - including a null column - takes the `else`
+    // at [model/entity/PriceGroupRate.cfc:L265-L267].
     const subject = aRate({ amount: Money.fromDecimalString('12.5') });
 
     expect(subject.getAmountType()).toBeUndefined();
@@ -1315,8 +1116,8 @@ describe('getAmountFormatted: every other branch is two-decimal currency', () =>
 
   it('invents no currency symbol and no thousands separator', () => {
     // CFML parity [model/entity/PriceGroupRate.cfc:L266]: `formatValue(v,"currency")` is a
-    // non-ported org/Hibachi/** formatter whose locale resolution and currency-symbol behaviour are
-    // NOT reproduced, because JavaRB is not ported and no i18n runtime is introduced.
+    // non-ported org/Hibachi/** formatter whose locale resolution and currency-symbol behaviour
+    // are not reproduced, because JavaRB is not ported and no i18n runtime is introduced.
     const formatted = aRate({
       amount: Money.fromDecimalString('1234.5'),
       amountType: 'amountOff',
@@ -1362,8 +1163,8 @@ describe('getAmountFormatted: every other branch is two-decimal currency', () =>
   });
 
   it('agrees with the shared fixture graph on all three recognised branches', () => {
-    // BOUNDARY, stated because one of these literals invites a misreading: every value below is the
-    // fixture's STORED amount rendered by `getAmountFormatted()`.
+    // BOUNDARY, stated because one of these literals invites a misreading: every value below is
+    // the fixture's STORED amount rendered by `getAmountFormatted()`.
     const fixtures = makePriceGroupFixtures();
 
     expect(fixtures.percentageOffRateWithRoundingRule.getAmount()?.toDecimalString()).toBe('12.5');
@@ -1378,13 +1179,7 @@ describe('getAmountFormatted: every other branch is two-decimal currency', () =>
 
 describe('the amount column itself', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L54]: `ormType="big_decimal"` with
-  // `hb_formatType="custom"` and NO `default=`. The `custom` format type is the attribute that
-  // routes the admin's display of this column to `getAmountFormatted()` [L262-L268]; the two are
-  // halves of one mechanism and both are preserved. CFML parity: this is one of exactly FOUR
-  // no-default money columns in the in-scope slice - alongside [model/entity/SkuCurrency.cfc:L53],
-  // [model/entity/PromotionApplied.cfc:L53] and [model/entity/PromotionReward.cfc:L61] - in
-  // deliberate contrast with `Sku.price`, `listPrice` and `renewalPrice`, which all declare
-  // `default="0"`.
+  // `hb_formatType="custom"` and no `default=`.
 
   it('is undefined when the column is null, never zero', () => {
     const subject = aRate();
@@ -1409,16 +1204,11 @@ describe('the amount column itself', () => {
   });
 });
 
-// --- getSimpleRepresentationPropertyName and getDisplayName -----------------
-
 describe('getSimpleRepresentationPropertyName', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L270-L272]: returns the literal `"DisplayName"`
-  // with a CAPITAL D, while the property is declared lowercase `displayName` at [L82] and the
-  // accessor is `getDisplayName()` at [L274]. Compare, all re-read for this suite:
-  // [model/entity/PromotionQualifier.cfc:L355-L357] -> "qualifierType";
-  // [model/entity/PromotionReward.cfc:L413-L415] -> "rewardType";
-  // [model/entity/PromotionCode.cfc:L171-L173] -> "promotionCode";
-  // [model/entity/Product.cfc:L791-L793] -> "productName".
+  // with a CAPITAL D, while the property is declared lowercase `displayName` at
+  // [model/entity/PriceGroupRate.cfc:L82] and the accessor is `getDisplayName()` at
+  // [model/entity/PriceGroupRate.cfc:L274].
 
   it('returns exactly "DisplayName", with the capital D', () => {
     const subject = aRate();
@@ -1434,8 +1224,8 @@ describe('getSimpleRepresentationPropertyName', () => {
   });
 
   it('names a property whose accessor the port really does ship', () => {
-    // The value is only useful if `get` + the returned name resolves to a real member, which is the
-    // whole mechanism the framework relies on.
+    // The value is only useful if `get` + the returned name resolves to a real member, which is
+    // the whole mechanism the framework relies on.
     const subject = aRate({ priceGroup: aPriceGroup('Wholesale') });
     const accessorName = `get${subject.getSimpleRepresentationPropertyName()}`;
 
@@ -1462,16 +1252,7 @@ describe('getSimpleRepresentationPropertyName', () => {
 });
 
 describe('getDisplayName', () => {
-  // CFML parity [model/entity/PriceGroupRate.cfc:L274-L276]:
-  //
-  //   return getPriceGroup().getPriceGroupName() & " - " & getAmount() & " - " & getAmountType();
-  //
-  // TWO `" - "` separators, space-hyphen-space, preserved byte for byte. THREE NULLABLE READS with
-  // TWO DIFFERENT OUTCOMES, and the difference is CFML's rather than a choice made here:
-  // `getPriceGroup()` is DEREFERENCED, so a null there is a method call on null and the legacy
-  // throws, while `getAmount()` and `getAmountType()` are merely CONCATENATED and CFML folds a null
-  // operand to the empty string. The far side's `getPriceGroupName()` is itself nullable and is
-  // likewise concatenated, so it folds too.
+  // Two `" - "` separators, space-hyphen-space, preserved byte for byte.
 
   it('joins the price group name, the amount and the amount type with " - " twice', () => {
     const subject = aRate({
@@ -1485,7 +1266,7 @@ describe('getDisplayName', () => {
   });
 
   it('interpolates the amount RAW, not through getAmountFormatted', () => {
-    // [L275] concatenates `getAmount()` directly.
+    // [model/entity/PriceGroupRate.cfc:L275] concatenates `getAmount()` directly.
     const subject = aRate({
       amount: Money.fromDecimalString('12.50'),
       amountType: 'percentageOff',
@@ -1527,8 +1308,8 @@ describe('getDisplayName', () => {
   });
 
   it('folds an absent price group NAME to the empty string without raising', () => {
-    // The price group is PRESENT, so the dereference at [L275] succeeds; only its nullable name
-    // folds.
+    // The price group is PRESENT, so the dereference at [model/entity/PriceGroupRate.cfc:L275]
+    // succeeds; only its nullable name folds.
     const subject = aRate({
       amount: Money.fromDecimalString('12.5'),
       amountType: 'amount',
@@ -1546,8 +1327,8 @@ describe('getDisplayName', () => {
   });
 
   it('RAISES when the rate has no materialized price group', () => {
-    // CFML parity [model/entity/PriceGroupRate.cfc:L275]: `getPriceGroup()` is dereferenced with NO
-    // null guard, so a rate whose price group is unset is a null-reference error in CFML too.
+    // CFML parity [model/entity/PriceGroupRate.cfc:L275]: `getPriceGroup()` is dereferenced with
+    // no null guard, so a rate whose price group is unset is a null-reference error in CFML too.
     const subject = aRate();
 
     expect(subject.getPriceGroup()).toBeUndefined();
@@ -1561,8 +1342,9 @@ describe('getDisplayName', () => {
   });
 
   it('RAISES again after the price group has been removed', () => {
-    // `removePriceGroup()` clears the field unconditionally at [L195], so a rate that once had a
-    // price group returns to the raising state.
+    // `removePriceGroup()` clears the field unconditionally at
+    // [model/entity/PriceGroupRate.cfc:L195], so a rate that once had a price group returns to the
+    // raising state.
     const priceGroup = aPriceGroup('Wholesale');
     const subject = aRate({ priceGroup });
 
@@ -1575,7 +1357,7 @@ describe('getDisplayName', () => {
 
   it('means a fresh instance has no usable simple representation, which is a finding', () => {
     // This is why [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58]'s inherited
-    // `simple_representation_exists_and_is_simple()` is NOT forced into this suite.
+    // `simple_representation_exists_and_is_simple()` is not forced into this suite.
     const fresh = aRate({ priceGroupRateID: UNSAVED_RATE_ID });
 
     expect(fresh.getSimpleRepresentationPropertyName()).toBe('DisplayName');
@@ -1592,14 +1374,8 @@ describe('getDisplayName', () => {
 });
 
 describe('getAmountRepresentation does not exist', () => {
-  // CFML parity [model/entity/PriceGroupRate.cfc]: there is NO `getAmountRepresentation()` anywhere
-  // in the 284 lines - verified by reading the whole file - yet
-  // [model/service/PriceGroupService.cfc:L243] calls exactly that on a rate while building the
-  // admin's price-group JSON. In CFML the call falls through the runtime dispatcher and terminates
-  // in the throw at [org/Hibachi/HibachiEntity.cfc:L565], because this entity declares no
-  // `attributeValues` property and so cannot even reach the EAV fallback at [L559]. The consumer's
-  // behaviour at [model/service/PriceGroupService.cfc:L230-L246], which also contains the separate
-  // `local.i` slip at [L236], is pinned by ITS OWN service suite.
+  // CFML parity `model/entity/PriceGroupRate.cfc`: there is no `getAmountRepresentation()`
+  // anywhere in the 284 lines - verified by reading the whole file.
 
   it('is absent from the prototype and from the instance', () => {
     const subject = aRate();
@@ -1614,10 +1390,9 @@ describe('getAmountRepresentation does not exist', () => {
   it('is a compile error as well as a runtime absence', () => {
     const subject = aRate();
 
+    // `model/entity/PriceGroupRate.cfc` declares no `getAmountRepresentation` even though
+    // [model/service/PriceGroupService.cfc:L243] calls it.
     // @ts-expect-error no such member: the port ships no dynamic dispatch
-    // [model/entity/PriceGroupRate.cfc] declares no `getAmountRepresentation` even though
-    // [model/service/PriceGroupService.cfc:L243] calls it. Porting no dispatcher is what turns that
-    // legacy runtime throw into a type error here.
     const absent: unknown = subject.getAmountRepresentation;
 
     expect(absent).toBeUndefined();
@@ -1637,23 +1412,11 @@ describe('getAmountRepresentation does not exist', () => {
   });
 });
 
-// --- The three excluded collections, and the cascade that never reads them -----
-
 describe('the three excluded collections and the gap they represent', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L75-L77]: `excludedProductTypes`,
   // `excludedProducts` and `excludedSkus` are RETAINED for schema and interface fidelity even
-  // though the five-level cascade [model/service/PriceGroupService.cfc:L140-L181] NEVER consults
-  // any of them, and the global short-circuit at [L106-L108] bypasses them too. Re-read for this
-  // suite: the cascade's only membership question is `hasSku()` at [L142], its only flag read is
-  // `getGlobalFlag()`, and its parent recursion at [L174] calls the PRODUCT variant rather than the
-  // SKU one, so at no point does it ask whether anything is EXCLUDED. Their ONLY reader anywhere in
-  // the in-scope slice is `getAppliesTo()`'s display prose.
-  //
-  // The gap is FLAGGED per AAP 0.4.1 and the columns are NOT removed: dropping them would break the
-  // `Sw*` schema contract, and inventing a filtering step the legacy cascade does not perform would
-  // change which price a customer is charged. This is a `CFML parity` note rather than a defect
-  // marker, because the source is internally consistent: it simply never wired the exclusions to
-  // anything but a label.
+  // though the five-level cascade [model/service/PriceGroupService.cfc:L140-L181] never consults
+  // any of them.
 
   it('ships an accessor for each of the three, and they default to empty', () => {
     const subject = aRate();
@@ -1675,7 +1438,7 @@ describe('the three excluded collections and the gap they represent', () => {
   });
 
   it('feeds getAppliesTo, which is their ONLY reader', () => {
-    // Populating all three changes the label and NOTHING else that this entity publishes.
+    // Populating all three changes the label and nothing else that this entity publishes.
     const subject = aRate({
       amount: Money.fromDecimalString('12.5'),
       amountType: 'percentageOff',
@@ -1715,7 +1478,7 @@ describe('the three excluded collections and the gap they represent', () => {
   it('lets the same entity sit on both sides at once, with each side reported separately', () => {
     // Nothing in the legacy component forbids it - there is no cross-collection validation rule in
     // model/validation/PriceGroupRate.json and no guard in the helper block - so the contradictory
-    // state is representable, and the label reports both halves without complaint.
+    // state is representable.
     const sku = aSku('sku-on-both-sides');
     const subject = aRate({ skus: [sku], excludedSkus: [sku] });
 
@@ -1739,12 +1502,7 @@ describe('the three excluded collections and the gap they represent', () => {
   it('ships NO add or remove helper for any of the three, and none is invented', () => {
     // Verified first-hand by reading the whole helper block
     // [model/entity/PriceGroupRate.cfc:L178-L258]: there is no `addExcludedProductType`,
-    // `removeExcludedProductType`, `addExcludedProduct`, `removeExcludedProduct`, `addExcludedSku`
-    // or `removeExcludedSku` anywhere in the 284 lines. The include side has all six helpers; the
-    // exclude side has none. Authoring even one would be a signature widening this file has no
-    // budget for - and it would make a PER-MEMBER change to what a rate covers reachable, which is
-    // the thing the source never exposes. The generated WHOLE-COLLECTION setter is a different
-    // member and is asserted present below.
+    // `removeExcludedProductType`, `addExcludedProduct`, `removeExcludedProduct`.
     const subject = aRate();
     const members = Object.getOwnPropertyNames(PriceGroupRate.prototype);
 
@@ -1760,14 +1518,9 @@ describe('the three excluded collections and the gap they represent', () => {
       expect(forbidden in subject).toBe(false);
     }
 
-    // ★ THE WHOLE-COLLECTION SETTERS *ARE* SHIPPED, AND THE DISTINCTION IS THE POINT OF THIS TEST.
-    // `component ... accessors=true` [model/entity/PriceGroupRate.cfc:L49] generates a
+    // `component... Accessors=true` [model/entity/PriceGroupRate.cfc:L49] generates a
     // `set<Property>` for every declared property, so CFML generated `setExcludedProducts`,
-    // `setExcludedProductTypes` and `setExcludedSKUs`, and `savePriceGroupRate` calls all three at
-    // [model/service/PriceGroupService.cfc:L440-L442] to clear a rate that has just been made
-    // global. What the exclude side genuinely lacks is the PER-MEMBER `add*`/`remove*` pair,
-    // asserted above - and a whole-collection replace is not a per-member mutation, which is why the
-    // cascade can never grow one member at a time and why the collections are handed out `readonly`.
+    // `setExcludedProductTypes` and `setExcludedSKUs`.
     expect(members.filter((member) => member.includes('Excluded')).sort()).toStrictEqual([
       'getExcludedProductTypes',
       'getExcludedProducts',
@@ -1781,9 +1534,9 @@ describe('the three excluded collections and the gap they represent', () => {
   it('rejects a mutating helper at compile time as well as at runtime', () => {
     const subject = aRate();
 
-    // @ts-expect-error no such helper on the exclude side
     // [model/entity/PriceGroupRate.cfc:L178-L258] declares no helper for any of the three exclude
     // collections - the ORM population path is their only writer.
+    // @ts-expect-error no such helper on the exclude side
     const absent: unknown = subject.addExcludedSku;
 
     expect(absent).toBeUndefined();
@@ -1791,27 +1544,15 @@ describe('the three excluded collections and the gap they represent', () => {
 
   it('is typed readonly, so the type system states that nothing here mutates them', () => {
     // JUDGMENT CALL: the assertion is a compile-time one because the fact being pinned is a
-    // compile-time fact. The three include accessors return a mutable `T[]` because this class's own
-    // helpers splice them, so a caller holding one may empty it - which is exactly how
-    // [model/service/PriceGroupService.cfc:L437-L439] is ported. The three exclude accessors return
-    // `readonly T[]` because NO CALLER may write them: the only writer is the class's own generated
-    // setter. A runtime `Object.isFrozen` check would assert something different and false.
-    //
-    // ★ `readonly` HERE MEANS "NOT WRITABLE THROUGH THIS REFERENCE", NOT "NEVER EMPTIED".
-    // `setExcludedSkus` exists and is called at [model/service/PriceGroupService.cfc:L442]. What it
-    // does is splice the held array to the incoming contents rather than swap in a new one, so a
-    // caller holding an earlier result observes the emptying - the same thing a caller holding the
-    // legacy Hibernate bag observed when `setExcludedSKUs([])` cleared it. This return type states
-    // that such a caller cannot perform that emptying itself.
+    // compile-time fact.
     const subject = aRate({ excludedSkus: skus(1) });
 
     // The readonly result is assignable to a readonly binding...
     const excluded: readonly Sku[] = subject.getExcludedSkus();
 
-    // @ts-expect-error readonly Sku[] is not assignable to a mutable Sku[]
     // `getExcludedSkus()` returns `readonly Sku[]` because no code path in
-    // [model/entity/PriceGroupRate.cfc:L178-L258] ever appends to an exclude collection. The three
-    // INCLUDE accessors are deliberately mutable, and the contrast below is the point.
+    // [model/entity/PriceGroupRate.cfc:L178-L258] ever appends to an exclude collection.
+    // @ts-expect-error readonly Sku[] is not assignable to a mutable Sku[]
     const mutable: Sku[] = subject.getExcludedSkus();
 
     // The three include accessors, by contrast, hand out a genuinely mutable array.
@@ -1823,15 +1564,10 @@ describe('the three excluded collections and the gap they represent', () => {
   });
 });
 
-// --- Collection accessors, containment probes, and the link-table contract -----
-
 describe('collection accessors', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L71-L77]: a Hibernate-managed collection is never
   // null, so all six accessors answer with an array on a rate constructed with none - never
-  // `undefined`, never a sentinel. THE THREE INCLUDE ARRAYS ARE HANDED OUT LIVE because this
-  // class's own helpers at [L201, L208-L210, L221, L228-L230, L241, L248-L250] mutate the very
-  // array the accessor returns; a defensive copy would make `addSku()` invisible to a caller
-  // holding an earlier `getSkus()` result, which is not how the legacy `variables.skus` behaves.
+  // `undefined`, never a sentinel.
 
   it('answers with a real array for all six, even when the constructor supplied none', () => {
     const subject = aRate();
@@ -1850,7 +1586,7 @@ describe('collection accessors', () => {
   });
 
   it('never hands out undefined for a collection', () => {
-    // CFML parity [model/entity/PriceGroupRate.cfc:L71-L77]: NOT ONE of the six declares
+    // CFML parity [model/entity/PriceGroupRate.cfc:L71-L77]: not one of the six declares
     // `type="array"`, unlike [model/entity/PromotionReward.cfc:L74, L86, L87] and
     // [model/entity/PromotionQualifier.cfc:L83, L84], which do.
     const subject = aRate();
@@ -1898,8 +1634,6 @@ describe('collection accessors', () => {
   });
 
   it('keeps the collections of two separate rates completely separate', () => {
-    // A2: a shared array literal hoisted to module scope would let one test's membership leak into
-    // another's.
     const first = aRate({ skus: skus(1) });
     const second = aRate();
 
@@ -1916,8 +1650,7 @@ describe('collection accessors', () => {
 describe('hasProductType, hasProduct and hasSku compare by primary key only', () => {
   // CFML parity [org/Hibachi/HibachiEntity.cfc:L507-L565]: the framework's generated `has*` is
   // Hibernate's collection-contains, which resolves on session identity - the primary key for a
-  // persistent row. The three probes exist here ONLY because this class's own helpers call them, at
-  // [model/entity/PriceGroupRate.cfc:L200, L220, L240].
+  // persistent row.
 
   it('matches a DIFFERENT instance carrying the same key', () => {
     const subject = aRate({ skus: [aSku('sku-42')] });
@@ -1974,9 +1707,7 @@ describe('hasProductType, hasProduct and hasSku compare by primary key only', ()
 
   it('cannot tell two unsaved rows apart, which is why every call site guards first', () => {
     // CFML parity: `unsavedvalue=""` at [model/entity/PriceGroupRate.cfc:L52] and its equivalents
-    // mean every unsaved row's key is `''`, so a key comparison necessarily conflates them. That is
-    // never reached in practice because the near-side guards at [L200, L220, L240] short-circuit on
-    // `arguments.<x>.isNew()` BEFORE the probe runs.
+    // mean every unsaved row's key is `''`, so a key comparison necessarily conflates them.
     const heldUnsaved = anUnsavedSku();
     const subject = aRate({ skus: [heldUnsaved] });
     const differentUnsaved = anUnsavedSku();
@@ -1987,22 +1718,9 @@ describe('hasProductType, hasProduct and hasSku compare by primary key only', ()
   });
 });
 
-// --- setPriceGroup and removePriceGroup: the many-to-one pair ---------------
-
 describe('setPriceGroup', () => {
-  // CFML parity [model/entity/PriceGroupRate.cfc:L181-L186]:
-  //
-  //   variables.priceGroup = arguments.priceGroup;
-  //   if(isNew() or !arguments.priceGroup.hasPriceGroupRate( this )) {
-  //     arrayAppend(arguments.priceGroup.getPriceGroupRates(), this);
-  //   }
-  //
   // The near-side assignment is UNCONDITIONAL and happens FIRST; only the far-side append is
-  // guarded. `isNew()` is evaluated first and CFML's `or` short-circuits, which `||` reproduces
-  // exactly, so an unsaved rate never asks the far side whether it already holds this rate. This is
-  // the method [model/entity/PriceGroup.cfc:L144-L146] delegates to - `addPriceGroupRate` is
-  // `arguments.priceGroupRate.setPriceGroup( this )`, so the near side of the parent's helper is
-  // this method's far side.
+  // guarded.
 
   it('stores the price group on the rate', () => {
     const priceGroup = aPriceGroup('Wholesale');
@@ -2036,14 +1754,6 @@ describe('setPriceGroup', () => {
   });
 
   it('DOES append twice for an UNSAVED rate - defect D25, reproduced', () => {
-    // LEGACY-DEFECT [model/entity/PriceGroupRate.cfc:L183]: the guard is
-    //   `isNew() or !arguments.priceGroup.hasPriceGroupRate(this)`,
-    // so for an unsaved rate the first disjunct is true and the containment probe is NEVER
-    // consulted: two calls with the same price group append the same rate twice. Reproduced
-    // exactly, because reordering the disjuncts or adding a containment check for the unsaved case
-    // would change which appends happen, and the parent's collection is what ends up persisted.
-    //
-    // Preserved deliberately; do not fix without a product decision.
     const priceGroup = aPriceGroup('Wholesale');
     const subject = aRate({ priceGroupRateID: UNSAVED_RATE_ID });
 
@@ -2057,7 +1767,8 @@ describe('setPriceGroup', () => {
   });
 
   it('replaces an earlier price group on the near side without unlinking the old far side', () => {
-    // Nothing in [L181-L186] detaches the previous parent - the assignment simply overwrites.
+    // Nothing in [model/entity/PriceGroupRate.cfc:L181-L186] detaches the previous parent - the
+    // assignment simply overwrites.
     const first = aPriceGroup('Wholesale');
     const second = aPriceGroup('Trade');
     const subject = aRate();
@@ -2071,8 +1782,8 @@ describe('setPriceGroup', () => {
   });
 
   it('assigns the near side even when the far-side append is skipped', () => {
-    // The assignment at [L182] sits OUTSIDE the guard, so a rate the parent already holds still
-    // gets its own field written.
+    // The assignment at [model/entity/PriceGroupRate.cfc:L182] sits OUTSIDE the guard, so a rate
+    // the parent already holds still gets its own field written.
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID });
     const priceGroup = aPriceGroup('Wholesale', [subject]);
 
@@ -2086,10 +1797,8 @@ describe('setPriceGroup', () => {
 });
 
 describe('removePriceGroup', () => {
-  // CFML parity [model/entity/PriceGroupRate.cfc:L187-L196]: the ONLY one of this class's four
+  // CFML parity [model/entity/PriceGroupRate.cfc:L187-L196]: the only one of this class's four
   // `remove*` helpers whose argument is OPTIONAL - `any priceGroup` with no `required`.
-  // `structDelete(variables, "priceGroup")` at [L195] runs UNCONDITIONALLY, outside the index
-  // guard.
 
   it('splices the rate out of the far-side collection and clears the near side', () => {
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID });
@@ -2114,7 +1823,8 @@ describe('removePriceGroup', () => {
   });
 
   it('clears the near side even when the far side did not hold the rate', () => {
-    // [L195] is outside the `if(index > 0)` guard, so a miss on the far side still detaches.
+    // [model/entity/PriceGroupRate.cfc:L195] is outside the `if(index > 0)` guard, so a miss on
+    // the far side still detaches.
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID });
     const priceGroup = aPriceGroup('Wholesale');
     const unrelated = aPriceGroup('Trade');
@@ -2141,8 +1851,9 @@ describe('removePriceGroup', () => {
   });
 
   it('removes only the FIRST match, leaving a duplicate from defect D25 behind', () => {
-    // `arrayFind` at [L191] returns one index and `arrayDeleteAt` at [L193] deletes one element, so
-    // a rate double-appended while unsaved needs two removals.
+    // `arrayFind` at [model/entity/PriceGroupRate.cfc:L191] returns one index and `arrayDeleteAt`
+    // at [model/entity/PriceGroupRate.cfc:L193] deletes one element, so a rate double-appended
+    // while unsaved needs two removals.
     const priceGroup = aPriceGroup('Wholesale');
     const subject = aRate({ priceGroupRateID: UNSAVED_RATE_ID });
     subject.setPriceGroup(priceGroup);
@@ -2154,14 +1865,9 @@ describe('removePriceGroup', () => {
   });
 
   it('RAISES when called with no argument on a rate that has no price group', () => {
-    // LEGACY-NOTE [model/entity/PriceGroupRate.cfc:L189-L192]: the omitted argument defaults to the
-    // null `variables.priceGroup` and `getPriceGroupRates()` is then invoked on it - a method call
-    // on null under every CFML engine. Reproduced rather than smoothed into an early return,
-    // because an early return would ALSO skip the unconditional field clear at [L195] and so would
-    // not be the same behaviour reached another way. The identical unguarded shape recurs at
-    // [model/entity/PriceGroup.cfc:L116-L122], [model/entity/Category.cfc:L107-L112] and
-    // [model/entity/ProductType.cfc:L155-L159], so it is the framework-wide idiom, not a local
-    // slip.
+    // LEGACY-NOTE [model/entity/PriceGroupRate.cfc:L189-L192]: the omitted argument defaults to
+    // the null `variables.priceGroup` and `getPriceGroupRates()` is then invoked on it - a method
+    // call on null under every CFML engine.
     const subject = aRate();
 
     expect(subject.getPriceGroup()).toBeUndefined();
@@ -2170,7 +1876,8 @@ describe('removePriceGroup', () => {
 
   it('does NOT raise when an explicit price group is supplied to an unattached rate', () => {
     // The default branch is what raises; supplying the argument skips it entirely, and the
-    // unconditional clear at [L195] is then a no-op on an already-empty field.
+    // unconditional clear at [model/entity/PriceGroupRate.cfc:L195] is then a no-op on an
+    // already-empty field.
     const subject = aRate();
     const priceGroup = aPriceGroup('Wholesale');
 
@@ -2190,12 +1897,10 @@ describe('removePriceGroup', () => {
   });
 });
 
-// --- The three owner-side many-to-many pairs, and the guard asymmetry -------
-
 describe('the guard asymmetry in the three add helpers', () => {
   // CFML parity [model/entity/PriceGroupRate.cfc:L199-L206, L219-L226, L239-L246]: the NEAR-side
-  // guard tests THE ARGUMENT's newness (`arguments.productType.isNew()`) while the FAR-side guard
-  // tests THIS RATE's newness (`isNew()`).
+  // guard tests the ARGUMENT's newness (`arguments.productType.isNew()`) while the FAR-side guard
+  // tests this RATE's newness (`isNew()`).
 
   it('saved rate plus saved argument: neither side duplicates', () => {
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID });
@@ -2255,7 +1960,7 @@ describe('the guard asymmetry in the three add helpers', () => {
   });
 
   it('writes the near side before the far side', () => {
-    // [L200-L205] orders the two guarded blocks near-first.
+    // [model/entity/PriceGroupRate.cfc:L200-L205] orders the two guarded blocks near-first.
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID });
     const productType = aProductType('ptp-1');
 
@@ -2276,13 +1981,7 @@ describe('the guard asymmetry in the three add helpers', () => {
 });
 
 describe('the three remove helpers, and the inversion cross-check', () => {
-  // INVERSION CROSS-CHECK VERDICT: CLEAN. Every one of this class's four `remove*` helpers -
-  // `removePriceGroup` [L187-L196], `removeProductType` [L207-L216], `removeProduct` [L227-L236]
-  // and `removeSku` [L247-L256] - calls `arrayDeleteAt`, never `arrayAppend`, and every index guard
-  // reads `if(<index> > 0)`, never the inverted `<= 0`. The direct counter-example is
-  // [model/entity/Option.cfc:L129-L131], where `removePromotionRewardExclusion` calls
-  // `arguments.promotionReward.addExcludedOption( this )` - a remove that ADDS - and
-  // [model/entity/Option.cfc:L145-L147], where `removePromotionQualifierExclusion` does the same.
+  // Inversion cross-check verdict: clean.
 
   it('splices the argument off the near side and the rate off the far side', () => {
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID });
@@ -2339,10 +2038,6 @@ describe('the three remove helpers, and the inversion cross-check', () => {
   });
 
   it('removes the element at index zero, which an inverted guard would have skipped', () => {
-    // THE DIRECT TEST FOR AN INVERTED PORT. CFML arrays are 1-based, so `if(index > 0)` means
-    // "found"; a JavaScript port that carried `> 0` across verbatim against a zero-based
-    // `findIndex` would silently refuse to remove the FIRST element. The shipped module tests `!==`
-    // against the zero-based sentinel `-1`, and this case is what proves it.
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID, skus: skus(2) });
 
     subject.removeSku(aSku('sku-1'));
@@ -2368,29 +2063,18 @@ describe('the three remove helpers, and the inversion cross-check', () => {
   it('takes a REQUIRED argument, unlike removePriceGroup', () => {
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID });
 
-    // @ts-expect-error the argument is required
     // [model/entity/PriceGroupRate.cfc:L247] declares `required any sku`, and only
-    // `removePriceGroup` at [L187] declares an optional one. No `structKeyExists` defaulting
-    // applies here.
+    // `removePriceGroup` at [model/entity/PriceGroupRate.cfc:L187] declares an optional one. No
+    // `structKeyExists` defaulting applies here.
+    // @ts-expect-error the argument is required
     const rejected = (): void => subject.removeSku();
 
     expect(typeof rejected).toBe('function');
   });
 
   it('removes the requested UNSAVED member, not the first unsaved one it finds', () => {
-    // ★★ WHAT `arrayFind(collection, object)` ACTUALLY COMPARED, AND WHY A KEY COMPARISON IS NOT
-    // THE SAME THING FOR AN UNSAVED ROW. `unsavedvalue=""` [model/entity/PriceGroupRate.cfc:L52]
-    // means every transient row carries the SAME empty key, so a comparison on the key alone
-    // reports the first transient member as a match for any transient needle. CFML compared
-    // OBJECTS, and Hibernate's collection-contains worked on SESSION IDENTITY - which for a
-    // persisted row is its primary key, and for a transient row, having no key, is the instance
-    // itself. So a key comparison is faithful for saved rows and wrong for unsaved ones, and the
-    // shipped module falls back to instance identity exactly when the keys are empty.
-    //
-    // ★ THE SOURCE ITSELF CORROBORATES THE READING. The ADD path already branches on newness for
-    // precisely this reason - [model/entity/PriceGroupRate.cfc:L200/L203, L220/L223, L240/L243] -
-    // while the remove path carries no such guard, which is why the distinction has to be made
-    // here rather than inherited.
+    // What `arrayFind(collection, object)` actually compared, and why a key comparison is not the
+    // same thing for an unsaved row.
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID });
     const firstUnsaved = anUnsavedSku();
     const secondUnsaved = anUnsavedSku();
@@ -2399,7 +2083,7 @@ describe('the three remove helpers, and the inversion cross-check', () => {
 
     subject.removeSku(secondUnsaved);
 
-    // The one that was ASKED FOR is gone, and the other is untouched. A key comparison would have
+    // The one that was ASKED for is gone, and the other is untouched. A key comparison would have
     // removed `firstUnsaved` instead, silently detaching a different row.
     expect(subject.getSkus()).toStrictEqual([firstUnsaved]);
     expect(subject.getSkus()[0]).toBe(firstUnsaved);
@@ -2420,9 +2104,8 @@ describe('the three remove helpers, and the inversion cross-check', () => {
   });
 
   it('removes the requested unsaved rate from the far side of an unsaved product type', () => {
-    // The far side has the same hazard from the other end: `removeProductType` looks for THIS RATE
-    // inside the product type's collection, so an unsaved rate sharing its empty key with another
-    // unsaved rate would splice the wrong one out.
+    // The far side has the same hazard from the other end: `removeProductType` looks for this RATE
+    // inside the product type's collection.
     const unsavedSubject = aRate({ priceGroupRateID: UNSAVED_RATE_ID });
     const otherUnsavedRate = aRate({ priceGroupRateID: UNSAVED_RATE_ID });
     const productType = aProductType('ptp-unsaved-far');
@@ -2437,10 +2120,7 @@ describe('the three remove helpers, and the inversion cross-check', () => {
   });
 
   it('still compares SAVED members by primary key, not by instance', () => {
-    // ★ THE FALLBACK IS SCOPED TO EMPTY KEYS AND NOTHING ELSE. Two distinct instances built from
-    // the same stored row must still match, because that is what session identity meant for a
-    // persisted row - and because a repository read and a caller-held entity are routinely two
-    // objects for one row. Switching the whole comparison to instance identity would break this.
+    // The fallback is scoped to empty keys and nothing else.
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID });
     const heldInstance = aSku('sku-shared-key');
     const equalKeyOtherInstance = aSku('sku-shared-key');
@@ -2455,25 +2135,15 @@ describe('the three remove helpers, and the inversion cross-check', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The five generated property setters
+// The five generated property setters.
 //
 // [model/entity/PriceGroupRate.cfc:L49] declares `accessors=true`, so CFML generated a
-// `set<Property>` for every persistent property without a line of authored code. The port authors
-// the five that ported call sites invoke, and this group pins each one plus the two things that are
-// easy to get wrong about them: a generated setter does NOT maintain the far side of an association,
-// and `setAmount(undefined)` means SQL NULL rather than zero.
-//
-// NET-NEW COVERAGE (AAP 0.6.6): `meta/tests/` contains no PriceGroupRate suite at all - the only two
-// legacy entity suites are BrandTest.cfc and ProductTest.cfc.
-// ---------------------------------------------------------------------------
+// `set<Property>` for every persistent property without a line of authored code.
 
 describe('setGlobalFlag', () => {
   it('★★ replaces the flag, which is what makes rate exclusivity enforceable', () => {
-    // [model/service/PriceGroupService.cfc:L430] `rates[i].setGlobalFlag(false)` demotes every other
-    // global rate in a price group. Without this member two global rates can coexist, and
-    // `getGlobalPriceGroupRate()` [model/entity/PriceGroup.cfc:L83-L90] then returns whichever the
-    // association happens to yield first - a nondeterministic price.
+    // [model/service/PriceGroupService.cfc:L430] `rates[i].setGlobalFlag(false)` demotes every
+    // other global rate in a price group.
     const subject = aRate({ globalFlag: true });
 
     expect(subject.getGlobalFlag()).toBe(true);
@@ -2494,8 +2164,7 @@ describe('setGlobalFlag', () => {
   it('accepts only a boolean, so CFML truthiness cannot re-enter through the writer', () => {
     // The FIELD admits `CfBooleanInput` because a persisted row can deliver SQL NULL or the string
     // `'false'` - [model/entity/PriceGroupRate.cfc:L53] `default="false"` constrains what the ORM
-    // writes, not what the column already holds. A caller inside this process is a different
-    // boundary, and [L430] passes the CFML boolean literal.
+    // writes.
     const subject = aRate();
 
     // @ts-expect-error setGlobalFlag takes boolean, not the CfBooleanInput the field admits: the wider type exists for hydration from a row [model/entity/PriceGroupRate.cfc:L53], and widening the writer would readmit CFML truthiness at a boundary the source never exposes to it.
@@ -2515,10 +2184,8 @@ describe('setAmount', () => {
   });
 
   it('★★ clears to undefined, and never to zero', () => {
-    // [model/entity/PriceGroupRate.cfc:L54] declares NO `default=`, unlike
-    // model/entity/Sku.cfc L55/L56/L57 which all declare `default="0"`. The schema encodes the
-    // asymmetry, so substituting `0` here would persist a rate that discounts nothing as a rate
-    // that discounts everything.
+    // [model/entity/PriceGroupRate.cfc:L54] declares no `default=`, unlike model/entity/Sku.cfc
+    // L55/L56/L57 which all declare `default="0"`.
     const subject = aRate({ amount: Money.fromDecimalString('12.50') });
 
     subject.setAmount(undefined);
@@ -2527,10 +2194,9 @@ describe('setAmount', () => {
   });
 
   it('is the member the ported population step writes through', () => {
-    // [org/Hibachi/HibachiService.cfc:L146] populates the entity from the payload before validating
-    // it, and `amount` is the one persistent property the ported
-    // `PriceGroupRateSaveInput` publishes. Without this member a submitted amount is silently
-    // dropped, which is half of what [model/service/PriceGroupService.cfc:L404] does.
+    // [org/Hibachi/HibachiService.cfc:L146] populates the entity from the payload before
+    // validating it, and `amount` is the one persistent property the ported
+    // `PriceGroupRateSaveInput` publishes.
     const subject = aRate({ amount: undefined });
 
     subject.setAmount(Money.fromDecimalString('7.25'));
@@ -2571,15 +2237,13 @@ describe('the three excluded-collection setters', () => {
   });
 
   it('★★ does NOT notify the far side, exactly as a generated CFML setter does not', () => {
-    // THIS IS THE DIFFERENCE BETWEEN THE TWO IDIOMS [model/service/PriceGroupService.cfc:L417-L425
-    // versus L437-L442]. The `remove*` helpers maintain the inverse side; the generated setters
-    // leave it stale until reload. Both coexist inside one legacy method, so unifying them would
-    // change behaviour - and the exclude collections have no helper at all, only this setter.
+    // This is the difference between the two idioms
+    // [model/service/PriceGroupService.cfc:L417-L425 versus L437-L442].
     const excludedSku = aSku('sku-far-side');
     const subject = aRate({ priceGroupRateID: SAVED_RATE_ID, excludedSkus: [excludedSku] });
 
-    // The far side never knew about the exclusion in the first place: no `addExcludedSku` exists to
-    // have registered it, which is why there is nothing here to become stale.
+    // The far side never knew about the exclusion in the first place: no `addExcludedSku` exists
+    // to have registered it, which is why there is nothing here to become stale.
     expect(excludedSku.getPriceGroupRates()).toStrictEqual([]);
 
     subject.setExcludedSkus([]);
@@ -2609,16 +2273,10 @@ describe('the three excluded-collection setters', () => {
   });
 });
 
-// --- Structural parity with one SwPriceGroupRate row ------------------------
-
 describe('structural parity with the SwPriceGroupRate row', () => {
   // C5 schema continuity [model/entity/PriceGroupRate.cfc:L49]: `table="SwPriceGroupRate"`,
   // `persistent=true output=false accessors=true`, `cacheuse="transactional"`,
-  // `hb_serviceName="priceGroupService"`, `hb_permission="priceGroup.priceGroupRates"`. CFML parity
-  // [L49]: `persistent` is UNQUOTED here (`persistent=true`) and BOTH `output=false` and
-  // `accessors=true` are present - unlike the four `Promotion*` entities, which quote the first and
-  // omit at least one of the other two. CFML parity [L58, L61-L64 versus L67-L68]: THE SECTION
-  // ORDER IS REVERSED relative to every other in-scope entity.
+  // `hb_serviceName="priceGroupService"`, `hb_permission="priceGroup.priceGroupRates"`.
 
   it('publishes exactly the ported public surface, and nothing more', () => {
     const shipped = Object.getOwnPropertyNames(PriceGroupRate.prototype)
@@ -2629,11 +2287,8 @@ describe('structural parity with the SwPriceGroupRate row', () => {
   });
 
   it('needs nothing but a primary key to exist - no port, no clock, no repository', () => {
-    // [model/entity/PriceGroupRate.cfc] has ZERO `getService(` sites, verified by grepping the
-    // whole file, and so does its parent [model/entity/PriceGroup.cfc]. Of the forty-five
-    // entity-internal service-locator sites in the slice - Product 18, Sku 19, ProductType 6,
-    // OptionGroup 1, RoundingRule 1 - not one is here. So the constructor injects NO collaborator
-    // port and NO clock, and a single argument is enough to build a valid rate.
+    // `model/entity/PriceGroupRate.cfc` has ZERO `getService(` sites, verified by grepping the
+    // whole file, and so does its parent `model/entity/PriceGroup.cfc`.
     expect(PriceGroupRate.length).toBe(1);
 
     const subject = new PriceGroupRate({ priceGroupRateID: SAVED_RATE_ID });
@@ -2644,8 +2299,7 @@ describe('structural parity with the SwPriceGroupRate row', () => {
   it('reads as unsaved for the empty key from L52 and saved for anything else', () => {
     // [model/entity/PriceGroupRate.cfc:L52] `unsavedvalue="" default=""` is what makes
     // [org/Hibachi/HibachiEntity.cfc:L571-L576]'s `getPrimaryIDValue() == ""` test honest, so the
-    // port's `isNew()` needs no separate flag - unlike src/domain/entities/sku.ts, which carries an
-    // explicit hydration flag and is why `anUnsavedSku()` exists here at all.
+    // port's `isNew()` needs no separate flag - unlike src/domain/entities/sku.ts.
     expect(aRate({ priceGroupRateID: UNSAVED_RATE_ID }).isNew()).toBe(true);
     expect(aRate({ priceGroupRateID: SAVED_RATE_ID }).isNew()).toBe(false);
     expect(aRate({ priceGroupRateID: '0' }).isNew()).toBe(false);
@@ -2657,10 +2311,10 @@ describe('structural parity with the SwPriceGroupRate row', () => {
   });
 
   it('leaves amount and amountType absent, because L54 and L55 declare no default', () => {
-    // `amount` is one of exactly FOUR no-default money columns in the slice, alongside
+    // `amount` is one of exactly four no-default money columns in the slice, alongside
     // [model/entity/SkuCurrency.cfc:L53], [model/entity/PromotionApplied.cfc:L53] and
     // [model/entity/PromotionReward.cfc:L61] - in pointed contrast with `Sku.price`,
-    // `Sku.listPrice` and `Sku.renewalPrice`, which all declare `default="0"`.
+    // `Sku.listPrice` and `Sku.renewalPrice`.
     const subject = aRate();
 
     expect(subject.getAmount()).toBeUndefined();
@@ -2703,10 +2357,8 @@ describe('structural parity with the SwPriceGroupRate row', () => {
   });
 
   it('HOLDS its rounding rule and never applies it', () => {
-    // BOUNDARY. [model/entity/PriceGroupRate.cfc:L68] is an association and nothing more: no method
-    // on this entity rounds anything. Applying the rule is the service's job at
-    // [model/service/PriceGroupService.cfc:L316-L340], where - defect 8 - ONLY the `percentageOff`
-    // branch consults it and there is no `default:` case at all.
+    // BOUNDARY. [model/entity/PriceGroupRate.cfc:L68] is an association and nothing more: no
+    // method on this entity rounds anything.
     const { rule, recorder } = aRoundingRuleWithRecorder();
     const subject = aRate({
       amount: Money.fromDecimalString('12.50'),
@@ -2748,11 +2400,7 @@ describe('structural parity with the SwPriceGroupRate row', () => {
 
   it('declares NO ORM event hook, because the L280/L282 banner is empty', () => {
     // CFML parity [model/entity/PriceGroupRate.cfc:L280, L282]: the "ORM Event Hooks" banner opens
-    // and closes with NOTHING between the two lines. So this entity maintains no materialized path
-    // and runs no pre-persist logic - a pointed contrast with its own parent
-    // [model/entity/PriceGroup.cfc:L206-L214], which sets the path BEFORE calling `super` and
-    // carries a harmless `;;`, and with [model/entity/Category.cfc:L126-L134], which calls `super`
-    // FIRST.
+    // and closes with nothing between the two lines.
     const members = Object.getOwnPropertyNames(PriceGroupRate.prototype);
 
     expect(members).not.toContain('preInsert');
@@ -2764,8 +2412,8 @@ describe('structural parity with the SwPriceGroupRate row', () => {
 
   it('declares no framework member the port deliberately left behind', () => {
     // §7 explain rather than fabricate: `getNewFlag()`, `getPrintTemplates()`,
-    // `getEmailTemplates()`, `clearAttributeCache()`, the four inherited memos and every smart-list
-    // getter live on [org/Hibachi/HibachiEntity.cfc], which AAP 0.5.3 replaces rather than ports.
+    // `getEmailTemplates()`, `clearAttributeCache()`, the four inherited memos and every
+    // smart-list getter live on `org/Hibachi/HibachiEntity.cfc`.
     const members = Object.getOwnPropertyNames(PriceGroupRate.prototype);
 
     for (const notPorted of [
@@ -2775,10 +2423,8 @@ describe('structural parity with the SwPriceGroupRate row', () => {
       'clearAttributeCache',
       'getPropertyTitle',
       'getAttributeValue',
-      // `validate` STAYS UNPORTED even though the error register it wrote into does not: the register
-      // is five small members with no framework behind them, whereas `validate` is metadata-driven
-      // dispatch over `model/validation/*.json` through `HibachiValidationService`. The RULES are
-      // transcribed by the service that needs them; the DISPATCHER is not ported.
+      // `validate` STAYS UNPORTED even though the error register it wrote into does not: the
+      // register is five small members with no framework behind them.
       'validate',
     ]) {
       expect(members).not.toContain(notPorted);
@@ -2787,13 +2433,7 @@ describe('structural parity with the SwPriceGroupRate row', () => {
 
   it('exposes no attributeValues, which is what made the legacy dispatcher throw', () => {
     // [org/Hibachi/HibachiEntity.cfc:L559] reaches the EAV fallback only when
-    // `hasProperty("attributeValues")` holds. PriceGroupRate declares no such property, so it is
-    // one of the FOURTEEN entities whose unmatched `get…` terminates in the throw at [L565] -
-    // versus the four silent ones, [model/entity/Sku.cfc:L70], [model/entity/Product.cfc:L75],
-    // [model/entity/ProductType.cfc:L67] and [model/entity/Brand.cfc:L60]. The port has no dynamic
-    // dispatch, so the throw is DOCUMENTED and not reproduced - and the raw
-    // `writeDump(getErrors())` debug output at [org/Hibachi/HibachiEntity.cfc:L605] is not ported
-    // either.
+    // `hasProperty("attributeValues")` holds.
     const subject = aRate();
 
     expect('attributeValues' in subject).toBe(false);
@@ -2803,7 +2443,6 @@ describe('structural parity with the SwPriceGroupRate row', () => {
   });
 
   it('exports exactly the class and the amount-type union, with no barrel', () => {
-    // P7 one unit per file, no barrels: the module's whole public API is the class plus the type.
     expect(typeof PriceGroupRate).toBe('function');
     expect(PriceGroupRate.name).toBe('PriceGroupRate');
 
@@ -2813,33 +2452,12 @@ describe('structural parity with the SwPriceGroupRate row', () => {
   });
 });
 
-// --- The declarative validation schema, and its orphaned condition ----------
-
 /**
- * [model/validation/PriceGroupRate.json], VERBATIM and complete: twelve lines carrying one
+ * `model/validation/PriceGroupRate.json`, VERBATIM and complete: twelve lines carrying one
  * condition and three properties.
  *
- *   {
- *     "conditions":{
- *         "isNotGlobal":{
- *             "getGlobalFlag":{"eq":0}
- *         }
- *     },
- *     "properties":{
- *       "priceGroup":  [{"contexts":"save","required":true}],
- *       "amountType":  [{"contexts":"save","required":true}],
- *       "amount":      [{"contexts":"save","required":true,"dataType":"numeric"}]
- *     }
- *   }
- *
- * P6 empty environment: the schema is a LITERAL here, never read from disk. Opening the `.json`
- * would be a filesystem test wearing a unit test's clothes, and would reach outside `slatwall-ts/`
- * for its input. Transcribed so a reviewer can diff twelve lines against twelve.
- *
- * NONE of the three rules is ENFORCED by the entity, and none is asserted here as though it were:
- * requiredness and schema validation live at the SERVICE tier, so NO zod schema is exercised in
- * this file. What the entity owes the schema is that the three named columns exist and are carried
- * faithfully and unvalidated.
+ * None of the three rules is ENFORCED by the entity, and none is asserted here as though it were:
+ * requiredness and schema validation live at the SERVICE tier.
  */
 const DECLARED_VALIDATION_SCHEMA = {
   conditions: {
@@ -2869,9 +2487,7 @@ describe('the declarative validation schema', () => {
 
   it('constrains only amount by data type, leaving amountType value-unconstrained', () => {
     // `amountType` is REQUIRED but its VALUE is unconstrained: no `dataType`, no `inList`, no
-    // pattern - even though [model/entity/PriceGroupRate.cfc:L87-L93] enumerates exactly three
-    // legal values and [model/service/PriceGroupService.cfc:L316-L340] switches on them with no
-    // `default:` case.
+    // pattern.
     expect(DECLARED_VALIDATION_SCHEMA.properties.amount.at(0)?.dataType).toBe('numeric');
     expect('dataType' in DECLARED_VALIDATION_SCHEMA.properties.amountType[0]).toBe(false);
     expect('dataType' in DECLARED_VALIDATION_SCHEMA.properties.priceGroup[0]).toBe(false);
@@ -2909,15 +2525,9 @@ describe('the declarative validation schema', () => {
 });
 
 describe('the ORPHANED isNotGlobal condition', () => {
-  // CFML parity [model/validation/PriceGroupRate.json]: `conditions.isNotGlobal` is ORPHANED - NO
+  // CFML parity `model/validation/PriceGroupRate.json`: `conditions.isNotGlobal` is ORPHANED - no
   // property in the schema references it - and it carries a SECOND anomaly on top: it keys on the
-  // GETTER NAME `getGlobalFlag` rather than the property `globalFlag`. The parallel is measured,
-  // not asserted here: those four schemas each declare a `physicalCounts` delete rule while the
-  // entities themselves declare `physicals`; `physicalCounts` exists only on
-  // [model/entity/Physical.cfc:L59]. The condition would have been legible if wired: a test of
-  // `globalFlag` against 0 is the negation of the short-circuit at
-  // [model/entity/PriceGroupRate.cfc:L106-L108], so a rule guarded by it would have read "these
-  // columns matter only when the rate is not global".
+  // GETTER NAME `getGlobalFlag` rather than the property `globalFlag`.
 
   it('is declared', () => {
     expect(Object.keys(DECLARED_VALIDATION_SCHEMA.conditions)).toStrictEqual(['isNotGlobal']);
@@ -2969,14 +2579,14 @@ describe('the ORPHANED isNotGlobal condition', () => {
 });
 
 describe('what the validation schema does NOT declare', () => {
-  // The absences are as much a part of the contract as the three rules, and NOTHING is invented to
+  // The absences are as much a part of the contract as the three rules, and nothing is invented to
   // fill them.
 
   it('declares NO delete-context gate at all', () => {
-    // Contrast [model/validation/PriceGroup.json], re-read for this suite, which declares SIX
+    // Contrast `model/validation/PriceGroup.json`, re-read for this suite, which declares six
     // `{"contexts":"delete","maxCollection":0}` gates - `appliedOrderItems`, `childPriceGroups`,
     // `accounts`, `subscriptionBenefits`, `subscriptionUsageBenefits`, `promotionRewards` - and
-    // [model/validation/RoundingRule.json], which gates on `priceGroupRates`.
+    // `model/validation/RoundingRule.json`.
     const contexts = Object.values(DECLARED_VALIDATION_SCHEMA.properties)
       .flat()
       .map((rule) => rule.contexts);
@@ -2987,8 +2597,8 @@ describe('what the validation schema does NOT declare', () => {
 
   it('declares NO rule for globalFlag, even though a condition is written about it', () => {
     // The sharpest absence in the file: `globalFlag` drives the early return at
-    // [model/entity/PriceGroupRate.cfc:L106-L108] AND is the subject of the orphaned condition, yet
-    // no property rule mentions it.
+    // [model/entity/PriceGroupRate.cfc:L106-L108] and is the subject of the orphaned condition,
+    // yet no property rule mentions it.
     expect('globalFlag' in DECLARED_VALIDATION_SCHEMA.properties).toBe(false);
   });
 
@@ -3019,13 +2629,7 @@ describe('what the validation schema does NOT declare', () => {
   });
 
   it('names NO custom validator method, so this entity declares none', () => {
-    // CFML parity: a `"method"` key names an entity member the framework invoked by string. There
-    // are exactly FIVE such declaratively-invoked validators across the in-scope slice -
-    // `hasUniqueOptions` and `hasOneOptionPerOptionGroup` [model/validation/Sku.json],
-    // `hasExpressionWithListOfNumericValuesOnly` [model/validation/RoundingRule.json],
-    // `getPromotionCodesDeletableFlag` [model/validation/Promotion.json] and
-    // `hasUniquePromotionCode` [model/validation/PromotionCode.json] - and NOT ONE of them belongs
-    // to PriceGroupRate.
+    // CFML parity: a `"method"` key names an entity member the framework invoked by string.
     const rulesWithMethods = Object.values(DECLARED_VALIDATION_SCHEMA.properties)
       .flat()
       .filter((rule) => 'method' in rule);
@@ -3046,32 +2650,25 @@ describe('what the validation schema does NOT declare', () => {
   });
 
   it('is one of the fifteen in-scope schemas that exist, not one of the six that do not', () => {
-    // VERIFIED CORRECTION to AAP 0.2.1, which states twelve: `model/validation/` holds 96 `.json`
-    // files, and the in-scope split is FIFTEEN PRESENT / SIX ABSENT.
+    // Verified correction to AAP 0.2.1, which states twelve: `model/validation/` holds 96 `.json`
+    // files, and the in-scope split is fifteen present / six absent.
     expect(Object.keys(DECLARED_VALIDATION_SCHEMA)).toStrictEqual(['conditions', 'properties']);
   });
 });
 
-// ===========================================================================
-// The error register, invoked directly on this entity
-// ===========================================================================
+// The error register, invoked directly on this entity.
 //
-// ★★★ ADDED BECAUSE A MECHANICAL INVENTORY FOUND THESE MEMBERS NAMED BUT NEVER CALLED HERE. A code
-// review reported that "nine public methods have no invocation in any test AST", which is a sharper
-// question than whether a name appears somewhere: a method mentioned only in a comment is a method
-// nothing exercises. The register's behaviour WAS covered - through the service suites, where a refused
-// save is observed - but not at the entity that declares it, so the per-entity contract rested on
-// another tier's assertions. Gate `A24` now requires an actual invocation.
+// Review reported that "nine public methods have no invocation in any test AST".
 //
-// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees and
-// that the save-refusal semantics depend on: a MISS yields an empty array rather than undefined,
-// messages ACCUMULATE under one name rather than replacing, and lookup is CASE-INSENSITIVE while the
-// key remembers the case it was FIRST written with.
+// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees
+// and that the save-refusal semantics depend on: a MISS yields an empty array rather than
+// undefined.
 
 describe('PriceGroupRate: the inherited error register', () => {
   it('returns an empty array for a name that was never recorded, never undefined', () => {
-    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent name
-    // has to be safe to iterate - `undefined` here would turn a clean validation pass into a crash.
+    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent
+    // name has to be safe to iterate - `undefined` here would turn a clean validation pass into a
+    // crash.
     const subject = new PriceGroupRate({ priceGroupRateID: 'rate-errors-1' });
 
     expect(subject.getError('noSuchRule')).toStrictEqual([]);
@@ -3080,8 +2677,8 @@ describe('PriceGroupRate: the inherited error register', () => {
   });
 
   it('★★ accumulates messages under one name instead of replacing them', () => {
-    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after the
-    // first, which is how a partially invalid entity comes to look like a singly invalid one.
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after
+    // the first, which is how a partially invalid entity comes to look like a singly invalid one.
     const subject = new PriceGroupRate({ priceGroupRateID: 'rate-errors-1' });
 
     subject.addError('urlTitle', 'is required');
@@ -3094,7 +2691,7 @@ describe('PriceGroupRate: the inherited error register', () => {
   it('★★ looks a name up case-insensitively, and keeps the case it was first written with', () => {
     // CFML struct keys are case-insensitive, so `getError('URLTITLE')` must find what `addError`
     // recorded as `urlTitle` - while [org/Hibachi/HibachiErrors.cfc:L14-L31] REMEMBERS the first
-    // spelling, so the published key is the one the first write used.
+    // spelling.
     const subject = new PriceGroupRate({ priceGroupRateID: 'rate-errors-1' });
 
     subject.addError('urlTitle', 'first');

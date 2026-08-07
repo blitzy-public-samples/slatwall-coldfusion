@@ -1,111 +1,13 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - repository suite for the option select-list reads
+// slatwall-ts - repository suite for the option select-list reads.
 //
-// WHAT THIS PINS
-//   src/repositories/mysql/mysqlOptionRepository.ts - the secondary adapter that
-//   replaces `model/dao/OptionDAO.cfc` in the TypeScript / AWS Lambda `nodejs20.x`
-//   port of the Slatwall 3.1.39 catalog + promotions/pricing slice
-//   (`version.txt` = `3.1.39`).
+// For orientation on what parity would have looked like: the only legacy suites extended anywhere
+// in this port are `meta/tests/unit/entity/BrandTest.cfc` and
+// `meta/tests/unit/entity/ProductTest.cfc`, both owned by tests/unit/domain/entities/.
 //
-//   Two things are asserted and nothing else: THE EXACT SQL TEXT THE ADAPTER
-//   EMITS, and THE EXACT ARRAY OF PARAMETERS IT BINDS TO THAT TEXT. The legacy
-//   component is 120 lines of `<cffunction>` TAG syntax wrapping two embedded
-//   `<cfquery>` blocks, which is precisely what makes those two query bodies -
-//   and not any paraphrase of them - the SQL SOURCE OF TRUTH for every
-//   expectation below. Each was opened in the legacy tree and matched
-//   line for line before it was transcribed here.
+// Why this sits under tests/integration/repositories/ and needs no database The tier names the
+// layer under test, not the presence of a server.
 //
-//   The verified locator map, so a reviewer can check each expectation against
-//   the exact line it came from:
-//
-//     [model/dao/OptionDAO.cfc:L51]      getUnusedProductOptions declaration
-//                                          (returntype="any" access="public")
-//     [model/dao/OptionDAO.cfc:L52-L53]    its two required string arguments
-//     [model/dao/OptionDAO.cfc:L58]        its <cfquery> opens
-//     [model/dao/OptionDAO.cfc:L59-L62]    the THREE projected columns
-//     [model/dao/OptionDAO.cfc:L65-L66]    INNER JOIN onto SwOptionGroup
-//     [model/dao/OptionDAO.cfc:L68]        the IN filter, bound list="true"
-//     [model/dao/OptionDAO.cfc:L70-L81]    the NOT EXISTS exclusion
-//     [model/dao/OptionDAO.cfc:L71]          its redundant inner DISTINCT
-//     [model/dao/OptionDAO.cfc:L78]        the productID bind, NO list attribute
-//     [model/dao/OptionDAO.cfc:L82-L84]    the TWO-column ORDER BY
-//     [model/dao/OptionDAO.cfc:L88]        the "<group> - <option>" label
-//     [model/dao/OptionDAO.cfc:L94]      getUnusedProductOptionGroups declaration
-//                                          (NO returntype, NO access - a
-//                                          per-function asymmetry inside one file)
-//     [model/dao/OptionDAO.cfc:L95]        its single required string argument
-//     [model/dao/OptionDAO.cfc:L100]       its <cfquery> opens
-//     [model/dao/OptionDAO.cfc:L101-L103]  the TWO projected columns
-//     [model/dao/OptionDAO.cfc:L105]       FROM SwOptionGroup - no join at all
-//     [model/dao/OptionDAO.cfc:L107]       the NOT IN filter, bound list="true"
-//     [model/dao/OptionDAO.cfc:L108-L109]  the SINGLE-column ORDER BY
-//     [model/dao/OptionDAO.cfc:L113]       the bare group-name label
-//
-//   The two statements are near-twins that differ in four load-bearing ways, and
-//   most of this file exists to keep those four differences from being smoothed
-//   away by a later editor who notices the resemblance:
-//
-//     1. POLARITY. One matches the group list with IN, the other with NOT IN.
-//     2. ORDER BY WIDTH. Two keys against one.
-//     3. PROJECTION SHAPE. A composed "<group> - <option>" label against a bare
-//        group name, from two different `arrayAppend` sites.
-//     4. THE EMPTY-LIST OUTCOME. Because of difference 1, the same unvalidated
-//        empty argument resolves to OPPOSITE results across the two methods.
-//
-// ---------------------------------------------------------------------------
-// THIS COVERAGE IS 100% NET-NEW. IT IS NOT PARITY AND MUST NEVER BE
-// PRESENTED AS PARITY.
-// ---------------------------------------------------------------------------
-//   Verified first-hand rather than assumed: `meta/tests/unit/dao/` contains
-//   exactly two files, [meta/tests/unit/dao/AccountDAOTest.cfc] and
-//   [meta/tests/unit/dao/PaymentDAOTest.cfc], NEITHER of which is in scope. A
-//   search of the whole legacy suite for `OptionDAO`, `getUnusedProductOptions`
-//   and `getUnusedProductOptionGroups` returns nothing at all. No case below has
-//   a legacy antecedent, and none is dressed up as one.
-//
-//   For orientation on what parity would have looked like: the only legacy
-//   suites extended anywhere in this port are [meta/tests/unit/entity/BrandTest.cfc]
-//   and [meta/tests/unit/entity/ProductTest.cfc], both owned by
-//   tests/unit/domain/entities/, and [meta/tests/functional/admin/entity/ProductTest.cfc]
-//   is an empty stub contributing zero coverage. The `issue_<ticket#>` regression
-//   convention taken from [meta/tests/unit/IssuesTest.cfc] appears nowhere below,
-//   because no ticket governs either of these statements.
-//
-//   WHAT WAS DELIBERATELY NOT CARRIED OVER. The legacy DAO suites are
-//   integration-style at every level: [meta/tests/unit/SlatwallUnitTestBase.cfc]
-//   builds the whole FW/1 application with
-//   `createObject("component", "Slatwall.Application")`, calls `bootstrap()`
-//   before EVERY test, elevates the current account to superuser, and leaves its
-//   teardown commented out; each DAO test then pulls its subject out of the
-//   ambient request scope by string name. That harness is not ported in any form -
-//   no base class, no per-test bootstrap, no privilege elevation, no lookup by
-//   string, no helper component. The ASSERTIONS are what carries across; the
-//   harness is replaced by an explicit constructor argument.
-//
-// WHY THIS SITS UNDER tests/integration/repositories/ AND NEEDS NO DATABASE
-//   The tier names the layer under test, not the presence of a server. The
-//   adapter takes its executor as a CONSTRUCTOR PARAMETER, so substituting a
-//   recording double for it makes the emitted text and the bound array directly
-//   observable with nothing running: no server, no container, no schema, no seed,
-//   no fixture data and no environment. Every case here passes on a bare checkout
-//   with no `.env` file and no variable set.
-//
-//   `liveDatabaseTestsEnabled` from tests/setup.ts is therefore NOT consulted and
-//   is not imported. There is no live path here to gate, so gating would only
-//   create a way for this suite to stop running. Whether `TEST_LIVE_DATABASE` is
-//   set, unset or set to any admissible value, this file runs and produces
-//   identical results.
-//
-// NO USER RULES WERE PROVIDED
-//   The project rules document says exactly that, and it was read in full and
-//   confirmed exhausted. No rule has been invented to fill the gap, and the
-//   absence is not licence to lower the bar: the enterprise substitute standard
-//   applies at full strength. What bites hardest in a suite like this one is
-//   proving that values are BOUND rather than interpolated, keeping the double
-//   fully typed with no escape hatch, and annotating each judgment call where it
-//   was made. Licence continuity lives in slatwall-ts/NOTICE-GPL.md; no licence
-//   header is reproduced here and none of the legacy `.cfc` header is copied.
-// ---------------------------------------------------------------------------
+// `liveDatabaseTestsEnabled` from tests/setup.ts is therefore not consulted and is not imported.
 
 import { describe, expect, it } from 'vitest';
 
@@ -118,73 +20,57 @@ import type {
 import { MAX_PLACEHOLDER_COUNT } from '../../../src/repositories/mysql/connection.js';
 import { MysqlOptionRepository } from '../../../src/repositories/mysql/mysqlOptionRepository.js';
 
-// --- The recording double ----------------------------------------------------
-
-/** One statement the adapter sent, captured with the parameters it bound to it. */
+/**
+ * One statement the adapter sent, captured with the parameters it bound to it.
+ */
 interface RecordedStatement {
-  /** The statement text, exactly as the adapter produced it. */
+  /**
+   * The statement text, exactly as the adapter produced it.
+   */
   readonly sql: string;
 
-  /** The bound parameters, in the positional order they were supplied. */
+  /**
+   * The bound parameters, in the positional order they were supplied.
+   */
   readonly params: readonly unknown[];
   /**
    * Whether this statement was issued inside `transaction`.
    *
    * Captured per statement so a suite can PROVE atomicity instead of assuming it.
-   * A multi-statement write that must not half-apply is asserted by requiring
-   * every one of its statements to carry `true` - a statement that escaped the
-   * transaction (by reaching past the `tx` executor to the outer one) records
-   * `false` and fails the assertion at the point the mistake is made.
    */
   readonly inTransaction: boolean;
 }
 
-// JUDGMENT CALL: the double is HAND-WRITTEN AND INLINE rather than produced by a
-// mocking utility or shared from a helper module. Three reasons, all of which
-// outrank the duplication it costs. The subject's collaborator is a three-method
-// interface, so implementing it outright is both shorter and stricter than
-// configuring a mock - `implements PreparedStatementExecutor` makes the compiler
-// check the shape on every build, which no runtime mock can do. A mocking library
-// is not in the fixed dependency set and adding one would breach exact pinning.
-// And this project keeps one exported unit per file with no barrels, so a shared
-// test helper module would be an exported unit that is not the subject of any
-// suite; each repository suite therefore carries its own double and the
-// duplication is accepted deliberately.
+// JUDGMENT CALL: the double is HAND-WRITTEN and INLINE rather than produced by a mocking utility
+// or shared from a helper module. Three reasons, all of which outrank the duplication it costs.
 //
-// JUDGMENT CALL: it records rather than simulates. It is not a database and does
-// not attempt to be one - it never parses the statement, never evaluates a
-// predicate, and returns whatever canned rows it was constructed with. Every
-// expectation about WHICH ROWS MySQL would return is therefore expressed by
-// CHOOSING the canned row set, and the assertion is about what the adapter emits
-// and how it maps what comes back. Where that distinction matters it is called
-// out at the case itself.
+// JUDGMENT CALL: it records rather than simulates. It is not a database and does not attempt to be
+// one - it never parses the statement, never evaluates a predicate, and returns whatever canned
+// rows it was constructed with.
 /**
  * A `PreparedStatementExecutor` that captures what it is asked to run.
  *
- * Satisfies the narrow executor contract the adapter is constructed with, so it
- * substitutes for the pool-backed executor without the adapter knowing. Nothing
- * here opens a connection, resolves configuration, or touches the process
- * environment.
+ * Satisfies the narrow executor contract the adapter is constructed with, so it substitutes for
+ * the pool-backed executor without the adapter knowing.
  */
 class RecordingExecutor implements PreparedStatementExecutor {
-  /** Every result-set statement, in call order. */
+  /**
+   * Every result-set statement, in call order.
+   */
   readonly calls: RecordedStatement[] = [];
 
   /**
    * Every data-modifying statement, in call order.
-   *
-   * Expected to stay EMPTY forever. Both ported functions are `<cfquery>` reads,
-   * so a recorded mutation would mean the adapter had grown a write path that the
-   * legacy component does not have.
    */
   readonly mutationCalls: RecordedStatement[] = [];
 
-  /** What `execute` hands back, standing in for the server's result set. */
+  /**
+   * What `execute` hands back, standing in for the server's result set.
+   */
   private readonly cannedRows: readonly SqlRow[];
 
   /**
-   * @param cannedRows the rows every `execute` call resolves with. Pass `[]` to
-   *   stand in for a statement that matched nothing.
+   * @param cannedRows the rows every `execute` call resolves with.
    */
   constructor(cannedRows: readonly SqlRow[]) {
     this.cannedRows = cannedRows;
@@ -192,10 +78,6 @@ class RecordingExecutor implements PreparedStatementExecutor {
 
   /**
    * Record the statement and answer with the canned rows.
-   *
-   * The parameter array is COPIED on the way in. The adapter builds it with a
-   * spread and hands it straight over, and capturing the reference instead would
-   * let a later mutation rewrite history that has already been asserted on.
    */
   execute(sql: string, params: readonly unknown[] = []): Promise<readonly SqlRow[]> {
     this.calls.push({ sql, params: [...params], inTransaction: this.transactionDepth > 0 });
@@ -206,10 +88,8 @@ class RecordingExecutor implements PreparedStatementExecutor {
   /**
    * Record the attempt and then fail loudly.
    *
-   * Refusing rather than returning a benign result is the point: a silent
-   * `affectedRows: 0` would let a write path through unnoticed, whereas this turns
-   * one into a failing test at the moment it appears. The body always throws, so
-   * its inferred return type is `never` and no `async` keyword is needed.
+   * Refusing rather than returning a benign result is the point: a silent `affectedRows: 0` would
+   * let a write path through unnoticed.
    */
   executeMutation(sql: string, params: readonly unknown[] = []): Promise<SqlMutationResult> {
     this.mutationCalls.push({
@@ -225,24 +105,16 @@ class RecordingExecutor implements PreparedStatementExecutor {
   }
 
   /**
-   * How many times `transaction` was entered. Expected to stay ZERO forever, and named
-   * to match the recorder in the five sibling repository suites.
+   * How many times `transaction` was entered. Expected to stay ZERO forever, and named to match
+   * the recorder in the five sibling repository suites.
    *
-   * A write that must be atomic opens EXACTLY ONE unit of work, so a non-zero value in
-   * those suites is the atomicity assertion. Here it is a CANARY instead: both ported
-   * `OptionDAO` functions are `<cfquery>` reads, so any value above zero means a write
-   * path has grown on an adapter that has none.
+   * A write that must be atomic opens EXACTLY one unit of work, so a non-zero value in those
+   * suites is the atomicity assertion.
    */
   transactionCount = 0;
 
   /**
    * Nesting depth, read by the `inTransaction` flag on every recorded statement.
-   *
-   * ★ IT IS PINNED AT ZERO BY CONSTRUCTION, not by accident: `transaction` below
-   * refuses rather than opening a unit, so the depth is never incremented and every
-   * statement this recorder captures reports `inTransaction: false`. That is the
-   * correct answer for a read-only adapter, and it is worth stating rather than
-   * leaving a reader to wonder whether the flag is simply unwired.
    */
   private transactionDepth = 0;
 
@@ -254,24 +126,9 @@ class RecordingExecutor implements PreparedStatementExecutor {
   /**
    * Refuse a transaction, for the same reason `executeMutation` refuses.
    *
-   * Both ported `OptionDAO` functions are `<cfquery>` reads. A transaction is only ever
-   * opened around a write, so one appearing here would mean a write path had grown.
-   * Refusing turns that into a failing test at the moment it appears rather than a
-   * silently accepted no-op.
+   * The alternative was a working no-op, and it is worth saying why it lost.
    *
-   * ★ THE ALTERNATIVE WAS A WORKING NO-OP, and it is worth saying why it lost. A double
-   * that ran the work inline - `transactionCount += 1`, `await work(this)` - is what the
-   * five sibling suites use, and it is right there because those adapters DO write: the
-   * double has to let the statements through so their sequence can be asserted. This
-   * adapter writes nothing, so an inline implementation would accept a call that should
-   * never happen and record it as ordinary. Both counters above are still incremented
-   * before the refusal, so a case that wants to see the attempt rather than the throw
-   * can read either name.
-   *
-   * The refusal is NOT a divergence from the shipped executor. `createConnectionExecutor`
-   * in `src/repositories/mysql/connection.ts` joins a nested call and opens a real unit
-   * for an outermost one; this double refuses BOTH, because the claim being pinned is
-   * about this adapter having no write path at all, not about transaction semantics.
+   * The refusal is not a divergence from the shipped executor.
    */
   transaction<T>(_work: (transactional: PreparedStatementExecutor) => Promise<T>): Promise<T> {
     this.transactionCount += 1;
@@ -284,15 +141,6 @@ class RecordingExecutor implements PreparedStatementExecutor {
     );
   }
 }
-
-// --- Reading the recording back ----------------------------------------------
-
-// `noUncheckedIndexedAccess` is on, so `calls[0]` has type `RecordedStatement |
-// undefined`. It is narrowed through this helper rather than with a postfix `!` or
-// a type assertion, both of which would silence exactly the check that keeps an
-// absent element from being read as a present one. The length test doubles as a
-// real assertion: it proves the call under inspection was the ONLY statement the
-// method issued.
 /**
  * The single statement a method issued, or a failure describing what it did instead.
  *
@@ -324,10 +172,8 @@ function onlyStatement(calls: readonly RecordedStatement[]): RecordedStatement {
 /**
  * One projected select option, narrowed without an escape hatch.
  *
- * `noUncheckedIndexedAccess` types an indexed read as possibly absent, and that is
- * exactly the check a postfix `!` would silence. Failing with a description instead
- * keeps a short result set from being reported as a wrong VALUE when it is really a
- * missing ELEMENT.
+ * `noUncheckedIndexedAccess` types an indexed read as possibly absent, and that is exactly the
+ * check a postfix `!` would silence.
  *
  * @param options the projection a method returned.
  * @param index the position to read.
@@ -350,46 +196,32 @@ function selectOptionAt(options: readonly SelectOption[], index: number): Select
   return option;
 }
 
-/** How many positional placeholders a statement carries. */
+/**
+ * How many positional placeholders a statement carries.
+ */
 function placeholderCount(sql: string): number {
   return sql.split('?').length - 1;
 }
 
-/** How many non-overlapping times a fragment appears in a statement. */
+/**
+ * How many non-overlapping times a fragment appears in a statement.
+ */
 function occurrences(sql: string, fragment: string): number {
   return sql.split(fragment).length - 1;
 }
 
-// --- The expected statements --------------------------------------------------
+// JUDGMENT CALL: each statement is split into a HEAD, a placeholder body and a TAIL, and the
+// pieces are plain literals concatenated with `+`. No expected statement contains an interpolation
+// of any kind.
 //
-// Transcribed from the two `<cfquery>` bodies rather than imported from the module
-// under test, and that is the whole point of writing them out. The adapter's
-// statement builders are module-private, and a suite that rebuilt its expectations
-// FROM the subject would pass no matter what the subject emitted. These literals
-// are the independent copy the subject is measured against.
-//
-// JUDGMENT CALL: each statement is split into a HEAD, a placeholder body and a
-// TAIL, and the pieces are plain literals concatenated with `+`. No expected
-// statement contains an interpolation of any kind. That is deliberate on two
-// counts. It mirrors the only thing that legitimately varies between calls - the
-// number of placeholders in the list predicate - while leaving every other
-// character fixed. And it keeps a value-shaped interpolation structurally
-// impossible in the expectation itself, so the proof that values are bound rather
-// than embedded cannot be undermined by the way the proof is written.
-//
-// JUDGMENT CALL: indentation is the two-space form the adapter emits, not the tabs
-// the legacy `<cfquery>` used, and no expected line ends in whitespace. The legacy
-// carries trailing spaces at [model/dao/OptionDAO.cfc:L80] and
-// [model/dao/OptionDAO.cfc:L108]; whitespace is inert to SQL, the CLAUSES are what
-// this suite preserves verbatim, and a trailing space inside a string literal is
-// invisible to review while still failing this repository's whitespace gate.
+// JUDGMENT CALL: indentation is the two-space form the adapter emits, not the tabs the legacy
+// `<cfquery>` used, and no expected line ends in whitespace.
 
 /**
  * Everything before the `IN` list of the unused-options statement.
  *
- * Ends at the opening parenthesis with no trailing newline, so a placeholder body
- * follows immediately - exactly as `<cfqueryparam ... list="true">` sat inside the
- * parentheses at [model/dao/OptionDAO.cfc:L68].
+ * Ends at the opening parenthesis with no trailing newline, so a placeholder body follows
+ * immediately.
  */
 const EXPECTED_OPTIONS_HEAD = [
   'SELECT',
@@ -407,9 +239,9 @@ const EXPECTED_OPTIONS_HEAD = [
 /**
  * Everything after the `IN` list of the unused-options statement.
  *
- * Transcribed from [model/dao/OptionDAO.cfc:L68-L84]: the closing parenthesis, the
- * `AND`, the whole `NOT EXISTS` exclusion including its redundant inner `DISTINCT`
- * and its single `productID` placeholder, then the two-column `ORDER BY`.
+ * Transcribed from [model/dao/OptionDAO.cfc:L68-L84]: the closing parenthesis, the `AND`, the
+ * whole `NOT EXISTS` exclusion including its redundant inner `DISTINCT` and its single `productID`
+ * placeholder.
  */
 const EXPECTED_OPTIONS_TAIL = [
   ')',
@@ -431,7 +263,9 @@ const EXPECTED_OPTIONS_TAIL = [
   '  SwOption.optionName',
 ].join('\n');
 
-/** Everything before the `NOT IN` list of the unused-option-groups statement. */
+/**
+ * Everything before the `NOT IN` list of the unused-option-groups statement.
+ */
 const EXPECTED_GROUPS_HEAD = [
   'SELECT',
   '  SwOptionGroup.optionGroupID,',
@@ -444,26 +278,28 @@ const EXPECTED_GROUPS_HEAD = [
 
 /**
  * Everything after the `NOT IN` list of the unused-option-groups statement.
- *
- * Transcribed from [model/dao/OptionDAO.cfc:L107-L109]. One ordering key, where
- * the sibling statement has two.
  */
 const EXPECTED_GROUPS_TAIL = [')', 'ORDER BY', '  SwOptionGroup.optionGroupName'].join('\n');
 
-/** The placeholder body `sqlPlaceholderList` renders for a one-element list. */
+/**
+ * The placeholder body `sqlPlaceholderList` renders for a one-element list.
+ */
 const ONE_PLACEHOLDER = '?';
 
-/** The placeholder body for a two-element list: comma AND space, as rendered. */
+/**
+ * The placeholder body for a two-element list: comma and space, as rendered.
+ */
 const TWO_PLACEHOLDERS = '?, ?';
 
-/** The placeholder body for a three-element list. */
+/**
+ * The placeholder body for a three-element list.
+ */
 const THREE_PLACEHOLDERS = '?, ?, ?';
 
 /**
  * The whole unused-options statement for a given list width.
  *
- * @param placeholderBody a rendered placeholder body such as `?, ?`. It is a
- *   placeholder body and never a value.
+ * @param placeholderBody a rendered placeholder body such as `?, ?`.
  * @returns the statement the adapter is expected to emit.
  */
 function expectedUnusedProductOptionsStatement(placeholderBody: string): string {
@@ -480,88 +316,96 @@ function expectedUnusedProductOptionGroupsStatement(placeholderBody: string): st
   return EXPECTED_GROUPS_HEAD + placeholderBody + EXPECTED_GROUPS_TAIL;
 }
 
-// --- Identifiers and canned rows ---------------------------------------------
-//
-// Identifiers are 32 lowercase hex characters, which is what the legacy generator
-// produces - `replace(lcase(createUUID()), '-', '', 'all')` - and what
-// `length="32"` on the key columns admits. Using realistic widths keeps the
-// binding assertions honest: a short label such as `'g1'` could hide a truncation
-// that a full-width value would expose.
+// Identifiers are 32 lowercase hex characters, which is what the legacy generator produces -
+// `replace(lcase(createUUID()), '-', '', 'all')` - and what `length="32"` on the key columns
+// admits.
 
-/** An option group identifier standing in for a colour group. */
+/**
+ * An option group identifier standing in for a colour group.
+ */
 const GROUP_ID_COLOUR = '7c2f9a1e4b8d40f3a615c07be92d84f1';
 
-/** A second option group identifier, distinct from the first. */
+/**
+ * A second option group identifier, distinct from the first.
+ */
 const GROUP_ID_SIZE = 'e3b0a94d15c7482fb8d6019a7f24c5e8';
 
-/** A third option group identifier, distinct from the first two. */
+/**
+ * A third option group identifier, distinct from the first two.
+ */
 const GROUP_ID_MATERIAL = '1a9d63f8c05b47e2ba7418d3e6f09c57';
 
-/** The product whose SKUs are checked for existing option use. */
+/**
+ * The product whose SKUs are checked for existing option use.
+ */
 const PRODUCT_ID = '5d81fe3ac72b49f0a9146e58b03cd27f';
 
-/** An option identifier belonging to the colour group. */
+/**
+ * An option identifier belonging to the colour group.
+ */
 const OPTION_ID_RED = 'b47e05d9a1c8426fb03e97d5c1a68f24';
 
-/** A second option identifier, belonging to the size group. */
+/**
+ * A second option identifier, belonging to the size group.
+ */
 const OPTION_ID_LARGE = '9f13c6b804ea475d8b27e0a3fd561c98';
 
-// The projected text values are named so that a label expectation can be composed
-// from the same pieces the canned row carries. Asserting
-// `COLOUR_GROUP_NAME + LABEL_SEPARATOR + RED_OPTION_NAME` says what the legacy
-// interpolation at [model/dao/OptionDAO.cfc:L88] says; asserting an opaque
-// 'Colour - Red' would only say that some string came back.
+// The projected text values are named so that a label expectation can be composed from the same
+// pieces the canned row carries.
 
-/** The `optionGroupName` cell of the first canned unused-options row. */
+/**
+ * The `optionGroupName` cell of the first canned unused-options row.
+ */
 const COLOUR_GROUP_NAME = 'Colour';
 
-/** The `optionName` cell of the first canned unused-options row. */
+/**
+ * The `optionName` cell of the first canned unused-options row.
+ */
 const RED_OPTION_NAME = 'Red';
 
-/** The `optionGroupName` cell of the second canned unused-options row. */
+/**
+ * The `optionGroupName` cell of the second canned unused-options row.
+ */
 const SIZE_GROUP_NAME = 'Size';
 
-/** The `optionName` cell of the second canned unused-options row. */
+/**
+ * The `optionName` cell of the second canned unused-options row.
+ */
 const LARGE_OPTION_NAME = 'Large';
 
 /**
  * The three characters the legacy label interpolation places between the two names.
- *
- * SPACE, HYPHEN-MINUS, SPACE - U+0020 U+002D U+0020. Not an en dash, not an em
- * dash, not a colon, and not a hyphen without its surrounding spaces.
  */
 const LABEL_SEPARATOR = ' - ';
 
 /**
  * Two rows shaped as the unused-options statement projects them.
  *
- * Ordered as the statement's two-column `ORDER BY` would deliver them - group name
- * first, then option name - so that the projection assertions read in the same
- * order a real result set would arrive in.
+ * Ordered as the statement's two-column `ORDER BY` would deliver them - group name first, then
+ * option name.
  */
 const UNUSED_OPTION_ROWS: readonly SqlRow[] = [
   { optionGroupName: COLOUR_GROUP_NAME, optionName: RED_OPTION_NAME, optionID: OPTION_ID_RED },
   { optionGroupName: SIZE_GROUP_NAME, optionName: LARGE_OPTION_NAME, optionID: OPTION_ID_LARGE },
 ];
 
-/** Two rows shaped as the unused-option-groups statement projects them. */
+/**
+ * Two rows shaped as the unused-option-groups statement projects them.
+ */
 const UNUSED_OPTION_GROUP_ROWS: readonly SqlRow[] = [
   { optionGroupName: COLOUR_GROUP_NAME, optionGroupID: GROUP_ID_COLOUR },
   { optionGroupName: SIZE_GROUP_NAME, optionGroupID: GROUP_ID_SIZE },
 ];
 
-/** A statement that matched nothing, which is a legitimate outcome for both methods. */
+/**
+ * A statement that matched nothing, which is a legitimate outcome for both methods.
+ */
 const NO_ROWS: readonly SqlRow[] = [];
 
 describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', () => {
   describe('composition: one injected executor, no container and no ambient scope', () => {
     it('is built by hand from an explicit constructor argument', () => {
-      // The replacement for DI/1's runtime convention scan. There is no container
-      // to configure, no application to bootstrap, no scope to elevate and no
-      // lookup by string name - the collaborator arrives as an argument the
-      // compiler checks. That is what makes every case in this file runnable with
-      // no server, and it is also why the legacy harness described in the header
-      // has no counterpart here.
+      // The replacement for DI/1's runtime convention scan.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -570,8 +414,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('satisfies the OptionRepository port', () => {
-      // A compile-time check as much as a runtime one: the annotation fails the
-      // typecheck gate if either method's name, arity or return type drifts from
+      // A compile-time check as much as a runtime one: the annotation fails the typecheck gate if
+      // either method's name, arity or return type drifts from
       // src/domain/ports/optionRepository.ts.
       const port: OptionRepository = new MysqlOptionRepository(new RecordingExecutor(NO_ROWS));
 
@@ -580,10 +424,6 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('carries the legacy method names verbatim, and exactly two of them', () => {
-      // [model/dao/OptionDAO.cfc:L51] and [model/dao/OptionDAO.cfc:L94] declare two
-      // functions and the component declares nothing else, so the adapter exposes
-      // two methods and no third. Method-level equivalence at this boundary is the
-      // acceptance contract, so the CFML camelCase spellings are kept as they are.
       const methodNames = Object.getOwnPropertyNames(MysqlOptionRepository.prototype)
         .filter((name) => name !== 'constructor')
         .sort();
@@ -592,10 +432,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('holds exactly one collaborator and no service locator', () => {
-      // The `getService("optionService")` site at [model/entity/Product.cfc:L341] is
-      // the locator that constructor injection replaces. Nothing in the hydration
-      // path may reach for a collaborator by name at run time: the instance's only
-      // own property is the executor it was handed.
+      // The `getService("optionService")` site at [model/entity/Product.cfc:L341] is the locator
+      // that constructor injection replaces.
       const repository = new MysqlOptionRepository(new RecordingExecutor(NO_ROWS));
 
       expect(Reflect.ownKeys(repository)).toHaveLength(1);
@@ -604,11 +442,7 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('issues nothing until a method is called', () => {
-      // Constructing the adapter must not reach the data store. Importing the module
-      // must not either, and the proof of that is this whole file: it imports the
-      // adapter at the top, runs with no `.env` file and no variable set, and never
-      // reaches a server - which it could not do if module evaluation or
-      // construction opened a connection.
+      // Constructing the adapter must not reach the data store.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -618,11 +452,6 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('reaches the data store only through prepared-statement execution', () => {
-      // Parameterization is STRUCTURAL rather than a convention a reviewer polices:
-      // the executor contract in src/repositories/mysql/connection.ts declares no
-      // `query` method at all, so there is no unparameterized path to reach even by
-      // mistake. That is the guarantee `<cfqueryparam>` gave the legacy `<cfquery>`
-      // bodies, preserved exactly.
       const executor = new RecordingExecutor(NO_ROWS);
 
       expect(typeof executor.execute).toBe('function');
@@ -678,8 +507,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(sql.toUpperCase()).not.toContain('CROSS JOIN');
     });
 
-    // CFML parity [model/dao/OptionDAO.cfc:L70-L81]: the exclusion is a NOT EXISTS
-    // CORRELATED SUBQUERY over `SwSkuOption a INNER JOIN SwSku b`, correlated on
+    // CFML parity [model/dao/OptionDAO.cfc:L70-L81]: the exclusion is a not exists correlated
+    // subquery over `SwSkuOption a INNER JOIN SwSku b`, correlated on
     // `a.optionID = SwOption.optionID` and filtered by a bound productID.
     it('excludes with a correlated NOT EXISTS, never a rewritten anti-join', async () => {
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
@@ -698,20 +527,18 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(occurrences(sql, 'NOT EXISTS(')).toBe(1);
 
       // The three rewrites that would change the emitted artefact under review.
-      // `LEFT JOIN ... IS NULL` and `NOT IN` are the usual anti-join substitutes,
-      // and a bare `EXISTS` would invert the whole predicate.
+      // `LEFT JOIN... IS NULL` and `NOT IN` are the usual anti-join substitutes, and a bare
+      // `EXISTS` would invert the whole predicate.
       expect(sql.toUpperCase()).not.toContain('IS NULL');
       expect(sql.toUpperCase()).not.toContain('NOT IN');
       expect(occurrences(sql, 'EXISTS')).toBe(1);
     });
 
-    // CFML parity [model/dao/OptionDAO.cfc:L71]: the SELECT DISTINCT inside NOT EXISTS is
+    // CFML parity [model/dao/OptionDAO.cfc:L71]: the SELECT DISTINCT inside not EXISTS is
     // semantically redundant and is reproduced verbatim rather than optimised away.
     it('keeps the redundant inner SELECT DISTINCT [model/dao/OptionDAO.cfc:L71]', async () => {
-      // EXISTS asks only whether a row exists, so de-duplicating the subquery's rows
-      // cannot change the answer. It is carried across anyway: a faithful port
-      // reproduces the source's redundancy rather than tidying it, and tidying it
-      // here would edit the artefact this suite exists to pin.
+      // EXISTS asks only whether a row exists, so de-duplicating the subquery's rows cannot change
+      // the answer.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -723,9 +550,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(occurrences(sql, 'SELECT DISTINCT')).toBe(1);
     });
 
-    // CFML parity [model/dao/OptionDAO.cfc:L82-L84]: TWO ordering keys, option group
-    // name first and option name second, neither carrying a direction keyword so both
-    // sort ascending. The ordering is deterministic and load-bearing.
+    // CFML parity [model/dao/OptionDAO.cfc:L82-L84]: two ordering keys, option group name first
+    // and option name second, neither carrying a direction keyword so both sort ascending. The
+    // ordering is deterministic and load-bearing.
     it('closes on the two-key ORDER BY, in that order', async () => {
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
@@ -735,8 +562,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       const { sql } = onlyStatement(executor.calls);
       const orderByClause = sql.slice(sql.lastIndexOf('ORDER BY'));
 
-      // Slicing from the clause and comparing whole removes any doubt about key
-      // order, key count and the absence of a third key or a direction keyword.
+      // Slicing from the clause and comparing whole removes any doubt about key order, key count
+      // and the absence of a third key or a direction keyword.
       expect(orderByClause).toBe(
         ['ORDER BY', '  SwOptionGroup.optionGroupName,', '  SwOption.optionName'].join('\n'),
       );
@@ -745,11 +572,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('emits nothing dialect-dependent', async () => {
-      // [config/configORM.cfm] selected a Hibernate dialect from the database product
-      // name, and two SQL sites elsewhere in the slice genuinely branch on it. Neither
-      // OptionDAO query does: there is no row-limiting clause, no vendor function and
-      // no concatenation to express differently, so this statement is the same text on
-      // every engine and no dialect assertion belongs here beyond proving that.
+      // `config/configORM.cfm` selected a Hibernate dialect from the database product name, and
+      // two SQL sites elsewhere in the slice genuinely branch on it.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -767,10 +591,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
   });
 
   describe('getUnusedProductOptions - parameter binding [model/dao/OptionDAO.cfc:L68, L78]', () => {
-    // CFML parity [model/dao/OptionDAO.cfc:L68]: `list="true"` on a <cfqueryparam> was
-    // CFML's OWN per-element expansion - the engine emitted one bound parameter per
-    // element. A prepared statement does not expand `IN (?)` from a list, so one
-    // placeholder is rendered per element to reproduce that mechanism exactly.
+    // CFML parity [model/dao/OptionDAO.cfc:L68]: `list="true"` on a <cfqueryparam> was CFML's own
+    // per-element expansion - the engine emitted one bound parameter per element.
     it('renders one placeholder per list element, for one, two and three elements', async () => {
       const cases = [
         { elements: [GROUP_ID_COLOUR], body: ONE_PLACEHOLDER },
@@ -794,15 +616,15 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       }
     });
 
-    // CFML parity [model/dao/OptionDAO.cfc:L78]: this bind carries NO `list` attribute,
-    // which is the asymmetry inside this one function - the group list expands per
-    // element and productID does not.
+    // CFML parity [model/dao/OptionDAO.cfc:L78]: this bind carries no `list` attribute, which is
+    // the asymmetry inside this one function - the group list expands per element and productID
+    // does not.
     it('binds productID as exactly one parameter, never as a list', async () => {
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
-      // A productID that would itself split into three elements if it were ever
-      // treated as a list. It must arrive as ONE opaque value.
+      // A productID that would itself split into three elements if it were ever treated as a list.
+      // It must arrive as one opaque value.
       const commaBearingProductID = [PRODUCT_ID, PRODUCT_ID, PRODUCT_ID].join(',');
 
       await repository.getUnusedProductOptions(commaBearingProductID, GROUP_ID_COLOUR);
@@ -814,9 +636,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(params).toEqual([GROUP_ID_COLOUR, commaBearingProductID]);
     });
 
-    // CFML parity [model/dao/OptionDAO.cfc:L68, L78]: the group list is bound in the
-    // outer WHERE and productID inside the NOT EXISTS, so the list comes FIRST and
-    // productID LAST. Positional binding makes that order load-bearing.
+    // CFML parity [model/dao/OptionDAO.cfc:L68, L78]: the group list is bound in the outer WHERE
+    // and productID inside the not EXISTS, so the list comes FIRST and productID LAST. Positional
+    // binding makes that order load-bearing.
     it('binds in clause order: the list elements, then productID', async () => {
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
@@ -830,16 +652,16 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
 
       expect(params).toEqual([GROUP_ID_COLOUR, GROUP_ID_SIZE, GROUP_ID_MATERIAL, PRODUCT_ID]);
 
-      // Independently of the array, the statement itself puts the list predicate
-      // ahead of the productID predicate, which is what makes that order correct.
+      // Independently of the array, the statement itself puts the list predicate ahead of the
+      // productID predicate, which is what makes that order correct.
       expect(sql.indexOf('SwOption.optionGroupID IN (')).toBeLessThan(
         sql.indexOf('b.productID = ?'),
       );
     });
 
     it('binds every caller value instead of embedding it in the statement', async () => {
-      // The obligation this whole tier exists for. Values are bound; the statement
-      // text carries placeholders and nothing the caller supplied.
+      // The obligation this whole tier exists for. Values are bound; the statement text carries
+      // placeholders and nothing the caller supplied.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -861,9 +683,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('binds only text, so no date or numeric conversion is in play', async () => {
-      // Both <cfqueryparam> binds declare cfsqltype="cf_sql_varchar", and neither
-      // statement has a date or money predicate. Nothing here needs a UTC policy
-      // because no instant is ever bound.
+      // Both <cfqueryparam> binds declare cfsqltype="cf_sql_varchar", and neither statement has a
+      // date or money predicate. Nothing here needs a UTC policy because no instant is ever bound.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -876,9 +697,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('drops empty elements the way CFML list semantics do', async () => {
-      // `listToArray(',,')` yields no elements and `listToArray('a,,b')` yields two,
-      // so a doubled delimiter is not an empty element - it is no element at all.
-      // That is the boundary conversion `list="true"` performed, reproduced.
+      // `listToArray(',,')` yields no elements and `listToArray('a,,b')` yields two, so a doubled
+      // delimiter is not an empty element - it is no element at all.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -896,8 +716,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
 
   describe('getUnusedProductOptions - the projection [model/dao/OptionDAO.cfc:L88]', () => {
     // CFML parity [model/dao/OptionDAO.cfc:L88]: the legacy loop appends
-    // `{name="#rs.optionGroupName# - #rs.optionName#", value=rs.optionID}` per row, so
-    // the label is the group name, the separator, then the option name - in that order.
+    // `{name="#rs.optionGroupName# - #rs.optionName#", value=rs.optionID}` per row, so the label
+    // is the group name, the separator, then the option name - in that order.
     it('composes the label as group name, separator, option name', async () => {
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
@@ -917,10 +737,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('separates the two names with SPACE, HYPHEN-MINUS, SPACE and nothing else', async () => {
-      // The separator is load-bearing: it is what a select list renders, so a
-      // substituted dash or a dropped space changes what a merchandiser sees. Asserted
-      // by code point rather than by eye, because the substitutes are hard to tell
-      // apart in a diff.
+      // The separator is load-bearing: it is what a select list renders, so a substituted dash or
+      // a dropped space changes what a merchandiser sees.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -945,12 +763,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('returns the two-member SelectOption projection, not a hydrated entity', async () => {
-      // The port publishes `SelectOption` - a display name and an identifier, both
-      // strings - and the evidence for that is the DAO itself: neither legacy function
-      // hydrates anything. There is no ORMExecuteQuery, no entityLoad and no hydration
-      // step in the whole 120-line component, only a <cfquery> and a two-key
-      // arrayAppend. So no Option or OptionGroup entity is constructed here, and no
-      // entity type is asserted against.
+      // The port publishes `SelectOption` - a display name and an identifier, both strings - and
+      // the evidence for that is the DAO itself: neither legacy function hydrates anything.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -968,17 +782,12 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('materializes no association and issues no follow-up query', async () => {
-      // The ORM-laziness replacement. There is no lazy collection to simulate, so the
-      // fetch shape is decided once at the statement: three flat scalar columns, and
-      // nothing is traversed afterwards.
+      // The ORM-laziness replacement. There is no lazy collection to simulate, so the fetch shape
+      // is decided once at the statement: three flat scalar columns, and nothing is traversed
+      // afterwards.
       //
-      // JUDGMENT CALL: the statement count is asserted as a CORRECTNESS property of the
-      // declared fetch shape, not as an efficiency claim. Exactly one statement is what
-      // "projects and returns" means here; a second statement would mean the target had
-      // started traversing a graph the legacy `<cfquery>` never traversed, and a third
-      // would mean it had invented an association this port does not expose. Per C7/B7
-      // this file asserts no performance property of any kind, and this expectation must
-      // not be read as one.
+      // JUDGMENT CALL: the statement count is asserted as a CORRECTNESS property of the declared
+      // fetch shape, not as an efficiency claim.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -991,9 +800,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
 
     it('reads its columns case-insensitively, as CFML query access does', async () => {
       // CFML parity [model/dao/OptionDAO.cfc:L88]: `rs.optionName`, `rs.OPTIONNAME` and
-      // `rs.optionname` are one and the same read in CFML, and a result-set LABEL
-      // follows the query text while the ORIGINAL name follows the table definition.
-      // Column and alias casing is therefore never assumed.
+      // `rs.optionname` are one and the same read in CFML, and a result-set LABEL follows the
+      // query text while the ORIGINAL name follows the table definition.
       const executor = new RecordingExecutor([
         {
           OPTIONGROUPNAME: COLOUR_GROUP_NAME,
@@ -1011,10 +819,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('renders a NULL name cell as the empty string, as CFML interpolation does', async () => {
-      // Both projected name columns are nullable - neither entity property declares
-      // notnull - so this path is live rather than theoretical. CFML interpolates a
-      // NULL query cell as the empty string, so the label degrades to
-      // "<group> - " rather than failing or reading "null".
+      // Both projected name columns are nullable - neither entity property declares notnull - so
+      // this path is live rather than theoretical.
       const executor = new RecordingExecutor([
         { optionGroupName: COLOUR_GROUP_NAME, optionName: null, optionID: OPTION_ID_RED },
       ]);
@@ -1027,10 +833,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('rejects a row the statement could not have produced', async () => {
-      // A missing COLUMN is a different fault from a NULL VALUE in one, and the two are
-      // kept apart on purpose: a NULL yields the empty string, while a column the
-      // statement never selected raises. Collapsing the second into the first would let
-      // a statement and its mapper drift apart while every label silently degraded.
+      // A missing COLUMN is a different fault from a NULL VALUE in one, and the two are kept apart
+      // on purpose: a NULL yields the empty string, while a column the statement never selected
+      // raises.
       const executor = new RecordingExecutor([{ optionGroupName: COLOUR_GROUP_NAME }]);
       const repository = new MysqlOptionRepository(executor);
 
@@ -1053,9 +858,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('projects two columns from a single table, with no join at all', async () => {
-      // [model/dao/OptionDAO.cfc:L101-L105]: two columns, `FROM SwOptionGroup`, and
-      // nothing else. The sibling statement joins; this one must not acquire a join
-      // because the two resemble each other.
+      // [model/dao/OptionDAO.cfc:L101-L105]: two columns, `FROM SwOptionGroup`, and nothing else.
+      // The sibling statement joins; this one must not acquire a join because the two resemble
+      // each other.
       const executor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -1072,9 +877,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(sql).not.toContain('SELECT *');
     });
 
-    // CFML parity [model/dao/OptionDAO.cfc:L107]: this list is matched with NOT IN - the
-    // OPPOSITE polarity to the sibling statement's IN - because an unused group is one
-    // the product does not already carry.
+    // CFML parity [model/dao/OptionDAO.cfc:L107]: this list is matched with not in - the OPPOSITE
+    // polarity to the sibling statement's in - because an unused group is one the product does not
+    // already carry.
     it('matches the list with NOT IN, never NOT EXISTS and never plain IN', async () => {
       const executor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
       const repository = new MysqlOptionRepository(executor);
@@ -1087,16 +892,15 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(sql.toUpperCase()).not.toContain('EXISTS');
       expect(sql.toUpperCase()).not.toContain('IS NULL');
 
-      // The only `IN` in the statement is the one inside `NOT IN`, so the polarity
-      // cannot have been flipped by dropping the negation.
+      // The only `IN` in the statement is the one inside `NOT IN`, so the polarity cannot have
+      // been flipped by dropping the negation.
       expect(occurrences(sql, ' IN (')).toBe(1);
       expect(occurrences(sql, 'NOT IN (')).toBe(1);
     });
 
-    // CFML parity [model/dao/OptionDAO.cfc:L108-L109]: ONE ordering key, with no
-    // direction keyword, where the sibling statement at
-    // [model/dao/OptionDAO.cfc:L82-L84] has TWO. The contrast is deliberate and neither
-    // side may be harmonised toward the other.
+    // CFML parity [model/dao/OptionDAO.cfc:L108-L109]: one ordering key, with no direction
+    // keyword, where the sibling statement at [model/dao/OptionDAO.cfc:L82-L84] has two. The
+    // contrast is deliberate and neither side may be harmonised toward the other.
     it('closes on a single-key ORDER BY, unlike the sibling statement', async () => {
       const executor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
       const repository = new MysqlOptionRepository(executor);
@@ -1156,8 +960,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('binds the list and nothing else', async () => {
-      // The one-argument signature at [model/dao/OptionDAO.cfc:L95] means the group list
-      // is the statement's only bound input: no productID, no flag, no implicit filter.
+      // The one-argument signature at [model/dao/OptionDAO.cfc:L95] means the group list is the
+      // statement's only bound input: no productID, no flag, no implicit filter.
       const executor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -1201,8 +1005,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
 
   describe('getUnusedProductOptionGroups - the projection [model/dao/OptionDAO.cfc:L113]', () => {
     // CFML parity [model/dao/OptionDAO.cfc:L113]: the legacy loop appends
-    // `{name=rs.optionGroupName, value=rs.optionGroupID}` - the group name ALONE, with
-    // no separator and no composition.
+    // `{name=rs.optionGroupName, value=rs.optionGroupID}` - the group name ALONE, with no
+    // separator and no composition.
     it('projects the bare group name, with no separator', async () => {
       const executor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
       const repository = new MysqlOptionRepository(executor);
@@ -1239,16 +1043,15 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(typeof first.name).toBe('string');
       expect(typeof first.value).toBe('string');
 
-      // The option group's `options` collection is deliberately not fetched: a select
-      // list needs a label and an identifier, so that is the whole fetch shape.
+      // The option group's `options` collection is deliberately not fetched: a select list needs a
+      // label and an identifier, so that is the whole fetch shape.
       expect('options' in first).toBe(false);
       expect('getOptionGroupID' in first).toBe(false);
     });
 
     it('materializes no association and issues no follow-up query', async () => {
       // Same correctness framing as the sibling expectation on the options statement: one
-      // statement is what the declared fetch shape MEANS, and this is not an efficiency
-      // claim. This projection is even flatter - two scalar columns off a single table.
+      // statement is what the declared fetch shape MEANS, and this is not an efficiency claim.
       const executor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -1260,10 +1063,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
   });
 
-  // CFML parity [model/dao/OptionDAO.cfc:L88, L113]: TWO DIFFERENT arrayAppend sites
-  // produce TWO DIFFERENT label shapes from the same two-member structure. Neither may
-  // be substituted for the other, and the resemblance between the statements is exactly
-  // what makes accidental unification plausible.
+  // CFML parity [model/dao/OptionDAO.cfc:L88, L113]: two DIFFERENT arrayAppend sites produce two
+  // DIFFERENT label shapes from the same two-member structure.
   describe('the two projections are deliberately NOT unified', () => {
     it('composes a separated label for options and a bare label for option groups', async () => {
       const optionExecutor = new RecordingExecutor(UNUSED_OPTION_ROWS);
@@ -1283,16 +1084,16 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(optionLabel).toContain(LABEL_SEPARATOR);
       expect(groupLabel).not.toContain(LABEL_SEPARATOR);
 
-      // Both rows carry the same optionGroupName, so the labels share a prefix and
-      // diverge only in the composition - which is the difference being pinned.
+      // Both rows carry the same optionGroupName, so the labels share a prefix and diverge only in
+      // the composition - which is the difference being pinned.
       expect(optionLabel.startsWith(groupLabel)).toBe(true);
       expect(optionLabel).not.toBe(groupLabel);
     });
 
     it('keeps the member names name and value on both, per the legacy structures', async () => {
-      // Taken verbatim from the two append sites. They are NOT the `id`/`value` shape
-      // that the two `searchXByProductType` projections elsewhere in the slice use;
-      // each DAO's own source dictates its own shape.
+      // Taken verbatim from the two append sites. They are not the `id`/`value` shape that the two
+      // `searchXByProductType` projections elsewhere in the slice use; each DAO's own source
+      // dictates its own shape.
       const optionExecutor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const groupExecutor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
 
@@ -1311,27 +1112,19 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
   });
 
-  // LEGACY-DEFECT [model/dao/OptionDAO.cfc:L68, L107]: both list arguments are declared
-  // required but neither is length-checked, so an empty list makes IN ('') yield zero rows
-  // while NOT IN ('') yields all rows.
+  // LEGACY-DEFECT [model/dao/OptionDAO.cfc:L68, L107]: both list arguments are declared required
+  // but neither is length-checked, so an empty list makes in ('') yield zero rows while not in
+  // ('') yields all rows.
   // Preserved deliberately; do not fix without a product decision.
-  //
-  // JUDGMENT CALL: the recording double is a RECORDER, NOT A DATABASE - it never parses
-  // the statement and never evaluates a predicate. So which rows MySQL would return is
-  // expressed by CHOOSING the canned row set: the IN ('') case is driven with an empty
-  // set and the NOT IN ('') case with the full set, those being the outcomes recorded as
-  // verified against the engine on the adapter's own empty-list note. What these cases
-  // assert is that the adapter EMITS the predicate that produces each outcome and then
-  // propagates that outcome faithfully - never that the double simulated the matching.
   describe('the empty-list asymmetry [model/dao/OptionDAO.cfc:L68, L107]', () => {
-    // LEGACY-DEFECT [model/dao/OptionDAO.cfc:L68, L107]: both list arguments are declared
-    // required but neither is length-checked, so an empty list makes IN ('') yield zero rows
-    // while NOT IN ('') yields all rows.
+    // LEGACY-DEFECT [model/dao/OptionDAO.cfc:L68, L107]: both list arguments are declared required
+    // but neither is length-checked, so an empty list makes in ('') yield zero rows while not in
+    // ('') yields all rows.
     // Preserved deliberately; do not fix without a product decision.
     it('binds a single empty-string element for getUnusedProductOptions', async () => {
-      // The faithful mechanical equivalent of the `IN ('')` CFML emitted. A
-      // zero-placeholder `IN ()` would not parse at all, so one placeholder carrying one
-      // empty string is what reproduces the legacy predicate.
+      // The faithful mechanical equivalent of the `IN ('')` CFML emitted. A zero-placeholder
+      // `IN ()` would not parse at all, so one placeholder carrying one empty string is what
+      // reproduces the legacy predicate.
       const executor = new RecordingExecutor(NO_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -1345,9 +1138,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(params).toHaveLength(2);
     });
 
-    // LEGACY-DEFECT [model/dao/OptionDAO.cfc:L68, L107]: both list arguments are declared
-    // required but neither is length-checked, so an empty list makes IN ('') yield zero rows
-    // while NOT IN ('') yields all rows.
+    // LEGACY-DEFECT [model/dao/OptionDAO.cfc:L68, L107]: both list arguments are declared required
+    // but neither is length-checked, so an empty list makes in ('') yield zero rows while not in
+    // ('') yields all rows.
     // Preserved deliberately; do not fix without a product decision.
     it('binds a single empty-string element for getUnusedProductOptionGroups', async () => {
       const executor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
@@ -1364,10 +1157,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('still issues the statement: neither method short-circuits an empty list', async () => {
-      // The legacy performs NO length check in either function, so the target performs
-      // none either. Short-circuiting to an early empty result belongs only where the
-      // legacy actually guards - and this DAO does not. Doing it here would silently
-      // convert the NOT IN method's "all rows" outcome into "no rows".
+      // The legacy performs no length check in either function, so the target performs none
+      // either. Short-circuiting to an early empty result belongs only where the legacy actually
+      // guards - and this DAO does not.
       const optionExecutor = new RecordingExecutor(NO_ROWS);
       const groupExecutor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
 
@@ -1379,9 +1171,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('propagates the OPPOSITE outcomes the two polarities produce', async () => {
-      // The defect made observable. One unvalidated empty argument, two methods, two
-      // contradictory answers: the IN side excludes everything and the NOT IN side
-      // excludes nothing.
+      // The defect made observable. One unvalidated empty argument, two methods, two contradictory
+      // answers: the `IN` side excludes everything and the not in side excludes nothing.
       const optionExecutor = new RecordingExecutor(NO_ROWS);
       const groupExecutor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
 
@@ -1400,8 +1191,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('treats a list of only delimiters exactly as it treats an empty list', async () => {
-      // `listToArray(',,,')` yields no elements, so this is the same unguarded path
-      // rather than a three-element list of empty strings.
+      // `listToArray(',,,')` yields no elements, so this is the same unguarded path rather than a
+      // three-element list of empty strings.
       const optionExecutor = new RecordingExecutor(NO_ROWS);
       const groupExecutor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
 
@@ -1428,13 +1219,6 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
   });
 
   describe('an empty result is a legitimate outcome, not an error', () => {
-    // `model/validation/Product.json:L13` constrains `unusedProductOptions` with
-    // `minCollection: 1` in the `addOption` context, and
-    // `model/validation/Product.json:L14` constrains `unusedProductOptionGroups` the same
-    // way in the `addOptionGroup` context. So emptiness is MEANINGFUL: it is the state
-    // those rules reject. Enforcing them is the service and validation tier's job, and no
-    // validation surface belongs in a repository - which is why no schema library is
-    // imported here.
     it('returns an empty array from getUnusedProductOptions, never undefined', async () => {
       const executor = new RecordingExecutor(NO_ROWS);
       const repository = new MysqlOptionRepository(executor);
@@ -1462,9 +1246,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('does not throw, retry or substitute a default when nothing matched', async () => {
-      // Not smoothed over in any of the three ways a well-meaning editor might: no
-      // exception for the caller to interpret as failure, no second attempt with a
-      // relaxed predicate, and no synthesised placeholder row.
+      // Not smoothed over in any of the three ways a well-meaning editor might: no exception for
+      // the caller to interpret as failure, no second attempt with a relaxed predicate, and no
+      // synthesised placeholder row.
       const optionExecutor = new RecordingExecutor(NO_ROWS);
       const groupExecutor = new RecordingExecutor(NO_ROWS);
 
@@ -1488,21 +1272,15 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect('validate' in repository).toBe(false);
       expect('minCollection' in repository).toBe(false);
 
-      // And it accepts an argument the validation tier would later reject, rather than
-      // pre-empting that decision.
+      // And it accepts an argument the validation tier would later reject, rather than pre-empting
+      // that decision.
       await expect(repository.getUnusedProductOptionGroups('')).resolves.toBeDefined();
     });
   });
-
-  // A NOTE ON THE LITERALS IN THIS BLOCK, so a reviewer's own grep is not misread.
-  // The identifiers this port must never emit - the ORM entity prefix, and every DDL
-  // verb - appear in this file ONLY as arguments to a negative assertion. Each
-  // occurrence is the check that PROVES the identifier is absent from the emitted
-  // statement, never an identifier this suite expects to see. The expected statements
-  // themselves are the EXPECTED_ constants above, and none of them contains any of these
-  // words.
   describe('schema continuity: the existing Sw* tables, read-only', () => {
-    /** Every statement either method emits, gathered once for the checks below. */
+    /**
+     * Every statement either method emits, gathered once for the checks below.
+     */
     async function emittedStatements(): Promise<readonly string[]> {
       const optionExecutor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const groupExecutor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
@@ -1519,12 +1297,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     }
 
     it('names only physical Sw* tables', async () => {
-      // Confirmed against the entity metadata: `table="SwOption"`,
-      // `table="SwOptionGroup"` and the `linktable="SwSkuOption"` the exclusion walks.
-      // This DAO was already written correctly against physical tables, so NO
-      // Slatwall-prefixed to Sw-prefixed correction applies here - unlike the raw-SQL
-      // methods in three sibling DAOs, whose ports do need it. Nothing may reintroduce
-      // an ORM entity name.
+      // Confirmed against the entity metadata: `table="SwOption"`, `table="SwOptionGroup"` and the
+      // `linktable="SwSkuOption"` the exclusion walks.
       const statements = await emittedStatements();
       const [optionsSql, groupsSql] = statements;
 
@@ -1557,9 +1331,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('issues no schema-changing or data-modifying statement', async () => {
-      // The port reads and writes the existing schema unchanged and performs no
-      // migration of any kind, so no statement may carry a DDL verb and no mutation may
-      // be attempted through the executor.
+      // The port reads and writes the existing schema unchanged and performs no migration of any
+      // kind, so no statement may carry a DDL verb and no mutation may be attempted through the
+      // executor.
       const statements = await emittedStatements();
 
       for (const sql of statements) {
@@ -1579,10 +1353,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('resolves its connection from the injected executor, never from a literal', async () => {
-      // Neither legacy <cfquery> carries a `datasource` attribute - both inherited the
-      // application default declared at [config/configApplication.cfm:L2] - and the
-      // target keeps that indirection: the adapter holds no host, no port, no schema
-      // name and no credential, only the executor it was constructed with.
+      // Neither legacy <cfquery> carries a `datasource` attribute - both inherited the application
+      // default declared at [config/configApplication.cfm:L2] - and the target keeps that
+      // indirection: the adapter holds no host, no port.
       const statements = await emittedStatements();
 
       for (const sql of statements) {
@@ -1590,11 +1363,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
         expect(sql).not.toContain('USE ');
       }
 
-      // The positive form of the same guarantee, and the stronger one: the adapter's
-      // ONLY own property is the executor it was constructed with. It therefore cannot
-      // hold a host, a port, a schema name or a credential - there is nowhere to put
-      // one. No such literal appears in this suite either, deliberately: asserting the
-      // absence of a hostname would mean writing one down.
+      // The positive form of the same guarantee, and the stronger one: the adapter's only own
+      // property is the executor it was constructed with.
       expect(Reflect.ownKeys(new MysqlOptionRepository(new RecordingExecutor(NO_ROWS)))).toEqual([
         'executor',
       ]);
@@ -1603,9 +1373,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
 
   describe('scope boundaries this suite deliberately does not cross', () => {
     it('does not carry getOptionsForSelect, which is service tier', async () => {
-      // [model/service/OptionService.cfc:L55] produces the SAME name/value shape but is
-      // synchronous, pure, and takes already-loaded options - it touches no query at
-      // all. It is not on this port and is not asserted here.
+      // [model/service/OptionService.cfc:L55] produces the same name/value shape but is
+      // synchronous, pure, and takes already-loaded options - it touches no query at all. It is
+      // not on this port and is not asserted here.
       const repository = new MysqlOptionRepository(new RecordingExecutor(NO_ROWS));
 
       expect('getOptionsForSelect' in repository).toBe(false);
@@ -1616,10 +1386,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('carries no smart-list, save, delete or count surface', () => {
-      // The legacy component declares exactly two functions and the service above it
-      // adds only the two passthroughs at [model/service/OptionService.cfc:L72] and
-      // [model/service/OptionService.cfc:L76]. Everything else it appeared to have came
-      // from the framework base class, which is not ported.
+      // The legacy component declares exactly two functions and the service above it adds only the
+      // two passthroughs at [model/service/OptionService.cfc:L72] and
+      // [model/service/OptionService.cfc:L76].
       const repository = new MysqlOptionRepository(new RecordingExecutor(NO_ROWS));
 
       for (const absent of [
@@ -1634,10 +1403,6 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('keeps the comma list a string, for signature parity', async () => {
-      // [model/dao/OptionDAO.cfc:L53] and [model/dao/OptionDAO.cfc:L95] both declare
-      // `type="string"`, so `existingOptionGroupIDList` stays a comma-delimited string
-      // rather than becoming an array. Splitting it is the adapter's job, not the
-      // caller's, and a reviewer must be able to diff the two surfaces directly.
       const executor = new RecordingExecutor(UNUSED_OPTION_GROUP_ROWS);
       const repository = new MysqlOptionRepository(executor);
       const commaList: string = [GROUP_ID_COLOUR, GROUP_ID_SIZE, GROUP_ID_MATERIAL].join(',');
@@ -1653,11 +1418,8 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
     });
 
     it('hydrates no boolean, so no CFML boolean coercion is in play', async () => {
-      // Both `SelectOption` members are strings and neither statement projects a flag,
-      // so the sanctioned `cfBoolean` helper is deliberately not imported. Were a
-      // boolean ever projected here it would have to go through that helper rather than
-      // through a bare truthiness test, because CFML admits "yes"/"no" and "1"/"0" as
-      // booleans and JavaScript does not.
+      // Both `SelectOption` members are strings and neither statement projects a flag, so the
+      // sanctioned `cfBoolean` helper is deliberately not imported.
       const executor = new RecordingExecutor(UNUSED_OPTION_ROWS);
       const repository = new MysqlOptionRepository(executor);
 
@@ -1672,19 +1434,9 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
 });
 
 describe('MysqlOptionRepository - the protocol placeholder ceiling on the group list', () => {
-  // ---------------------------------------------------------------------------
-  // SECURITY FINDING F17. One clause and one placeholder are allocated per element of the
-  // caller-supplied `existingOptionGroupIDList`, and the only general ceiling on this path
-  // was the one `sqlPlaceholderList` applies - reached only AFTER the list had been parsed,
-  // and reported with a message about `IN ()` and zero-length lists that names no argument.
-  //
-  // THE BOUND IS THE PROTOCOL'S OWN, NOT A POLICY. `COM_STMT_PREPARE_OK` reports a prepared
-  // statement's placeholder count in a two-byte field, so a list above 65535 could not be
-  // prepared by the server however it was sent - nothing [model/dao/OptionDAO.cfc:L52-L117]
-  // could have answered is refused, and no throughput or capacity figure is involved.
-  // ---------------------------------------------------------------------------
-
-  /** A comma-list of `count` single-character elements. The COUNT is what is under test. */
+  /**
+   * A comma-list of `count` single-character elements. The COUNT is what is under test.
+   */
   function listOfCountedElements(count: number): string {
     return new Array<string>(count).fill('x').join(',');
   }
@@ -1734,9 +1486,6 @@ describe('MysqlOptionRepository - the protocol placeholder ceiling on the group 
     await expect(repository.getUnusedProductOptions(PRODUCT_ID, oneTooMany)).rejects.toThrow(
       /cannot prepare a statement with more than 65535 placeholders/,
     );
-
-    // ★ AND NO STATEMENT WAS ISSUED, which is the half of the finding that matters: the
-    // refusal now precedes the placeholder-body allocation rather than following it.
     expect(executor.calls).toStrictEqual([]);
     expect(executor.mutationCalls).toStrictEqual([]);
   });
@@ -1760,9 +1509,7 @@ describe('MysqlOptionRepository - the protocol placeholder ceiling on the group 
   });
 
   it('leaves an ordinary list untouched - no trim, sort, dedupe, case fold or reorder', async () => {
-    // The bound refuses on a COUNT alone. Every accepted element still reaches the bind array
-    // byte for byte and in list order, because each of those transformations would change
-    // which option groups the predicate excludes.
+    // The bound refuses on a COUNT alone.
     const executor = new RecordingExecutor([]);
     const repository = new MysqlOptionRepository(executor);
 

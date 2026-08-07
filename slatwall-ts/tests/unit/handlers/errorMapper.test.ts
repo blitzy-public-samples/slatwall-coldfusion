@@ -1,81 +1,13 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - unit suite for the shared primary-adapter request/response boundary
+// slatwall-ts - unit suite for the shared primary-adapter request/response boundary.
 //
-// WHAT THIS PINS
-//   src/handlers/errorMapper.ts - the one place in the TypeScript / AWS Lambda
-//   `nodejs20.x` port of the Slatwall 3.1.39 catalog + promotions/pricing slice
-//   (`version.txt` = `3.1.39`) that decides which failures are describable to a
-//   caller and which are not.
+// The withholding cases therefore assert against the raw emitted log line and the raw response
+// body.
 //
-//   It also owns the three cross-handler policies for the SERVER-ESTABLISHED
-//   parts of a request - the correlation identifier, the success envelope and the
-//   CALLER PRINCIPAL - and each has its own section below. The principal cases sit
-//   at the end of this file, having moved here with the resolver itself when a
-//   review found its former ninth handler module in breach of AAP 0.3.1's exact
-//   eight-file layout.
+// The module is created from scratch - the plan's handler transformation table records its source
+// file as "-" and its change as "No legacy equivalent.
 //
-//   Two obligations pull in opposite directions here, and every case below exists
-//   to hold both at once:
-//
-//     1. ONE message must survive verbatim. The CFML framework's terminal
-//        dead-call-target throw is an OBSERVABLE BEHAVIOURAL CONTRACT, identical
-//        at [org/Hibachi/HibachiEntity.cfc:L565] and
-//        [org/Hibachi/HibachiService.cfc:L280], grammatical error and all. If the
-//        recognizer stops matching it, the contract is silently lost to the
-//        generic arm and nothing else in the system notices.
-//     2. EVERYTHING ELSE must be withheld - from the response body AND from the
-//        log line. The pinned MySQL driver composes its error message out of the
-//        server's own error text and hangs the failing statement off the error
-//        object, so for a syntax or constraint failure the message itself embeds
-//        the failing SQL fragment and its bound values. A validation failure
-//        quotes the rejected input; a connection failure names the host and the
-//        account. A log line is durable and centrally aggregated, so publishing
-//        any of that there rather than in a body changes who can read it, not
-//        whether it leaked.
-//
-//   The withholding cases therefore assert against the RAW EMITTED LOG LINE and
-//   the raw response body, not only against parsed fields: an assertion that
-//   inspected a named field would pass while the credential still shipped inside
-//   a field this suite did not think to look at.
-//
-// ---------------------------------------------------------------------------
-// THIS COVERAGE IS 100% NET-NEW. IT IS NOT PARITY AND MUST NEVER BE
-// PRESENTED AS PARITY.
-// ---------------------------------------------------------------------------
-//   The module is created from scratch - the plan's handler transformation table
-//   records its source file as "-" and its change as "No legacy equivalent; maps
-//   domain errors to API Gateway responses". The legacy suite contains nothing
-//   whatsoever for the handler tier: meta/tests/unit/service/ holds only
-//   AccountServiceTest, HibachiServiceTest, PaymentServiceTest and
-//   UtilityRBServiceTest, none of them in scope, and there is no handler tier in
-//   the legacy architecture to have tested.
-//
-//   The only legacy suites extended anywhere in this port are
-//   [meta/tests/unit/entity/BrandTest.cfc] and
-//   [meta/tests/unit/entity/ProductTest.cfc], and
-//   [meta/tests/functional/admin/entity/ProductTest.cfc] is an empty stub
-//   contributing zero coverage. No case below has a legacy antecedent and none is
-//   presented as one. The recognized MESSAGE is legacy; the mapping around it is
-//   not, and the distinction is kept explicit.
-//
-// HOW THE SUBJECT IS DRIVEN
-//   Through the optional `logger` on `ErrorMappingContext`, which is the seam the
-//   module publishes for exactly this purpose. Every RESPONSE-BUILDING export has
-//   one side effect - a single emission through that logger - and returns a value
-//   derived from nothing but its arguments, so every branch including what is and
-//   is not written to the log is drivable without patching a global stream or
-//   reading the process environment. The three server-established policies -
-//   correlation identifier, success envelope and caller principal - are pure
-//   functions of their arguments and need no seam at all: the principal resolver
-//   emits nothing, precisely so that a refusal is logged ONCE, by the handler that
-//   refuses.
-//
-// NO USER RULES WERE PROVIDED
-//   The project rules source returns exactly that, and the plan records it
-//   outright. No rule is invented here and no assertion below is attributed to
-//   one; each traces to the plan, to the cited legacy locator, or to the module's
-//   own documented contract.
-// ---------------------------------------------------------------------------
+// The only legacy suites extended anywhere in this port are `meta/tests/unit/entity/BrandTest.cfc`
+// and `meta/tests/unit/entity/ProductTest.cfc`.
 
 import type { APIGatewayProxyEvent, Context } from 'aws-lambda';
 import { describe, expect, it, vi } from 'vitest';
@@ -106,41 +38,38 @@ import {
 } from '../../../src/handlers/errorMapper.js';
 import type { LogContext, LogLevel, Logger, LogSink } from '../../../src/lib/logger.js';
 
-// ---------------------------------------------------------------------------
-// Test doubles and planted data
-// ---------------------------------------------------------------------------
+// Test doubles and planted data.
 
 /**
- * Planted credential and personal data. Long, unique and free of regex
- * metacharacters, so a substring search cannot produce a false result either way.
+ * Planted credential and personal data. Long, unique and free of regex metacharacters, so a
+ * substring search cannot produce a false result either way.
  */
 const PLANTED_SECRET = 'PLANTED-CREDENTIAL-5b1d7e04c396';
 const PLANTED_EMAIL = 'planted.person@example-customer.test';
 
-/** A correlation identifier, shaped like the one API Gateway supplies. */
+/**
+ * A correlation identifier, shaped like the one API Gateway supplies.
+ */
 const REQUEST_ID = 'c0ffee00-1111-2222-3333-444455556666';
 
-/** One captured emission, in the form the module handed to the logger. */
+/**
+ * One captured emission, in the form the module handed to the logger.
+ */
 interface CapturedEmission {
   readonly level: LogLevel;
   readonly message: string;
   readonly context: LogContext | undefined;
-  /** The serialized form, so a leak anywhere in the payload is detectable. */
+  /**
+   * The serialized form, so a leak anywhere in the payload is detectable.
+   */
   readonly serialized: string;
 }
 
 /**
  * A logger that records rather than emits.
  *
- * A hand-written double rather than a mock framework: it needs no lifecycle, it
- * holds only its own array, and a fresh one is built inside every test - which
- * matters in this port because module-level state surviving between unrelated
- * invocations on a warm container is precisely the hazard four legacy
- * component-level caches are re-scoped to avoid.
- *
- * `withLevel` and `withSink` return the same recorder. Neither is exercised by
- * this module, and returning a divergent object would make the double lie about
- * what the subject did.
+ * A hand-written double rather than a mock framework: it needs no lifecycle, it holds only its own
+ * array, and a fresh one is built inside every test.
  */
 function createRecordingLogger(): {
   readonly logger: Logger;
@@ -153,8 +82,8 @@ function createRecordingLogger(): {
       level,
       message,
       context,
-      // `undefined` members vanish under serialization exactly as they do in the
-      // real logger, so the recorded string is what would have been emitted.
+      // `undefined` members vanish under serialization exactly as they do in the real logger, so
+      // the recorded string is what would have been emitted.
       serialized: JSON.stringify({ level, message, context }),
     });
   };
@@ -171,12 +100,16 @@ function createRecordingLogger(): {
   return { logger: recorder, emissions };
 }
 
-/** A context carrying the recording logger and a route, as a handler would. */
+/**
+ * A context carrying the recording logger and a route, as a handler would.
+ */
 function contextWith(logger: Logger): ErrorMappingContext {
   return { requestId: REQUEST_ID, route: 'POST /skus/resolve', logger };
 }
 
-/** Parse a response body, narrowing rather than casting blindly. */
+/**
+ * Parse a response body, narrowing rather than casting blindly.
+ */
 function bodyOf(body: string | undefined): ErrorResponseBody['error'] {
   if (body === undefined) {
     throw new Error('the response carried no body');
@@ -192,7 +125,9 @@ function bodyOf(body: string | undefined): ErrorResponseBody['error'] {
   return error as ErrorResponseBody['error'];
 }
 
-/** Read the single emission a call is documented to produce. */
+/**
+ * Read the single emission a call is documented to produce.
+ */
 function soleEmission(emissions: readonly CapturedEmission[]): CapturedEmission {
   expect(emissions).toHaveLength(1);
   const [emission] = emissions;
@@ -202,7 +137,9 @@ function soleEmission(emissions: readonly CapturedEmission[]): CapturedEmission 
   return emission;
 }
 
-/** Read the recorded context as an object. */
+/**
+ * Read the recorded context as an object.
+ */
 function contextOf(emission: CapturedEmission): Record<string, unknown> {
   const { context } = emission;
   if (context === undefined) {
@@ -211,15 +148,12 @@ function contextOf(emission: CapturedEmission): Record<string, unknown> {
   return context;
 }
 
-// ---------------------------------------------------------------------------
-// The one message that must survive verbatim
-// ---------------------------------------------------------------------------
+// The one message that must survive verbatim.
 
 describe('the framework dead-call-target contract', () => {
   /**
-   * The legacy message, reproduced exactly as both framework tiers throw it -
-   * including the grammatical error "does not exists" and the word "entity",
-   * which the SERVICE tier emits too because its copy is byte-identical.
+   * The legacy message, reproduced exactly as both framework tiers throw it - including the
+   * grammatical error "does not exists" and the word "entity".
    */
   const CONTRACT_MESSAGE =
     'You have called a method calculateSkuPriceBasedOnPromotion() which does not exists in the Sku entity.';
@@ -260,28 +194,8 @@ describe('the framework dead-call-target contract', () => {
   it('does NOT recognize the contract as a bare thrown string, because no producer throws one', () => {
     const { logger } = createRecordingLogger();
 
-    // This case previously asserted the opposite, on the grounds that `throw('<x>')`
-    // is what the LEGACY CFML construct emits. That premise does not survive
-    // contact with the target: no CFML runs here, and NO `throw` site in `src/**`
-    // throws a string - every one raises an `Error` instance, whether constructed
-    // inline with `new` or returned by a local factory such as
-    // `Sku.missingCollaborator`. The seven that raise this very contract are
-    // [src/domain/entities/promotionPeriod.ts:L1154, L1179, L1203, L1237;
-    // src/domain/entities/promotionAccount.ts:L558, L561, L632].
-    // The recognizer therefore requires a real `Error`, which removes a shape a
-    // caller could forge without rejecting any producer that exists.
-    //
-    // ★★ TWO CORRECTIONS HERE, BOTH DRIFT RATHER THAN REASONING. The locators read
-    // `L1379, L1407, L1433, L1468` against a 1,346-line file and `L560, L563, L634`
-    // against the sibling, and a review measured them. The sentence also counted
-    // "163 `throw` sites in `src/**`"; the tree holds over three hundred, and the
-    // count was doing no work - what the case needs is that no producer throws a
-    // STRING, which is now what it says. A number nothing derives is a number that
-    // goes stale, so this one is gone rather than re-fixed.
-    //
-    // The byte-exact-message requirement is untouched and is still covered: the
-    // first case in this block maps `new Error(CONTRACT_MESSAGE)` and gets the
-    // contract back verbatim.
+    // The byte-exact-message requirement is untouched and is still covered: the first case in this
+    // block maps `new Error(CONTRACT_MESSAGE)` and gets the contract back verbatim.
     const body = bodyOf(mapErrorToApiGatewayResponse(CONTRACT_MESSAGE, contextWith(logger)).body);
 
     expect(body.category).toBe('unrecognized');
@@ -301,8 +215,8 @@ describe('the framework dead-call-target contract', () => {
 
   it('does NOT conflate the framework\u2019s third, grammatically correct variant with the contract', () => {
     const { logger } = createRecordingLogger();
-    // [org/Hibachi/HibachiObject.cfc:L126] - "does not exist", no `()`, no
-    // trailing period. A different shape, deliberately not recognized.
+    // [org/Hibachi/HibachiObject.cfc:L126] - "does not exist", no `()`, no trailing period. A
+    // different shape, deliberately not recognized.
     const otherVariant =
       'You have attempted to call the method getFoo which does not exist in Slatwall.model.entity.Sku';
 
@@ -312,9 +226,7 @@ describe('the framework dead-call-target contract', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Everything else: withheld from the body AND from the log
-// ---------------------------------------------------------------------------
+// Everything else: withheld from the body and from the log.
 
 describe('an unrecognized failure', () => {
   it('publishes the fixed generic sentence and nothing of the failure', () => {
@@ -344,8 +256,8 @@ describe('an unrecognized failure', () => {
     mapErrorToApiGatewayResponse(driverFailure, contextWith(logger));
     const emission = soleEmission(emissions);
 
-    // Not merely absent from a field this suite named - absent from the entire
-    // serialized payload the module handed over.
+    // Not merely absent from a field this suite named - absent from the entire serialized payload
+    // the module handed over.
     expect(emission.serialized).not.toContain(PLANTED_SECRET);
     expect(emission.serialized).not.toContain('Access denied');
     expect(contextOf(emission)).not.toHaveProperty('error');
@@ -371,26 +283,14 @@ describe('an unrecognized failure', () => {
     expect(contextOf(emission)['thrownShape']).toBe('unsafeName');
   });
 
-  // -------------------------------------------------------------------------
-  // ★★ `thrownAt` - the third classifier, added because the first two were not enough (QA-I2)
-  //
-  // QA testing found a CRITICAL wiring defect and reported it as UNDIAGNOSABLE FROM THIS LINE. The
-  // reason is worth restating precisely, because it is what these cases are protecting: the thrown
-  // value was a PLAIN `Error`, so `thrownShape` was truthfully `'Error'` and `errorCode` was absent -
-  // making a composition failure and a driver failure produce identical log lines. The deliberate
-  // refusal to emit the message is correct and unchanged; what was missing was any way to tell WHERE
-  // the failure came from.
-  //
-  // The bar these cases hold it to is the same bar every other emitted value here meets: it is
-  // code-authored, it is shape-policed, it never carries a path or a message, and it FAILS CLOSED.
-  // -------------------------------------------------------------------------
+  // `thrownAt` - the third classifier, because the shape and the name alone do not say WHERE a
+  // failure was thrown, and a wiring defect is undiagnosable without that.
 
   it('★★★ names the FUNCTION a failure was thrown from, which is what makes a wiring bug diagnosable', () => {
     const { logger, emissions } = createRecordingLogger();
 
     // Named exactly as the class-and-method frame the real defect produced
-    // (`ProductType.getBaseProductType`), so this case exercises the shape that actually occurred
-    // rather than a bare function name that would be easier to match.
+    // (`ProductType.getBaseProductType`).
     const productType = {
       getBaseProductType(): never {
         throw new Error(`requires a productTypeRepository, host=${PLANTED_SECRET}`);
@@ -408,8 +308,8 @@ describe('an unrecognized failure', () => {
     const emission = soleEmission(emissions);
 
     expect(contextOf(emission)['thrownAt']).toBe('Object.getBaseProductType');
-    // ★ AND THE MESSAGE IS STILL WITHHELD, from the line as well as the body. The whole value of this
-    // field is that it buys diagnosability WITHOUT relaxing that.
+    // And the MESSAGE is still WITHHELD, from the line as well as the body. The whole value of
+    // this field is that it buys diagnosability without relaxing that.
     expect(emission.serialized).not.toContain(PLANTED_SECRET);
     expect(response.body).not.toContain(PLANTED_SECRET);
     expect(response.body).not.toContain('getBaseProductType');
@@ -418,8 +318,8 @@ describe('an unrecognized failure', () => {
   it('★★ emits NO filesystem path, no line number and no deeper frame', () => {
     const { logger, emissions } = createRecordingLogger();
     const failure = new Error('boom');
-    // A hand-built stack, so the assertion is about what this module EXTRACTS rather than about what
-    // V8 happened to produce on this machine. Three frames, two of them plainly private.
+    // A hand-built stack, so the assertion is about what this module EXTRACTS rather than about
+    // what V8 happened to produce on this machine. Three frames, two of them plainly private.
     failure.stack = [
       'Error: boom',
       '    at MysqlSkuRepository.saveSku (/srv/secret-app/src/repositories/mysql/mysqlSkuRepository.ts:2822:13)',
@@ -433,7 +333,7 @@ describe('an unrecognized failure', () => {
     expect(contextOf(emission)['thrownAt']).toBe('MysqlSkuRepository.saveSku');
     // Only the FIRST frame is a classifier; every deeper one is a map of this service's internals.
     expect(emission.serialized).not.toContain('saveProduct');
-    // No path, no line, no column - and structurally so, because the name is taken from BEFORE the
+    // No path, no line, no column - and structurally so, because the name is taken from before the
     // ` (` that opens the location and the classifier pattern admits neither `/` nor `:`.
     expect(emission.serialized).not.toContain('/srv/secret-app');
     expect(emission.serialized).not.toContain('2822');
@@ -451,8 +351,8 @@ describe('an unrecognized failure', () => {
     mapErrorToApiGatewayResponse(failure, contextWith(logger));
 
     // Without stripping `async `, every asynchronous frame would fail the classifier shape on the
-    // space alone - which in a service that is asynchronous throughout would drop exactly the frames
-    // worth having.
+    // space alone - which in a service that is asynchronous throughout would drop exactly the
+    // frames worth having.
     expect(contextOf(soleEmission(emissions))['thrownAt']).toBe(
       'MysqlProductRepository.saveProduct',
     );
@@ -467,8 +367,8 @@ describe('an unrecognized failure', () => {
       // Anonymous, constructor and eval frames each carry a character the classifier refuses.
       ['Error: boom', '    at Object.<anonymous> (/srv/app/x.ts:1:1)'].join('\n'),
       ['Error: boom', '    at new ProductType (/srv/app/x.ts:1:1)'].join('\n'),
-      // A 65-character name is one over the cap: dropped rather than truncated, because a truncated
-      // classifier is a guess.
+      // A 65-character name is one over the cap: dropped rather than truncated, because a
+      // truncated classifier is a guess.
       ['Error: boom', `    at ${'n'.repeat(65)} (/srv/app/x.ts:1:1)`].join('\n'),
       // A stack with no frame at all.
       'Error: boom',
@@ -484,9 +384,8 @@ describe('an unrecognized failure', () => {
 
     expect(emissions).toHaveLength(unclassifiable.length);
     for (const emission of emissions) {
-      // `undefined` on the context and ABSENT from the serialized line - the same two-level shape the
-      // `errorCode` cases above assert, because `JSON.stringify` omits an undefined member. The
-      // serialized assertion is the one that matters: it is what an operator actually reads.
+      // `undefined` on the context and ABSENT from the serialized line - the same two-level shape
+      // the `errorCode` cases above assert, because `JSON.stringify` omits an undefined member.
       expect(contextOf(emission)['thrownAt']).toBeUndefined();
       expect(emission.serialized).not.toContain('thrownAt');
       expect(emission.serialized).not.toContain(PLANTED_SECRET);
@@ -495,11 +394,7 @@ describe('an unrecognized failure', () => {
   });
 
   it('classifies an `eval` frame as `eval`, still without its location', () => {
-    // ★ NOT IN THE FAIL-CLOSED LIST ABOVE, AND THIS RECORDS THE JUDGMENT. `eval` is a REAL function
-    // name - code-authored, three characters, no path - so it passes the classifier shape honestly and
-    // there is no reason to invent an exception for it. What must not travel is the LOCATION, and an
-    // eval frame carries a doubly-nested one; the name is taken from before the FIRST ` (`, so the
-    // whole `eval at <anonymous> (…)` tail is never read.
+    // Not in the fail-closed list above, and this records the judgment.
     const { logger, emissions } = createRecordingLogger();
     const failure = new Error('boom');
     failure.stack = [
@@ -518,7 +413,8 @@ describe('an unrecognized failure', () => {
   it('omits the field for a thrown value that is not an Error, and for one with no stack', () => {
     const { logger, emissions } = createRecordingLogger();
     const stackless = new Error('boom');
-    // `stack` is an ordinary own property and a caller-reachable one, so a non-string must not fault.
+    // `stack` is an ordinary own property and a caller-reachable one, so a non-string must not
+    // fault.
     Object.defineProperty(stackless, 'stack', { value: 42, configurable: true });
 
     mapErrorToApiGatewayResponse('a thrown string', contextWith(logger));
@@ -607,21 +503,14 @@ describe('an unrecognized failure', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The client-shaped arms
-// ---------------------------------------------------------------------------
+// The client-shaped arms.
 
 describe('a schema-rejected request input', () => {
   /**
    * A GENUINE `ZodError` from the pinned validation library.
    *
-   * This fixture used to FORGE the shape - `new Error()` with `name` reassigned to
-   * `'ZodError'` and an `issues` array bolted on - because the recognizer used to
-   * accept anything wearing that shape. It no longer does: recognition is now an
-   * `instanceof ZodError` test, so a forged object falls to the generic arm (proved
-   * directly by the last case in this block). The fixture is therefore constructed
-   * through the library's own constructor, which is also what the production
-   * producer hands the mapper: `safeParse` returns exactly this type.
+   * Constructed BY the library rather than forged: a hand-made `new Error()` with `name` reassigned
+   * to `'ZodError'` and an `issues` array bolted on would not exercise the mapper's instance check.
    */
   function validationFailure(): unknown {
     return new ZodError([
@@ -668,11 +557,7 @@ describe('a schema-rejected request input', () => {
   it('REFUSES a forged validation failure, so the echo path cannot be driven by shape alone', () => {
     const { logger } = createRecordingLogger();
 
-    // Type confusion, stated as a test. `name` is an ordinary writable property and
-    // `issues` is just an array, so before recognition became an `instanceof` test
-    // ANY object could wear this shape - and a deserialized request body is such an
-    // object. Wearing it bought the forger the one response path that echoes
-    // attacker-authored text (`issue.message`) back into the body under a 400.
+    // Type confusion, stated as a test.
     const forged: Error & { issues?: readonly unknown[] } = new Error('invalid input');
     forged.name = 'ZodError';
     forged.issues = [{ path: ['selectedOptions'], message: 'ATTACKER CONTROLLED TEXT' }];
@@ -689,7 +574,7 @@ describe('a schema-rejected request input', () => {
   it('bounds the published issue count, and logs how many were withheld', () => {
     const { logger, emissions } = createRecordingLogger();
 
-    // 25 issues against a published ceiling of 20.
+    // 25 issues against a published ceiling of.
     const many = new ZodError(
       Array.from({ length: 25 }, (_unused, index) => ({
         code: 'custom',
@@ -726,8 +611,8 @@ describe('a schema-rejected request input', () => {
       throw new Error('the mapper published no field issue');
     }
 
-    // A message is bounded at 200 characters INCLUDING the ellipsis, and the path
-    // stops at 10 rendered segments with a marker recording that it was cut.
+    // A message is bounded at 200 characters INCLUDING the ellipsis, and the path stops at 10
+    // rendered segments with a marker recording that it was cut.
     expect(field.message).toHaveLength(200);
     expect(field.message.endsWith('...')).toBe(true);
     const renderedSegments = field.path.split('.').filter((segment) => segment.length > 0);
@@ -735,22 +620,19 @@ describe('a schema-rejected request input', () => {
     expect(renderedSegments[0]).toBe('s0');
     expect(renderedSegments[9]).toBe('s9');
     expect(field.path.endsWith('...')).toBe(true);
-    // The over-long 16th segment is never reached, so its 120 characters cannot
-    // reach the body by either route - the segment cap stops the walk before the
-    // per-segment clamp would have had to.
+    // The over-long 16th segment is never reached, so its 120 characters cannot reach the body by
+    // either route - the segment cap stops the walk before the per-segment clamp would have had
+    // to.
     expect(field.path).not.toContain('x'.repeat(65));
   });
 
-  // -------------------------------------------------------------------------
-  // ★★★ UNRECOGNIZED KEYS KEEP ONLY THEIR SCHEMA-AUTHORED CONTAINER PATH.
+  // Unrecognized keys keep only their schema-authored container path.
   //
-  // The validator's `keys` and rendered message contain caller-authored member names. Publishing
-  // either would make a 400 response and its durable log line an echo channel. The mapper therefore
-  // substitutes a fixed sentence and keeps only `path`: empty for the root object, or a bounded
-  // containing path such as `order` for a nested strict object.
-  // -------------------------------------------------------------------------
+  // The validator's `keys` and rendered message contain caller-authored member names.
 
-  /** A genuine strict-object rejection, produced by the pinned validator rather than forged. */
+  /**
+   * A genuine strict-object rejection, produced by the pinned validator rather than forged.
+   */
   function strictRejection(input: Readonly<Record<string, unknown>>): unknown {
     const schema = z.strictObject({ operation: z.string() });
     const outcome = schema.safeParse(input);
@@ -899,7 +781,7 @@ describe('a schema-rejected request input', () => {
 
     const paths = (body.fields ?? []).map((field) => field.path).sort();
 
-    // BOTH facts reach the caller without quoting the submitted key: the root object contains an
+    // Both facts reach the caller without quoting the submitted key: the root object contains an
     // unpublished member, and the operation member the schema requires is absent.
     expect(paths).toStrictEqual(['', 'operation']);
   });
@@ -918,10 +800,8 @@ describe('the router and handler entry points', () => {
   });
 
   it('publishes a rejection REASON with its field detail, never a free-form sentence', () => {
-    // The reason is a member of a CLOSED union and the published sentence is
-    // looked up from it, so a handler cannot author the text a caller reads and
-    // cannot leak a rejected value into it. The reason travels to the log; the
-    // fixed sentence travels to the body.
+    // The reason is a member of a CLOSED union and the published sentence is looked up from it, so
+    // a handler cannot author the text a caller reads and cannot leak a rejected value into it.
     const { logger, emissions } = createRecordingLogger();
 
     const response = invalidRequestResponse('unusableRequestInput', contextWith(logger), [
@@ -961,11 +841,7 @@ describe('the router and handler entry points', () => {
   });
 
   it('falls back to the module logger when the context supplies none, without throwing', () => {
-    // No logger on the context, so the module-level one is used. That one writes
-    // to the real stdout, so the write is intercepted here rather than left to
-    // pollute the runner's output - and intercepting it turns the emission into
-    // something this case can assert on as well. `tests/setup.ts` restores every
-    // spy after each case, so the interception cannot leak into another test.
+    // No logger on the context, so the module-level one is used.
     const written: string[] = [];
     const writeSpy = vi
       .spyOn(process.stdout, 'write')
@@ -981,17 +857,15 @@ describe('the router and handler entry points', () => {
 
     expect(bodyOf(response.body).category).toBe('unrecognized');
 
-    // The fallback logger is the redacting one, not a bare console write: the
-    // thrown error's message must not survive into the emitted line.
+    // The fallback logger is the redacting one, not a bare console write: the thrown error's
+    // message must not survive into the emitted line.
     expect(written).toHaveLength(1);
     expect(written[0]).not.toContain('opaque');
     expect(written[0]).toContain('"thrownShape":"Error"');
   });
 });
 
-// ---------------------------------------------------------------------------
-// The authorization refusal vocabulary
-// ---------------------------------------------------------------------------
+// The authorization refusal vocabulary.
 
 describe('a refusal to serve a caller', () => {
   it('answers 401 for a caller it could not identify', () => {
@@ -1045,14 +919,6 @@ describe('a refusal to serve a caller', () => {
   it('sends no authentication challenge because no scheme is declared', () => {
     const { logger } = createRecordingLogger();
     const headers = unauthenticatedResponse(contextWith(logger)).headers ?? {};
-
-    // ★★ THE SET IS TWO AGAIN, AND IT IS STILL CLOSED. `x-content-type-options: nosniff` briefly joined
-    // `JSON_RESPONSE_HEADERS`; a code review removed it as an HTTP semantic the ported system never had
-    // and the AAP never prescribed (0.8.1 forbids inventing one), so the exact set is back to the two
-    // headers this module's own contract requires. What this case is really about has not changed: NO
-    // `www-authenticate` accompanies a 401, because naming a scheme would publish an authentication
-    // mechanism this migration was never given. An exact key set is how that stays enforced rather than
-    // hoped for - a third header fails this, whichever direction it is invented from.
     expect(
       Object.keys(headers)
         .map((name): string => name.toLowerCase())
@@ -1085,9 +951,7 @@ describe('a refusal to serve a caller', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// An unrecognized member is reported without quoting the caller
-// ---------------------------------------------------------------------------
+// An unrecognized member is reported without quoting the caller.
 
 describe('a strict schema rejecting a member it does not publish', () => {
   const CALLER_AUTHORED_KEY = 'x-PLANTED-KEY-9f2c41ab';
@@ -1157,29 +1021,23 @@ describe('a strict schema rejecting a member it does not publish', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The shared response and correlation contract
-//
-// API review findings F8 and F13: the five capability entrypoints had each derived
-// their own answer to three questions every one of them has to answer - which
-// correlation identifier wins, how a route is labelled, and what a successful JSON
-// body looks like. The decisions now live in this module, beside the failure half of
-// the same contract, and these cases pin them so a sixth divergence cannot reappear
-// unnoticed.
-// ---------------------------------------------------------------------------
+// The shared response and correlation contract.
 
-/** The runtime identifier a real invocation carries. */
+/**
+ * The runtime identifier a real invocation carries.
+ */
 const RUNTIME_REQUEST_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
 
-/** The gateway identifier a real invocation carries. */
+/**
+ * The gateway identifier a real invocation carries.
+ */
 const GATEWAY_REQUEST_ID = 'bbbbbbbb-5555-6666-7777-888888888888';
 
 /**
  * A proxy event carrying only what correlation reads.
  *
- * Deliberately built as a partial and narrowed on the way in rather than assembled
- * in full: `APIGatewayProxyEvent` declares dozens of members, none of which this
- * function may read, and constructing them would suggest otherwise.
+ * Deliberately built as a partial and narrowed on the way in rather than assembled in full:
+ * `APIGatewayProxyEvent` declares dozens of members, none of which this function may read.
  */
 function eventWithGatewayRequestId(gatewayRequestId?: unknown): APIGatewayProxyEvent {
   const requestContext =
@@ -1188,17 +1046,23 @@ function eventWithGatewayRequestId(gatewayRequestId?: unknown): APIGatewayProxyE
   return { requestContext } as unknown as APIGatewayProxyEvent;
 }
 
-/** An event with no `requestContext` at all, as a synthesised one may be. */
+/**
+ * An event with no `requestContext` at all, as a synthesised one may be.
+ */
 function eventWithoutRequestContext(): APIGatewayProxyEvent {
   return {} as unknown as APIGatewayProxyEvent;
 }
 
-/** A Lambda context carrying only the invocation identifier. */
+/**
+ * A Lambda context carrying only the invocation identifier.
+ */
 function contextWithRuntimeRequestId(awsRequestId?: unknown): Context {
   return { awsRequestId } as unknown as Context;
 }
 
-/** Parse a success body, narrowing rather than casting blindly. */
+/**
+ * Parse a success body, narrowing rather than casting blindly.
+ */
 function successBodyOf(body: string | undefined): SuccessResponseBody<unknown> {
   if (body === undefined) {
     throw new Error('the response carried no body');
@@ -1213,10 +1077,8 @@ function successBodyOf(body: string | undefined): SuccessResponseBody<unknown> {
 
 describe('the one correlation-precedence policy', () => {
   it("prefers the runtime's invocation identifier over the gateway's request identifier", () => {
-    // The precedence is not a security choice - both are platform-minted - it is that
-    // the runtime identifier is the one the platform's own START/END/REPORT lines
-    // carry for THIS execution, so a gateway retry that produced two executions is
-    // still joined to the right one.
+    // The precedence is not a security choice - both are platform-minted - it is that the runtime
+    // identifier is the one the platform's own START/END/REPORT lines carry for this execution.
     const resolved = resolveServerRequestId(
       eventWithGatewayRequestId(GATEWAY_REQUEST_ID),
       contextWithRuntimeRequestId(RUNTIME_REQUEST_ID),
@@ -1250,24 +1112,21 @@ describe('the one correlation-precedence policy', () => {
   });
 
   it('narrows a non-string identifier instead of publishing it', () => {
-    // Both sources are typed with index signatures this module must not trust: a
-    // synthesised event can carry a number, a null or an object where the platform
-    // would have put a string.
+    // Both sources are typed with index signatures this module must not trust: a synthesised event
+    // can carry a number, a null or an object where the platform would have put a string.
     expect(
       resolveServerRequestId(eventWithGatewayRequestId(42), contextWithRuntimeRequestId(null)),
     ).toBe('unattributed');
   });
 
   it('publishes a fixed literal rather than minting one when the platform supplied none', () => {
-    // Nothing is generated: a random-looking value would appear on no log line the
-    // platform emitted, and would look like a real join key while joining to nothing.
+    // Nothing is generated: a random-looking value would appear on no log line the platform
+    // emitted, and would look like a real join key while joining to nothing.
     expect(resolveServerRequestId(eventWithoutRequestContext())).toBe('unattributed');
   });
 
   it('reads NOTHING from a caller-supplied header', () => {
-    // The security half. This value is echoed into response bodies and written to the
-    // log stream, so honouring a caller-chosen `X-Request-Id` would let a caller stamp
-    // its own text onto both and forge a join key onto another invocation's line.
+    // The security half.
     const event = {
       requestContext: { requestId: GATEWAY_REQUEST_ID },
       headers: { 'x-request-id': 'CALLER-CHOSEN', 'X-Amzn-Trace-Id': 'CALLER-CHOSEN-TRACE' },
@@ -1286,10 +1145,8 @@ describe('the one route-label policy', () => {
   });
 
   it('survives the route sanitizer intact, so the label reaches the log as written', () => {
-    // The sanitizer drops everything from the first character outside its path
-    // alphabet, and a SPACE is inside that alphabet - so a method-and-path label is
-    // not truncated to a path. This is what makes the shared label usable on
-    // `ErrorMappingContext.route`.
+    // The sanitizer drops everything from the first character outside its path alphabet, and a
+    // SPACE is inside that alphabet - so a method-and-path label is not truncated to a path.
     const { logger, emissions } = createRecordingLogger();
 
     routeNotFoundResponse({
@@ -1317,9 +1174,9 @@ describe('the one JSON success envelope', () => {
   });
 
   it('uses the same header set as the failure envelope, no-store included', () => {
-    // One construction path for a response means one header policy: an intermediary
-    // must not be able to serve a stored success to a later, unrelated request any
-    // more than it can serve a stored failure.
+    // One construction path for a response means one header policy: an intermediary must not be
+    // able to serve a stored success to a later, unrelated request any more than it can serve a
+    // stored failure.
     const success = jsonSuccessResponse(REQUEST_ID, 'productFeed', 'generateProductFeed', null);
     const failure = routeNotFoundResponse({ requestId: REQUEST_ID });
 
@@ -1329,8 +1186,8 @@ describe('the one JSON success envelope', () => {
   });
 
   it('does NOT echo the route path into the success body', () => {
-    // Same rule the failure envelope follows: the route is logged and never reflected
-    // back, because the closed `action` literal already names what ran.
+    // Same rule the failure envelope follows: the route is logged and never reflected back,
+    // because the closed `action` literal already names what ran.
     const response = jsonSuccessResponse(REQUEST_ID, 'skuResolution', 'resolveSkus', { skus: [] });
 
     expect(response.body).not.toContain('/catalog/skus');
@@ -1351,9 +1208,6 @@ describe('the one JSON success envelope', () => {
   });
 
   it('emits no log line of its own, so a served request is logged by its handler once', () => {
-    // Deliberately silent. The handler owns the served line - it is the only party
-    // that knows the operation and the counts - and a second emission here would make
-    // every success two lines, which is the defect F14 raised on the failure side.
     const written: string[] = [];
     const writeSpy = vi
       .spyOn(process.stdout, 'write')
@@ -1373,10 +1227,6 @@ describe('the one JSON success envelope', () => {
 
 describe('the mapper owns the single emission for a handler-established refusal', () => {
   it('appends a handler-supplied ground to the LOG MESSAGE', () => {
-    // F14: two handlers emitted their own `warn` for a refusal they then passed here,
-    // producing two lines for one rejection. They did so because the closed reason
-    // names the CLASS of problem while the handler knows the GROUND of it, and there
-    // was nowhere to put the ground. This is that place.
     const { logger, emissions } = createRecordingLogger();
 
     invalidRequestResponse(
@@ -1396,8 +1246,8 @@ describe('the mapper owns the single emission for a handler-established refusal'
   });
 
   it('never lets that ground reach the RESPONSE BODY', () => {
-    // The central guarantee is untouched: the body still carries only the frozen
-    // sentence this module owns for the reason.
+    // The central guarantee is untouched: the body still carries only the frozen sentence this
+    // module owns for the reason.
     const { logger } = createRecordingLogger();
 
     const response = invalidRequestResponse(
@@ -1423,13 +1273,6 @@ describe('the mapper owns the single emission for a handler-established refusal'
   });
 
   it('★★★ logs the closed reason and a COUNT, and no field-path text whatsoever', () => {
-    // ★★ THIS CASE WAS INVERTED, AND THE INVERSION IS THE FIX. It used to require the published paths
-    // to appear verbatim in the log context under `fieldPaths`. A security review found (MAJOR,
-    // CWE-209/CWE-532) that the requirement was the defect: one producer of those paths assembled them
-    // out of the CALLER's own ancestor key names, so a caller could choose what this module persisted
-    // to the log stream. The paths are still PUBLISHED to the caller in the response body - that is
-    // what makes a 400 actionable - but nothing on the stream can carry submitted text now, because
-    // the two members that remain are a closed union value and a number.
     const { logger, emissions } = createRecordingLogger();
 
     const response = invalidRequestResponse(
@@ -1439,10 +1282,8 @@ describe('the mapper owns the single emission for a handler-established refusal'
         { path: 'queryStringParameters.keyword', message: 'is required' },
         { path: 'queryStringParameters.operation', message: 'is required' },
       ],
-      // The handler-established GROUND still travels, on the log MESSAGE, exactly as before - it is
-      // this module's own sentence about what it found and carries no submitted material. It is worded
-      // here without repeating either published path, so the assertion below can hold the WHOLE line to
-      // account rather than only the context.
+      // The handler-established GROUND still travels, on the log MESSAGE, exactly as before - it
+      // is this module's own sentence about what it found and carries no submitted material.
       'a required parameter was absent',
     );
 
@@ -1458,7 +1299,7 @@ describe('the mapper owns the single emission for a handler-established refusal'
     expect(line).not.toContain('keyword');
     expect(line).not.toContain('queryStringParameters');
 
-    // ★ AND STILL PUBLISHED WHERE A CALLER CAN ACT ON THEM.
+    // And still published where a caller can act on them.
     expect(bodyOf(response.body).fields?.map((field) => field.path)).toStrictEqual([
       'queryStringParameters.keyword',
       'queryStringParameters.operation',
@@ -1466,8 +1307,8 @@ describe('the mapper owns the single emission for a handler-established refusal'
   });
 
   it('reports a zero count rather than omitting it when a refusal produced no field detail', () => {
-    // The count is unconditional so an operator never has to distinguish "no issues" from "the field
-    // was not emitted". Its predecessor published an empty array for the same reason.
+    // The count is unconditional so an operator never has to distinguish "no issues" from "the
+    // field was not emitted". Its predecessor published an empty array for the same reason.
     const { logger, emissions } = createRecordingLogger();
 
     invalidRequestResponse('missingRequestBody', contextWith(logger));
@@ -1476,67 +1317,24 @@ describe('the mapper owns the single emission for a handler-established refusal'
   });
 });
 
-// ===========================================================================
-// THE SHARED CALLER PRINCIPAL
+// The shared caller principal.
 //
-// WHAT THESE CASES PIN
-//   The final section of `src/handlers/errorMapper.ts` - the ONE place in this port
-//   that decides who a request is from.
-//
-//   That resolver exists because a security review found (CRITICAL, CWE-306 and
-//   CWE-862) that four of the five capability entrypoints affirmatively declined
-//   to derive a caller principal and therefore served every anonymous request,
-//   and that one of them accepted an `accountID` from the REQUEST BODY (CRITICAL,
-//   CWE-639) and threaded it straight into the pricing scope. Both are closed by
-//   making one function the only source of a caller identity, and by making its
-//   unidentified outcome a REFUSAL rather than a logged-out state.
-//
-//   ★ THESE CASES MOVED HERE WITH THE CODE THEY PIN, AND NOT ONE OF THEM WAS
-//   DROPPED. They were a suite of their own beside a NINTH module in
-//   `src/handlers/`; a code review recorded that module as a breach of AAP
-//   0.3.1's exact eight-file handler layout, so the resolver moved into this
-//   module - which already owns the correlation-identifier policy, the success
-//   envelope and the refusal an unidentified caller earns - and its coverage
-//   moved with it rather than being thinned on the way.
-//
-//   Four properties are load-bearing and each has cases below:
-//
-//     1. FAIL CLOSED. No authorizer context, a `null` one, an array, a missing
-//        claim, a blank claim or a non-string claim all yield `identified: false`.
-//        Never a principal, and never a principal carrying an empty identifier.
-//     2. THE ADMIN BIT IS CONSERVATIVE. API Gateway STRINGIFIES authorizer context
-//        values, so `true` arrives as `"true"`; the closed truthy set admits that
-//        and `"1"` folding case, and refuses everything else. A permissive reading
-//        would hand out administrative reach.
-//     3. KEY CASE IS FOLDED, exactly as a CFML struct folds it, so a deployment's
-//        claim casing cannot silently decide whether a request is identified.
-//     4. NOTHING ELSE ABOUT THE EVENT IS READ - not a header, not a query
-//        parameter, not the body, and above all NOT `requestContext.identity`,
-//        whose members include API-key and access-key fields.
-//
-//   The legacy CONCEPT the resolver reproduces is real - FW/1's
-//   `secureMethods`/`anyAdminMethods` gating, and the ambient-scope account read
-//   at [model/service/PriceGroupService.cfc:L262-L268] - but no legacy TEST
-//   asserts anything about it, so every case below is NET-NEW and none is
-//   presented as parity.
-// ===========================================================================
+// The final section of `src/handlers/errorMapper.ts` - the one place in this port that decides who
+// a request is from.
 
-/** An account identifier shaped like the 32-character `Sw*` keys the schema uses. */
+/**
+ * An account identifier shaped like the 32-character `Sw*` keys the schema uses.
+ */
 const ACCOUNT_ID = 'aa11bb22cc33dd44ee55ff6677889900';
 
 /**
  * Build an API Gateway proxy event carrying the supplied authorizer context.
  *
- * ★ `requestContext.identity` IS A GETTER THAT THROWS, and that is the most
- * deliberate line in this builder. The subject must never read it: its members
- * include API-key and access-key fields, and its caller-controlled members are
- * transport metadata rather than verified claims. Standing the whole object in
- * with one throwing accessor makes an attempt to read it FAIL a case rather than
- * pass unnoticed, and keeps every credential-shaped identifier out of this file.
+ * `requestContext.identity` is a getter that throws, and that is the most deliberate line in this
+ * builder.
  *
- * Everything else is deliberately uninteresting: no body, no headers, no query
- * parameters and no path parameters, because the subject reads none of them and a
- * fixture that supplied them would suggest otherwise.
+ * Everything else is deliberately uninteresting: no body, no headers, no query parameters and no
+ * path parameters.
  */
 function eventWithAuthorizer(authorizer: unknown): APIGatewayProxyEvent {
   const requestContext = {
@@ -1578,7 +1376,9 @@ function eventWithAuthorizer(authorizer: unknown): APIGatewayProxyEvent {
   };
 }
 
-/** Read the principal a case expects to have been established. */
+/**
+ * Read the principal a case expects to have been established.
+ */
 function principalOf(event: APIGatewayProxyEvent): RequestPrincipal {
   const resolution = resolveRequestPrincipal(event);
   if (!resolution.identified) {
@@ -1603,9 +1403,9 @@ describe('an identified caller', () => {
   });
 
   it('folds claim-name case exactly as a CFML struct does', () => {
-    // An authorizer emitting `accountId` and one emitting `accountID` name the
-    // same claim. A case-sensitive index would let a deployment's key casing
-    // decide whether a request is treated as identified.
+    // An authorizer emitting `accountId` and one emitting `accountID` name the same claim. A
+    // case-sensitive index would let a deployment's key casing decide whether a request is treated
+    // as identified.
     for (const spelling of ['accountId', 'ACCOUNTID', 'AccountID']) {
       expect(principalOf(eventWithAuthorizer({ [spelling]: ACCOUNT_ID })).accountID).toBe(
         ACCOUNT_ID,
@@ -1650,9 +1450,9 @@ describe('the fail-closed direction', () => {
 
     expect(resolution.identified).toBe(false);
     if (!resolution.identified) {
-      // The distinction is DIAGNOSTIC only: a route deployed with no authorizer
-      // in front of it is an operator problem, not a caller mistake. Neither
-      // reason is ever published - the refusal builders accept no detail.
+      // The distinction is DIAGNOSTIC only: a route deployed with no authorizer in front of it is
+      // an operator problem, not a caller mistake. Neither reason is ever published - the refusal
+      // builders accept no detail.
       expect(resolution.reason).toBe('noAccountClaim');
     }
   });
@@ -1676,9 +1476,8 @@ describe('the fail-closed direction', () => {
   });
 
   it('cannot be satisfied through the prototype chain', () => {
-    // The keyed read resolves a stored key through `Object.keys` narrowed by
-    // `hasOwnProperty`, so the prototype chain is unreachable rather than merely
-    // filtered. A context whose PROTOTYPE carries the claim identifies nobody.
+    // The keyed read resolves a stored key through `Object.keys` narrowed by `hasOwnProperty`, so
+    // the prototype chain is unreachable rather than merely filtered.
     const inherited = Object.create({ [AUTHORIZER_ACCOUNT_CLAIM]: ACCOUNT_ID }) as object;
 
     expect(resolveRequestPrincipal(eventWithAuthorizer(inherited)).identified).toBe(false);
@@ -1702,10 +1501,8 @@ describe('the administrative claim', () => {
   }
 
   it('accepts the STRING renderings API Gateway actually delivers', () => {
-    // ★ API Gateway stringifies every authorizer context value, so a boolean
-    // `true` arrives as `"true"`. Accepting only a JavaScript boolean would make
-    // the claim unsatisfiable behind a real authorizer and would refuse the
-    // legitimate administrator while telling nobody why.
+    // API Gateway stringifies every authorizer context value, so a boolean `true` arrives as
+    // `"true"`.
     for (const rendering of ['true', 'TRUE', 'True', '1', ' true ']) {
       expect(adminFlagFor(rendering)).toBe(true);
     }
@@ -1735,31 +1532,20 @@ describe('the administrative claim', () => {
   });
 
   it('never establishes an administrative principal without an account', () => {
-    // The admin bit is meaningless on its own: an unidentified caller cannot be
-    // an administrator, so the account claim gates the whole principal.
+    // The admin bit is meaningless on its own: an unidentified caller cannot be an administrator,
+    // so the account claim gates the whole principal.
     expect(
       resolveRequestPrincipal(eventWithAuthorizer({ [AUTHORIZER_ADMIN_CLAIM]: 'true' })).identified,
     ).toBe(false);
   });
 });
 
-// ===========================================================================
-// THE SERVICE GRANT (NET-NEW)
-//
-// ★★★ WHY THIS CLAIM EXISTS SEPARATELY FROM THE ADMINISTRATIVE ONE. A code review
-// found (MAJOR, CWE-862/CWE-285) that the promotion-application route claimed to
-// require "a trusted service principal" while testing only the ADMINISTRATIVE
-// claim - the very claim `catalogQueryHandler` uses to admit ordinary human
-// catalog administrators. One bit was answering two different trust questions, so
-// every catalog administrator was also accepted as the pricing service. The
-// remedy is a dedicated, server-established, service-only grant, and these cases
-// pin the three properties that make it one: it is read from the authorizer and
-// nowhere else, it fails CLOSED on every unusable shape, and the administrative
-// claim neither grants it nor is granted by it.
-// ===========================================================================
+// The service grant (net-new)
 
 describe('the service grant (NET-NEW)', () => {
-  /** The grant a principal resolved from `value` carries. */
+  /**
+   * The grant a principal resolved from `value` carries.
+   */
   function serviceScopeFor(value: unknown): string {
     return principalOf(
       eventWithAuthorizer({
@@ -1769,7 +1555,9 @@ describe('the service grant (NET-NEW)', () => {
     ).serviceScope;
   }
 
-  /** Whether a principal resolved from `value` is granted `capability`. */
+  /**
+   * Whether a principal resolved from `value` is granted `capability`.
+   */
   function grants(value: unknown, capability: string): boolean {
     return principalHasServiceScope(
       principalOf(
@@ -1791,8 +1579,8 @@ describe('the service grant (NET-NEW)', () => {
   });
 
   it('★★★ is EMPTY for every shape that is not a usable grant, so a route fails closed', () => {
-    // Absence, a blank, a non-string: each yields the empty grant rather than
-    // something a membership test might accidentally satisfy.
+    // Absence, a blank, a non-string: each yields the empty grant rather than something a
+    // membership test might accidentally satisfy.
     for (const unusable of [undefined, null, '', '   ', 1, true, {}, []]) {
       expect(serviceScopeFor(unusable)).toBe('');
       expect(grants(unusable, 'promotionApplication')).toBe(false);
@@ -1816,10 +1604,7 @@ describe('the service grant (NET-NEW)', () => {
   });
 
   it('★★ grants ONLY what the list names - no prefix, substring or padded match', () => {
-    // A grant is an exact element comparison. `promotion` is not
-    // `promotionApplication`; a padded element is not the element, because
-    // `listFindNoCase` treats padding as significant across the ported slice and
-    // the fail-closed direction is a refusal an operator can see.
+    // A grant is an exact element comparison.
     for (const rendering of [
       'promotion',
       'promotionApplications',
@@ -1832,8 +1617,6 @@ describe('the service grant (NET-NEW)', () => {
   });
 
   it('★★★ is INDEPENDENT of the administrative claim in both directions', () => {
-    // The whole point of the finding: neither claim implies the other. An
-    // administrator holds no grant, and a granted service needs no admin bit.
     const administrator = principalOf(
       eventWithAuthorizer({
         [AUTHORIZER_ACCOUNT_CLAIM]: ACCOUNT_ID,
@@ -1865,8 +1648,8 @@ describe('the service grant (NET-NEW)', () => {
   });
 
   it('cannot be granted by anything a CALLER writes', () => {
-    // The body, the headers, the query string and the path all assert the grant;
-    // the authorizer context does not exist. Nothing may be granted.
+    // The body, the headers, the query string and the path all assert the grant; the authorizer
+    // context does not exist. Nothing may be granted.
     const event = eventWithAuthorizer(undefined);
     const tampered: APIGatewayProxyEvent = {
       ...event,
@@ -1880,8 +1663,8 @@ describe('the service grant (NET-NEW)', () => {
   });
 
   it('is read case-insensitively by claim NAME, as a CFML struct key is', () => {
-    // An authorizer emitting `SERVICESCOPE` names the same claim as one emitting
-    // `serviceScope` - the same folding the account and admin claims get.
+    // An authorizer emitting `SERVICESCOPE` names the same claim as one emitting `serviceScope` -
+    // the same folding the account and admin claims get.
     expect(
       grants(undefined, 'promotionApplication') ||
         principalHasServiceScope(
@@ -1899,8 +1682,8 @@ describe('the service grant (NET-NEW)', () => {
 
 describe('what the resolver deliberately does not read', () => {
   it('never touches requestContext.identity', () => {
-    // The fixture's `identity` throws. Both the identified and the unidentified
-    // path must complete without it being read.
+    // The fixture's `identity` throws. Both the identified and the unidentified path must complete
+    // without it being read.
     expect(() =>
       resolveRequestPrincipal(eventWithAuthorizer({ [AUTHORIZER_ACCOUNT_CLAIM]: ACCOUNT_ID })),
     ).not.toThrow();
@@ -1908,9 +1691,8 @@ describe('what the resolver deliberately does not read', () => {
   });
 
   it('ignores an account identifier supplied anywhere a CALLER can write one', () => {
-    // ★★ THE CROSS-ACCOUNT DISCLOSURE CASE. A body, a header and a query string
-    // are all caller-authored. None of them may establish an identity, however
-    // plausibly it is spelled.
+    // The cross-account disclosure case. A body, a header and a query string are all
+    // caller-authored.
     const forged = 'ffffffffffffffffffffffffffffffff';
     const event = eventWithAuthorizer(undefined);
     const tampered: APIGatewayProxyEvent = {
@@ -1931,42 +1713,16 @@ describe('what the resolver deliberately does not read', () => {
   });
 });
 
-// ===========================================================================
-// THE ONE UNRECOGNIZED KEY A STRICT SCHEMA DOES NOT REFUSE
+// The one unrecognized key a strict schema does not refuse.
 //
-// WHAT THESE CASES PIN
-//   `containsPrototypeMemberKey` and `PROTOTYPE_MEMBER_FIELD_ISSUE` - the detection
-//   and the refusal that close the single gap in this service's closed request
-//   grammar. Every request document is validated by a `z.strictObject`, whose
-//   contract is that an unrecognized key is a REFUSAL naming the member; measured
-//   against the pinned `zod` 4.4.3, `__proto__` is the one key that contract does
-//   not hold for - it is ACCEPTED and silently dropped at every nesting level,
-//   while `constructor` in the same position is refused.
-//
-// WHY THEY LIVE IN THIS SUITE
-//   The detection used to be a helper module of its own with a suite of its own,
-//   and both were beyond the project's enumerated layout. A code review required
-//   the validation folded into an approved module and the unplanned pair removed,
-//   so the predicate now sits with the response vocabulary it feeds - which also
-//   keeps `promotionApplicationHandler` and `priceResolutionHandler`, the two
-//   boundaries that parse a JSON body, from either duplicating it or importing
-//   each other. Its coverage moved here with it; nothing was dropped in the move.
-//
-// ⚠ EVERY DOCUMENT BELOW IS BUILT WITH `JSON.parse`, AND THAT IS NOT A STYLE
-// CHOICE. The object literal `{ __proto__: {} }` invokes the prototype SETTER and
-// creates NO own property, so a literal fixture would contain nothing to detect
-// and these cases would pass against a predicate that always answered `false`.
-// `JSON.parse` - which is what a handler runs on the body API Gateway delivers -
-// makes it an ordinary own DATA property. `parseDocument` below is the narrowing
-// that keeps that honest.
-// ===========================================================================
+// `containsPrototypeMemberKey` and `PROTOTYPE_MEMBER_FIELD_ISSUE` - the detection and the refusal
+// that close the single gap in this service's closed request grammar.
 
 /**
  * Parse raw request text into the `object` the predicate declares, or fail the case.
  *
- * The narrowing is the point: both call sites in production reach this check only after establishing
- * that the parsed body is a non-null, non-array object, and this helper reproduces exactly that
- * precondition rather than casting past it.
+ * The narrowing is the point: both call sites in production reach this check only after
+ * establishing that the parsed body is a non-null, non-array object.
  */
 function parseDocument(text: string): object {
   const parsed: unknown = JSON.parse(text);
@@ -1983,17 +1739,13 @@ describe('containsPrototypeMemberKey', () => {
     expect(containsPrototypeMemberKey(parseDocument('{"operation":"x","__proto__":{"p":1}}'))).toBe(
       true,
     );
-
-    // The finding's own central observation, re-asserted rather than taken on trust: the document
-    // carries the key as DATA and the prototype chain is untouched, which is why this closes an
-    // inconsistency rather than an active vulnerability.
     expect(Object.prototype).not.toHaveProperty('p');
   });
 
   it('★★ detects it at every depth, including inside an array element', () => {
-    // DEEP, because the asymmetry it corrects is deep: `strictObject` refuses an unrecognized key at
-    // every level, so refusing this one only at the root would leave the inconsistency one level down -
-    // and the nested case is the one QA actually submitted.
+    // DEEP, because the asymmetry it corrects is deep: `strictObject` refuses an unrecognized key
+    // at every level, so refusing this one only at the root would leave the inconsistency one
+    // level down.
     for (const text of [
       '{"order":{"orderID":"o-1","__proto__":{"p":1}}}',
       '{"order":{"orderItems":[{"skuID":"s-1","__proto__":{"p":1}}]}}',
@@ -2005,8 +1757,9 @@ describe('containsPrototypeMemberKey', () => {
   });
 
   it('detects it whatever the offending key HOLDS, including null and a scalar', () => {
-    // The value under the key is never inspected. A document that carries the name at all is refused,
-    // because what makes it a refusal is the member being present, not what was put in it.
+    // The value under the key is never inspected. A document that carries the name at all is
+    // refused, because what makes it a refusal is the member being present, not what was put in
+    // it.
     for (const text of ['{"__proto__":"x"}', '{"__proto__":null}', '{"__proto__":0}']) {
       expect(containsPrototypeMemberKey(parseDocument(text))).toBe(true);
     }
@@ -2014,8 +1767,7 @@ describe('containsPrototypeMemberKey', () => {
 
   it('★★ answers false for an ordinary document, so no well-formed request is refused', () => {
     // The INHERITED `__proto__` is present on every ordinary object in the language and is not a
-    // caller's doing - `Object.hasOwn` is what distinguishes the two, and reporting the inherited one
-    // would refuse every request this service receives.
+    // caller's doing - `Object.hasOwn` is what distinguishes the two.
     const ordinary = parseDocument(
       '{"operation":"applyPromotions","order":{"orderID":"o-1","orderItems":[{"skuID":"s-1"}]}}',
     );
@@ -2026,11 +1778,6 @@ describe('containsPrototypeMemberKey', () => {
   });
 
   it('★★ MUTATES NOTHING - neither the document it walks nor `Object.prototype`', () => {
-    // A guard against prototype pollution that polluted anything would be self-defeating, and one that
-    // DELETED the offending key would be making a decision the caller should be told about instead.
-    // This pins the reporting-only contract, and with it the central observation of the original
-    // finding: `JSON.parse` never reaches the prototype setter, so the key is an ordinary own data
-    // property both before and after the walk. Asserted here rather than taken on trust.
     const document = parseDocument('{"a":1,"__proto__":{"polluted":"yes"}}');
     const before = JSON.stringify(document);
 
@@ -2041,14 +1788,15 @@ describe('containsPrototypeMemberKey', () => {
     expect(Object.prototype).not.toHaveProperty('polluted');
     expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
 
-    // And it is a pure function of its argument: a second call on the same document answers the same
-    // way, which it could not if the first had consumed or altered anything.
+    // And it is a pure function of its argument: a second call on the same document answers the
+    // same way, which it could not if the first had consumed or altered anything.
     expect(containsPrototypeMemberKey(document)).toBe(true);
   });
 
   it('answers false for the OTHER prototype-adjacent names, which a strict schema already refuses', () => {
-    // `constructor` and `prototype` need no help here: measured against the pinned validator, both come
-    // back as `unrecognized_keys`, so detecting them would duplicate the schema and change nothing.
+    // `constructor` and `prototype` need no help here: measured against the pinned validator, both
+    // come back as `unrecognized_keys`, so detecting them would duplicate the schema and change
+    // nothing.
     expect(
       containsPrototypeMemberKey(parseDocument('{"constructor":{"a":1},"prototype":{"b":2}}')),
     ).toBe(false);
@@ -2062,7 +1810,8 @@ describe('containsPrototypeMemberKey', () => {
 
   it('★★★ survives caller-supplied nesting that would overflow a recursive walk', () => {
     // ITERATIVE, with an explicit stack, because a `RangeError` thrown from a security guard would
-    // convert a 400 into an unrecognized 500. A 2 000-level document is exactly what QA testing sent.
+    // convert a 400 into an unrecognized 500, and a 2 000-level document is well within what a
+    // caller can send.
     const depth = 2000;
     const clean = `${'{"a":'.repeat(depth)}1${'}'.repeat(depth)}`;
     const offending = `${'{"a":'.repeat(depth)}{"__proto__":{"p":1}}${'}'.repeat(depth)}`;
@@ -2080,12 +1829,6 @@ describe('containsPrototypeMemberKey', () => {
   });
 
   it('is a PREDICATE, so there is no path for it to assemble out of the caller’s key names', () => {
-    // ★★★ THIS IS THE CASE THE REPLACED HELPER COULD NOT HAVE PASSED. It returned the offending key's
-    // full dotted location, so this document produced `planted_api_token_value.__proto__` - and a
-    // security review found (MAJOR, CWE-209/CWE-532) that the path reached a 400 body and the log
-    // stream, letting a caller choose what this service published and persisted. A boolean cannot: the
-    // ancestor name below is never read into a return value, and the refusal that follows is a frozen
-    // constant of the module.
     const document = parseDocument('{"planted_api_token_value":{"__proto__":{"p":1}}}');
     const detected: boolean = containsPrototypeMemberKey(document);
 
@@ -2097,8 +1840,9 @@ describe('containsPrototypeMemberKey', () => {
 
 describe('PROTOTYPE_MEMBER_FIELD_ISSUE', () => {
   it('★★ names the offending key and nothing else, and is frozen', () => {
-    // The one member name involved that a caller does not choose. The depth at which the key was found
-    // is deliberately absent, because a depth cannot be described without naming the ancestors.
+    // The one member name involved that a caller does not choose. The depth at which the key was
+    // found is deliberately absent, because a depth cannot be described without naming the
+    // ancestors.
     expect(PROTOTYPE_MEMBER_FIELD_ISSUE).toStrictEqual({
       path: '__proto__',
       message: 'is not a member this request accepts',
@@ -2107,8 +1851,8 @@ describe('PROTOTYPE_MEMBER_FIELD_ISSUE', () => {
   });
 
   it('publishes as a 400 with the fixed path, through the mapper’s own refusal arm', () => {
-    // The shared refusal builder is what both JSON boundaries hand it to, so the published shape is
-    // asserted here rather than restated in each handler suite.
+    // The shared refusal builder is what both JSON boundaries hand it to, so the published shape
+    // is asserted here rather than restated in each handler suite.
     const { logger } = createRecordingLogger();
     const response = invalidRequestResponse('unusableRequestInput', contextWith(logger), [
       PROTOTYPE_MEMBER_FIELD_ISSUE,

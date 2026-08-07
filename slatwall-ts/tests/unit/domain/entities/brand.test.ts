@@ -2,13 +2,13 @@
 //
 // LEGACY-EXTENDED: carries `defaults_are_correct` forward from
 // [meta/tests/unit/entity/BrandTest.cfc:L58-L60] together with the cases Brand inherits from
-// [meta/tests/unit/entity/SlatwallEntityTestBase.cfc]. Every other block is labelled NET-NEW at its
-// `describe`, so net-new coverage is never read as parity.
+// [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67]. Every other block is labelled
+// NET-NEW at its `describe`, so net-new coverage is never read as parity.
 //
 // Regression-case traceability: `tests/traceability/legacyTestMap.ts` routes `issue_1097`,
-// `issue_1296`, `issue_1329`, `issue_1331`, `issue_1335`, `issue_1348`, `issue_1376`, `issue_1604`
-// and `issue_1690` [meta/tests/unit/IssuesTest.cfc] here for the record. Not one of them names a
-// brand, so none adds a case to this suite.
+// `issue_1296`, `issue_1329`, `issue_1331`, `issue_1335`, `issue_1348`, `issue_1376`,
+// `issue_1604` and `issue_1690` [meta/tests/unit/IssuesTest.cfc] here for the record. Not one of
+// them names a brand, so none adds a case to this suite.
 
 import { describe, expect, it } from 'vitest';
 
@@ -29,19 +29,12 @@ const MODIFIED_INSTANT = new Date('2024-06-02T12:30:45.000Z');
 /**
  * A syntactically well-formed but obviously inert website value.
  *
- * P6 forbids a hostname, an address, a connection string or a credential anywhere in this file, and
- * `brandWebsite` is the one column that invites one. `.invalid` is reserved by RFC 2606 precisely
- * so it can never resolve, so this literal cannot become a live reference by accident - and nothing
- * in the suite parses it in any case.
+ * P6 forbids a hostname, an address, a connection string or a credential anywhere in this file,
+ * and `brandWebsite` is the one column that invites one.
  */
 const INERT_BRAND_WEBSITE = 'https://brand.example.invalid/catalog';
 
-// ---------------------------------------------------------------------------
-// Hand-written in-memory far-side doubles
-//
-// P3 prefers hand-written doubles over a mocking framework, and here that is also the more faithful
-// choice: the assertions that matter are about DIRECTION (does `remove*` remove?) and about
-// MEMBERSHIP BY PRIMARY KEY, and a recorder that maintains real key lists can express both.
+// Hand-written in-memory far-side doubles.
 
 /**
  * Appends a key once, mirroring the far side's `isNew() or !hasX(...)` guard for a SAVED row. A
@@ -56,8 +49,8 @@ function appendOnce(keys: string[], key: string): void {
 /**
  * Withdraws a key if present.
  *
- * Uses `!== -1`: CFML's `arrayFind` returns a 1-BASED index or 0, while `indexOf` returns a 0-BASED
- * index or -1, so carrying the legacy `> 0` test across would skip element zero.
+ * Uses `!== -1`: CFML's `arrayFind` returns a 1-BASED index or 0, while `indexOf` returns a
+ * 0-BASED index or -1, so carrying the legacy `> 0` test across would skip element zero.
  */
 function withdraw(keys: string[], key: string): void {
   const index = keys.indexOf(key);
@@ -68,10 +61,6 @@ function withdraw(keys: string[], key: string): void {
 
 /**
  * The far side of the `brandID` many-to-one, recording delegations only.
- *
- * Deliberately does NOT reproduce `Product.setBrand`'s reciprocal append. Its whole purpose is to
- * isolate what `Brand`'s OWN helper body does, which is a single outward call and nothing else. The
- * composite behaviour with the real far side is asserted separately using `makeProductFixture`.
  */
 class ProductLinkDouble implements ProductBrandLink {
   readonly calls: string[] = [];
@@ -91,9 +80,8 @@ class ProductLinkDouble implements ProductBrandLink {
 /**
  * The far side of `SwPromoRewardBrand` and `SwPromoRewardExclBrand`.
  *
- * Inclusion and exclusion are TWO DISTINCT LINK TABLES sharing one entity type, so this double
- * keeps two independent lists. A brand may be included by one reward and excluded by another, and
- * neither list implies the other.
+ * Inclusion and exclusion are two distinct link tables sharing one entity type, so this double
+ * keeps two independent lists.
  */
 class PromotionRewardLinkDouble implements PromotionRewardBrandLink {
   readonly calls: string[] = [];
@@ -131,11 +119,6 @@ class PromotionRewardLinkDouble implements PromotionRewardBrandLink {
 
 /**
  * The far side of `SwPromoQualBrand` and `SwPromoQualExclBrand`.
- *
- * Structurally identical to {@link PromotionRewardLinkDouble} and declared separately on purpose:
- * these are different link tables owned by a different entity, and collapsing the two would erase
- * which locator a reviewer should check. The shipped module makes the same choice for the same
- * reason.
  */
 class PromotionQualifierLinkDouble implements PromotionQualifierBrandLink {
   readonly calls: string[] = [];
@@ -174,10 +157,8 @@ class PromotionQualifierLinkDouble implements PromotionQualifierBrandLink {
 /**
  * The far side of `SwVendorBrand`.
  *
- * `model/entity/Vendor.cfc` is OUT OF SCOPE - the plan excludes the vendor module outright and
- * there is no `vendor.ts` in the eighteen-file entity budget - so no vendor entity is imported and
- * none is invented. The exported `VendorBrandLink` contract is the whole of what `Brand` depends
- * on, and this double implements exactly that.
+ * `model/entity/Vendor.cfc` is out of SCOPE - the plan excludes the vendor module outright and
+ * there is no `vendor.ts` in the eighteen-file entity budget.
  */
 class VendorLinkDouble implements VendorBrandLink {
   readonly calls: string[] = [];
@@ -200,10 +181,6 @@ class VendorLinkDouble implements VendorBrandLink {
 
 /**
  * The far side of `SwPhysicalBrand`.
- *
- * `model/entity/Physical.cfc` is out of scope on the same footing as Vendor. Kept separate from
- * {@link VendorLinkDouble} despite being structurally identical, because it stands for a different
- * table.
  */
 class PhysicalLinkDouble implements PhysicalBrandLink {
   readonly calls: string[] = [];
@@ -232,59 +209,21 @@ function productIDsOf(products: readonly Product[]): readonly string[] {
   return products.map((product: Product) => product.getProductID());
 }
 
-// === The four legacy cases - LEGACY-EXTENDED ===
+// One `it` per legacy method, each NAMED after the legacy method so the lineage is greppable, each
+// citing its locator.
 //
-// One `it` per legacy method, each NAMED AFTER the legacy method so the lineage is greppable, each
-// citing its locator. The assertions are inlined; no shared base class is built, because the CFML
-// inheritance chain is a harness detail.
-//
-// [meta/tests/unit/entity/SlatwallEntityTestBase.cfc] is 70 lines, opening at L49, and its four
-// public test methods are:
-//
-//   L51-L54  validate_as_save_for_a_new_instance_doesnt_pass
-//              variables.entity.validate(context="save");
-//              assert(variables.entity.hasErrors());
-//   L56-L58  simple_representation_exists_and_is_simple
-//              assert(isSimpleValue(variables.entity.getSimpleRepresentation()));
-//   L60-L62  has_primary_id_property_name
-//              assert(len(variables.entity.getPrimaryIDPropertyName()));
-//   L64-L67  defaults_are_correct           <-- OVERRIDDEN by BrandTest.cfc
-//              assert(variables.entity.isNew());
-//              assert(!len(variables.entity.getPrimaryIDValue()));
-//
-// with the closing brace at L68. The range is L51-L67; any citation of L49-L68 is off by two at
-// each end and is rejected in favour of the source. The third case names
-// `getPrimaryIDPropertyName`, a DIFFERENT member from `getSimpleRepresentationPropertyName`; the
-// two are not conflated.
-//
-// [meta/tests/unit/entity/BrandTest.cfc] is 64 lines: L49 extends the base, L52-L56 is a `setUp`
-// calling `super.setup()` and then `getService("brandService").newBrand()`, and L58-L60 is the
-// override.
+// `meta/tests/unit/entity/BrandTest.cfc` is 64 lines: L49 extends the base, L52-L56 is a `setUp`
+// calling `super.setup()` and then `getService("brandService").newBrand()`.
 
 describe('LEGACY-EXTENDED: the four cases Brand inherits or overrides', () => {
   // C8 LEGACY-EXTENDED [meta/tests/unit/entity/BrandTest.cfc:L58-L60]: overrides
-  // SlatwallEntityTestBase.defaults_are_correct [L64-L67].
+  // SlatwallEntityTestBase.defaults_are_correct `meta/tests/unit/entity/BrandTest.cfc`.
   it('defaults_are_correct - getProducts() equals [] on a freshly built brand', () => {
-    // The overriding body in full, and it is one line:
+    // This is the one hard legacy contract in the entire file, and the empty array is the
+    // assertion, not a falsy value and not a nullish one.
     //
-    //   public void function defaults_are_correct() {
-    //     assertEquals(variables.entity.getProducts(), []);
-    //   }
-    //
-    // THIS IS THE ONE HARD LEGACY CONTRACT IN THE ENTIRE FILE, and the empty ARRAY is the
-    // assertion, not a falsy value and not a nullish one. `undefined` and `null` both fail it,
-    // which is why the shipped accessor is typed `Product[]` rather than `Product[] | undefined`.
-    //
-    // WHICH EMPTY-COLLECTION SEMANTIC THIS IS, of the five this migration keeps distinct: not a
-    // caller's permissive empty list, not an evaluator's restrictive one, not either of
-    // `hasAnyInProperty`'s two opposite include/exclude readings and not the fulfillment three-way
-    // gate, but a plain construction default carrying no qualification meaning at all - and the
-    // only one of the five a legacy test asserts.
-    //
-    // `new Brand()` with no argument is the faithful translation of
-    // `getService("brandService").newBrand()` at [meta/tests/unit/entity/BrandTest.cfc:L55]: the
-    // factory supplied no data, and the shipped constructor defaults its whole parameter object to
-    // `{}`.
+    // Which EMPTY-COLLECTION SEMANTIC this is, of the five this migration keeps distinct: not a
+    // caller's permissive empty list, not an evaluator's restrictive one.
     const subject = new Brand();
 
     expect(subject.getProducts()).toEqual([]);
@@ -297,16 +236,6 @@ describe('LEGACY-EXTENDED: the four cases Brand inherits or overrides', () => {
   });
 
   it('validate_as_save_for_a_new_instance_doesnt_pass - the DISPATCHER is not portable, the REGISTER is', () => {
-    // ★★★ QUOTE-THEN-REVISE. This case asserted the ABSENCE of all four members, on the reading that
-    // the whole validation affordance was unportable. Half of that was right and half was a defect
-    // code review recorded: `validate` IS the unportable half - metadata-driven dispatch over
-    // `model/validation/*.json` through `HibachiValidationService`, replaced by the rules
-    // `src/services/brandService.ts` transcribes - but the ERROR REGISTER
-    // [org/Hibachi/HibachiTransient.cfc:L30-L64] is five small members with no framework behind them,
-    // and `HibachiService.save` [org/Hibachi/HibachiService.cfc:L151-L167] carries a refused save's
-    // rules on the entity through exactly those members. Without them `saveBrand` had no way to report
-    // a refusal and threw instead, which broke the return contract of
-    // [model/service/BrandService.cfc:L76].
     expect(prototypeMembers()).not.toContain('validate');
     expect(prototypeMembers()).toContain('hasErrors');
     expect(prototypeMembers()).toContain('hasError');
@@ -314,9 +243,8 @@ describe('LEGACY-EXTENDED: the four cases Brand inherits or overrides', () => {
     expect(prototypeMembers()).toContain('getError');
     expect(prototypeMembers()).toContain('addError');
 
-    // ★ AND A BARE ENTITY CARRIES NO ERROR, which is the legacy case's actual subject: the CFML test
-    // asserted that a NEW brand does not PASS validation, not that it arrives pre-flagged. Errors
-    // appear only once something records them.
+    // And A bare entity carries no ERROR, which is the legacy case's actual subject: the CFML test
+    // asserted that a NEW brand does not PASS validation, not that it arrives pre-flagged.
     expect(new Brand().hasErrors()).toBe(false);
     expect(new Brand().getErrors()).toStrictEqual({});
 
@@ -333,15 +261,8 @@ describe('LEGACY-EXTENDED: the four cases Brand inherits or overrides', () => {
   });
 
   it('simple_representation_exists_and_is_simple - not portable, and not fabricated', () => {
-    // The legacy body, verbatim [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58]:
-    //
-    //   assert(isSimpleValue(variables.entity.getSimpleRepresentation()));
-    //
     // CFML parity [model/entity/Brand.cfc:L157-L159]: the "Overridden Methods" banner pair is
-    // LITERALLY EMPTY, L157 opening it and L159 closing it with nothing between. So Brand never
-    // declared `getSimpleRepresentation()`, never declared an `hb_simpleRepresentationProperty` and
-    // never overrode anything: what the legacy case observed came ENTIRELY from the framework base,
-    // which is not ported. The absence is EXPLAINED rather than forced.
+    // LITERALLY EMPTY, L157 opening it and L159 closing it with nothing between.
     expect(prototypeMembers()).not.toContain('getSimpleRepresentation');
     expect(prototypeMembers()).not.toContain('getSimpleRepresentationPropertyName');
   });
@@ -357,8 +278,6 @@ describe('LEGACY-EXTENDED: the four cases Brand inherits or overrides', () => {
     expect(subject.getBrandID().length).toBeGreaterThan(0);
   });
 });
-
-// --- NET-NEW: brandID, isNew() and the two undefaulted boolean flags --------
 
 describe('NET-NEW: brandID defaults to the empty string, which is what makes isNew() honest', () => {
   it('a bare brand is new and its primary id is the empty string, not undefined', () => {
@@ -397,11 +316,8 @@ describe('NET-NEW: brandID defaults to the empty string, which is what makes isN
   });
 
   it('exposes no setter at all, so the id and every column are hydrate-once', () => {
-    // CFML parity [model/entity/Brand.cfc:L49]: `accessors=true` generated a getter AND a setter
-    // per persistent property, and `hb_populateEnabled="false"` on the audit run and on five of the
-    // six inverse collections is how the framework excluded those from mass assignment. The target
-    // needs no such mechanism: every field is `readonly` and no setter is published, which closes
-    // the gap uniformly - including the one the legacy left open at L70.
+    // CFML parity [model/entity/Brand.cfc:L49]: `accessors=true` generated a getter and a setter
+    // per persistent property.
     const setters = prototypeMembers().filter((member: string) => member.startsWith('set'));
 
     expect(setters).toEqual([]);
@@ -462,13 +378,9 @@ describe('NET-NEW: activeFlag and publishedFlag declare NO ORM default', () => {
   });
 });
 
-// --- NET-NEW: brandWebsite is an inert string and is never fetched ----------
-
 describe('NET-NEW: brandWebsite is a plain string - hb_formatType="url" is a hint only', () => {
   // CFML parity [model/entity/Brand.cfc:L57]: `hb_formatType="url"` on `brandWebsite` is
-  // presentation metadata that told the legacy admin how to render the value, whereas the `url`
-  // dataType declared for the `save` context in [model/validation/Brand.json] is a constraint
-  // enforced at the service tier. The entity applies no URL validation of its own.
+  // presentation metadata that told the legacy admin how to render the value.
 
   it('the value round-trips byte-for-byte, with no normalisation', () => {
     const subject = new Brand({ brandWebsite: INERT_BRAND_WEBSITE });
@@ -507,15 +419,8 @@ describe('NET-NEW: brandWebsite is a plain string - hb_formatType="url" is a hin
   });
 });
 
-// --- NET-NEW: model/validation/Brand.json, including its orphan -------------
-
 /**
- * [model/validation/Brand.json] transcribed verbatim from the 8-line source.
- *
- * INERT DATA, frozen by `as const`, holding no state and mutated by nothing. It exists so the
- * schema contract is a checkable artefact in this suite rather than a claim in a comment: a
- * reviewer diffs these five entries against the file, and the assertions below then relate each
- * entry to what the ENTITY actually exposes.
+ * `model/validation/Brand.json` transcribed verbatim from the 8-line source.
  *
  * The file has no `"method"` entry, so Brand contributes no declaratively invoked validator -
  * unlike the five that do exist elsewhere in the folder.
@@ -552,8 +457,8 @@ describe('NET-NEW: the save-context requirements and the delete gate', () => {
   });
 
   it('urlTitle carries the uniqueness contract, which is a database and service concern', () => {
-    // CFML parity [model/entity/Brand.cfc:L55]: `unique="true"` on the property and `"unique":true`
-    // in the save context are the same fact stated twice.
+    // CFML parity [model/entity/Brand.cfc:L55]: `unique="true"` on the property and
+    // `"unique":true` in the save context are the same fact stated twice.
     expect(BRAND_VALIDATION_SCHEMA.urlTitle[0].unique).toBe(true);
     expect(prototypeMembers()).not.toContain('hasUniqueUrlTitle');
     expect(prototypeMembers()).not.toContain('hasUniqueOrNullUrlTitle');
@@ -596,10 +501,9 @@ describe('NET-NEW: the save-context requirements and the delete gate', () => {
   });
 
   it('the delete gate CANNOT be an in-memory length check, and the tension is recorded', () => {
-    // A REAL ANTI-CORRUPTION TENSION, recorded here and deliberately NOT resolved by this suite. So
-    // the very default [meta/tests/unit/entity/BrandTest.cfc:L58-L60] pins is what makes the delete
-    // guard toothless in memory. CFML parity [model/entity/Brand.cfc:L61]: `inverse="true"` means
-    // `Product` owns the `brandID` FK, so the brand never writes the link.
+    // A real anti-corruption tension, recorded here and deliberately not resolved by this suite.
+    // So the very default [meta/tests/unit/entity/BrandTest.cfc:L58-L60] pins is what makes the
+    // delete guard toothless in memory.
     const unmaterialized = new Brand({ brandID: 'brand-1' });
 
     expect(unmaterialized.getProducts()).toEqual([]);
@@ -610,34 +514,12 @@ describe('NET-NEW: the save-context requirements and the delete gate', () => {
 });
 
 describe('NET-NEW: the orphaned physicalCounts delete gate', () => {
-  // CFML parity [model/validation/Brand.json, model/entity/Brand.cfc:L71,
-  // model/entity/Physical.cfc:L59]: the delete gate keys on "physicalCounts", a property Brand does
-  // not declare -- Brand declares "physicals" at L71, and physicalCounts exists only on
-  // Physical.cfc:L59. An ORPHANED declaration. Documented dead; no physicalCounts member is
-  // invented to satisfy it.
+  // CFML parity
+  // [model/validation/Brand.json, model/entity/Brand.cfc:L71, model/entity/Physical.cfc:L59]: the
+  // delete gate keys on "physicalCounts", a property Brand does not declare -- Brand declares
+  // "physicals" at L71.
   //
-  // Verified by census, not inferred: `name="physicalCounts"` across `model/entity/` returns
-  // EXACTLY ONE hit, [model/entity/Physical.cfc:L59], a one-to-many with
-  // `singularname="physicalCount"`. What Brand declares at [model/entity/Brand.cfc:L71] is
-  // `physicals`, a many-to-many over `linktable="SwPhysicalBrand"` with
-  // `hb_populateEnabled="false"`. Different name, fieldtype and table. The same orphan appears in
-  // FIVE validation files - Brand.json, Product.json, Sku.json, ProductType.json and the
-  // out-of-scope Location.json, the likely copy-paste origin since `Location` is nearest to
-  // physical inventory - and Product, Sku and ProductType all declare `physicals` too, exactly as
-  // Brand does.
-  //
-  // WHY IT WENT UNNOTICED, and the mechanism is specific to Brand. Brand is one of exactly FOUR
-  // in-scope entities that declare `attributeValues`, the others being Sku, Product and
-  // ProductType, and that declaration unlocks the EAV fallback at
-  // [org/Hibachi/HibachiEntity.cfc:L559-L561], whose guard conjoins
-  // `left(missingMethodName,3)=="get"`, `structKeyExists(variables,"getAttributeValue")` and
-  // `hasProperty("attributeValues")`. A call dispatched through a nonexistent `getPhysicalCounts()`
-  // does not match the `get*Count` branch at [L553-L557] either, the name ending `ounts` and not
-  // `Count`, so it falls through to L559 and becomes `getAttributeValue("PhysicalCounts")`, an
-  // attribute lookup returning the empty string: the gate passes vacuously instead of throwing at
-  // [L565]. On the fourteen entities that do NOT declare `attributeValues` the identical rule would
-  // have thrown immediately. That 4-silent / 14-throw split is the mechanism that hides this
-  // orphan. In the target NEITHER path exists - no dispatcher and no EAV - so the rule is inert.
+  // Why it went unnoticed, and the mechanism is specific to Brand.
 
   it('the orphaned key is present in the schema and is transcribed rather than dropped', () => {
     expect(Object.keys(BRAND_VALIDATION_SCHEMA)).toContain('physicalCounts');
@@ -664,7 +546,7 @@ describe('NET-NEW: the orphaned physicalCounts delete gate', () => {
   });
 
   it('this finding does not expand the six-file validation-absence inventory', () => {
-    // The six in-scope artefacts with NO validation file remain exactly six: Category,
+    // The six in-scope artefacts with no validation file remain exactly six: Category,
     // PromotionQualifier, PromotionApplied, PromotionAccount, Product_AddOption and
     // Product_AddOptionGroup.
     const IN_SCOPE_VALIDATION_ABSENCES = [
@@ -685,7 +567,7 @@ describe('NET-NEW: the orphaned physicalCounts delete gate', () => {
 describe('NET-NEW: every remove* helper removes - the inversion cross-check verdict', () => {
   // CFML parity [model/entity/Brand.cfc:L118-L120]: `removePromotionRewardExclusion` delegates to
   // the far side's `removeExcludedBrand`, and [model/entity/Brand.cfc:L135-L137] does the same for
-  // `removePromotionQualifierExclusion`, so each round trip asserted below closes.
+  // `removePromotionQualifierExclusion`.
 
   it('removePromotionRewardExclusion WITHDRAWS the exclusion - the round trip closes', () => {
     const subject = new Brand({ brandID: 'brand-1' });
@@ -728,8 +610,8 @@ describe('NET-NEW: every remove* helper removes - the inversion cross-check verd
   });
 
   it('inclusion and exclusion are independent link tables and never bleed into each other', () => {
-    // CFML parity [model/entity/Brand.cfc:L66-L67]: `promotionRewards` maps to `SwPromoRewardBrand`
-    // and `promotionRewardExclusions` to `SwPromoRewardExclBrand`.
+    // CFML parity [model/entity/Brand.cfc:L66-L67]: `promotionRewards` maps to
+    // `SwPromoRewardBrand` and `promotionRewardExclusions` to `SwPromoRewardExclBrand`.
     const subject = new Brand({ brandID: 'brand-1' });
     const reward = new PromotionRewardLinkDouble();
 
@@ -767,8 +649,8 @@ describe('NET-NEW: every remove* helper removes - the inversion cross-check verd
   });
 
   it('membership is compared by brandID alone - never by identity, never by deep equality', () => {
-    // Hibernate's collection-contains rested on SESSION IDENTITY, which for a persistent row is the
-    // primary key.
+    // Hibernate's collection-contains rested on SESSION IDENTITY, which for a persistent row is
+    // the primary key.
     const original = new Brand({ brandID: 'brand-1', brandName: 'Acme' });
     const rehydratedSameRow = new Brand({ brandID: 'brand-1', brandName: 'Acme Renamed' });
     const differentRowSameData = new Brand({ brandID: 'brand-2', brandName: 'Acme' });
@@ -789,24 +671,16 @@ describe('NET-NEW: every remove* helper removes - the inversion cross-check verd
 describe('NET-NEW: the six many-to-many-inverse link tables, preserved verbatim', () => {
   /**
    * The six `linktable` values live at [model/entity/Brand.cfc:L66-L71], and the requirement is
-   * that EVERY ABBREVIATION SURVIVES: `Promo` is not `Promotion`, `Qual` is not `Qualifier`, `Excl`
-   * is not `Exclusion`. These are physical table names in a live schema this port keeps reading and
-   * writing unchanged (AAP 0.8.1), so "tidying" one would be a migration.
+   * that every abbreviation survives: `Promo` is not `Promotion`, `Qual` is not `Qualifier`,
+   * `Excl` is not `Exclusion`.
    *
-   * That claim is NOT asserted here. Restating the six literals in this file and comparing them
-   * with themselves would prove only that a test-owned array holds what it was written to hold - it
-   * cannot notice a target module misspelling a table. The contract is checked where the shipped
-   * text can actually be read: tests/traceability/legacyTestMap.ts, block A20, derives all 53
-   * in-scope `linktable` declarations from the frozen legacy entities and holds `src/` to them,
-   * including the four of Brand's six that reach real SQL and the two that stay commentary.
-   *
-   * What this block does assert is the part that lives on THIS class: which collections the entity
+   * What this block does assert is the part that lives on this class: which collections the entity
    * materializes, and which it deliberately does not.
    */
 
   it('materializes four of the six collections and, correctly, not the other two', () => {
     // CFML parity [model/entity/Brand.cfc:L70-L71]: `vendors` and `physicals` point at
-    // `model/entity/Vendor.cfc` and `model/entity/Physical.cfc`, both OUT OF SCOPE and both absent
+    // `model/entity/Vendor.cfc` and `model/entity/Physical.cfc`, both out of SCOPE and both absent
     // from the entity budget.
     const subject = new Brand({ brandID: 'brand-1' });
 
@@ -822,22 +696,9 @@ describe('NET-NEW: the six many-to-many-inverse link tables, preserved verbatim'
   });
 
   it('the two metadata asymmetries are annotated and NEITHER is normalised', () => {
-    // CFML parity [model/entity/Brand.cfc:L60-L71]: two declaration inconsistencies run across this
-    // block, both cosmetic in CFML because the engine treats the collections identically, and both
-    // recorded rather than silently regularised. `type="array"` is PRESENT on L60, L61, L67, L69
-    // and L71 and OMITTED on L66 promotionRewards, L68 promotionQualifiers and L70 vendors, so both
-    // `*Exclusions` carry it and neither non-exclusion twin does - copy-paste drift rather than
-    // intent. And `hb_populateEnabled="false"` is present on L66, L67, L68, L69 and L71 but ABSENT
-    // on L70 `vendors`, the single inverse collection the legacy left open to mass assignment.
-    //
-    // Neither has any expression in the target: all four materialized collections are modelled
-    // uniformly, and since every field is `readonly` with no setter published, the L70 gap cannot
-    // be exercised through this class at all.
-    // The line numbers above are the record of what the legacy declares; they are NOT restated as
-    // arrays and compared with themselves, because that would assert only that this file can hold
-    // its own literals. What is checkable from here is the target's side of the claim: all four
-    // materialized collections behave identically, and the L70 mass-assignment gap has nowhere to
-    // exist because NO setter is published at all.
+    // CFML parity [model/entity/Brand.cfc:L60-L71]: two declaration inconsistencies run across
+    // this block, both cosmetic in CFML because the engine treats the collections identically, and
+    // both recorded rather than silently regularised.
     const subject = new Brand({ brandID: 'brand-1' });
 
     expect(Array.isArray(subject.getPromotionRewards())).toBe(true);
@@ -851,23 +712,10 @@ describe('NET-NEW: the six many-to-many-inverse link tables, preserved verbatim'
 
 describe('NET-NEW: addProduct and removeProduct delegate to the owning side', () => {
   // CFML parity [model/entity/Brand.cfc:L98-L103]: addProduct uses lowercase `arguments.product`
-  // (L99) while removeProduct uses capitalized `arguments.Product` (L102). CFML scope keys are
-  // case-insensitive, so both resolve; the target normalises to ONE binding without changing
-  // behaviour.
-  //
-  // The one line that carries the wart, verbatim:
-  //
-  //   L102     arguments.Product.removeBrand(this);      <-- CAPITAL P
-  //
-  // The parameter is declared `product` in lower case on BOTH L098 and L101; only the BODY of
-  // `removeProduct` capitalises it. CFML's `arguments` scope is a case-insensitive struct, so both
-  // spellings resolve to the same single argument and there is NO behavioural consequence.
-  // TypeScript has one parameter identifier, so the wart has nowhere to exist in the target, which
-  // is why this is a parity note rather than a defect.
+  // (L99) while removeProduct uses capitalized `arguments.Product` (L102).
   //
   // The hazard is real for a porter: had the two spellings been read as two different arguments,
-  // `removeProduct` would have been ported against an undefined value. `noUnusedLocals` was NOT
-  // weakened to accommodate it.
+  // `removeProduct` would have been ported against an undefined value.
 
   it('addProduct calls setBrand on the far side and nothing else', () => {
     const subject = new Brand({ brandID: 'brand-1' });
@@ -913,11 +761,10 @@ describe('NET-NEW: addProduct and removeProduct delegate to the owning side', ()
 });
 
 describe('NET-NEW: the composite behaviour through the REAL far side', () => {
-  // The reciprocal bookkeeping lives on the owning side: `src/domain/entities/product.ts`
-  // reproduces [model/entity/Product.cfc:L662-L667], whose guard `isNew() or
-  // !brand.hasProduct(this)` appends the product into `brand.getProducts()`. So `addProduct` with a
-  // REAL `Product` DOES change `getProducts()`, which is why the accessor hands back a live
-  // `Product[]`; the recording double used in the block above observes the outward delegation only.
+  // CFML parity [model/entity/Brand.cfc:L98-L100]: `Brand.addProduct` delegates straight to
+  // `arguments.product.setBrand(this)`, and the owning side [model/entity/Product.cfc:L662-L667]
+  // appends into `brand.getProducts()` - so `addProduct` with a real far side mutates the brand's
+  // live array rather than a copy.
 
   it('addProduct with a real Product appends to the brand LIVE array', () => {
     const subject = new Brand({ brandID: 'brand-1' });
@@ -1010,7 +857,7 @@ describe('NET-NEW: the composite behaviour through the REAL far side', () => {
 
 describe('NET-NEW: the vendor and physical helpers are ported despite out-of-scope far sides', () => {
   // CFML parity [model/entity/Brand.cfc:L140-L153]: `addVendor`/`removeVendor` and
-  // `addPhysical`/`removePhysical` are declared on THIS component, so they are ported in full -
+  // `addPhysical`/`removePhysical` are declared on this component, so they are ported in full -
   // unlike the collections they relate to.
 
   it('addVendor and removeVendor delegate to the far side in the correct direction', () => {
@@ -1058,16 +905,7 @@ describe('NET-NEW: the attributeValues EAV path and its two helpers are DROPPED'
   // declaration and its two bidirectional helpers, `addAttributeValue`/`removeAttributeValue`,
   // which delegate to `setBrand`/`removeBrand` on the far side.
   //
-  // The whole EAV read path is out of scope, so the collection is not materialized and both helpers
-  // are DROPPED, which is why the sixteen legacy methods become fourteen in the target.
-  //
-  // "Dropped" means these members are not authored in TypeScript. It does NOT mean anything was
-  // removed from the legacy tree: [model/entity/Brand.cfc] is REFERENCE ONLY, remains byte-for-byte
-  // unchanged, and the CFML monolith keeps running with the EAV subsystem intact.
-  //
-  // The L60 `cascade="all-delete-orphan"` is an obligation an entity cannot honour in this
-  // architecture, because deletion is an explicit repository operation. It belongs to the
-  // repository tier and is not simulated here.
+  // "Dropped" means these members are not authored in TypeScript.
 
   it('neither attributeValue helper exists, and no collection stands in for them', () => {
     expect(prototypeMembers()).not.toContain('addAttributeValue');
@@ -1090,11 +928,9 @@ describe('NET-NEW: the attributeValues EAV path and its two helpers are DROPPED'
   });
 
   it('exposes fourteen bidirectional helpers - sixteen legacy methods minus the two dropped', () => {
-    // ★ `addError` IS EXCLUDED BY NAME, not by prefix. It begins with `add` and is emphatically not a
-    // bidirectional association helper - it is the error register's writer
-    // [org/Hibachi/HibachiTransient.cfc:L61-L64]. Filtering on the prefix alone would have counted it
-    // as a fifteenth helper and made this case a statement about spelling rather than about
-    // associations.
+    // `addError` is EXCLUDED by NAME, not by prefix. It begins with `add` and is emphatically not
+    // a bidirectional association helper - it is the error register's writer
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64].
     const helpers = prototypeMembers().filter(
       (member: string) =>
         member !== 'addError' && (member.startsWith('add') || member.startsWith('remove')),
@@ -1110,23 +946,8 @@ describe('NET-NEW: urlTitle is stored here and generated elsewhere', () => {
   // CFML parity [model/entity/Brand.cfc:L55]: `urlTitle` is an `ormtype="string"` declared
   // `unique="true"`.
   //
-  // The value is what [model/service/BrandService.cfc:L67-L77] feeds through the URL-title
-  // generator. That is the ONLY method the legacy service declares, everything else having been
-  // inherited from the framework base, and it generates only when BOTH the entity's own title and
-  // any incoming `data.urlTitle` are absent or empty:
-  //
-  //   getDataService().createUniqueURLTitle(titleString=..., tableName="SwBrand");
-  //
   // The `dataService` dependency at [model/service/BrandService.cfc:L51] becomes the
   // `urlTitleGenerator` port, one of the thirteen ports in the plan, and there is no fourteenth.
-  // Generation is a SERVICE concern: it needs a uniqueness query against `SwBrand`, which an entity
-  // cannot issue.
-  //
-  // A CASING HAZARD WORTH NAMING. [model/service/BrandService.cfc:L68] reads the value back as
-  // `arguments.brand.getURLTitle()` with a capital `URL` while the property is spelled `urlTitle`.
-  // CFML method names are case-insensitive so both resolve to one generated accessor; TypeScript is
-  // not, so exactly one spelling can exist. The shipped accessor is `getUrlTitle()`, matching the
-  // property, and NO alias is added.
 
   it('urlTitle round-trips and is absent rather than blank when unset', () => {
     const populated = new Brand({ urlTitle: 'acme-brand' });
@@ -1166,23 +987,9 @@ describe('NET-NEW: urlTitle is stored here and generated elsewhere', () => {
   });
 });
 
-// --- NET-NEW: structural facts, and the framework surface not ported --------
-
 describe('NET-NEW: remoteID and the four audit columns', () => {
-  // CFML parity [model/entity/Brand.cfc:L74, L77-L80]:
-  //
-  //   L74  property name="remoteID" ormtype="string";
-  //   L77  property name="createdDateTime" hb_populateEnabled="false" ormtype="timestamp";
-  //   L78  property name="createdByAccount" hb_populateEnabled="false" cfc="Account"
-  //        fieldtype="many-to-one" fkcolumn="createdByAccountID";
-  //   L79  property name="modifiedDateTime" hb_populateEnabled="false" ormtype="timestamp";
-  //   L80  property name="modifiedByAccount" hb_populateEnabled="false" cfc="Account"
-  //        fieldtype="many-to-one" fkcolumn="modifiedByAccountID";
-  //
   // The two account associations point at `model/entity/Account.cfc`, explicitly out of scope, so
-  // each collapses to the OPAQUE FK COLUMN it is backed by. That collapse is legitimate here
-  // precisely because these ARE real columns on `SwBrand` - contrast `vendors`/`physicals`, whose
-  // keys live in link tables and for which an id member would have invented a column.
+  // each collapses to the opaque fk column it is backed by.
 
   it('remoteID is an inert correlation string with no parsing and no default', () => {
     const populated = new Brand({ remoteID: 'legacy-brand-0042' });
@@ -1240,17 +1047,8 @@ describe('NET-NEW: remoteID and the four audit columns', () => {
 
 describe('NET-NEW: Brand has NO ORM event hook and NO overridden method', () => {
   // CFML parity [model/entity/Brand.cfc:L157-L163]: the "Overridden Methods" pair at L157/L159 and
-  // the "ORM Event Hooks" pair at L161/L163 are BOTH present-but-LITERALLY EMPTY, as is the
-  // "Non-Persistent Property Methods" pair at L83/L85. Only the "Bidirectional Helper Methods" pair
-  // at L87/L155 contains anything, and the component closes at L164.
-  //
-  // NEVER NORMALISE A BANNER: an empty banner implies nothing on its own and is not evidence that a
-  // member was dropped. Two consequences are real and assertable. No materialized-path maintenance,
-  // so a repository has nothing to invoke on save - contrast
-  // [model/entity/PriceGroup.cfc:L206-L214] and [model/entity/ProductType.cfc:L305-L313], which
-  // assign their path BEFORE calling `super`, and [model/entity/Category.cfc:L126-L134], which
-  // calls `super` FIRST and assigns SECOND; those three are CITED, not re-tested. And no memoized
-  // accessor, hence none of the memo defects that afflict `Sku` and `Product`.
+  // the "ORM Event Hooks" pair at L161/L163 are both present-but-LITERALLY EMPTY, as is the
+  // "Non-Persistent Property Methods" pair at L83/L85.
 
   it('hosts no ORM lifecycle hook of any kind', () => {
     for (const hook of [
@@ -1303,12 +1101,8 @@ describe('NET-NEW: Brand has NO ORM event hook and NO overridden method', () => 
 describe('NET-NEW: the framework dynamic-dispatch surface is documented, not reproduced', () => {
   // CFML parity [org/Hibachi/HibachiEntity.cfc:L507-L565]: `onMissingMethod` synthesised
   // `hasUniqueOrNullXXX`, `hasUniqueXXX`, `hasAnyXXX`, `getXXXAssignedIDList`, `getXXXID`,
-  // `getXXXOptions`, `getXXXOptionsSmartList`, `getXXXSmartList`, `getXXXStruct` and `getXXXCount`,
-  // and THREW at [L565] for anything it could not match. Because it declares `attributeValues` at
-  // [model/entity/Brand.cfc:L60] - as do Sku [L70], Product [L75] and ProductType [L67], and no
-  // other in-scope entity - an unmatched `get...` on a Brand did NOT throw. It fell through to the
-  // EAV branch at [L559-L561] and became `getAttributeValue(...)`, returning the empty string. The
-  // other fourteen in-scope entities threw at [L565] instead.
+  // `getXXXOptions`, `getXXXOptionsSmartList`, `getXXXSmartList`, `getXXXStruct` and
+  // `getXXXCount`.
 
   it('synthesises none of the eleven dispatcher patterns', () => {
     for (const synthesised of [
@@ -1339,10 +1133,8 @@ describe('NET-NEW: the framework dynamic-dispatch surface is documented, not rep
       'getPrimaryIDValue',
       'getPrimaryIDPropertyName',
       'populate',
-      // `validate` YES, `hasErrors` NO LONGER - see the LEGACY-EXTENDED case above for the full
-      // record. The dispatcher is not ported; the five-member error register it wrote into is,
-      // because `HibachiService.save` [org/Hibachi/HibachiService.cfc:L151-L167] delivers a refused
-      // save through it and `saveBrand` inherits that contract.
+      // `validate` yes, `hasErrors` no longer - see the legacy-extended case above for the full
+      // record.
       'validate',
       'setSuperUserFlag',
     ]) {
@@ -1357,25 +1149,14 @@ describe('NET-NEW: the framework dynamic-dispatch surface is documented, not rep
   it('reproduces neither the dead attribute retry nor the raw debug dump', () => {
     // CFML parity [model/entity/HibachiEntity.cfc:L180-L183]: the intermediate base class issues
     // `getService("attributeService").getAttributeByAttributeCode( arguments.attribute )` at L180
-    // and then, inside a guard at L181, issues the IDENTICAL call with the IDENTICAL argument at
-    // L182. CFML parity [org/Hibachi/HibachiEntity.cfc:L605]: the base class calls
-    // `writeDump(getErrors())` on a failed ORM flush, writing raw entity state to the response.
+    // and then, inside a guard at L181.
     for (const absent of ['getAttributeByAttributeCode', 'logHibachi', 'writeDump']) {
       expect(prototypeMembers()).not.toContain(absent);
     }
-
-    // ★ `getErrors` USED TO BE IN THAT LIST, AND IT NO LONGER BELONGS THERE. What this case is about
-    // is the DEBUG DUMP - `writeDump(getErrors())` [org/Hibachi/HibachiEntity.cfc:L605] writing raw
-    // entity state into the HTTP response - not about the register the dump happened to read. The
-    // register is ported [org/Hibachi/HibachiTransient.cfc:L30-L32]; the dump is not, and the
-    // distinction is asserted rather than blurred.
     expect(prototypeMembers()).toContain('getErrors');
   });
 
   it('injects no collaborator port - Brand has ZERO legacy getService() sites', () => {
-    // Verified by census: a search for `getService(` across [model/entity/Brand.cfc] returns ZERO
-    // hits, so this entity never reached a service locator and there is nothing to convert into a
-    // constructor port.
     const subject = new Brand();
 
     expect(subject.getBrandID()).toBe('');
@@ -1386,27 +1167,11 @@ describe('NET-NEW: the framework dynamic-dispatch surface is documented, not rep
   });
 });
 
-// --- NET-NEW: the published surface is exactly the ported CFML surface ------
-
 /**
  * The 41 public members of the shipped class, in declaration order.
  *
  * Sixteen accessors, `isNew()`, five containment probes, fourteen bidirectional helpers and the
- * five-member error register. These are the ported CFML member names with ACRONYM CASING NORMALISED to
- * the property spelling, not verbatim spellings: the legacy code calls `getURLTitle()`
- * [model/service/BrandService.cfc:L68] whereas this class exposes `getUrlTitle()`. CFML method names
- * are case-insensitive, so both forms resolved to one generated accessor there; TypeScript is
- * case-sensitive, so exactly one spelling can exist here.
- *
- * ★★ THE FIVE-MEMBER REGISTER WAS ADDED IN ONE REVISION AND THE REASON IS RECORDED HERE. This surface
- * used to be 36, and the five absences were asserted deliberately - the LEGACY-EXTENDED case above
- * carries the full argument. Briefly: `HibachiService.save`
- * [org/Hibachi/HibachiService.cfc:L151-L167] delivers a refused save by leaving its rules ON THE
- * ENTITY, skipping the flush and returning that same entity, and `saveBrand`
- * [model/service/BrandService.cfc:L76] inherits exactly that. With no register the ported service
- * had nowhere to put a refusal and threw instead, which is the divergence code review recorded. The
- * five are [org/Hibachi/HibachiTransient.cfc:L30-L64] verbatim; the `validate` DISPATCHER that wrote
- * into them is still not ported.
+ * five-member error register.
  */
 const INTENDED_PUBLIC_SURFACE = [
   'getBrandID',
@@ -1446,9 +1211,9 @@ const INTENDED_PUBLIC_SURFACE = [
   'addPhysical',
   'removePhysical',
 
-  // The error register [org/Hibachi/HibachiTransient.cfc:L30-L64]. Listed last because it is the one
-  // group that is NOT a `Brand.cfc` member - it is inherited framework behaviour the ported save
-  // contract depends on.
+  // The error register [org/Hibachi/HibachiTransient.cfc:L30-L64]. Listed last because it is the
+  // one group that is not a `Brand.cfc` member - it is inherited framework behaviour the ported
+  // save contract depends on.
   'getErrors',
   'hasErrors',
   'hasError',
@@ -1485,10 +1250,7 @@ describe('NET-NEW: the published surface is exactly the ported CFML surface', ()
   });
 
   it('splits the surface exactly 16 / 1 / 5 / 14 / 5', () => {
-    // ★ THE REGISTER IS PARTITIONED OUT FIRST, BY NAME AND NOT BY PREFIX. Its five members would
-    // otherwise scatter across all three prefix groups - `getErrors`/`getError` read as accessors,
-    // `hasErrors`/`hasError` as containment probes and `addError` as a bidirectional helper - which
-    // would make every count below a statement about spelling rather than about the CFML surface.
+    // The register is partitioned out first, by name and not by prefix.
     const register = new Set(['getErrors', 'hasErrors', 'hasError', 'getError', 'addError']);
     const cfmlSurface = INTENDED_PUBLIC_SURFACE.filter((member: string) => !register.has(member));
 
@@ -1528,40 +1290,26 @@ describe('NET-NEW: the published surface is exactly the ported CFML surface', ()
   it('records SwBrand and hb_permission="this" as inert metadata, resolved by nothing', () => {
     // CFML parity [model/entity/Brand.cfc:L49]: the table is `SwBrand` and the entity name
     // `SlatwallBrand`, both preserved verbatim - schema continuity is binding and the property
-    // metadata IS the contract. `hb_permission="this"` is the literal four-character string `this`,
-    // NOT a resolved path; the same literal appears at [model/entity/Category.cfc:L49].
-    //
-    // `SwBrand` and `SlatwallBrand` are NOT restated here as local constants and compared with
-    // themselves; tests/traceability/legacyTestMap.ts block A20 derives both from the frozen
-    // `table=` / `entityname=` attributes and holds the shipped source to them, for all 18
-    // entities. `hb_permission` and `hb_serviceName` have no target expression at all, which is
-    // itself the assertion below: not one of the four metadata accessors is published.
+    // metadata is the contract.
     for (const absent of ['getTableName', 'getEntityName', 'getPermission', 'getServiceName']) {
       expect(prototypeMembers()).not.toContain(absent);
     }
   });
 });
 
-// ===========================================================================
-// The error register, invoked directly on this entity
-// ===========================================================================
+// The error register, invoked directly on this entity.
 //
-// ★★★ ADDED BECAUSE A MECHANICAL INVENTORY FOUND THESE MEMBERS NAMED BUT NEVER CALLED HERE. A code
-// review reported that "nine public methods have no invocation in any test AST", which is a sharper
-// question than whether a name appears somewhere: a method mentioned only in a comment is a method
-// nothing exercises. The register's behaviour WAS covered - through the service suites, where a refused
-// save is observed - but not at the entity that declares it, so the per-entity contract rested on
-// another tier's assertions. Gate `A24` now requires an actual invocation.
+// Review reported that "nine public methods have no invocation in any test AST".
 //
-// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees and
-// that the save-refusal semantics depend on: a MISS yields an empty array rather than undefined,
-// messages ACCUMULATE under one name rather than replacing, and lookup is CASE-INSENSITIVE while the
-// key remembers the case it was FIRST written with.
+// The three properties asserted are the ones [org/Hibachi/HibachiTransient.cfc:L30-L64] guarantees
+// and that the save-refusal semantics depend on: a MISS yields an empty array rather than
+// undefined.
 
 describe('Brand: the inherited error register', () => {
   it('returns an empty array for a name that was never recorded, never undefined', () => {
-    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent name
-    // has to be safe to iterate - `undefined` here would turn a clean validation pass into a crash.
+    // [org/Hibachi/HibachiTransient.cfc:L34-L43]. Callers index the result directly, so an absent
+    // name has to be safe to iterate - `undefined` here would turn a clean validation pass into a
+    // crash.
     const subject = new Brand({ brandID: 'brand-errors-1' });
 
     expect(subject.getError('noSuchRule')).toStrictEqual([]);
@@ -1570,8 +1318,8 @@ describe('Brand: the inherited error register', () => {
   });
 
   it('★★ accumulates messages under one name instead of replacing them', () => {
-    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after the
-    // first, which is how a partially invalid entity comes to look like a singly invalid one.
+    // [org/Hibachi/HibachiTransient.cfc:L61-L64] APPENDS. Replacing would hide every failure after
+    // the first, which is how a partially invalid entity comes to look like a singly invalid one.
     const subject = new Brand({ brandID: 'brand-errors-1' });
 
     subject.addError('urlTitle', 'is required');
@@ -1584,7 +1332,7 @@ describe('Brand: the inherited error register', () => {
   it('★★ looks a name up case-insensitively, and keeps the case it was first written with', () => {
     // CFML struct keys are case-insensitive, so `getError('URLTITLE')` must find what `addError`
     // recorded as `urlTitle` - while [org/Hibachi/HibachiErrors.cfc:L14-L31] REMEMBERS the first
-    // spelling, so the published key is the one the first write used.
+    // spelling.
     const subject = new Brand({ brandID: 'brand-errors-1' });
 
     subject.addError('urlTitle', 'first');
