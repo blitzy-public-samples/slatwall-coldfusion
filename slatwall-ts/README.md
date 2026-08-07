@@ -512,10 +512,12 @@ away from the legacy one by a cent at a time.
 ## Environment-variable contract
 
 [`.env.example`](./.env.example) is the committed contract, it declares all nineteen variables this
-subtree reads, and it contains **no credential** — deliberately, and permanently. Configuration is
-read in exactly one place under `src/**`: `src/lib/config.ts` is the only module there permitted to
-touch `process.env`, and it reads eighteen of the nineteen keys. It validates the whole set at once
-and reports **every** problem it finds rather than failing on the first one.
+subtree reads, and it contains **no credential** — deliberately, and permanently. Eighteen of the
+nineteen are **deployable**: configuration is read in exactly one place under `src/**`, where
+`src/lib/config.ts` is the only module permitted to touch `process.env`, and those eighteen are the
+whole of what it reads. It validates the set at once and reports **every** problem it finds rather
+than failing on the first one. The nineteenth key belongs to the test harness and is covered in the
+second bullet below.
 
 Two consequences of that single-authority rule are worth stating precisely, because both are easy to
 state loosely and wrong when stated loosely:
@@ -530,11 +532,16 @@ state loosely and wrong when stated loosely:
   threshold able to abort a cold start would produce a service that can neither start nor say why.
   The coercion is announced once per container from that fixed classifier — the rejected value
   itself is discarded at resolution and is never logged, never echoed and never retained.
-- **`TEST_LIVE_DATABASE` is the one key `src/lib/config.ts` does not read**, and that is deliberate
-  rather than an omission. It selects whether an integration suite talks to a real server, so it
-  describes the harness and not the service; `tests/setup.ts` reads it, alongside the `TZ` it
-  assigns. Neither exists in a deployed bundle, which is why the sentence above is scoped to
-  `src/**`.
+- **`TEST_LIVE_DATABASE` is the one key `src/lib/config.ts` does not read**, and the claim is
+  literal: no statement in that module names it, resolves it, or measures its length, so it is absent
+  from the delivery-size budget below and **no value of it can refuse a cold start**. It describes the harness and not the service; `tests/setup.ts` reads it, alongside the
+  `TZ` it assigns, and neither exists in a deployed bundle — which is why the sentence above is
+  scoped to `src/**`. The harness side is not lenient in the way `LOG_LEVEL` is: `tests/setup.ts`
+  normalises the value on **every** run, whether or not anything would consult the result, and an
+  unrecognised value stops the run before a single test executes rather than being read as
+  disabled. `true`/`1`/`yes` enable, `false`/`0`/`no`/empty/unset disable, matched without regard to
+  case or surrounding whitespace. What it enables is a **capability, not a suite**: no suite in this
+  repository gates on it, which [the testing section states in full](#testing).
 
 In Lambda these values arrive as native environment variables and `dotenv` never runs.
 
@@ -632,17 +639,17 @@ performance claim of any sort.
 
 Omit any of these to accept the value shown.
 
-| Key                     | Default       | Notes                                                                                                                                                                                                                                                                                                                |
-| ----------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DB_PORT`               | `3306`        | 1–65535.                                                                                                                                                                                                                                                                                                             |
-| `DB_NAME`               | `Slatwall`    | The legacy datasource name, carried forward unchanged.                                                                                                                                                                                                                                                               |
-| `DB_CONNECTION_LIMIT`   | `10`          | Pool size.                                                                                                                                                                                                                                                                                                           |
-| `DB_CONNECT_TIMEOUT_MS` | `10000`       | Connection-establishment timeout.                                                                                                                                                                                                                                                                                    |
-| `DB_MAX_IDLE`           | `10`          | Idle connections retained.                                                                                                                                                                                                                                                                                           |
-| `DB_IDLE_TIMEOUT_MS`    | `60000`       | Idle-connection lifetime.                                                                                                                                                                                                                                                                                            |
-| `NODE_ENV`              | `development` | `development` \| `test` \| `production`, matched without regard to case.                                                                                                                                                                                                                                             |
-| `LOG_LEVEL`             | `info`        | `debug` \| `warn` \| `error` are the alternatives, matched without regard to case. Resolved by `src/lib/config.ts` like every other key, but **leniently**: an unrecognised value falls back to `info` and is announced once rather than failing startup, so a typo cannot silence the logger or break a cold start. |
-| `TEST_LIVE_DATABASE`    | `false`       | Set `true` only to opt a live-database probe in. Read by `tests/setup.ts`, not by `src/**`. `npm test` ignores it — the suites assert SQL shape against a fake executor.                                                                                                                                             |
+| Key                     | Default       | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DB_PORT`               | `3306`        | 1–65535.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `DB_NAME`               | `Slatwall`    | The legacy datasource name, carried forward unchanged.                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `DB_CONNECTION_LIMIT`   | `10`          | Pool size.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `DB_CONNECT_TIMEOUT_MS` | `10000`       | Connection-establishment timeout.                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `DB_MAX_IDLE`           | `10`          | Idle connections retained.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `DB_IDLE_TIMEOUT_MS`    | `60000`       | Idle-connection lifetime.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `NODE_ENV`              | `development` | `development` \| `test` \| `production`, matched without regard to case.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `LOG_LEVEL`             | `info`        | `debug` \| `warn` \| `error` are the alternatives, matched without regard to case. Resolved by `src/lib/config.ts` like every other key, but **leniently**: an unrecognised value falls back to `info` and is announced once rather than failing startup, so a typo cannot silence the logger or break a cold start.                                                                                                                                          |
+| `TEST_LIVE_DATABASE`    | `false`       | **Test-only, and it gates nothing that exists**: no suite consults it, so setting it enables no probe — it is a declared hatch for a suite that would one day need a server. Read by `tests/setup.ts` and by nothing under `src/**`, not even to measure its length, so it is outside the delivery-size budget below. `npm test` does **not** ignore it: the value is normalised on every run and an unrecognised one stops the run before any test executes. |
 
 ### The delivery-size contract — 4096 bytes for the whole environment
 
@@ -653,10 +660,10 @@ explain why.
 
 Two variables invite an unbounded value — `DB_TLS_CA` accepts inline PEM and `ECB_REFERENCE_RATES` an
 arbitrarily long rate list — which is how an otherwise valid environment becomes undeployable. Every
-variable therefore carries a documented maximum in UTF-8 bytes, listed under **DELIVERY-SIZE
-CONTRACT** at the foot of [`.env.example`](./.env.example), and `src/lib/config.ts` refuses both an
-over-size **value** and an over-budget **set** at start-up. The maxima total 3781 bytes; with the 250 bytes of key names and
-one byte per entry reserved for overhead, the documented ceiling is **4050 of 4096** — 46 bytes of
+**deployable** variable therefore carries a documented maximum in UTF-8 bytes, listed under
+**DELIVERY-SIZE CONTRACT** at the foot of [`.env.example`](./.env.example), and `src/lib/config.ts`
+refuses both an over-size **value** and an over-budget **set** at start-up. The maxima total 3765 bytes; with the 232 bytes of key names and
+one byte per entry reserved for overhead, the documented ceiling is **4015 of 4096** — 81 bytes of
 headroom.
 
 Two deliberate asymmetries are worth knowing. The short enumerations and integers are bounded
@@ -668,11 +675,15 @@ Its bytes still count toward the aggregate.
 
 The pre-deploy check runs in CI. `tests/traceability/legacyTestMap.ts` (block `A29`) recomputes that
 sum from the source and fails the suite if it ever exceeds the quota, so a raised maximum or a
-twentieth variable is caught by `npm test` rather than by a failed deployment.
+nineteenth deployable variable is caught by `npm test` rather than by a failed deployment. The same
+block asserts the one deliberate exclusion, so dropping a deployable key out of the budget is a test
+failure too.
 
-Only those nineteen keys are measured. The `AWS_*` variables the runtime injects are not part of the
-function's configured map and cannot be shrunk by a deployment, and a developer's shell carries
-hundreds more that have nothing to do with this service; measuring either would make the budget
+Only those eighteen deployable keys are measured, and `TEST_LIVE_DATABASE` is measured nowhere: it is
+never present in a deployed function, so charging it bytes would misstate the budget and would let a
+mistyped harness flag refuse a cold start. The `AWS_*` variables the runtime injects are not part of
+the function's configured map and cannot be shrunk by a deployment, and a developer's shell carries
+hundreds more that have nothing to do with this service; measuring any of them would make the budget
 unreachable. If a value does not fit, the answer is not a larger number — `.env.example` records the
 alternatives for an over-size certificate authority and rate table, and a configuration that
 genuinely needs more than 4096 bytes cannot be delivered through Lambda environment variables at all.
@@ -890,9 +901,10 @@ application cache, conditional validator, rate limit or concurrency guard. Any n
 repeat allowed-`Host` requests in parallel. That mechanism is stated plainly because it is real, and
 it is a residual this subtree may not close in code.
 
-`src/handlers/productFeedHandler.ts` carries the clause-by-clause record beside its capacity block.
-In short, of the five controls that would close it, four are blocked by the plan and one is already
-satisfied:
+The clause-by-clause record is the table below, and this file is where it lives, because the reasons
+are plan clauses rather than code. `src/handlers/productFeedHandler.ts` carries the matching capacity
+note beside its entrypoint and points back to this section. Of the five controls that would close the
+residual, four are blocked by the plan and one is already satisfied:
 
 | Control                                    | Why it is not implemented here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -904,11 +916,14 @@ satisfied:
 
 **What bounds the residual.** The route answers only for a `Host` in the deployment-owned allow-list
 and fails closed — absent or empty `FEED_ALLOWED_HOSTS` authorizes no host and the route answers no
-document, so an unconfigured deployment has no exposure here. Per invocation the work is one selection
-statement plus four **batched** follow-up statements — one round trip per feed, never one per row — one
-pure render, one request scope, no duplicate buffer, and nothing retained between invocations. Capacity
-is characterized against the platform's own payload ceilings, and a catalog past them fails visibly
-rather than shrinking.
+document, so an unconfigured deployment has no exposure here. Per invocation the work is one
+whole-catalog selection statement plus four **batched** follow-up resolutions, then one pure render,
+one request scope, no duplicate buffer, and nothing retained between invocations. Each follow-up is
+batched across the whole selection rather than issued per row, and an identifier-keyed one is chunked
+at `SQL_TUPLE_ROW_LIMIT` identifiers per statement, so the statement count grows in bounded steps with
+the catalog and never one per row: a 2984-SKU catalog spanning 2860 products resolves in eight
+statements, not 2984. Capacity is characterized against the platform's own payload ceilings, and a
+catalog past them fails visibly rather than shrinking.
 
 **The deployment obligation, stated so it is not assumed.** Request rate limiting, request concurrency
 limiting, a cache or CDN in front of `GET /feeds/google/products`, and duration and memory alarms are
@@ -1484,8 +1499,14 @@ is how AAP 0.8.1's prohibition on inventing a non-functional requirement is actu
 setting it changes nothing about what any of them proves — the seven repository suites each say so in
 their own header. It is a documented escape hatch, so that a suite which one day genuinely needs a
 server gates on a declared variable rather than on a connection written into source. `tests/setup.ts`
-still normalises it and **refuses an unrecognised value**, because a typo must not silently skip the
-suites it was set to enable while the run reports success.
+still normalises it on **every** run and **refuses an unrecognised value**, because a typo must not
+silently skip the suites it was set to enable while the run reports success — so an unrecognised
+value costs the whole run, not one suite, and that is the trade taken deliberately. The
+[environment-variable contract](#environment-variable-contract) states the other half of the
+ownership: nothing under `src/**` reads this key, not even to measure it, so it is outside the
+delivery-size budget and cannot refuse a cold start. `tests/unit/lib/config.test.ts` asserts both
+halves — the resolver's accepted literals and its refusal, and a shipped load left unaffected by any
+value of the flag.
 
 **Two things this tier does not prove, recorded here and in the ledger's `acknowledgedGaps`.** No
 assertion has ever been compared against output from a running Lucee or ColdFusion engine — no legacy

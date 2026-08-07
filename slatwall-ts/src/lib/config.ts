@@ -1,9 +1,11 @@
 // slatwall-ts - static, environment-driven process configuration.
 //
-// It reads eighteen of the nineteen keys in the committed environment contract - the thirteen `DB_*`
+// It reads the eighteen DEPLOYABLE keys of the committed environment contract - the thirteen `DB_*`
 // keys, `ECB_REFERENCE_RATES`, `ECB_RATES_RETRIEVED_AT`, `FEED_ALLOWED_HOSTS`, `LOG_LEVEL` and
-// `NODE_ENV` - and is the only module under `src/**` that reads more than one of them. The nineteenth,
-// `TEST_LIVE_DATABASE`, is read by the integration suites and never by shipped code.
+// `NODE_ENV` - and is the only module under `src/**` that reads more than one of them. The
+// nineteenth key `.env.example` publishes, `TEST_LIVE_DATABASE`, describes the test harness: no
+// statement here names it, resolves it or measures it, so no value of it can refuse a cold start.
+// `tests/setup.ts` is its sole reader.
 //
 // [config/configApplication.cfm:L2] pins the datasource name to the literal `Slatwall`, which is
 // therefore the documented default for DB_NAME.
@@ -616,8 +618,8 @@ function resolveRuntimeEnvironment(
 
 // That is a hard platform limit rather than a style preference.
 //
-// Two of the nineteen contract variables had no upper bound of any kind: `DB_TLS_CA` accepts "one
-// or more PEM blocks" and `ECB_REFERENCE_RATES` accepts an arbitrarily long rate list.
+// Two of the eighteen deployable contract variables had no upper bound of any kind: `DB_TLS_CA`
+// accepts "one or more PEM blocks" and `ECB_REFERENCE_RATES` accepts an arbitrarily long rate list.
 
 /**
  * The platform ceiling on the whole environment map, in bytes: AWS Lambda's 4 KB quota.
@@ -636,10 +638,18 @@ const MAX_DELIVERABLE_ENVIRONMENT_BYTES = 4_096;
 const ENVIRONMENT_ENTRY_OVERHEAD_BYTES = 1;
 
 /**
- * The documented maximum value size of every variable in the contract, in UTF-8 bytes.
+ * The documented maximum value size of every DEPLOYABLE variable in the contract, in UTF-8 bytes.
  *
- * Nineteen key names total 250 bytes and the per-entry allowance adds 19, so 269 bytes are spoken
+ * Eighteen key names total 232 bytes and the per-entry allowance adds 18, so 250 bytes are spoken
  * for before any value.
+ *
+ * `TEST_LIVE_DATABASE` is deliberately ABSENT, which is what makes this map the whole of what
+ * `src/**` knows about the environment contract. It is declared in `.env.example` because the test
+ * harness reads it, it is documented there as never present in a deployed function, and budgeting
+ * it here would charge a deployed function for bytes it does not carry while giving a mistyped
+ * harness flag the power to refuse a cold start. The quota this map is measured against applies to
+ * a deployed function's own variable map, so the map holds exactly the keys such a function
+ * delivers.
  *
  * `DB_HOST` - RFC 1035's 253-character host. * `DB_NAME` and `DB_USER` - MySQL's own identifier
  * and account-name limits. * `DB_PASSWORD` - 128, far beyond any credential policy in practice.
@@ -663,7 +673,6 @@ const CONTRACT_KEY_MAX_VALUE_BYTES: Readonly<Record<string, number>> = Object.fr
   FEED_ALLOWED_HOSTS: 512,
   ECB_REFERENCE_RATES: 512,
   ECB_RATES_RETRIEVED_AT: 32,
-  TEST_LIVE_DATABASE: 16,
 });
 
 /**
@@ -689,6 +698,11 @@ function measureUtf8Bytes(value: string): number {
  *
  * Two independent refusals, because a set can fail either way round: every variable is held to its
  * own documented maximum, and the total is held to the platform cap.
+ *
+ * The subjects are exactly {@link CONTRACT_KEY_MAX_VALUE_BYTES}'s keys, so a variable outside the
+ * deployable contract - the harness flag, and every ambient variable of the host - is neither
+ * measured nor refused. A key present in the environment but absent from that map contributes
+ * nothing to either refusal.
  *
  * @param source the environment being resolved.
  * @param problems the aggregate problem list; one entry per over-size variable, plus one for the
@@ -716,7 +730,7 @@ function assertDeliverableEnvironment(source: EnvironmentSource, problems: strin
 
   if (totalBytes > MAX_DELIVERABLE_ENVIRONMENT_BYTES) {
     problems.push(
-      `The configured environment is ${String(totalBytes)} bytes across the ${String(Object.keys(CONTRACT_KEY_MAX_VALUE_BYTES).length)} contract variables, over the ${String(MAX_DELIVERABLE_ENVIRONMENT_BYTES)}-byte quota AWS Lambda applies to the entire variable map, keys included. Every variable may be individually within its maximum and the set still not fit. Reduce the largest values - DB_TLS_CA, ECB_REFERENCE_RATES and FEED_ALLOWED_HOSTS are the three that can grow - or deliver them outside the environment. No value is echoed here.`,
+      `The configured environment is ${String(totalBytes)} bytes across the ${String(Object.keys(CONTRACT_KEY_MAX_VALUE_BYTES).length)} deployable contract variables, over the ${String(MAX_DELIVERABLE_ENVIRONMENT_BYTES)}-byte quota AWS Lambda applies to the entire variable map, keys included. Every variable may be individually within its maximum and the set still not fit. Reduce the largest values - DB_TLS_CA, ECB_REFERENCE_RATES and FEED_ALLOWED_HOSTS are the three that can grow - or deliver them outside the environment. No value is echoed here.`,
     );
   }
 }

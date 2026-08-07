@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { appConfig } from '../../../src/lib/config.js';
+import {
+  FLAG_DISABLED_LITERALS,
+  FLAG_ENABLED_LITERALS,
+  liveDatabaseTestsEnabled,
+  LIVE_DATABASE_FLAG_NAME,
+  resolveLiveDatabaseTestsEnabled,
+} from '../../setup.js';
 import type { AppConfig, EnvironmentSource } from '../../../src/lib/config.js';
 
 /**
@@ -895,6 +902,55 @@ describe('appConfig.load', () => {
     expect(Object.keys(config.currency.europeanCentralBankRates)).toHaveLength(3);
   });
 
+  // The nineteenth key of the committed contract, and the one this module owns no part of.
+  //
+  // `.env.example` declares `TEST_LIVE_DATABASE` because `tests/setup.ts` reads it. Shipped
+  // configuration does not read it at all - it is absent from the delivery-size map - so no value
+  // of it is resolved, measured, charged to the aggregate, or able to refuse a cold start. A
+  // deployed function never carries it, and charging bytes for a variable it does not deliver would
+  // misstate the budget in the one direction that matters.
+
+  it('★★ IGNORES THE TEST-ONLY FLAG AT EVERY LENGTH, including one no byte bound would admit', () => {
+    // The three shapes that would each have been a refusal while the flag was budgeted: an
+    // unrecognized literal, one byte over the old maximum, and a value the size of the whole quota.
+    for (const planted of ['bogus', 'z'.repeat(17), 'z'.repeat(4_096)]) {
+      const config = load({ TEST_LIVE_DATABASE: planted });
+
+      expect(config.database.host).toBe('db.internal.invalid');
+      expect(config.environment).toBe('development');
+    }
+  });
+
+  it('★★ leaves the aggregate budget untouched by the flag, so the sweep measures a deployed map', () => {
+    // The documented ceiling is 4015 of 4096, leaving 81 bytes of headroom, so a 2000-byte flag
+    // would carry the set past the quota if its bytes were counted. The load succeeding is the
+    // assertion.
+    const config = load({
+      TEST_LIVE_DATABASE: 'y'.repeat(2_000),
+      FEED_ALLOWED_HOSTS: 'shop.example.com',
+    });
+
+    expect(config.feed.allowedHosts).toStrictEqual(['shop.example.com']);
+  });
+
+  it('★★ still refuses an over-budget DEPLOYABLE set, so the narrower sweep is not a weaker one', () => {
+    // Narrowing the map removed one key from the measurement and nothing from the refusal: a
+    // deployable set over the quota is refused with the flag present and enormous beside it.
+    const problems = loadExpectingRefusal({
+      TEST_LIVE_DATABASE: 'y'.repeat(2_000),
+      DB_TLS_MODE: 'verify-identity',
+      DB_TLS_CA: `-----BEGIN CERTIFICATE-----\n${'A'.repeat(2_020)}`,
+      LOG_LEVEL: 'v'.repeat(2_000),
+    });
+
+    const aggregate = problems.filter((problem) => problem.includes('deployable contract'));
+
+    expect(aggregate).toHaveLength(1);
+    expect(aggregate[0]).toContain('4096');
+    // And the flag is named nowhere in the diagnosis, because it took no part in the measurement.
+    expect(problems.join(' ')).not.toContain('TEST_LIVE_DATABASE');
+  });
+
   // DB_TLS_MODE=disabled requires a loopback host, in every environment.
   //
   // `src/lib/config.ts` has no imports and must keep none, so a name that merely RESOLVES to a
@@ -1317,5 +1373,58 @@ describe('appConfig.load - certificate validation cannot be weaker than its mode
 
     expect(config.tls.mode).toBe('disabled');
     expect(config.tls.certificateAuthority).toBeUndefined();
+  });
+});
+
+// The other half of the same boundary: what the HARNESS does with the key shipped configuration
+// refuses to touch.
+//
+// The resolver is imported from `tests/setup.ts` rather than re-implemented, so these cases assert
+// the rule the runner actually applies instead of proving that two copies of it agree. It resolves
+// once, at setup time, before any suite is collected - which is why an unrecognized value costs the
+// whole run and not one file, and why that trade is asserted rather than described.
+
+describe('the test-only live-database flag, owned by tests/setup.ts alone', () => {
+  it('treats unset as disabled, so a clean checkout needs no server', () => {
+    expect(resolveLiveDatabaseTestsEnabled(undefined)).toBe(false);
+  });
+
+  it('accepts each published literal, ignoring case and surrounding whitespace', () => {
+    for (const literal of FLAG_ENABLED_LITERALS) {
+      expect(resolveLiveDatabaseTestsEnabled(literal)).toBe(true);
+      expect(resolveLiveDatabaseTestsEnabled(` ${literal.toUpperCase()} `)).toBe(true);
+    }
+
+    for (const literal of FLAG_DISABLED_LITERALS) {
+      expect(resolveLiveDatabaseTestsEnabled(literal)).toBe(false);
+      expect(resolveLiveDatabaseTestsEnabled(` ${literal.toUpperCase()} `)).toBe(false);
+    }
+  });
+
+  it('★★ REFUSES AN UNRECOGNIZED VALUE rather than reading it as disabled', () => {
+    // A typo that resolved to disabled would skip the very suites it was set to enable while the
+    // run reported success, so the resolution raises. The published literals are named in the
+    // message and the offending value is not, because this file prints no environment content.
+    for (const planted of ['bogus', 'TRUE-ish', 'enabled', '2']) {
+      expect(() => resolveLiveDatabaseTestsEnabled(planted)).toThrow(LIVE_DATABASE_FLAG_NAME);
+      expect(() => resolveLiveDatabaseTestsEnabled(planted)).not.toThrow(planted);
+    }
+  });
+
+  it('★★ is a flag no suite gates on, which is what makes it a hatch rather than a switch', () => {
+    // Setting it changes nothing about what any suite proves: the resolved value below is the one
+    // the runner computed for this very run, and no case anywhere consults it.
+    expect(typeof liveDatabaseTestsEnabled).toBe('boolean');
+  });
+
+  it('★★ names a variable shipped configuration does not read, at any size', () => {
+    // The two halves meet here: the harness owns the value, and `src/lib/config.ts` is unaffected by
+    // it - so the flag cannot reach a deployed function's cold start through either route.
+    const config = appConfig.load({
+      ...REQUIRED_ONLY,
+      [LIVE_DATABASE_FLAG_NAME]: 'z'.repeat(1_024),
+    });
+
+    expect(config.database.host).toBe('db.internal.invalid');
   });
 });

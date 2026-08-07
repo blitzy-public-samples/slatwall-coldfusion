@@ -223,7 +223,13 @@ class MissingProductFeedPortError extends Error {
 // The assertion for all of this lives in `tests/unit/handlers/productFeedHandler.test.ts`, which
 // drives the whole document through unpaginated and byte-identical.
 
-// What is already true, so the residual is bounded rather than open.
+// Capacity of this route, and what bounds it. The document is recomputed per request: one selection
+// statement, batched follow-up hydration rather than one statement per row, one pure render, and one
+// request scope that nothing outlives. No row ceiling is applied, so correct data is never answered
+// short. What is not bounded here is repetition - request rate, request concurrency, and any cache
+// or conditional validator in front of this route belong to the deployment. The plan clause blocking
+// each of those from being added inside this subtree is recorded in `README.md`, under
+// "Product-feed availability".
 
 /**
  * Build the feed entrypoint over a given route into the wired graph.

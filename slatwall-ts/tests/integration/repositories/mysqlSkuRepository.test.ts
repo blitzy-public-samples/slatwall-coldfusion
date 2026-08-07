@@ -625,8 +625,9 @@ const CONFIGURED_DIALECT_ENVIRONMENT: readonly (readonly [string, string])[] = O
 ]);
 
 /**
- * Every variable `src/lib/config.ts` treats as part of the environment contract, kept in step
- * with `CONTRACT_KEY_MAX_VALUE_BYTES` in that module.
+ * Every variable the committed contract in `.env.example` publishes: the eighteen deployable keys
+ * `src/lib/config.ts` validates - kept in step with `CONTRACT_KEY_MAX_VALUE_BYTES` in that
+ * module - plus the harness flag `tests/setup.ts` owns and shipped code never reads.
  *
  * WHY THE WHOLE LIST AND NOT THE FOUR KEYS ABOVE. `resolveConfiguredDialect` reaches
  * `appConfig.load()` with no argument, which validates `process.env` AS A WHOLE and reports every

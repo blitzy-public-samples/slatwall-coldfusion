@@ -1238,7 +1238,9 @@ export class GoogleFeedRepository {
     );
 
     // Both per-SKU resolutions are batched for the whole selection, for the same reason the two
-    // statements above are: one round trip per feed rather than one per row.
+    // statements above are: a statement count that grows in bounded steps with the catalog rather
+    // than one statement per row. An identifier-keyed follow-up chunks its key set, so a batch is
+    // bounded by `SQL_TUPLE_ROW_LIMIT` rather than by how large a selection happens to be.
     const shippingWeightsBySkuID = await this.resolveShippingWeights(selections);
     const salePriceDetailsBySkuID = await this.resolveSalePriceDetails(selections);
 

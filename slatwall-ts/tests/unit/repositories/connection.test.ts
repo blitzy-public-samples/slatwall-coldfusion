@@ -1134,12 +1134,14 @@ describe('sqlPlaceholderList - the IN-list body, and its guard order', () => {
 // rather than creating a new one.
 
 /**
- * Every variable `src/lib/config.ts` treats as part of the environment contract.
+ * Every variable the committed contract in `.env.example` publishes: the eighteen
+ * deployable keys `src/lib/config.ts` validates, plus the harness flag
+ * `tests/setup.ts` owns.
  *
- * Kept in step with `CONTRACT_KEY_MAX_VALUE_BYTES` in that module, which is the
- * authoritative list and is itself asserted against this contract's own size budget by
- * `tests/traceability/legacyTestMap.ts`. A key added there and not here would leave a
- * new hole of exactly the kind this list closes.
+ * Kept in step with `CONTRACT_KEY_MAX_VALUE_BYTES` in that module for the deployable
+ * eighteen - that map is the authoritative list and is itself asserted against this
+ * contract's own size budget by `tests/traceability/legacyTestMap.ts`. A key added
+ * there and not here would leave a new hole of exactly the kind this list closes.
  *
  * `TZ` is deliberately NOT among them: it is not a contract variable, `tests/setup.ts`
  * assigns it as its first executable statement, and several suites assert it is `UTC`.
@@ -1181,8 +1183,9 @@ const CONFIGURATION_CONTRACT_KEYS: readonly string[] = Object.freeze([
  * `TEST_LIVE_DATABASE` is deleted along with the rest, and that is safe: it is read
  * once, at setup time, by `tests/setup.ts` - which has already resolved
  * `liveDatabaseTestsEnabled` before any case here runs - so removing it inside a test
- * cannot change which tests execute. It is included because `src/lib/config.ts`
- * budgets its length, which makes it capable of failing a load like any other key.
+ * cannot change which tests execute. It is included for completeness of the published
+ * contract rather than out of necessity: `src/lib/config.ts` does not read it, so no
+ * value of it can fail a load the way the other eighteen can.
  */
 const stubConfigurationContract = (overrides: Readonly<Record<string, string>>): void => {
   for (const key of CONFIGURATION_CONTRACT_KEYS) {
@@ -1315,7 +1318,7 @@ describe('closeConnectionPool - safe in an unconditional cleanup hook', () => {
     // close and reopen.
     await closeConnectionPool();
 
-    // The whole contract, not five of nineteen keys - so an unrelated ambient variable
+    // The whole contract, not five keys of it - so an unrelated ambient variable
     // cannot make this acquisition fail for a reason that has nothing to do with the
     // dialect being asserted.
     stubConfigurationContract({

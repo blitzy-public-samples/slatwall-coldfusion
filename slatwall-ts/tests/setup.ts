@@ -45,25 +45,44 @@ try {
 } catch {}
 
 // The flag that enables suites needing a reachable database. It is the only test-only key in the
-// committed environment contract.
-const LIVE_DATABASE_FLAG_NAME = 'TEST_LIVE_DATABASE';
+// committed environment contract, and it is the only key in that contract `src/lib/config.ts` does
+// not read - not to resolve it, and not to measure its length either.
 
-const FLAG_ENABLED_LITERALS: readonly string[] = ['true', '1', 'yes'];
+/**
+ * The environment variable this file owns, exported so a suite can name it without spelling it.
+ */
+export const LIVE_DATABASE_FLAG_NAME = 'TEST_LIVE_DATABASE';
 
-const FLAG_DISABLED_LITERALS: readonly string[] = ['false', '0', 'no', ''];
+/**
+ * The values that enable the flag, exported so a suite asserts the published set rather than a copy
+ * of it.
+ */
+export const FLAG_ENABLED_LITERALS: readonly string[] = ['true', '1', 'yes'];
+
+/**
+ * The values that disable it, the empty string among them.
+ */
+export const FLAG_DISABLED_LITERALS: readonly string[] = ['false', '0', 'no', ''];
 
 /**
  * Interpret the live-database flag.
  *
  * An unrecognized value raises rather than defaulting to disabled, so a typo cannot silently skip
- * the suites it was set to enable while the run still reports success.
+ * the suites it was set to enable while the run still reports success. The cost is the whole run
+ * rather than one suite, because this resolution happens once at setup time and before any suite is
+ * collected - stated so the trade is visible where it is made.
  *
- * That is deliberately UNLIKE production configuration, and the two must not be conflated.
+ * That is deliberately UNLIKE production configuration, and the two must not be conflated:
+ * `src/lib/config.ts` never reads this variable, so no value of it reaches a deployed function's
+ * cold start.
+ *
+ * Exported so the contract above is asserted directly rather than re-implemented by a suite, which
+ * would prove only that two copies of the rule agree.
  *
  * @param raw the unnormalised environment value, or `undefined` when unset.
  * @returns `true` only for an explicitly enabling value.
  */
-function resolveLiveDatabaseTestsEnabled(raw: string | undefined): boolean {
+export function resolveLiveDatabaseTestsEnabled(raw: string | undefined): boolean {
   if (raw === undefined) {
     return false;
   }

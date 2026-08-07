@@ -77,6 +77,10 @@ const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for ';
  * in front of the service: these are absolute URLs inside an XML document, and nothing rewrites them
  * on the way out. Changing the scheme is a product decision, not this renderer's.
  *
+ * Once an AAP amendment authorizes that decision, the edit is this one literal plus the parity gate
+ * that pins it against the legacy template. Every one of the five sites composes its URL from the
+ * single origin built here, so no site needs touching individually and none can drift from the rest.
+ *
  * The host half is the request `Host`, and the request only ever SELECTS among the authorities a
  * deployment already authorized in `FEED_ALLOWED_HOSTS`; {@link assertFeedHostShape} re-validates its
  * grammar here as the last line of defence.

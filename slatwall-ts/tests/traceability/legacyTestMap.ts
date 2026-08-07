@@ -5141,6 +5141,59 @@ describe('A22 README accuracy: the overstated claims, corrected and pinned', () 
     ).toEqual(['src/lib/config.ts']);
   });
 
+  it('★★★ states the harness flag as a hatch that gates nothing, and as unread by shipped code', () => {
+    // Three documents describe `TEST_LIVE_DATABASE`, and each described it in a way the runtime
+    // contradicted: shipped configuration measured it and could refuse a load over it, the runner
+    // parses it on EVERY run and stops the whole run on a value it does not recognise, and no suite
+    // consults the result. `A29` owns the shipped half; this owns what the documents say and what
+    // the suites do.
+    const readme = readSubtreeFile('README.md');
+    const template = readSubtreeFile('.env.example');
+
+    // The claim of non-reading is stated as total in both documents, so neither can be read as
+    // "resolves it but does not measure it".
+    expect(readme).toContain('not even to measure its length');
+    expect(template).toContain('not to resolve a value, and not to measure');
+
+    // No claim survives that a run ignores the variable: the run parses it, and an unrecognised
+    // value is fatal to the whole run rather than to one suite.
+    expect(
+      linesAssertingPhrase(readme, '`npm test` ignores it'),
+      'README.md claims the test run ignores the harness flag. tests/setup.ts resolves it before ' +
+        'any suite is collected and raises on an unrecognised value, which ends the entire run.',
+    ).toEqual([]);
+    expect(readme).toContain('gates nothing that exists');
+    expect(readme).toContain('normalised on every run');
+
+    // And the suites really do leave it alone: `tests/setup.ts` publishes the resolved flag, and no
+    // other suite IMPORTS it - a binding that is never imported cannot be branched on. Import
+    // statements are matched on the executable half, so a docblock explaining the flag is not an
+    // offender, and this ledger naming the symbol as assertion data is not one either. The suite
+    // below is exempted by name because it imports the flag to assert this very boundary.
+    const importers = listTypeScriptFiles('tests').filter(
+      (file) =>
+        file !== 'tests/setup.ts' &&
+        file !== 'tests/unit/lib/config.test.ts' &&
+        /^\s*import\b[^;]*\bliveDatabaseTestsEnabled\b/mu.test(
+          scanSource(readSubtreeFile(file)).executable,
+        ),
+    );
+
+    expect(
+      importers,
+      'a suite imports liveDatabaseTestsEnabled, so the flag now gates something. Either it ' +
+        'gates a suite that needs a live server - in which case both committed documents move ' +
+        'first - or the reference is accidental.',
+    ).toEqual([]);
+
+    // The one suite that names it asserts the resolver rather than gating on it, which is the
+    // difference this case exists to keep.
+    const owner = readSubtreeFile('tests/unit/lib/config.test.ts');
+    expect(owner).toContain('resolveLiveDatabaseTestsEnabled');
+    expect(owner).not.toMatch(/if\s*\(\s*liveDatabaseTestsEnabled/u);
+    expect(owner).not.toMatch(/skipIf|runIf/u);
+  });
+
   it('counts the module-scope mutable memos honestly, at five rather than one', () => {
     const readme = readSubtreeFile('README.md');
 
@@ -7547,8 +7600,9 @@ describe('A30 schema continuity: abbreviated link-table names, held to the legac
   });
 });
 
-// Two of the nineteen contract variables carry a length bound of their own - `DB_TLS_CA` accepts
-// inline PEM and `ECB_REFERENCE_RATES` accepts a long rate list, and both are bounded explicitly.
+// Two of the eighteen deployable contract variables carry a length bound of their own - `DB_TLS_CA`
+// accepts inline PEM and `ECB_REFERENCE_RATES` accepts a long rate list, and both are bounded
+// explicitly.
 //
 // The arithmetic is recomputed from the source rather than restated, so the assertion cannot agree
 // with a comment while disagreeing with the code.
@@ -7583,9 +7637,16 @@ describe('A29 the environment delivery-size contract fits the platform quota', (
     return parsed;
   };
 
-  it('DOCUMENTS A MAXIMUM FOR EVERY CONTRACT VARIABLE, and only for those', () => {
-    // The contract is the nineteen keys `.env.example` publishes. A variable with no documented
-    // maximum is a variable that can grow without limit, which is the defect.
+  /**
+   * The one contract key a deployed function never carries, and the only admitted exclusion from
+   * the budget.
+   */
+  const HARNESS_ONLY_CONTRACT_KEY = 'TEST_LIVE_DATABASE';
+
+  it('DOCUMENTS A MAXIMUM FOR EVERY DEPLOYABLE CONTRACT VARIABLE, and only for those', () => {
+    // The contract is the nineteen keys `.env.example` publishes, of which eighteen are deployable.
+    // A deployable variable with no documented maximum is a variable that can grow without limit,
+    // which is the defect; the nineteenth is the harness flag, and the case below is its authority.
     const maxima = documentedMaxima();
     const template = readSubtreeFile('.env.example');
 
@@ -7593,8 +7654,45 @@ describe('A29 the environment delivery-size contract fits the platform quota', (
     // precise: a declaration is written hard against the margin - live (`FEED_ALLOWED_HOSTS=`) or.
     const declared = [...template.matchAll(/^#?([A-Z][A-Z0-9_]*)=/gm)].map(([, key]) => key ?? '');
 
-    expect(maxima.size).toBe(19);
-    expect([...maxima.keys()].sort()).toStrictEqual([...declared].sort());
+    expect(declared).toContain(HARNESS_ONLY_CONTRACT_KEY);
+    expect(maxima.size).toBe(18);
+    expect([...maxima.keys()].sort()).toStrictEqual(
+      declared.filter((key) => key !== HARNESS_ONLY_CONTRACT_KEY).sort(),
+    );
+  });
+
+  it('★★★ EXCLUDES THE HARNESS-ONLY KEY FROM SHIPPED CONFIGURATION ENTIRELY, not merely from the prose', () => {
+    // The claim three committed documents make about this key is that `src/**` does not read it. A
+    // budget entry is a read: it measures the value and refuses a load above the maximum, which
+    // hands a mistyped harness flag the power to abort a cold start of a function that never
+    // carries the variable at all. So the exclusion is asserted where it can be checked - in the
+    // map, and across every module in the tree.
+    const maxima = documentedMaxima();
+
+    expect(maxima.has(HARNESS_ONLY_CONTRACT_KEY)).toBe(false);
+
+    // Measured on the executable half, which is where a read lives. Naming the key in a comment is
+    // how the exclusion gets explained, and `src/lib/config.ts` does exactly that.
+    const readers = listTypeScriptFiles('src').filter((file) =>
+      scanSource(readSubtreeFile(file)).executable.includes(HARNESS_ONLY_CONTRACT_KEY),
+    );
+
+    expect(
+      readers,
+      `${HARNESS_ONLY_CONTRACT_KEY} is read under src/**, so the environment-contract claim in ` +
+        'README.md, .env.example and src/lib/config.ts is overstated again. The key belongs to ' +
+        'tests/setup.ts.',
+    ).toEqual([]);
+
+    expect(scanSource(readSubtreeFile('src/lib/config.ts')).comments).toContain(
+      HARNESS_ONLY_CONTRACT_KEY,
+    );
+
+    // And the harness really does own it, so the exclusion above is a transfer rather than a
+    // deletion: nothing in the tree would read the variable at all if this were vacuous.
+    expect(scanSource(readSubtreeFile('tests/setup.ts')).executable).toContain(
+      HARNESS_ONLY_CONTRACT_KEY,
+    );
   });
 
   it('KEEPS THE SUM OF THE MAXIMA, PLUS KEY NAMES, INSIDE THE 4,096-BYTE QUOTA', () => {
@@ -7611,7 +7709,7 @@ describe('A29 the environment delivery-size contract fits the platform quota', (
     // Pinned exactly, so a change to any maximum is visible in the diff rather than absorbed
     // silently by the headroom. The value is the arithmetic written out in the docblock on
     // `CONTRACT_KEY_MAX_VALUE_BYTES`.
-    expect(ceiling).toBe(4_050);
+    expect(ceiling).toBe(4_015);
   });
 
   it('bounds the two variables that used to be unbounded, and bounds them to something usable', () => {
@@ -7641,6 +7739,19 @@ describe('A29 the environment delivery-size contract fits the platform quota', (
 
     expect(template).toContain('DELIVERY-SIZE CONTRACT');
     expect(template).toContain('4096');
+
+    // The arithmetic is published as well as enforced, and both documents carry the same figures -
+    // an operator reading either learns the same ceiling. Recomputed above rather than trusted, so
+    // a raised maximum turns these two sentences with it.
+    const readme = readSubtreeFile('README.md');
+
+    expect(template).toContain('4015');
+    expect(readme).toContain('**4015 of 4096**');
+
+    // And the exclusion is published where the maxima are, so a reader meeting the list learns why
+    // one declared key is missing from it rather than reading the absence as an oversight.
+    expect(template).toContain(`NOT BUDGETED, AND NOT MEASURED: ${HARNESS_ONLY_CONTRACT_KEY}`);
+    expect(readme).toContain('Only those eighteen deployable keys are measured');
   });
 });
 
