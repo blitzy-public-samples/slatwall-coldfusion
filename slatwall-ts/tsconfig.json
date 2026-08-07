@@ -1,0 +1,64 @@
+// Base TypeScript configuration. `tsconfig.build.json` extends it to emit;
+// vitest and typescript-eslint parse with it.
+//
+// `noUnusedParameters`, `noImplicitReturns` and `noFallthroughCasesInSwitch` are
+// deliberately unset: interface parity keeps legacy CFML signatures verbatim
+// including unused arguments, and legacy defects such as the missing `return` at
+// [model/entity/Product.cfc:L598] are reproduced rather than repaired.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+
+    // No "DOM": this is a headless backend service.
+    "lib": ["ES2022"],
+
+    // The Lambda artifact is CommonJS, but that is an esbuild output concern
+    // handled by `format: 'cjs'` in esbuild.config.mjs - bundling this
+    // dependency set to ESM builds cleanly and then fails at runtime with
+    // `Dynamic require of "node:buffer"` through mysql2 -> sql-escaper. Do not
+    // change `module` to "CommonJS" to fix that.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    // Only Node globals are ambient; `@types/aws-lambda` is imported explicitly.
+    "types": ["node"],
+
+    // Null semantics are load-bearing: `getPriceByCurrencyCode`
+    // [model/entity/Sku.cfc:L269-L273] has no `else` and no fallback, so an
+    // unknown currency yields null and the target returns `Money | undefined`.
+    // Substituting 0 for that absence would sell products for free.
+    "strict": true,
+
+    // The legacy engine indexes structs and 1-based arrays freely; each such
+    // access must now be proven safe.
+    "noUncheckedIndexedAccess": true,
+
+    // A `structKeyExists` miss and a present-but-null key are different states,
+    // and this keeps them distinct.
+    "exactOptionalPropertyTypes": true,
+
+    "noImplicitOverride": true,
+
+    // Catches the legacy defect class where a value is computed and then
+    // discarded, as at [model/entity/Sku.cfc:L512-L522].
+    "noUnusedLocals": true,
+
+    // Inert under `noEmit`; tsconfig.build.json flips it.
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+
+    // Skipping library checks must never be used to mask a first-party error.
+    "skipLibCheck": false,
+
+    "noEmit": true
+  },
+
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+
+  "exclude": ["node_modules", "dist", "build", "coverage"]
+}
