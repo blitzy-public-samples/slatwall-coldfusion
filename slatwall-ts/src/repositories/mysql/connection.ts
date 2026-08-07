@@ -283,8 +283,13 @@ export interface PreparedStatementExecutor {
   transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T>;
 }
 
-// Two distinct faults, two distinct types, following the pattern already established by
-// `src/repositories/mysql/dialect.ts`: the class is local, it sets an explicit `name`.
+// Distinct faults get distinct types, following the pattern already established by
+// `src/repositories/mysql/dialect.ts`: each class sets an explicit `name`.
+//
+// Three of the four are LOCAL - a placeholder count that cannot be prepared, a value that is not
+// bindable, and a tuple shape that cannot be rendered all describe a defect in this service that no
+// caller can act on, so nothing outside this file narrows one. `WriteConflictError` is the exception
+// and is exported, for the reason set out on the class itself.
 
 /**
  * The largest `IN`-list placeholder count this port will render.
@@ -329,6 +334,158 @@ class SqlPlaceholderCountError extends Error {
     this.name = 'SqlPlaceholderCountError';
     this.count = count;
   }
+}
+
+/**
+ * A write did not apply because another transaction holds - or has already committed - the state it
+ * needed.
+ *
+ * EXPORTED, unlike the three faults around it, and the asymmetry is the point. Those three describe a
+ * DEFECT in this service: a statement whose text and schema disagree, a placeholder count that could
+ * not be prepared, a value that is not bindable. Nothing a caller can do changes any of them, so
+ * nothing outside this file has a reason to narrow one. A write conflict is the opposite: the caller's
+ * request was well formed, this service is working correctly, and the one thing worth telling the
+ * caller is that NOTHING WAS WRITTEN and re-sending converges. `src/handlers/catalogQueryHandler.ts`
+ * narrows this class by `instanceof` and `src/handlers/errorMapper.ts`'s `conflictResponse` turns it
+ * into the 409 that says so.
+ *
+ * ⚠ THE DRIVER'S ERROR IS DISCARDED RATHER THAN WRAPPED, AND THAT IS A DISCLOSURE DECISION.
+ * `mysql2` populates `sqlMessage` on a constraint violation with the OFFENDING VALUE and the INDEX
+ * NAME - `Duplicate entry 'NAJ-1-2' for key 'UI_SKUCODE'` - and `sql` with the whole statement. Neither
+ * is chained here as `cause` and neither reaches this message: the only thing carried across is
+ * {@link WriteConflictError.conflictCode}, a bare uppercase token. `src/lib/logger.ts` would redact
+ * both independently, so this is the second line of defence rather than the only one.
+ *
+ * WHY IT IS NOT A DOMAIN ERROR. A conflict is a property of the STORAGE ENGINE'S concurrency
+ * control, not of the catalog: the same domain operation applied twice in sequence converges, and only
+ * overlap produces this. The class therefore belongs on the outward side of the port, with the module
+ * that owns the driver, and the domain never learns that transactions exist.
+ */
+export class WriteConflictError extends Error {
+  /**
+   * A stable uppercase token naming WHICH conflict occurred, for the log stream only.
+   *
+   * Either the server's own condition name for a driver-reported failure (`ER_DUP_ENTRY`,
+   * `ER_LOCK_DEADLOCK`, `ER_LOCK_WAIT_TIMEOUT`) or a token a repository authored for a conflict it
+   * detected itself before issuing the write. Never published in a response body - see
+   * `conflictResponse` in `src/handlers/errorMapper.ts`, which validates it a second time and logs it
+   * beside the correlation identifier.
+   */
+  readonly conflictCode: string;
+
+  /**
+   * @param conflictCode the uppercase token naming the conflict; see {@link WriteConflictError.conflictCode}.
+   * @param detail a SERVER-AUTHORED sentence describing what did not apply. It must name no column
+   * value, no statement text and no identifier a caller supplied.
+   */
+  constructor(conflictCode: string, detail: string) {
+    super(
+      `The write was not applied because it conflicts with a concurrent or already-committed ` +
+        `change (${conflictCode}). ${detail} The enclosing transaction is rolled back, so nothing ` +
+        `from this unit of work was written.`,
+    );
+    this.name = 'WriteConflictError';
+    this.conflictCode = conflictCode;
+  }
+}
+
+/**
+ * The shape a conflict token must have to be carried anywhere.
+ *
+ * Matched before a token is ever put on {@link WriteConflictError.conflictCode}, so a value read off
+ * a thrown object cannot smuggle a message, a value or a statement fragment through the field that
+ * the log stream prints verbatim.
+ */
+const CONFLICT_CODE_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
+
+/**
+ * The driver conditions that mean "this write did not apply, and re-sending it may".
+ *
+ * Three families, and each is a genuine write conflict rather than a fault:
+ *
+ *   * DUPLICATE KEY (1062, 1022, 1586) - another row already holds a value a unique index requires
+ *     to be unique. The legacy schema declares exactly such a constraint on `SwSku.skuCode`
+ *     [model/entity/Sku.cfc:L54 `unique="true"`], which is the constraint this service must honour
+ *     without being allowed to author it (AAP 0.8.1 admits no schema change).
+ *   * DEADLOCK (1213) - InnoDB picked this transaction as the victim of a lock cycle and rolled it
+ *     back. The documented remedy is to re-issue it.
+ *   * LOCK WAIT TIMEOUT (1205) - another transaction held the rows this one needed for longer than
+ *     `innodb_lock_wait_timeout`. Also re-issuable.
+ *
+ * Keyed by the server's condition NAME because that is what `mysql2` reports as `code`; the numeric
+ * `errno` is accepted as a fallback so a driver release that omits the name still classifies.
+ */
+const WRITE_CONFLICT_CODES_BY_ERRNO: Readonly<Record<number, string>> = Object.freeze({
+  1022: 'ER_DUP_KEY',
+  1062: 'ER_DUP_ENTRY',
+  1205: 'ER_LOCK_WAIT_TIMEOUT',
+  1213: 'ER_LOCK_DEADLOCK',
+  1586: 'ER_DUP_ENTRY_WITH_KEY_NAME',
+});
+
+/**
+ * The same set as its own keys, so a reported `code` is classified without trusting `errno`.
+ */
+const WRITE_CONFLICT_CODES: ReadonlySet<string> = new Set(
+  Object.values(WRITE_CONFLICT_CODES_BY_ERRNO),
+);
+
+/**
+ * What each classified condition means, in a sentence that names nothing the caller sent.
+ */
+const WRITE_CONFLICT_DETAIL_BY_CODE: Readonly<Record<string, string>> = Object.freeze({
+  ER_DUP_KEY: 'A unique index already holds the value this row would have written.',
+  ER_DUP_ENTRY: 'A unique index already holds the value this row would have written.',
+  ER_DUP_ENTRY_WITH_KEY_NAME: 'A unique index already holds the value this row would have written.',
+  ER_LOCK_WAIT_TIMEOUT:
+    'Another transaction held the rows this write needed for longer than the configured lock wait.',
+  ER_LOCK_DEADLOCK:
+    'The storage engine chose this transaction as the victim of a lock cycle and rolled it back.',
+});
+
+/**
+ * Classify a thrown value as a write conflict, or decline.
+ *
+ * Structural rather than nominal, and DELIBERATELY so, because of where it runs: the only values
+ * reaching it are the ones `mysql2` rejected a statement with, inside this module and inside the one
+ * repository that issues a locking read. A caller's document never becomes a thrown value here, so
+ * there is no `name`-spoofing surface to defend - and the values that matter (`code`, `errno`) are
+ * SERVER-ESTABLISHED, which is the same standard `resolveServerRequestId` holds correlation
+ * identifiers to. The nominal discipline is kept where it does matter: what leaves this function is a
+ * `WriteConflictError` instance, and `src/handlers/` narrows THAT by `instanceof` and never by a
+ * property probe of its own.
+ *
+ * @param thrown the caught value, of genuinely unknown type.
+ * @returns a `WriteConflictError` carrying the sanitized condition token, or `undefined` when the
+ * value is not a recognized conflict - in which case the caller must re-throw the ORIGINAL.
+ */
+export function asWriteConflict(thrown: unknown): WriteConflictError | undefined {
+  if (typeof thrown !== 'object' || thrown === null) {
+    return undefined;
+  }
+
+  const reportedCode = 'code' in thrown ? thrown.code : undefined;
+  const reportedErrno = 'errno' in thrown ? thrown.errno : undefined;
+
+  // The name first, because it is what the driver populates and what an operator recognizes; the
+  // number only as a fallback, mapped back onto the canonical name so the token that reaches a log
+  // line is the same either way.
+  const conflictCode =
+    typeof reportedCode === 'string' && WRITE_CONFLICT_CODES.has(reportedCode)
+      ? reportedCode
+      : typeof reportedErrno === 'number'
+        ? WRITE_CONFLICT_CODES_BY_ERRNO[reportedErrno]
+        : undefined;
+
+  if (conflictCode === undefined || !CONFLICT_CODE_PATTERN.test(conflictCode)) {
+    return undefined;
+  }
+
+  return new WriteConflictError(
+    conflictCode,
+    WRITE_CONFLICT_DETAIL_BY_CODE[conflictCode] ??
+      'The storage engine refused the write as conflicting.',
+  );
 }
 
 /**
@@ -730,12 +887,25 @@ export function createPoolExecutor(pool: Pool): PreparedStatementExecutor {
       sql: string,
       params: readonly unknown[] = NO_PARAMETERS,
     ): Promise<SqlMutationResult> {
-      const [header] = await pool.execute<ResultSetHeader>(sql, toBoundParameters(params));
+      // THE ONE PLACE EVERY MUTATION IN THE SERVICE FUNNELS THROUGH, WHICH IS WHY THE CONFLICT
+      // CLASSIFICATION LIVES HERE AND NOT IN SIX REPOSITORIES. A constraint violation used to travel
+      // as an ordinary driver error, reach `mapErrorToApiGatewayResponse`'s deliberately closed
+      // recognizer set, and answer HTTP 500 `unrecognized` - a PREDICTABLE conflict reported as a
+      // server fault. Classifying it once, at the boundary that owns the driver, covers every write
+      // path including the ones added later.
+      try {
+        const [header] = await pool.execute<ResultSetHeader>(sql, toBoundParameters(params));
 
-      return Object.freeze({
-        affectedRows: header.affectedRows,
-        warningStatus: header.warningStatus,
-      });
+        return Object.freeze({
+          affectedRows: header.affectedRows,
+          warningStatus: header.warningStatus,
+        });
+      } catch (thrown: unknown) {
+        // Re-throwing the ORIGINAL when it is not a conflict is load-bearing: a parameter that could
+        // not be bound, a statement the schema refuses and a lost connection must keep their own
+        // identity, and only the recognized conditions are re-shaped.
+        throw asWriteConflict(thrown) ?? thrown;
+      }
     },
 
     async transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {
@@ -798,12 +968,20 @@ function createConnectionExecutor(connection: PoolConnection): PreparedStatement
       sql: string,
       params: readonly unknown[] = NO_PARAMETERS,
     ): Promise<SqlMutationResult> {
-      const [header] = await connection.execute<ResultSetHeader>(sql, toBoundParameters(params));
+      // The transactional twin of the pool executor's arm, and the one that actually fires in
+      // production: every write in this service runs inside `transaction`, so a duplicate key or a
+      // deadlock is reported on THIS connection. Classified identically, then re-thrown so
+      // `transaction` above rolls back before the conflict reaches the handler.
+      try {
+        const [header] = await connection.execute<ResultSetHeader>(sql, toBoundParameters(params));
 
-      return Object.freeze({
-        affectedRows: header.affectedRows,
-        warningStatus: header.warningStatus,
-      });
+        return Object.freeze({
+          affectedRows: header.affectedRows,
+          warningStatus: header.warningStatus,
+        });
+      } catch (thrown: unknown) {
+        throw asWriteConflict(thrown) ?? thrown;
+      }
     },
 
     transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {

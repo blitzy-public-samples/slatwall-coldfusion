@@ -43,7 +43,10 @@ import type {
   SqlMutationResult,
   SqlRow,
 } from '../../../src/repositories/mysql/connection.js';
-import { SQL_TUPLE_ROW_LIMIT } from '../../../src/repositories/mysql/connection.js';
+import {
+  SQL_TUPLE_ROW_LIMIT,
+  WriteConflictError,
+} from '../../../src/repositories/mysql/connection.js';
 import type { DatabaseDialect } from '../../../src/repositories/mysql/dialect.js';
 import {
   optionGroupOdometerPowerFragment,
@@ -2471,10 +2474,28 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(mutation.params[0]).toBe(saved.getSkuID());
       expect(saved.isNew()).toBe(false);
 
-      // No read statement is issued by a write. The membership reconciliation is
-      // delete-then-insert precisely so this stays true: a computed delta would have had to read
-      // the current rows first.
-      expect(executor.calls).toHaveLength(0);
+      // THE ONLY READS A WRITE ISSUES ARE THE TWO SKU-CODE GUARD STATEMENTS, and this case pins that
+      // number so a third read cannot appear unnoticed. It once asserted ZERO on the strength of two
+      // claims, one of which still holds and one of which never should have: the membership
+      // reconciliation is delete-then-insert precisely so it needs no read of its own, and that is
+      // unchanged - but "a write reads nothing" also meant the uniqueness of the minted sku code was
+      // decided entirely from memory, which is the concurrency defect the guard exists to close. Both
+      // reads are LOCKING reads, and both are named here rather than counted, so the assertion
+      // describes what they are for.
+      expect(executor.calls).toHaveLength(2);
+      expect(statementAt(executor.calls, 0).sql).toBe(
+        'select productID from SwProduct where productID = ? for update',
+      );
+      expect(statementAt(executor.calls, 1).sql).toBe(
+        'select skuID from SwSku where skuCode = ? for update',
+      );
+      expect(statementAt(executor.calls, 1).params).toStrictEqual([saved.getSkuCode()]);
+
+      // Neither of them reads `SwSkuOption`, so the delta-free membership claim is asserted rather
+      // than merely restated.
+      for (const read of executor.calls) {
+        expect(read.sql).not.toContain('SwSkuOption');
+      }
     });
 
     // `makeSkuFixture` populates both account columns with values of its own invention, and the
@@ -3164,6 +3185,278 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
 
       expect('saveSkus' in repository).toBe(false);
       expect('saveSkuForProduct' in repository).toBe(false);
+    });
+  });
+
+  // The sku-code guard: the database-side half of a uniqueness check whose other half sees memory only.
+  //
+  // WHAT WAS MEASURED, so these cases are read as a regression suite rather than as a design
+  // preference. Three concurrent `processProduct_addOption` requests against one product were issued
+  // against a live MySQL 8.4 instance. With no unique index on `SwSku.skuCode` - the state this
+  // project ships, because AAP 0.8.1 admits no schema change and the subtree authors no DDL - all
+  // three answered HTTP 200 and THREE rows shared the sku code `NAJ-1-2`. With the index restored the
+  // rows were correct but two callers received HTTP 500 `unrecognized` carrying a raw `ER_DUP_ENTRY`,
+  // which reports a caller-resolvable collision as a server fault.
+  //
+  // The cause is a read and a write in different units of work: `SkuService` derives the code from
+  // `product.getSkus().length + 1` [model/service/SkuService.cfc:L97] - state materialized before the
+  // service was called - and nothing between that derivation and the insert consults the database.
+  // Under Hibernate the pair sat inside one ambient `cftransaction` per request and the engine's own
+  // row locks serialized them; AAP 0.6.5 says there is no such transaction here and requires the bulk
+  // paths to carry idempotency on retry in its place.
+  //
+  // So the guard runs inside the write transaction, and these cases pin BOTH of its statements
+  // because each is load-bearing for a different reason - see the constants in the adapter.
+
+  describe('saveSku - the sku code is serialized and re-checked against the database', () => {
+    const LOCK_PARENT_SQL = 'select productID from SwProduct where productID = ? for update';
+    const CLAIM_CHECK_SQL = 'select skuID from SwSku where skuCode = ? for update';
+
+    /**
+     * A parent key of the shape `mintEntityIdentifier` produces.
+     */
+    const CASCADE_PRODUCT_ID = 'ac41d5e0be6f4d2ab9037cf158ea6d71';
+
+    it('★★★ locks the PARENT PRODUCT ROW first, so two writers minting codes cannot overlap', async () => {
+      // WHY THE PARENT AND NOT THE CODE. Locking an existing row exclusively is real mutual
+      // exclusion: the second writer waits, and by the time it proceeds the first has committed, so
+      // the claim check below SEES the row it would have duplicated. A `for update` against a MISSING
+      // sku code takes a GAP lock instead, and gap locks are shared - both writers would take one,
+      // both would then attempt the insert, and the pair would deadlock rather than one refusing.
+      const executor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: true }),
+        CASCADE_PRODUCT_ID,
+        executor,
+      );
+
+      const lock = statementAt(executor.calls, 0);
+
+      expect(lock.sql).toBe(LOCK_PARENT_SQL);
+      // The OVERRIDE, so the row locked is the row the insert will name as its parent.
+      expect(lock.params).toStrictEqual([CASCADE_PRODUCT_ID]);
+      expect(lock.sql).not.toContain(CASCADE_PRODUCT_ID);
+      expect(lock.inTransaction).toBe(true);
+
+      // BEFORE the insert, not beside it: a lock taken after the row was written would serialize
+      // nothing.
+      expect(executor.calls).toHaveLength(2);
+      expect(executor.mutationCalls).toHaveLength(3);
+    });
+
+    it('★★★ re-reads the code with `for update`, so it cannot answer from a stale snapshot', async () => {
+      // The reason the modifier is not decoration. InnoDB's default REPEATABLE READ answers a
+      // CONSISTENT read from the snapshot taken at the transaction's first consistent read, which on
+      // the product-cascade path is `productRowExists` - issued before the cascade and therefore
+      // possibly before the competing writer committed. A LOCKING read is exempt and always reads the
+      // latest committed version, so the guard cannot miss the row it is looking for.
+      const executor = new RecordingExecutor([]);
+      const draft = makeSkuFixture({ isNew: true, skuCode: 'NAJ-1-2' });
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(draft, undefined, executor);
+
+      const claimCheck = statementAt(executor.calls, 1);
+
+      expect(claimCheck.sql).toBe(CLAIM_CHECK_SQL);
+      expect(claimCheck.sql).toContain('for update');
+      expect(claimCheck.params).toStrictEqual(['NAJ-1-2']);
+      // Bound, never interpolated - E5 admits no exception, and a sku code is caller-derived.
+      expect(claimCheck.sql).not.toContain('NAJ-1-2');
+      expect(claimCheck.inTransaction).toBe(true);
+
+      // GLOBAL rather than scoped to the parent, because [model/entity/Sku.cfc:L54] declares the
+      // column unique across the table rather than within a product.
+      expect(claimCheck.sql).not.toContain('productID');
+    });
+
+    it('★★★ REFUSES the insert when a row already holds the code, and writes nothing', async () => {
+      // The concurrency outcome, reproduced against the double: the competing writer has committed,
+      // so the claim check finds its row. Nothing may be written and the failure must be a CONFLICT
+      // rather than a fault, because re-sending the operation converges.
+      // TWO canned sets, in statement order: the parent lock answers nothing (it is issued for its
+      // lock, not its rows), then the claim check answers the competing writer's committed row.
+      const executor = new RecordingExecutor([
+        NO_ROWS,
+        [{ skuID: 'sku-written-by-the-other-request' }],
+      ]);
+
+      const rejected = new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: true, skuCode: 'NAJ-1-2' }),
+        CASCADE_PRODUCT_ID,
+        executor,
+      );
+
+      await expect(rejected).rejects.toBeInstanceOf(WriteConflictError);
+      await expect(rejected).rejects.toThrow(/SKU_CODE_ALREADY_PERSISTED/u);
+
+      // NOT ONE statement was written - not the row, and not the membership either - so the unit of
+      // work rolls back with nothing in it. This is the property that turns three duplicate rows into
+      // one.
+      expect(executor.mutationCalls).toStrictEqual([]);
+      expect(executor.transactionEvents).toContain('ROLLBACK');
+    });
+
+    it('★★ carries the condition token and names no row, no index and no statement', async () => {
+      // The token travels for the LOG - `conflictResponse` prints it beside the correlation
+      // identifier - and the response body is a fixed sentence, so what matters here is that the
+      // token is a bare classifier and the message quotes no value read out of the database.
+      // TWO canned sets, in statement order: the parent lock answers nothing (it is issued for its
+      // lock, not its rows), then the claim check answers the competing writer's committed row.
+      const executor = new RecordingExecutor([
+        NO_ROWS,
+        [{ skuID: 'sku-written-by-the-other-request' }],
+      ]);
+
+      const raised = await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR)
+        .saveSku(makeSkuFixture({ isNew: true, skuCode: 'NAJ-1-2' }), CASCADE_PRODUCT_ID, executor)
+        .then(
+          () => undefined,
+          (thrown: unknown) => thrown,
+        );
+
+      if (!(raised instanceof WriteConflictError)) {
+        throw new Error('the claimed sku code should have raised a WriteConflictError');
+      }
+
+      expect(raised.conflictCode).toBe('SKU_CODE_ALREADY_PERSISTED');
+      expect(raised.name).toBe('WriteConflictError');
+      for (const leak of ['sku-written-by-the-other-request', 'UI_SKUCODE', 'select skuID']) {
+        expect(raised.message, leak).not.toContain(leak);
+      }
+      // It DOES cite the two source locators a maintainer needs, which is a citation rather than a
+      // disclosure: neither names anything a caller sent or a row holds.
+      expect(raised.message).toContain('model/entity/Sku.cfc:L54');
+      expect(raised.message).toContain('model/service/SkuService.cfc:L97');
+    });
+
+    it('★★ is an INSERT-path guard: an update issues neither statement', async () => {
+      // An UPDATE that moves an already-persisted row onto a taken code is left to the third line of
+      // defence - the unique index reports it and `asWriteConflict` classifies it identically -
+      // because excluding the row's own key from the predicate would weaken this guard's contract to
+      // "unique except for me", which is not what the column declares.
+      const executor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: false }),
+        CASCADE_PRODUCT_ID,
+        executor,
+      );
+
+      expect(executor.calls).toStrictEqual([]);
+      expect(statementAt(executor.mutationCalls, 0).sql).toBe(EXPECTED_UPDATE_SKU_SQL);
+    });
+
+    it('★★ skips the LOCK when no parent key resolves, and still runs the claim check', async () => {
+      // `saveSku` accepts a SKU with neither an override nor a materialized product association.
+      // There is then no row to lock, so the guard gives up the mutual exclusion and keeps the part
+      // that still holds: whatever is already committed is still seen.
+      const executor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: true, product: undefined, skuCode: 'DETACHED-1' }),
+        undefined,
+        executor,
+      );
+
+      expect(executor.calls).toHaveLength(1);
+      expect(statementAt(executor.calls, 0).sql).toBe(CLAIM_CHECK_SQL);
+      expect(statementAt(executor.calls, 0).params).toStrictEqual(['DETACHED-1']);
+    });
+
+    it('★★ issues NO claim check for a sku with no code, because a unique index admits many NULLs', async () => {
+      // Nothing to serialize: the insert binds SQL NULL, and any number of rows may hold it. The
+      // parent lock is still taken, because the code the NEXT insert mints is derived from this
+      // product's collection either way.
+      const executor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: true, skuCode: undefined }),
+        CASCADE_PRODUCT_ID,
+        executor,
+      );
+
+      expect(executor.calls).toHaveLength(1);
+      expect(statementAt(executor.calls, 0).sql).toBe(LOCK_PARENT_SQL);
+      expect(executor.mutationCalls).toHaveLength(3);
+    });
+
+    it('★★★ classifies a DEADLOCK reported by either locking read as the same conflict', async () => {
+      // Neither guard statement is a mutation, so neither routes through the executor's own
+      // classification arm; the guard converts for itself. Without this a lock cycle - the one
+      // residual way two writers on DIFFERENT products can collide, when their codes fall in one
+      // index gap - would answer 500 for a condition whose documented remedy is to re-send.
+      const deadlock = Object.assign(new Error('Deadlock found when trying to get lock'), {
+        code: 'ER_LOCK_DEADLOCK',
+        errno: 1213,
+        sqlMessage: 'Deadlock found when trying to get lock; try restarting transaction',
+        sql: 'select skuID from SwSku where skuCode = ? for update',
+      });
+
+      class DeadlockingExecutor extends RecordingExecutor {
+        public override execute(sql: string): Promise<readonly SqlRow[]> {
+          return sql.includes('SwSku') ? Promise.reject(deadlock) : Promise.resolve(NO_ROWS);
+        }
+      }
+
+      const executor = new DeadlockingExecutor([]);
+
+      const rejected = new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: true }),
+        CASCADE_PRODUCT_ID,
+        executor,
+      );
+
+      await expect(rejected).rejects.toBeInstanceOf(WriteConflictError);
+      await expect(rejected).rejects.toThrow(/ER_LOCK_DEADLOCK/u);
+      // The driver's own text is discarded rather than wrapped, so neither the statement nor the
+      // engine's advice reaches the classified failure.
+      await expect(rejected).rejects.not.toThrow(/restarting transaction/u);
+      expect(executor.mutationCalls).toStrictEqual([]);
+    });
+
+    it('★★ re-throws a NON-conflict read failure unchanged, so a real fault stays a fault', async () => {
+      const missingTable = Object.assign(new Error('table missing'), {
+        code: 'ER_NO_SUCH_TABLE',
+        errno: 1146,
+      });
+
+      class FailingExecutor extends RecordingExecutor {
+        public override execute(): Promise<readonly SqlRow[]> {
+          return Promise.reject(missingTable);
+        }
+      }
+
+      const executor = new FailingExecutor([]);
+
+      await expect(
+        new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
+          makeSkuFixture({ isNew: true }),
+          CASCADE_PRODUCT_ID,
+          executor,
+        ),
+      ).rejects.toBe(missingTable);
+    });
+
+    it('★★ guards a CASCADE the same way, because the cascade writes through this same member', async () => {
+      // `MysqlProductRepository.saveProduct` persists a transient product's SKUs through
+      // `ProductSkuCascadeWriter.saveSku` [model/entity/Product.cfc:L73 `cascade="all-delete-orphan"`],
+      // which IS this method - so the aggregate path inherits the guard rather than needing a second
+      // one. Asserted through the structural contract the product repository declares, not through
+      // the class, so the assertion is about the seam the cascade actually uses.
+      const executor = new RecordingExecutor([NO_ROWS, [{ skuID: 'already-there' }]]);
+      const writer: {
+        saveSku(sku: Sku, productID: string, executor: PreparedStatementExecutor): Promise<Sku>;
+      } = new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR);
+
+      await expect(
+        writer.saveSku(
+          makeSkuFixture({ isNew: true, skuCode: 'NAJ-1-2' }),
+          CASCADE_PRODUCT_ID,
+          executor,
+        ),
+      ).rejects.toBeInstanceOf(WriteConflictError);
+      expect(executor.mutationCalls).toStrictEqual([]);
     });
   });
 

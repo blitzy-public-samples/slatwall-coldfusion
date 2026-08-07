@@ -511,6 +511,11 @@ const LEGIBLE_DIAGNOSTIC_KEYS: Readonly<Record<string, string | number | boolean
   skuCode: 'ABC-1',
   currencyCode: 'USD',
   errorCode: 'ER_ACCESS_DENIED_ERROR',
+  // The condition token on a mapped 409. Admitted on the same ground as `errorCode` above it: a
+  // bare server condition name, shape-checked by the producer before it is emitted, and the only
+  // thing that distinguishes a duplicate key from a deadlock on the one line that reports the
+  // refusal.
+  conflictCode: 'ER_DUP_ENTRY',
   statusCode: 500,
   className: 'PriceGroupRate',
   category: 'unrecognized',
@@ -591,6 +596,53 @@ describe('the never-log policy fails closed rather than open', () => {
     for (const key of NEAR_MISS_SENSITIVE_KEYS) {
       expect(contextOf(captured)[key]).toBe(REDACTED);
     }
+  });
+
+  it('★★★ withholds a serialized token passed as a BARE MESSAGE, with no key and no scheme', () => {
+    // The message surface is matched by CONTENT rather than by key, so a credential reaches it safely
+    // only if some rule recognizes the shape. A runtime review observed that a token with no key, no
+    // `Authorization` prefix and no `name=value` shape matched none of the five rules that existed. No
+    // shipped call site emits one, and the rule is here so a future one cannot.
+    const token = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.QWxhZGRpbjpvcGVuc2VzYW1l';
+
+    for (const message of [
+      token,
+      `token rejected: ${token}`,
+      `${token} was presented`,
+      // The two-segment and header-only forms, which are the same material truncated.
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9',
+      'eyJhbGciOiJIUzI1NiJ9',
+    ]) {
+      const captured = captureError(message, {});
+
+      expect(captured.line, message).not.toContain('eyJ');
+      expect(captured.line, message).toContain(REDACTED);
+    }
+
+    // And under a scheme it is ONE replacement rather than two overlapping ones, because the scheme
+    // rule runs first and consumes the material with it.
+    expect(captureError(`Authorization: Bearer ${token}`, {}).line).not.toContain('eyJ');
+  });
+
+  it('★★★ claims no 32-character identifier, which is what an entropy heuristic would have cost', () => {
+    // The load-bearing negative. Every `Sw*` primary key this service mints is a 32-character
+    // hexadecimal string, and the policy keeps those legible on purpose - a rule keyed on length or
+    // randomness would have redacted the identifiers that make a log line traceable at all, which is a
+    // real diagnostic traded for a hypothetical secret. The token rule is keyed on `eyJ`, the base64url
+    // encoding of `{"`, which nothing in this domain's vocabulary begins with.
+    const mintedIdentifier = 'ac41d5e0be6f4d2ab9037cf158ea6d71';
+    const captured = captureError(`sku persisted ${mintedIdentifier}`, {
+      skuID: mintedIdentifier,
+      skuCode: 'NAJ-1-2',
+    });
+
+    expect(captured.line).toContain(mintedIdentifier);
+    expect(contextOf(captured)['skuID']).toBe(mintedIdentifier);
+    expect(contextOf(captured)['skuCode']).toBe('NAJ-1-2');
+
+    // Nor an ordinary base64-looking word that is not token-shaped, and nor a UUID with its dashes.
+    const uuid = 'ac41d5e0-be6f-4d2a-b903-7cf158ea6d71';
+    expect(captureError(`price group ${uuid} applied`, {}).line).toContain(uuid);
   });
 
   it('withholds a bare opaque secret, which content sanitization cannot recognize', () => {

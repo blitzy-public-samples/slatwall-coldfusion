@@ -53,7 +53,10 @@ import type {
   SqlMutationResult,
   SqlRow,
 } from '../../../src/repositories/mysql/connection.js';
-import { MAX_PLACEHOLDER_COUNT } from '../../../src/repositories/mysql/connection.js';
+import {
+  MAX_PLACEHOLDER_COUNT,
+  WriteConflictError,
+} from '../../../src/repositories/mysql/connection.js';
 import type {
   CatalogProductPageProjection,
   CatalogQueryLambdaHandler,
@@ -1100,6 +1103,17 @@ interface CatalogQueryOutcomes {
   addOptionGroupRejectsWith: Error | undefined;
 
   /**
+   * When set, `processProduct_addOption` throws this.
+   *
+   * ADDED FOR THE CONFLICT ARM, and this operation specifically because it is the one the runtime
+   * finding was raised against: it mints a sku code from the product's own SKU collection
+   * [model/service/SkuService.cfc:L97], so two overlapping requests derive the same code and the second
+   * write is refused by the guard in `src/repositories/mysql/mysqlSkuRepository.ts`. A case needs to be
+   * able to programme that refusal to assert what the adapter does with it.
+   */
+  addOptionRejectsWith: Error | undefined;
+
+  /**
    * Save-context rules to record on the entity instead of validating, as `[property, message]` pairs.
    *
    * The failure is programmed on the entity, not as a throw, because that is the ported contract -
@@ -1279,6 +1293,7 @@ function makeTestBed(): CatalogQueryTestBed {
     updateSkusRejectsWith: undefined,
     deleteDefaultImageRejectsWith: undefined,
     addOptionGroupRejectsWith: undefined,
+    addOptionRejectsWith: undefined,
     saveProductRuleFailures: [],
     saveProductTypeRuleFailures: [],
     saveBrandRuleFailures: [],
@@ -1325,6 +1340,10 @@ function makeTestBed(): CatalogQueryTestBed {
     processProduct_addOption: async (product, input): Promise<Product> => {
       addOptionCalls.push({ product, input });
       await passThroughGate();
+
+      if (outcomes.addOptionRejectsWith !== undefined) {
+        throw outcomes.addOptionRejectsWith;
+      }
 
       return product;
     },
@@ -4346,6 +4365,85 @@ describe('catalogQueryHandler', () => {
 
       // And it is NOT logged at error level, so a 5xx alarm never counts a by-design limitation.
       expect(decodedLines(bed).filter((entry) => entry.level === 'error')).toEqual([]);
+    });
+
+    it('★★★ maps a write conflict to 409, so concurrent duplicates stop answering 500', async () => {
+      // THE REGRESSION TEST FOR THE CONCURRENCY FINDING, and the operation is the one it was raised
+      // against. Three concurrent `processProduct_addOption` requests against one product answered
+      // `200, 500, 500` against a live MySQL instance: the sku code is derived from
+      // `product.getSkus().length + 1` [model/service/SkuService.cfc:L97], a read performed before the
+      // write, so all three derived `NAJ-1-2` and the two losers hit the unique index
+      // [model/entity/Sku.cfc:L54] declares. Their `ER_DUP_ENTRY` fell through `./errorMapper.js`'s
+      // deliberately closed recognizer set to the generic 500 - telling the caller this service had
+      // failed at the moment it had correctly refused to write a duplicate.
+      //
+      // Nothing was written, and re-sending converges - which is exactly what
+      // `CATALOG_OPERATION_TRANSPORT.processProduct_addOption` publishes - so 409 is the status that
+      // states the truth, and the caller can act on it.
+      bed.outcomes.addOptionRejectsWith = new WriteConflictError(
+        'SKU_CODE_ALREADY_PERSISTED',
+        `A SwSku row already holds the sku code 'NAJ-1-2' this insert would have written.`,
+      );
+
+      const response = await invokeOperation(bed, 'processProduct_addOption');
+      const failure = readFailureBody(response).error;
+
+      expect(response.statusCode).toBe(409);
+      expect(failure.category).toBe('conflict');
+      expect(failure.message).toContain('Nothing was written');
+      expect(failure.message).toContain('re-sending');
+      expect(failure.fields).toBeUndefined();
+
+      // The colliding value, the class and the condition token all stay on the log stream: a body
+      // naming the sku code would publish another caller's data, and one naming the index would
+      // publish the schema.
+      for (const leak of [
+        'NAJ-1-2',
+        'UI_SKUCODE',
+        'WriteConflictError',
+        'SKU_CODE_ALREADY_PERSISTED',
+        'SwSku',
+      ]) {
+        expect(response.body, leak).not.toContain(leak);
+      }
+
+      // And it is NOT logged at error level, so a 5xx alarm never counts a caller-resolvable
+      // collision - the second half of what the 500 got wrong.
+      expect(decodedLines(bed).filter((entry) => entry.level === 'error')).toEqual([]);
+    });
+
+    it('★★ classifies a driver-reported conflict on ANY mutation, not just the sku paths', async () => {
+      // The classification is applied at `connection.ts`'s single mutation funnel, so every write in
+      // the service inherits it - a duplicate `urlTitle` on a product save reaches the same arm as a
+      // duplicate sku code. Driven here through a different operation to prove the arm is not keyed to
+      // one of them.
+      bed.outcomes.updateSkusRejectsWith = new WriteConflictError(
+        'ER_LOCK_DEADLOCK',
+        'The storage engine chose this transaction as the victim of a lock cycle and rolled it back.',
+      );
+
+      const response = await invokeOperation(bed, 'processProduct_updateSkus');
+
+      expect(response.statusCode).toBe(409);
+      expect(readFailureBody(response).error.category).toBe('conflict');
+      expect(response.body).not.toContain('ER_LOCK_DEADLOCK');
+    });
+
+    it('★★★ still answers 500 for a FORGED conflict, because the class is narrowed by instanceof', async () => {
+      // `{"code":"ER_DUP_ENTRY","name":"WriteConflictError"}` is a shape any deserialized body can
+      // wear. If this arm probed for it structurally a caller could pick its own status and its own log
+      // category; it narrows the exported class instead, so a look-alike lands on the generic arm.
+      bed.outcomes.addOptionRejectsWith = Object.assign(new Error('Duplicate entry'), {
+        name: 'WriteConflictError',
+        code: 'ER_DUP_ENTRY',
+        errno: 1062,
+        conflictCode: 'ER_DUP_ENTRY',
+      });
+
+      const response = await invokeOperation(bed, 'processProduct_addOption');
+
+      expect(response.statusCode).toBe(500);
+      expect(readFailureBody(response).error.category).toBe('unrecognized');
     });
 
     it('★★ maps the SUBSCRIPTION stub-port refusal the same way, for consistency', async () => {

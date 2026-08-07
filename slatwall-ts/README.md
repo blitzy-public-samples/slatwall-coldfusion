@@ -708,6 +708,43 @@ subtree**, and none may be introduced: `.env.example` documents the contract wit
 secret, and the only reader of `process.env` is `src/lib/config.ts` — there is no second reader
 anywhere under `src/**`.
 
+#### The grant the database account needs — and everything it does not
+
+Runtime testing observed that this service demonstrably issues no DDL and no DCL, and then observed
+that neither this file nor `.env.example` told an operator to provision accordingly — so the posture
+was correct while the deployment relied on whoever created the account choosing well. It is written
+down here instead.
+
+The service issues **four statement verbs and no others** — `SELECT`, `INSERT`, `UPDATE`, `DELETE` —
+against the `Sw*` tables of the single schema `DB_NAME` names. It creates no table, alters no column,
+adds no index and grants no privilege, because [AAP 0.8.1's schema-continuity clause](#schema-continuity)
+admits no schema change at all. The minimum grant that works is therefore:
+
+```sql
+CREATE USER 'slatwall_app'@'%' IDENTIFIED BY '<supplied at deploy time>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `Slatwall`.* TO 'slatwall_app'@'%';
+```
+
+That is not a recommendation derived from reading the code — every published route was invoked against
+a MySQL 8.4 instance under exactly that grant and answered `200`, and the same account was then refused
+`CREATE`, `ALTER`, `DROP`, `GRANT`, a read of `mysql.user`, and `LOAD_FILE()`.
+
+**All four verbs are required, including by the code paths that only read.** The sku-code guard in
+`src/repositories/mysql/mysqlSkuRepository.ts` serializes concurrent writers with
+`SELECT ... FOR UPDATE`, and MySQL 8 refuses a locking read to an account holding `SELECT` alone —
+measured, it answers `ERROR 1142 ... SELECT with locking clause command denied`. A read-only grant
+cannot serve the mutating routes, so narrowing to `SELECT` is not a safe economy.
+
+What the account should **not** hold: `CREATE`, `ALTER`, `DROP`, `INDEX`, `REFERENCES`, `TRIGGER`,
+`CREATE ROUTINE`, `GRANT OPTION`, `FILE`, `PROCESS`, `RELOAD`, `SUPER`. None is used by any statement
+this subtree issues, and `FILE` in particular is what makes `LOAD_FILE()` and `LOAD DATA` reachable.
+
+The subscription tables the price-group path reaches through — `SwSubsUsageBenefitAccount`,
+`SwSubsUsageBenefit`, `SwSubsUsageBenefitPriceGroup`, `SwSubsUsage`, `SwSubscriptionStatus`, `SwType`,
+[AAP 0.2.2's one deliberate data-layer exception](#scope-boundaries--what-is-deliberately-absent) — are
+**read only** and live in the same schema, so the grant above already covers them and no second grant
+is needed.
+
 Four classes of local artifact must never reach a commit — the installed dependency tree
 (`node_modules/`), the build and bundle output (`dist/`, `build/`, `*.tsbuildinfo`), the coverage
 report (`coverage/`) and tooling caches (`.eslintcache`, `.vitest/`), and your real `.env`. This

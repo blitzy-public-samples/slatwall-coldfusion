@@ -9,6 +9,8 @@ import type { Pool } from 'mysql2/promise';
 import { appConfig } from '../../../src/lib/config.js';
 import {
   AUDIT_ACTOR_COLUMNS,
+  WriteConflictError,
+  asWriteConflict,
   chunkTupleRows,
   closeConnectionPool,
   createPoolExecutor,
@@ -505,6 +507,211 @@ describe('createPoolExecutor - the non-transactional surface still goes through 
     const innerKeys = await executor.transaction((tx) => Promise.resolve(Object.keys(tx).sort()));
 
     expect(innerKeys).toEqual(['execute', 'executeMutation', 'transaction']);
+  });
+});
+
+// The write-conflict classification.
+//
+// The finding this closes was measured at runtime, not reasoned about: two of three concurrent
+// `processProduct_addOption` requests received HTTP 500 with the generic `unrecognized` body while the
+// log carried a raw `ER_DUP_ENTRY`. A duplicate key is not a server fault - the service correctly
+// declined to write a row a unique index forbids - and reporting it as one told the caller the wrong
+// thing and pointed an operator's 5xx alarm at a caller-resolvable collision.
+//
+// The classification lives at THIS boundary because it is the only one that owns the driver and the
+// only one every mutation in the service passes through, so a write path added later inherits it
+// without being told to.
+
+/**
+ * An error shaped the way `mysql2` shapes one, including the members that must NOT survive.
+ *
+ * `sqlMessage` carries the offending VALUE and the INDEX NAME, and `sql` the whole statement; both are
+ * exactly what a response body and a log line must never repeat, so both are populated here and
+ * asserted absent afterwards.
+ */
+function makeDriverError(code: string, errno: number): Error {
+  return Object.assign(new Error(`Duplicate entry 'NAJ-1-2' for key 'UI_SKUCODE'`), {
+    code,
+    errno,
+    sqlState: '23000',
+    sqlMessage: `Duplicate entry 'NAJ-1-2' for key 'UI_SKUCODE'`,
+    sql: `insert into SwSku (skuID, skuCode) values ('abc', 'NAJ-1-2')`,
+  });
+}
+
+/**
+ * A pool whose every statement is rejected by `rejection`.
+ *
+ * Typed `Error` rather than `unknown`: every rejection driven through here is an `Error` the driver
+ * would have raised, and the narrower type is what lets the doubles reject without an escape hatch.
+ */
+function makeRejectingPool(rejection: Error): Pool {
+  const connection = {
+    execute: (): Promise<never> => Promise.reject(rejection),
+    beginTransaction: (): Promise<void> => Promise.resolve(),
+    commit: (): Promise<void> => Promise.resolve(),
+    rollback: (): Promise<void> => Promise.resolve(),
+    release: (): void => undefined,
+  };
+
+  return {
+    execute: (): Promise<never> => Promise.reject(rejection),
+    getConnection: (): Promise<typeof connection> => Promise.resolve(connection),
+  } as unknown as Pool;
+}
+
+describe('asWriteConflict - which driver conditions mean "not applied, re-sending may work"', () => {
+  it('★★★ classifies a duplicate key, a deadlock and a lock-wait timeout, by name', () => {
+    for (const [code, errno] of [
+      ['ER_DUP_ENTRY', 1062],
+      ['ER_DUP_KEY', 1022],
+      ['ER_DUP_ENTRY_WITH_KEY_NAME', 1586],
+      ['ER_LOCK_DEADLOCK', 1213],
+      ['ER_LOCK_WAIT_TIMEOUT', 1205],
+    ] as const) {
+      const classified = asWriteConflict(makeDriverError(code, errno));
+
+      expect(classified, code).toBeInstanceOf(WriteConflictError);
+      expect(classified?.conflictCode).toBe(code);
+      expect(classified?.name).toBe('WriteConflictError');
+    }
+  });
+
+  it('★★★ carries the CONDITION and discards the driver error, so no value or statement travels', () => {
+    // The disclosure half. The driver's own message names the colliding sku code and the index; the
+    // classified error must name neither, and must not chain the original as `cause` either - a
+    // logger walking `cause` would find both again.
+    const classified = asWriteConflict(makeDriverError('ER_DUP_ENTRY', 1062));
+
+    if (classified === undefined) {
+      throw new Error('a duplicate-key error should classify');
+    }
+
+    for (const leak of ['NAJ-1-2', 'UI_SKUCODE', 'insert into', 'SwSku', '23000']) {
+      expect(classified.message, leak).not.toContain(leak);
+    }
+    expect(classified.cause).toBeUndefined();
+
+    // And it says the two things a caller acts on: nothing was written, and the condition is a
+    // conflict rather than a fault.
+    expect(classified.message).toContain('conflicts with a concurrent or already-committed change');
+    expect(classified.message).toContain('nothing');
+    expect(classified.conflictCode).toBe('ER_DUP_ENTRY');
+  });
+
+  it('falls back to the numeric errno, mapped onto the canonical condition name', () => {
+    // A driver release that reports the number without the name still classifies, and the token that
+    // reaches a log line is the same either way rather than a bare integer.
+    const numericOnly = Object.assign(new Error('write failed'), { errno: 1062 });
+
+    expect(asWriteConflict(numericOnly)?.conflictCode).toBe('ER_DUP_ENTRY');
+  });
+
+  it('★★ DECLINES everything else, so an ordinary failure keeps its own identity', () => {
+    // The load-bearing negative. Classifying too broadly would answer 409 for a genuine fault and
+    // hide it from a 5xx alarm, which is the same class of mis-signal in the opposite direction.
+    for (const notAConflict of [
+      undefined,
+      null,
+      'ER_DUP_ENTRY',
+      42,
+      new Error('no code at all'),
+      Object.assign(new Error('table missing'), { code: 'ER_NO_SUCH_TABLE', errno: 1146 }),
+      Object.assign(new Error('gone'), { code: 'PROTOCOL_CONNECTION_LOST', errno: -1 }),
+      // A shape that WEARS the name without carrying the condition. `name` is writable, so this is
+      // the value a structural name probe would have accepted.
+      Object.assign(new Error('forged'), { name: 'WriteConflictError' }),
+    ]) {
+      expect(asWriteConflict(notAConflict)).toBeUndefined();
+    }
+  });
+});
+
+describe('executeMutation - the classification is applied at the one mutation funnel', () => {
+  it('★★★ converts a duplicate key raised through the POOL executor', async () => {
+    const executor = createPoolExecutor(makeRejectingPool(makeDriverError('ER_DUP_ENTRY', 1062)));
+
+    const rejected = executor.executeMutation('insert into SwSku (skuID) values (?)', ['sku-1']);
+
+    await expect(rejected).rejects.toBeInstanceOf(WriteConflictError);
+    await expect(rejected).rejects.toThrow(/ER_DUP_ENTRY/u);
+    await expect(rejected).rejects.not.toThrow(/NAJ-1-2/u);
+  });
+
+  it('★★★ converts one raised through the TRANSACTION-BOUND executor, and still rolls back', async () => {
+    // The arm that fires in production: every write in this service runs inside `transaction`, so the
+    // duplicate is reported on the pinned connection rather than on the pool.
+    const { pool, log } = makeFakePool();
+    const rollingBack = createPoolExecutor(pool);
+
+    // A conflict raised from inside the unit of work, standing in for the driver rejecting the
+    // insert, so the rollback can be observed rather than assumed.
+    const rejected = rollingBack.transaction(() =>
+      Promise.reject(makeDriverError('ER_DUP_ENTRY', 1062)),
+    );
+
+    await expect(rejected).rejects.toThrow();
+    expect(stepsOf(log)).toEqual([
+      'pool.getConnection',
+      'connection.begin',
+      'connection.rollback',
+      'connection.release',
+    ]);
+
+    // And the conversion itself, on the bound executor's own statement path.
+    const boundRejection = createPoolExecutor(
+      makeRejectingPool(makeDriverError('ER_LOCK_DEADLOCK', 1213)),
+    ).transaction(
+      async (tx) => await tx.executeMutation('delete from SwSku where skuID = ?', ['x']),
+    );
+
+    await expect(boundRejection).rejects.toBeInstanceOf(WriteConflictError);
+    await expect(boundRejection).rejects.toThrow(/ER_LOCK_DEADLOCK/u);
+  });
+
+  it('★★ re-throws a NON-conflict driver failure unchanged, on both executors', async () => {
+    const missingTable = Object.assign(new Error('table missing'), {
+      code: 'ER_NO_SUCH_TABLE',
+      errno: 1146,
+    });
+    const poolExecutor = createPoolExecutor(makeRejectingPool(missingTable));
+
+    await expect(poolExecutor.executeMutation('insert into Nope (a) values (?)', [1])).rejects.toBe(
+      missingTable,
+    );
+    await expect(
+      poolExecutor.transaction(
+        async (tx) => await tx.executeMutation('insert into Nope (a) values (?)', [1]),
+      ),
+    ).rejects.toBe(missingTable);
+  });
+
+  it('★★ leaves the parameter guard alone: an unbindable value is still a parameter fault', async () => {
+    // `toBoundParameters` runs INSIDE the try, so this asserts the conversion cannot absorb a
+    // pre-flight refusal and re-label this service's own defect as the caller's collision.
+    const { pool } = makeFakePool();
+    const executor = createPoolExecutor(pool);
+
+    const rejected = executor.executeMutation('insert into SwSku (skuID) values (?)', [
+      { toSqlString: (): string => '1=1' },
+    ]);
+
+    await expect(rejected).rejects.toThrowError(
+      expect.objectContaining({ name: 'SqlParameterError' }),
+    );
+    await expect(rejected).rejects.not.toBeInstanceOf(WriteConflictError);
+  });
+
+  it('★★ does not classify READS, because a consistent read cannot conflict', async () => {
+    // A plain read takes no locks and cannot deadlock, so `execute` carries no conversion arm; the
+    // one place a LOCKING read is issued converts for itself - see the sku-code guard in
+    // `src/repositories/mysql/mysqlSkuRepository.ts`.
+    const driverError = makeDriverError('ER_LOCK_DEADLOCK', 1213);
+    const executor = createPoolExecutor(makeRejectingPool(driverError));
+
+    await expect(executor.execute('select skuID from SwSku where skuCode = ?', ['x'])).rejects.toBe(
+      driverError,
+    );
   });
 });
 

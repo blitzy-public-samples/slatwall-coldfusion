@@ -1525,6 +1525,21 @@ export class SkuService {
    * `Product.skus` is `cascade="all-delete-orphan"` [model/entity/Product.cfc:L73], so that array
    * is the SKU set this product will hold after the caller's save.
    *
+   * ⚠ IT SEES THIS REQUEST'S COLLECTION AND NOTHING ELSE, WHICH IS HALF OF A TWO-PART GUARD.
+   * The array read here was materialized before this service was called, so it reflects the database
+   * as of that read and cannot reflect a row another invocation commits while this one is deciding.
+   * That makes this test exactly right for a SEQUENTIAL replay - the case every sku-code formula
+   * actually produces, since [model/service/SkuService.cfc:L97] counts the collection and
+   * [model/service/SkuService.cfc:L133] hardcodes `-1`, so both regenerate a code the product already
+   * holds - and blind to a CONCURRENT one.
+   *
+   * The other half is `assertSkuCodeUnclaimed` in `src/repositories/mysql/mysqlSkuRepository.ts`,
+   * which runs inside the write transaction: it takes the parent product's row lock and re-reads the
+   * code against the latest committed state, so two overlapping calls cannot both insert. Neither half
+   * substitutes for the other - this one fails fast with no round trip, that one is the only one that
+   * can see another transaction - and the composed guarantee is what AAP 0.6.5 asks of a bulk path
+   * with no ambient `cftransaction` behind it.
+   *
    * @param product The product whose existing SKUs are read.
    * @param skuCode The code about to be stamped.
    * @returns `true` when a sibling already carries it.
@@ -1541,6 +1556,13 @@ export class SkuService {
 
   /**
    * Refuses to attach a SKU whose generated code the product already carries.
+   *
+   * Raises an ordinary `Error`, deliberately, and NOT the `WriteConflictError` its persistence-layer
+   * counterpart raises. The two describe different situations: reaching this one means the CALLER
+   * asked for something the state it supplied already contains, which no retry changes, whereas a
+   * conflict at the write boundary means an overlapping request got there first and re-sending
+   * converges. Conflating them would publish 409 - "re-send this" - for a request that will refuse
+   * identically every time.
    *
    * @param product The product whose existing SKUs are checked.
    * @param skuCode The code about to be stamped.

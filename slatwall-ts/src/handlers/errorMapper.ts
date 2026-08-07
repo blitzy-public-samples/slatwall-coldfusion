@@ -25,11 +25,21 @@ import { logger } from '../lib/logger.js';
  * rather than answer plausibly, so a routed operation reaching one has a permanent, by-design
  * limitation to report rather than a fault. 501 is the registered status for that, and the handler
  * decides it the same way it decides 400, 401 and 403 - no thrown value picks its own status.
+ *
+ * `conflict` is the eighth, and it is the mirror image of the seventh: a permanent limitation the
+ * caller must stop retrying, beside a TRANSIENT collision the caller SHOULD retry. A write that
+ * overlapped another transaction's write did not apply - runtime testing measured two concurrent
+ * catalog mutations receiving HTTP 500 `unrecognized` carrying a raw `ER_DUP_ENTRY`, which told the
+ * caller this service had failed when in fact it had correctly refused to write a duplicate. 409 is
+ * the registered status for that, and it is decided here for the same reason 501 is: the adapter
+ * raises a typed failure, the handler narrows it by `instanceof`, and the status is a decision about
+ * a REQUEST rather than a property a thrown value carries.
  */
 export type MappedErrorCategory =
   | 'missingMethod'
   | 'routeNotFound'
   | 'invalidRequest'
+  | 'conflict'
   | 'notImplemented'
   | 'unauthenticated'
   | 'forbidden'
@@ -180,7 +190,7 @@ export type InvalidRequestReason =
 export interface ErrorResponseBody {
   readonly error: {
     /**
-     * Which of the six mapped shapes this response represents.
+     * Which of the eight mapped shapes this response represents.
      */
     readonly category: MappedErrorCategory;
     /**
@@ -202,7 +212,7 @@ export interface ErrorResponseBody {
 }
 
 /**
- * The status carried by each mapped shape. Five codes, and only five - see the status-set note and
+ * The status carried by each mapped shape. Six codes, and only six - see the status-set note and
  * the authorization-vocabulary note in the module header for why each exists and why nothing
  * further is modelled.
  *
@@ -214,6 +224,10 @@ const STATUS_BY_CATEGORY: Readonly<Record<MappedErrorCategory, number>> = Object
   missingMethod: 500,
   routeNotFound: 404,
   invalidRequest: 400,
+  // The request was well formed and this service refused to write a duplicate, or the storage engine
+  // rolled the unit of work back because another transaction held the same rows. Nothing was
+  // written and re-sending converges, which is what separates this from the two 500s.
+  conflict: 409,
   // Published and routed, and not implemented by this deployment: a permanent limitation rather
   // than a failure. No `Retry-After` accompanies it, because the limitation is not temporal.
   notImplemented: 501,
@@ -289,6 +303,27 @@ const FORBIDDEN_MESSAGE = UNAUTHENTICATED_MESSAGE;
 const NOT_IMPLEMENTED_MESSAGE =
   'This deployment does not implement the operation. It is published for interface parity and no ' +
   'retry will succeed.';
+
+/**
+ * Body message for a write that overlapped another write and was therefore not applied.
+ *
+ * IT IS ACTIONABLE, FOR THE SAME REASONS THE 501 SENTENCE IS, AND IT SAYS THE OPPOSITE THING. A
+ * conflict is only reachable behind an operation the closed selector list already publishes and behind
+ * a caller this route has already identified and admitted, so it is not a reconnaissance oracle and
+ * there is no fact left to withhold. What the caller needs is the two facts a bare 409 would leave it
+ * guessing at: that NOTHING was written, so there is no partial state to reconcile, and that RETRYING
+ * is the remedy rather than a mistake - the exact inverse of "no retry will succeed".
+ *
+ * ⚠ IT NAMES NO VALUE, NO COLUMN, NO INDEX, NO TABLE AND NO STATEMENT. `mysql2` reports a
+ * constraint violation as `Duplicate entry 'NAJ-1-2' for key 'UI_SKUCODE'`, which names the colliding
+ * VALUE and the INDEX; `src/repositories/mysql/connection.ts` discards that error rather than wrapping
+ * it, and this sentence is fixed, so neither reaches a body. The condition token stays on the log
+ * stream under the same `requestId` this body echoes, exactly as every other withheld detail here
+ * does.
+ */
+const CONFLICT_MESSAGE =
+  'The request conflicts with a concurrent change and was not applied. Nothing was written, and ' +
+  're-sending the same request is expected to succeed.';
 
 /**
  * The sentence published for each `InvalidRequestReason`.
@@ -1144,6 +1179,53 @@ export function notImplementedResponse(context: ErrorMappingContext): APIGateway
     baseLogContext('notImplemented', context),
   );
   return buildResponse('notImplemented', NOT_IMPLEMENTED_MESSAGE, context.requestId, undefined);
+}
+
+/**
+ * Build the response for a write that was not applied because it conflicts with another write.
+ *
+ * A PRODUCER, not a recognizer, and for the reason `notImplementedResponse` documents at length: the
+ * recognizer set in {@link mapErrorToApiGatewayResponse} stays closed so that a value arriving from a
+ * service, a driver or a deserialized document can never choose its own status. The adapter that owns
+ * the driver raises `WriteConflictError` - see `src/repositories/mysql/connection.ts` - the handler
+ * narrows THAT class by `instanceof`, and 409 is decided here.
+ *
+ * WHY 409 RATHER THAN 500 OR 503. The request was well formed, the caller was entitled to it, and the
+ * service behaved correctly: it declined to write a row that would have duplicated a value the schema
+ * declares unique [model/entity/Sku.cfc:L54], or the storage engine rolled the unit of work back
+ * because another transaction held the same rows. That is a collision with the CURRENT STATE OF A
+ * RESOURCE, which is what 409 is for. 500 would report this service as having failed - the exact
+ * mis-signal runtime testing measured, where two concurrent catalog mutations answered
+ * `unrecognized` - and 503 would claim the service is unavailable, which it is not.
+ *
+ * `fields` is not a parameter, for the same reason the two authorization producers omit it: the
+ * caller's input was not the problem and every member it sent may have been well formed.
+ *
+ * No `Retry-After` accompanies it, though this limitation IS temporal, unlike the 501. A conflict
+ * clears the moment the competing transaction commits - which has already happened by the time this
+ * response is built - so any interval published here would be invented, and the message says "re-send"
+ * rather than naming a delay this service cannot know.
+ *
+ * @param context Correlation identifier, the route being served if known, and an optional logger.
+ * @param conflictCode The condition token from `WriteConflictError.conflictCode`, LOGGED beside the
+ * correlation identifier and never published. Validated against the same safe-token shape the
+ * unrecognized arm holds a driver code to, so a token that does not look like a condition name is
+ * dropped rather than printed.
+ */
+export function conflictResponse(
+  context: ErrorMappingContext,
+  conflictCode?: string,
+): APIGatewayProxyResult {
+  const safeConflictCode =
+    conflictCode !== undefined && SAFE_ERROR_TOKEN_PATTERN.test(conflictCode)
+      ? conflictCode
+      : undefined;
+
+  resolveLogger(context).warn('request refused: the write conflicts with a concurrent change', {
+    ...baseLogContext('conflict', context),
+    conflictCode: safeConflictCode,
+  });
+  return buildResponse('conflict', CONFLICT_MESSAGE, context.requestId, undefined);
 }
 
 // Section - the caller principal.

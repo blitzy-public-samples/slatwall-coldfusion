@@ -23,6 +23,7 @@ import {
   AUTHORIZER_ACCOUNT_CLAIM,
   AUTHORIZER_ADMIN_CLAIM,
   AUTHORIZER_SERVICE_SCOPE_CLAIM,
+  conflictResponse,
   containsPrototypeMemberKey,
   forbiddenResponse,
   invalidRequestResponse,
@@ -1026,6 +1027,116 @@ describe('a refusal to serve a caller', () => {
       category: 'notImplemented',
       statusCode: 501,
       name: 'ImageStoreNotConfiguredError',
+    });
+
+    const response = mapErrorToApiGatewayResponse(forged, contextWith(logger));
+
+    expect(response.statusCode).toBe(500);
+    expect(bodyOf(response.body).category).toBe('unrecognized');
+  });
+
+  it('★★★ answers 409 for a write that conflicts with a concurrent change', () => {
+    // WHAT THIS CLOSES, MEASURED RATHER THAN REASONED ABOUT. Three concurrent
+    // `processProduct_addOption` requests against one product answered `200, 500, 500` against a live
+    // MySQL instance, the two 500s carrying this module's generic `unrecognized` body while the log
+    // showed a raw `ER_DUP_ENTRY`. Nothing had failed: the service correctly declined to write a
+    // second row under a sku code [model/entity/Sku.cfc:L54] declares unique. 409 is the status for a
+    // collision with the current state of a resource, and reporting it as 500 both misled the caller
+    // and pointed a 5xx alarm at a collision the caller can resolve by re-sending.
+    const { logger, emissions } = createRecordingLogger();
+
+    const response = conflictResponse(contextWith(logger), 'ER_DUP_ENTRY');
+
+    expect(response.statusCode).toBe(409);
+    expect(bodyOf(response.body).category).toBe('conflict');
+    expect(soleEmission(emissions).level).toBe('warn');
+    expect(contextOf(soleEmission(emissions))['statusCode']).toBe(409);
+    // The condition token is a LOG field, so an operator can tell a duplicate key from a deadlock
+    // without the body carrying either.
+    expect(contextOf(soleEmission(emissions))['conflictCode']).toBe('ER_DUP_ENTRY');
+  });
+
+  it('★★ publishes an ACTIONABLE sentence saying nothing was written and a retry is expected', () => {
+    // The inverse of the 501 sentence, and the asymmetry is the whole point of having two: a
+    // published-but-unimplemented operation must stop being retried, and a conflict must be retried.
+    // Both are actionable for the same reason - the caller is already identified and the operation is
+    // already in the published selector list, so neither is a reconnaissance oracle.
+    const { logger } = createRecordingLogger();
+    const conflict = bodyOf(conflictResponse(contextWith(logger)).body);
+
+    expect(conflict.message).not.toBe('The request was not served.');
+    expect(conflict.message).toContain('conflicts with a concurrent change');
+    expect(conflict.message).toContain('Nothing was written');
+    expect(conflict.message).toContain('re-sending');
+    expect(conflict.message).not.toContain('no retry will succeed');
+  });
+
+  it('★★★ names no value, column, index, table or statement in the 409 body', () => {
+    // `mysql2` reports a constraint violation as `Duplicate entry 'NAJ-1-2' for key 'UI_SKUCODE'`,
+    // which names the colliding VALUE and the INDEX. `src/repositories/mysql/connection.ts` discards
+    // that error rather than wrapping it, and this sentence is fixed, so neither can reach a body even
+    // by accident.
+    const { logger } = createRecordingLogger();
+    const body = conflictResponse(contextWith(logger), 'ER_DUP_ENTRY').body ?? '';
+
+    for (const leak of [
+      'NAJ-1-2',
+      'UI_SKUCODE',
+      'skuCode',
+      'SwSku',
+      'insert into',
+      'ER_DUP_ENTRY',
+      'WriteConflictError',
+      'SKU_CODE_ALREADY_PERSISTED',
+    ]) {
+      expect(body, leak).not.toContain(leak);
+    }
+    expect(bodyOf(body)).not.toHaveProperty('fields');
+  });
+
+  it('★★ sends no Retry-After with a 409, because the interval would be invented', () => {
+    // The limitation IS temporal here, unlike the 501 - and it has already cleared by the time this
+    // response is built, since the competing transaction committed before the conflict was detected.
+    // Any interval published would therefore be a number this service cannot know, and AAP 0.8.1
+    // forbids inventing non-functional values.
+    const { logger } = createRecordingLogger();
+    const headers = conflictResponse(contextWith(logger)).headers ?? {};
+
+    expect(
+      Object.keys(headers)
+        .map((name): string => name.toLowerCase())
+        .sort(),
+    ).toEqual(['cache-control', 'content-type']);
+    expect(headers['retry-after']).toBeUndefined();
+  });
+
+  it('★★ drops a conflict token that does not look like a condition name', () => {
+    // The token is printed verbatim on the log stream, so it is held to the same shape the
+    // unrecognized arm holds a driver code to. A value carrying a message, a statement fragment or a
+    // colliding value is dropped rather than printed.
+    const { logger, emissions } = createRecordingLogger();
+
+    conflictResponse(contextWith(logger), "Duplicate entry 'NAJ-1-2' for key 'UI_SKUCODE'");
+
+    const emitted = contextOf(soleEmission(emissions));
+
+    expect(emitted['conflictCode']).toBeUndefined();
+    expect(JSON.stringify(emitted)).not.toContain('NAJ-1-2');
+  });
+
+  it('★★★ is never produced by the thrown-value mapping funnel either', () => {
+    // Same invariant as the 501's, and it matters more here: a duplicate-key error is a shape a
+    // deserialized document can wear trivially - `{"code":"ER_DUP_ENTRY"}` - so if the funnel probed
+    // for it, a caller could choose 409 and the log category with it. The funnel does not; the
+    // repository layer raises `WriteConflictError` and the handler narrows THAT by `instanceof`.
+    const { logger } = createRecordingLogger();
+    const forged = Object.assign(new Error('Duplicate entry'), {
+      name: 'WriteConflictError',
+      code: 'ER_DUP_ENTRY',
+      errno: 1062,
+      category: 'conflict',
+      statusCode: 409,
+      conflictCode: 'ER_DUP_ENTRY',
     });
 
     const response = mapErrorToApiGatewayResponse(forged, contextWith(logger));

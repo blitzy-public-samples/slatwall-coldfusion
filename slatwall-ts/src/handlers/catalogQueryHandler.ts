@@ -61,11 +61,13 @@ import {
 } from './bootstrap.js';
 import {
   MAX_PLACEHOLDER_COUNT,
+  WriteConflictError,
   isPreparablePlaceholderCount,
 } from '../repositories/mysql/connection.js';
 import type { ErrorMappingContext, InvalidRequestReason, MappedFieldIssue } from './errorMapper.js';
 import {
   PROTOTYPE_MEMBER_FIELD_ISSUE,
+  conflictResponse,
   containsPrototypeMemberKey,
   invalidRequestResponse,
   jsonSuccessResponse,
@@ -2220,6 +2222,33 @@ export function createCatalogQueryHandler(
         thrown instanceof SubscriptionTermsNotConfiguredError
       ) {
         return notImplementedResponse(mappingContext);
+      }
+
+      // THE CONFLICT ARM, AND IT IS THE ONLY ARM ON THIS CHAIN THAT EXISTS FOR A CONCURRENCY FAULT.
+      // This is the capability that mutates - nine of its fourteen operations write - and two of those
+      // MINT A VALUE the schema declares unique: `SkuService` derives each sku code from the SKU
+      // collection the product carries at the moment of the call [model/service/SkuService.cfc:L97,
+      // L133], which is a read this handler performs before the write and which a competing invocation
+      // can invalidate in between. Runtime testing measured the consequence directly: three concurrent
+      // `processProduct_addOption` requests answered `200, 500, 500`, the two 500s carrying the generic
+      // `unrecognized` body while the log showed a raw `ER_DUP_ENTRY` - so a caller was told this
+      // service had failed at the exact moment it had correctly declined to write a duplicate.
+      //
+      // BOTH HALVES OF THE FIX MEET HERE. `src/repositories/mysql/mysqlSkuRepository.ts` now
+      // serializes the mint on the parent product's row and refuses a code the database already holds,
+      // and `src/repositories/mysql/connection.ts` classifies the driver's own duplicate-key, deadlock
+      // and lock-wait conditions the same way, so every one of them arrives as one class. 409 states
+      // the truth the 500 hid: nothing was written, and re-sending converges - which is exactly what
+      // `CATALOG_OPERATION_TRANSPORT` publishes about the two operations that mint codes, and what AAP
+      // 0.6.5 requires of a bulk path that has no ambient transaction to fall back on.
+      //
+      // Narrowed by `instanceof` against the class the repository layer exports, never by a structural
+      // probe of `code` or `name` - the same discipline the two arms above keep, and for the same
+      // reason `./errorMapper.js` refuses to let a thrown value choose its own status. The token that
+      // says WHICH condition fired travels to the log stream through the producer and is published
+      // nowhere.
+      if (thrown instanceof WriteConflictError) {
+        return conflictResponse(mappingContext, thrown.conflictCode);
       }
 
       // THE ONE FUNNEL. The caught value is of genuinely unknown type and is passed nowhere: it goes

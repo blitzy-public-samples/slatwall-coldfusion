@@ -2214,6 +2214,45 @@ export const LEGACY_TEST_MAP: {
   // Transport-tier policy on the net-new adapter surface. Not divergences; see the interface.
   observableRefinements: [
     {
+      summary:
+        'A transient SKU is inserted only after its sku code has been re-checked against the ' +
+        'DATABASE, inside the same transaction as the insert and behind the parent product row\u2019s ' +
+        'own `for update` lock. A code another transaction has committed is refused rather than ' +
+        'duplicated, and nothing from that unit of work is written. The legacy needed no such ' +
+        'statements: the read that derives the code [model/service/SkuService.cfc:L97, L133] and the ' +
+        'insert sat inside ONE ambient `cftransaction` per request, so Hibernate\u2019s own row locks ' +
+        'serialized them. Runtime testing measured what their absence costs - three concurrent ' +
+        '`processProduct_addOption` requests produced THREE rows sharing one sku code where no unique ' +
+        'index stopped them, and two unclassified HTTP 500s where one did. Sequential behaviour is ' +
+        'unchanged in both directions: a first call still writes, and a replay still converges ' +
+        'through the reconciliation `createSkus` already performs.',
+      owningModule: 'src/repositories/mysql/mysqlSkuRepository.ts',
+      assertedBy: 'tests/integration/repositories/mysqlSkuRepository.test.ts',
+      aapAuthority:
+        'AAP 0.6.5 requires the ported bulk-mutation paths to carry explicit batch limits, ' +
+        'IDEMPOTENCY ON RETRY and a documented compensation story precisely "because there is no ' +
+        'ambient transaction to fall back on", and AAP 0.8.1 admits no schema change - so the ' +
+        'uniqueness [model/entity/Sku.cfc:L54] declares has to be honoured in code rather than by ' +
+        'authoring the index. AAP 0.3.3 T3 makes the fetch shape and the statement set of a ' +
+        'repository method an explicit, documented decision, which is what these two statements are.',
+    },
+    {
+      summary:
+        'A duplicate key, a deadlock or a lock-wait timeout reported by the driver is classified as ' +
+        'one typed conflict at the single mutation funnel, and the driver\u2019s own error is discarded ' +
+        'rather than wrapped - so neither the colliding VALUE nor the INDEX NAME `mysql2` puts in ' +
+        '`sqlMessage`, nor the statement it puts in `sql`, survives even as a `cause`. Only a bare ' +
+        'uppercase condition token travels. Reads are deliberately NOT classified: a consistent read ' +
+        'cannot conflict, and the one place a LOCKING read is issued converts for itself.',
+      owningModule: 'src/repositories/mysql/connection.ts',
+      assertedBy: 'tests/unit/repositories/connection.test.ts',
+      aapAuthority:
+        'AAP 0.4.1 makes `errorMapper` responsible for mapping domain errors to API Gateway ' +
+        'responses "without leaking internals", which requires the layer that owns the driver to hand ' +
+        'it something classifiable; AAP 0.3.3 places all data access behind repository ports over ' +
+        'mysql2 prepared statements, making this module the only correct home for driver knowledge.',
+    },
+    {
       // A silent success on an unimplemented feature is indistinguishable from a real one, which is
       // why this path signals. Making all four stub-touching process methods THROW instead is
       // declined on AAP 0.2.2 grounds: a method that always throws is neither of the two treatments
@@ -2366,6 +2405,30 @@ export const LEGACY_TEST_MAP: {
   ],
 
   adapterTransportPolicies: [
+    {
+      summary:
+        'A write the storage engine did not apply answers HTTP 409 `conflict` rather than 500 ' +
+        '`unrecognized`. The transport tier gains one category and one producer for it: the adapter ' +
+        'that owns the driver raises `WriteConflictError` for a duplicate key, a deadlock or a ' +
+        'lock-wait timeout, `catalogQueryHandler` narrows THAT CLASS by `instanceof`, and the status ' +
+        'is decided here - so no thrown value, and in particular no deserialized document wearing ' +
+        '`{"code":"ER_DUP_ENTRY"}`, can choose it. The body is a fixed sentence naming no value, ' +
+        'column, index, table or statement; the condition token travels to the log stream only, and ' +
+        'is dropped there unless it has the shape of a condition name. No `Retry-After` accompanies ' +
+        'it, because the conflict has already cleared by the time the response is built and any ' +
+        'interval would be invented.',
+      owningModule: 'src/handlers/errorMapper.ts',
+      assertedBy: 'tests/unit/handlers/errorMapper.test.ts',
+      unchangedServiceContract:
+        'No service method changed signature, return type or behaviour: the seven service surfaces ' +
+        'AAP 0.4.2 publishes are untouched, and `SkuService.createSkus` still answers `boolean` and ' +
+        'still refuses a code the product already carries with an ordinary Error rather than a ' +
+        'conflict [model/service/SkuService.cfc:L58, L97]. What changed is the STATUS a failure that ' +
+        'already existed is reported with, which is a transport decision - the same status set is ' +
+        'reached from the same thrown values, and the two suites that assert the service tier ' +
+        '(tests/unit/services/skuService.test.ts, tests/unit/services/productService.test.ts) needed ' +
+        'no edit for it.',
+    },
     {
       summary:
         'The selected-options parameter carries TWO admission bounds at the routed boundary and none ' +

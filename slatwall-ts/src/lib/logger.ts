@@ -367,6 +367,15 @@ const LEGIBLE_DIAGNOSTIC_KEYS: ReadonlySet<string> = new Set([
   'classname',
   'thrownshape',
   'errorcode',
+  // The condition token on a mapped 409, admitted on exactly the same ground as `errorcode` beside
+  // it and for the same reason: without it the ONE surface that reports a write was refused cannot
+  // say WHICH refusal it was, and a duplicate key, a deadlock and a lock-wait timeout are three
+  // different operational stories. Its value is not free text - `conflictResponse` in
+  // `src/handlers/errorMapper.ts` drops anything that is not shaped like a condition name before
+  // emitting, and the only values reaching it are the server's own condition names plus one
+  // server-authored token from `src/repositories/mysql/mysqlSkuRepository.ts`. Nothing a caller sends
+  // and no value read out of a row can appear under it.
+  'conflictcode',
   'thrownat',
   'publishedissuecount',
   'issuecount',
@@ -891,6 +900,35 @@ const ABSOLUTE_PATH_PATTERNS: readonly RegExp[] = [
 const AUTH_SCHEME_PATTERN = /\b(bearer|basic|digest)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 
 /**
+ * A serialized web token, recognized by SHAPE rather than by the key or scheme carrying it.
+ *
+ * WHY THIS RULE EXISTS, AND WHY IT IS THIS NARROW. The key-based half of the policy fails closed and
+ * is the strong half, but it governs CONTEXT MEMBERS only; the MESSAGE surface is permissive by
+ * design and is matched by content, so a credential arrives there safely only if some rule
+ * recognizes it. The rules above recognize five shapes - a statement, a `name=value` pair under a
+ * forbidden name, URI userinfo, an auth scheme with its material, and a driver's own account or
+ * target text - and a runtime review pointed out that a token passed as a BARE message, with no key,
+ * no scheme prefix and no assignment shape, matches none of them. No shipped call site emits one; a
+ * future one could.
+ *
+ * `eyJ` is what a base64url encoding of `{"` begins with, so this matches a serialized JSON object
+ * and, in practice, the header or payload of a JWS/JWT. That precision is the point: a heuristic
+ * keyed on LENGTH or ENTROPY would also claim the 32-character hexadecimal identifiers this domain
+ * is full of - every `Sw*` primary key is one - and the policy deliberately keeps those legible
+ * (see {@link LEGIBLE_IDENTIFIER_KEYS}), so an entropy rule would trade a real diagnostic for a
+ * hypothetical secret. Nothing in the `Sw*` schema or in this service's own vocabulary begins `eyJ`
+ * and continues in base64url.
+ *
+ * ⚠ IT DOES NOT CLOSE THE GENERAL CASE, AND NOTHING CONTENT-BASED CAN. An arbitrary opaque string -
+ * a bare API key, a random session identifier - is indistinguishable from an ordinary value by
+ * inspection, which is exactly why the CONTEXT surface fails closed on the KEY instead. The
+ * remaining boundary is asserted rather than implied: see the case named "withholds a bare opaque
+ * secret, which content sanitization cannot recognize" in `tests/unit/lib/logger.test.ts`, which
+ * proves the key-based half withholds it.
+ */
+const SERIALIZED_TOKEN_PATTERN = /\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{4,}){0,2}/gu;
+
+/**
  * Where the line containing `start` ends - the whole remainder when there is no newline after it.
  *
  * The FAIL-CLOSED fallback for a value this scanner cannot delimit, and the reason it stops at the
@@ -1062,9 +1100,13 @@ function sanitizeText(text: string): string {
     (_whole: string, scheme: string): string => `${scheme} ${REDACTED}`,
   );
 
+  // After the scheme rule, so `Bearer eyJ...` is already one replacement rather than two, and before
+  // the driver and path rules, which cannot match token text.
+  const withoutSerializedToken = withoutAuthMaterial.replace(SERIALIZED_TOKEN_PATTERN, REDACTED);
+
   // The two shapes a DRIVER writes rather than a caller: a quoted account (with its host) in an
   // authentication refusal, and the target of a connectivity failure.
-  const withoutDatabaseAccount = withoutAuthMaterial.replace(
+  const withoutDatabaseAccount = withoutSerializedToken.replace(
     DATABASE_ACCOUNT_PATTERN,
     (_whole: string, name: string): string => `${name} ${REDACTED}`,
   );

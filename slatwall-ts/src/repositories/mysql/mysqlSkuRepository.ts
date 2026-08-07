@@ -32,6 +32,8 @@ import type {
   SqlRow,
 } from './connection.js';
 import {
+  WriteConflictError,
+  asWriteConflict,
   resolveAuditActorAccountID,
   resolveStampedModifiedByAccountID,
   chunkTupleRows,
@@ -125,6 +127,11 @@ const SELECT_SKU_ACCESS_CONTENT_IDS = 'selectSkuAccessContentIDs';
 const SELECT_SKU_SUBSCRIPTION_BENEFIT_IDS = 'selectSkuSubscriptionBenefitIDs';
 const INSERT_SKU = 'insertSku';
 const UPDATE_SKU = 'updateSku';
+
+// The two sku-code guard statements below deliberately declare NO label of their own. Every other
+// label in this list exists so a column that cannot be read can be attributed to the statement that
+// selected it - `SkuColumnError` takes one - and neither guard reads a column: the lock reads nothing
+// at all, and the claim check reads only whether a row came back.
 
 // B5 - schema continuity.
 //
@@ -885,6 +892,70 @@ const SUBSCRIPTION_BENEFIT_LINK = Object.freeze({
 const INSERT_SKU_SQL = `insert into SwSku (${SKU_COLUMNS.join(', ')}) values (${sqlPlaceholderList(
   SKU_COLUMNS.length,
 )})`;
+
+// THE TWO STATEMENTS THAT MAKE SKU-CODE MINTING SAFE UNDER CONCURRENCY, AND WHY THEY EXIST.
+//
+// `SkuService` derives every sku code from state it holds IN MEMORY - the merchandise combination
+// path reads `product.getSkus().length + 1` [model/service/SkuService.cfc:L97, L100] and the
+// single-sku path hardcodes `-1` [model/service/SkuService.cfc:L133] - and checks it against the same
+// in-memory collection. That check is correct for a SEQUENTIAL replay and blind to a CONCURRENT one:
+// two invocations that load the same product both count the same SKUs, both mint the same code, and
+// both arrive here. Runtime testing measured exactly that - three concurrent
+// `processProduct_addOption` requests against one product produced THREE rows sharing one sku code
+// where no unique index stopped them, and where one did, two callers received an unclassified HTTP
+// 500 carrying a raw `ER_DUP_ENTRY`.
+//
+// Under Hibernate the read and the write sat inside ONE ambient `cftransaction` per request, so the
+// engine's own row locks serialized them. There is no ambient transaction on Lambda - AAP 0.6.5 says
+// so and requires the bulk paths to carry idempotency on retry in its place - so the serialization
+// has to be written down. These two statements are that, and they run inside the SAME unit of work as
+// the insert they guard.
+//
+// WHY THIS IS NOT SOLVED BY THE UNIQUE INDEX ALONE. [model/entity/Sku.cfc:L54] declares
+// `unique="true"` on `skuCode`, so a correctly provisioned schema does carry the constraint - but AAP
+// 0.8.1 admits NO schema change, this port authors no DDL, and correctness that depends on an object
+// the deployment neither creates nor asserts is not correctness. So the constraint is enforced HERE,
+// in code, and the index - when present - is the third line of defence rather than the first: a
+// duplicate it reports is classified by `asWriteConflict` in `./connection.js` and answers the same
+// 409 this guard produces.
+
+/**
+ * Take the parent product's row lock, so two writers minting codes for one product cannot overlap.
+ *
+ * WHY THE PARENT ROW AND NOT THE SKU CODE. Locking an EXISTING row exclusively is genuine mutual
+ * exclusion: the second writer waits, and when it proceeds the first has committed, so the check
+ * below SEES the row it would otherwise duplicate and refuses cleanly. A `for update` against a
+ * MISSING `skuCode` takes a GAP lock instead, and gap locks are shared - two writers would both take
+ * one, both then attempt the insert, and the pair would DEADLOCK rather than one of them refusing.
+ * Every sku code a single call mints shares one parent, so one lock covers the whole batch.
+ *
+ * Selecting the key column alone: nothing is read from the row, the statement exists for its lock.
+ */
+const LOCK_PRODUCT_FOR_SKU_CODE_MINT_SQL =
+  'select productID from SwProduct where productID = ? for update';
+
+/**
+ * Whether any row already holds this sku code, read as of the LATEST COMMITTED state.
+ *
+ * `for update` rather than a plain read, and the difference decides whether the guard works.
+ * InnoDB's default REPEATABLE READ answers a consistent read from the snapshot taken at the
+ * transaction's FIRST consistent read, which on the product-cascade path is `productRowExists` -
+ * issued before the cascade and therefore possibly before the competing writer committed. A locking
+ * read is exempt: it always reads the latest committed version. So the guard cannot answer "no such
+ * code" from a view of the world that predates the row it is looking for.
+ *
+ * Global rather than scoped to the parent product, because [model/entity/Sku.cfc:L54] declares the
+ * column unique across the table rather than within a product.
+ */
+const SKU_ID_BY_SKU_CODE_FOR_UPDATE_SQL = 'select skuID from SwSku where skuCode = ? for update';
+
+/**
+ * The token this adapter authors for a code the database already holds.
+ *
+ * Server-authored and value-free: `conflictResponse` in `src/handlers/errorMapper.ts` prints it beside
+ * the correlation identifier and publishes nothing.
+ */
+const SKU_CODE_ALREADY_PERSISTED = 'SKU_CODE_ALREADY_PERSISTED';
 
 /**
  * Updates one `SwSku` row.
@@ -1663,6 +1734,12 @@ export class MysqlSkuRepository implements SkuRepository {
     const auditTimestamp = new Date();
 
     return await executor.transaction(async (tx): Promise<Sku> => {
+      if (sku.isNew()) {
+        // Inside the transaction and before the insert, so the lock it takes is held for the whole
+        // unit of work and a refusal leaves nothing written.
+        await this.assertSkuCodeUnclaimed(sku, productIDOverride, tx);
+      }
+
       const saved = sku.isNew()
         ? await this.insertSku(sku, auditTimestamp, tx, productIDOverride)
         : await this.updateSku(sku, auditTimestamp, tx, productIDOverride);
@@ -1671,6 +1748,78 @@ export class MysqlSkuRepository implements SkuRepository {
 
       return saved;
     });
+  }
+
+  /**
+   * Serialize on the parent product and refuse a sku code the database already holds.
+   *
+   * The database-side half of a guard whose in-memory half lives in `SkuService`: that one refuses a
+   * code the product ALREADY CARRIES in the collection it is mutating, this one refuses a code
+   * ANOTHER TRANSACTION has committed. Neither substitutes for the other - the first fails fast
+   * without a round trip and catches a sequential replay, the second is the only one that can see a
+   * concurrent writer. See the statement constants above for why each statement is shaped as it is.
+   *
+   * INSERTS ONLY, and the two omissions are deliberate. A sku with no code binds SQL NULL, and a
+   * unique index admits any number of NULLs, so there is nothing to serialize and no statement is
+   * issued. An UPDATE that moves an already-persisted row onto a taken code is left to the third line
+   * of defence - the index reports it and `asWriteConflict` classifies it - because excluding the row's
+   * own key from the predicate would make this guard's contract "unique except for me", which is a
+   * different and easier claim than the one the column declares.
+   *
+   * A SKU WHOSE PARENT CANNOT BE NAMED IS STILL CHECKED, JUST NOT SERIALIZED. `saveSku` accepts a
+   * SKU with neither an override nor a materialized product association; there is then no row to lock,
+   * so the code check runs alone. It remains correct against anything already committed and gives up
+   * only the mutual exclusion, which is why the lock is attempted first whenever a key exists.
+   *
+   * @param sku the transient SKU about to be inserted.
+   * @param productIDOverride the parent key the caller handed down, when it did.
+   * @param tx the enclosing transaction's statement sink - never the pool, or the lock would be
+   * released the instant it was taken.
+   * @throws An error named `WriteConflictError` when the code is already held, or when the storage
+   * engine reports a deadlock or lock-wait timeout acquiring either lock.
+   */
+  private async assertSkuCodeUnclaimed(
+    sku: Sku,
+    productIDOverride: string | undefined,
+    tx: PreparedStatementExecutor,
+  ): Promise<void> {
+    const skuCode = sku.getSkuCode();
+
+    // Resolved the same way `toSkuColumnValues` resolves the parent key it binds, so the row this
+    // locks is the row the insert will name. An unsaved product legitimately answers the empty string
+    // [model/entity/Product.cfc:L52 `unsavedvalue=""`], which names nothing and is treated as absent.
+    const parentProductID = productIDOverride ?? sku.getProduct()?.getProductID();
+
+    try {
+      if (parentProductID !== undefined && parentProductID.length > 0) {
+        await tx.execute(LOCK_PRODUCT_FOR_SKU_CODE_MINT_SQL, [parentProductID]);
+      }
+
+      if (skuCode === undefined || skuCode.length === 0) {
+        return;
+      }
+
+      const claimed = await tx.execute(SKU_ID_BY_SKU_CODE_FOR_UPDATE_SQL, [skuCode]);
+
+      if (claimed.length > 0) {
+        throw new WriteConflictError(
+          SKU_CODE_ALREADY_PERSISTED,
+          `A SwSku row already holds the sku code this insert would have written; ` +
+            `[model/entity/Sku.cfc:L54] declares that column unique. ` +
+            `[model/service/SkuService.cfc:L97, L133] derive the code from the product's own SKU ` +
+            `collection, so two overlapping calls derive the same one and this is the second of them.`,
+        );
+      }
+    } catch (thrown: unknown) {
+      // The refusal above is already a conflict and passes straight through; what this converts is a
+      // deadlock or a lock-wait timeout reported by either LOCKING READ, neither of which routes
+      // through `executeMutation` and so neither of which the executor's own arm would classify.
+      if (thrown instanceof WriteConflictError) {
+        throw thrown;
+      }
+
+      throw asWriteConflict(thrown) ?? thrown;
+    }
   }
 
   /**
