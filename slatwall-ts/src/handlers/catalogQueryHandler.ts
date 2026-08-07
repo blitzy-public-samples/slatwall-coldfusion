@@ -23,15 +23,42 @@ import type {
 } from 'aws-lambda';
 import { z } from 'zod';
 
+// The value object the services tier declares for `ProductSaveInput.price`, and the brander its
+// factory validates with. Both are imported for ONE purpose - admitting and minting the `saveProduct`
+// payload's `price` numeral - and the module header records why that is transport work and not domain
+// work.
+import { Money } from '../domain/valueObjects/money.js';
 import { listFindNoCase, listToArray } from '../lib/cfml/list.js';
-// The published CFML case-folding primitive.
+import { toDecimalString } from '../lib/cfml/numberFormat.js';
+// The published CFML case-folding primitive. It is imported rather than re-derived because the option
+// load answers a map keyed by a CASE-FOLDED identifier, and folding a lookup key with a second
+// implementation of the same rule is precisely how two copies of one rule drift apart.
 import { cfFoldKey } from '../lib/cfml/struct.js';
+// The published CFML boolean-conversion table. Imported as the request-grammar PREDICATE for the two
+// `processProduct_updateSkus` flags so that what this file admits and what the service tier can
+// convert are one rule rather than two - see `cfmlConvertibleFlagMember`.
+import { cfTruthy } from '../lib/cfml/truthiness.js';
 import type { Logger } from '../lib/logger.js';
 import { logger as processLogger } from '../lib/logger.js';
 import type { OptionService } from '../services/optionService.js';
 import type { ProductPage, ProductQueryCriteria } from '../services/productService.js';
+// A VALUE import, and the only one this file takes from the services tier. `MissingAssociationError`
+// is narrowed by `instanceof` in the catch chain, which needs the constructor itself; the sanctioned
+// precedent is `OrderViewDocumentDataError` in `./bootstrap.js`, narrowed the same way by
+// `./promotionApplicationHandler.js`. It introduces no cycle - `../services/productService.js` imports
+// nothing from `src/handlers/**`.
+// `assertPlainImageFileName` joins it as the delegated predicate for the published `imageFile` member -
+// see `wireImageFileName`. Neither is a port and neither consumes a B4 ledger slot.
+import { MissingAssociationError, assertPlainImageFileName } from '../services/productService.js';
 import type { CompositionRoot, RequestScope } from './bootstrap.js';
-import { bootstrapCompositionRoot } from './bootstrap.js';
+// Two VALUE imports beside the composition-root factory. Both are the stub-port refusal classes AAP
+// 0.2.1's image and subscription-term ports raise; they are narrowed by `instanceof` in the catch chain
+// so that a by-design limitation answers 501 rather than the 500 finding F-04 measured.
+import {
+  ImageStoreNotConfiguredError,
+  SubscriptionTermsNotConfiguredError,
+  bootstrapCompositionRoot,
+} from './bootstrap.js';
 import {
   MAX_PLACEHOLDER_COUNT,
   isPreparablePlaceholderCount,
@@ -43,6 +70,7 @@ import {
   invalidRequestResponse,
   jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
+  notImplementedResponse,
   resolveServerRequestId,
   routeDiagnosticLabel,
   forbiddenResponse,
@@ -229,8 +257,33 @@ export const CATALOG_OPERATION_TRANSPORT: Readonly<
   getUnusedProductOptions: { method: 'GET', resendable: true },
   getUnusedProductOptionGroups: { method: 'GET', resendable: true },
   getOptionsForSelect: { method: 'GET', resendable: true },
-  processProduct_addOptionGroup: { method: 'POST', resendable: false },
-  processProduct_addOption: { method: 'POST', resendable: false },
+
+  // THESE TWO CONVERGE, AND THE CONVERGENCE IS MEASURED RATHER THAN ASSUMED.
+  // `processProduct_addOptionGroup` appends the group's first option to every existing SKU
+  // [model/service/ProductService.cfc:L119] and `processProduct_addOption` extends the option list
+  // and rebuilds SKUs from it [model/service/ProductService.cfc:L145], so the legacy shape looks
+  // accumulating - but neither re-applies here.
+  //
+  // THAT DESCRIBES THE LEGACY AND NOT THIS SERVICE. Both operations persisted NOTHING at the time -
+  // the CRITICAL finding F-06 - so no run of either had an observable effect and the claim could not
+  // be checked against anything. Now that they write, it can be, and it is wrong on both counts:
+  //
+  //   * `processProduct_addOptionGroup` - `Sku.addOption` is guarded by `Sku.hasOption`
+  //     [src/domain/entities/sku.ts] precisely so `SwSkuOption` cannot acquire a duplicate row, which
+  //     its composite key would refuse anyway. Measured: `SwSkuOption` 8 -> 12 -> 12 -> 12.
+  //   * `processProduct_addOption` - `SkuService.createSkus` carries an explicit, deliberate RETRY
+  //     RECONCILIATION that SKIPS a combination the product already carried before the call
+  //     [src/services/skuService.ts, `createMerchandiseSkusForOptionCombinations`], for the stated
+  //     reason that "applying the same call twice leaves exactly the SKU set one application leaves".
+  //     Measured: `SwSku` 4 -> 8 -> 8 -> 8, with byte-identical `skuCode` sets on runs two and three.
+  //
+  // So `resendable: true` is the ACCURATE value and `false` was inherited reasoning. Both were
+  // measured three runs deep on the source AND packaged tiers. Understating convergence is the safe
+  // direction to be wrong in, which is why the old value did no harm - but a published declaration
+  // that contradicts the shipped behaviour is the same class of untruth F-06 was raised about, and it
+  // is corrected rather than left because it is comfortable.
+  processProduct_addOptionGroup: { method: 'POST', resendable: true },
+  processProduct_addOption: { method: 'POST', resendable: true },
 
   // CONVERGES. It ASSIGNS the supplied price to every SKU rather than adjusting by it
   // [model/service/ProductService.cfc:L222-L227], so a second run with the same payload writes the
@@ -554,7 +607,7 @@ const MAXIMUM_OPERATIONS_PER_INVOCATION = 1;
  */
 function countSuppliedOperations(event: APIGatewayProxyEvent): number {
   const repeated = event.multiValueQueryStringParameters;
-  if (repeated !== null) {
+  if (repeated !== null && repeated !== undefined) {
     const values = repeated[OPERATION_PARAMETER];
     if (values !== undefined) {
       return values.length;
@@ -562,7 +615,7 @@ function countSuppliedOperations(event: APIGatewayProxyEvent): number {
   }
 
   const single = event.queryStringParameters;
-  if (single !== null && single[OPERATION_PARAMETER] !== undefined) {
+  if (single !== null && single !== undefined && single[OPERATION_PARAMETER] !== undefined) {
     return 1;
   }
 
@@ -579,7 +632,7 @@ function readOperationParameters(event: APIGatewayProxyEvent): Record<string, st
   const supplied = event.queryStringParameters;
   const parameters: Record<string, string> = {};
 
-  if (supplied === null) {
+  if (supplied === null || supplied === undefined) {
     return parameters;
   }
 
@@ -774,14 +827,92 @@ const existingRowIdentifier = z
 const cfmlFlagMember = z.union([z.string(), z.number(), z.boolean()]);
 
 /**
- * A decimal amount as JSON carries one. Not converted to `Money` here - see the module header.
+ * The rule text for a flag whose value must be one a CFML boolean context would accept.
+ *
+ * Names the GRAMMAR and never the value, which is the invariant {@link MappedFieldIssue} requires.
  */
-const decimalAmountMember = z.union([z.string(), z.number()]);
+const CFML_CONVERTIBLE_FLAG_RULE =
+  'must be a value a CFML boolean context accepts: a boolean, a number, ' +
+  'a numeric string, one of true/false/yes/no, or the empty string';
 
 /**
- * [model/process/Product_AddOptionGroup.cfc:L49-L57] plus the product the method's first parameter
- * names.
+ * A CFML flag whose value is one the service tier can actually convert.
+ *
+ * THE GRAMMAR IS NOT RESTATED HERE - IT IS DELEGATED, exactly as
+ * `./promotionApplicationHandler.js` delegates its decimal grammar to the brander `Money` itself
+ * calls. `cfTruthy` from `../lib/cfml/truthiness.js` IS the function the service tier applies to
+ * these two members [src/services/productService.ts, `processProduct_updateSkus`], at the line CFML
+ * applies it [model/service/ProductService.cfc:L222, L226]. Using it as this predicate makes the wire
+ * grammar and the service's grammar THE SAME RULE by construction; a table copied into this file
+ * would be a second rule that starts equal and drifts, and the drift would be silent in exactly the
+ * direction that hurts - a value the schema admitted and `cfTruthy` refused becomes a 500 where a 400
+ * was owed.
+ *
+ * WHY THE PREDICATE AND NOT A NARROWER TYPE. `cfTruthy` RAISES for a non-empty string that is
+ * neither a boolean literal nor numeric, and it raises for `NaN`. Those raises are deliberate CFML
+ * parity and are NOT weakened - see that function's own reasoning for why answering `false` would
+ * discard the parity. So the transport tier does not ask `cfTruthy` to become
+ * total; it asks it, here, whether THIS value is one it can answer at all, and refuses the request as
+ * a field issue when it cannot. `'active'`, `'Y'`, `'on'` and a truncated `'tru'` are all refused by
+ * name at the boundary instead of becoming an unrecognized server error four layers down.
  */
+const cfmlConvertibleFlagMember = cfmlFlagMember.refine(
+  (value: string | number | boolean): boolean => {
+    try {
+      cfTruthy(value);
+
+      return true;
+    } catch {
+      // The caught value is deliberately not inspected: this is a PREDICATE, and the reported message
+      // is the schema's own so that no helper's wording reaches a response body.
+      return false;
+    }
+  },
+  { message: CFML_CONVERTIBLE_FLAG_RULE },
+);
+
+/** A decimal amount as JSON carries one. NOT converted to `Money` here - see the module header. */
+const decimalAmountMember = z.union([z.string(), z.number()]);
+
+/** The rule text for a monetary member. Names the GRAMMAR and never the value. */
+const WIRE_DECIMAL_NUMERAL_RULE = 'must be a plain decimal numeral, as a string';
+
+/**
+ * A monetary member as it travels: a plain decimal numeral, in a string.
+ *
+ * THE GRAMMAR IS DELEGATED, NOT RESTATED, exactly as `./promotionApplicationHandler.js` does it.
+ * `toDecimalString` from `../lib/cfml/numberFormat.js` is the validating brander
+ * `Money.fromDecimalString` itself calls, so admission here and minting below are THE SAME RULE by
+ * construction. A regular expression copied into this file would be a second rule free to drift, and
+ * the drift would be silent in the direction that hurts: a numeral the schema admitted and `Money`
+ * refused would become a 500 where a 400 was owed.
+ *
+ * Refusing is the point. `''`, `'abc'`, `'1,234.50'`, `'12.'`, `'NaN'`, `'Infinity'`, exponential
+ * notation, surrounding whitespace and an over-long numeral are all rejected, and NONE of them is
+ * coerced to zero - a silent zero in a price path sells product for free.
+ *
+ * A JSON NUMBER IS NOT ADMITTED, deliberately, and that is narrower than {@link decimalAmountMember}
+ * on purpose. A double is precisely how IEEE-754 drift would enter, and `toDecimalString` refuses a
+ * non-string for that reason. `decimalAmountMember` stays a string-or-number union because the member
+ * it serves is handed on UNCONVERTED to a service that reproduces a CFML `isNumeric` read; this one is
+ * MINTED into a `Money`, so it is held to `Money`'s own input contract.
+ */
+const wireDecimalNumeral = z.string().refine(
+  (value: string): boolean => {
+    try {
+      toDecimalString(value);
+
+      return true;
+    } catch {
+      // The caught value is deliberately not inspected: this is a PREDICATE, and the reported message
+      // is the schema's own so that no library's wording reaches a response body.
+      return false;
+    }
+  },
+  { message: WIRE_DECIMAL_NUMERAL_RULE },
+);
+
+/** [model/process/Product_AddOptionGroup.cfc:L49-L57] plus the product the method's first parameter names. */
 const addOptionGroupBody = z.strictObject({
   productID: existingRowIdentifier,
   optionGroup: existingRowIdentifier,
@@ -803,11 +934,58 @@ const addOptionBody = z.strictObject({
  */
 const updateSkusBody = z.strictObject({
   productID: existingRowIdentifier,
-  updatePriceFlag: cfmlFlagMember.optional(),
+  updatePriceFlag: cfmlConvertibleFlagMember,
   price: decimalAmountMember.optional(),
-  updateListPriceFlag: cfmlFlagMember.optional(),
+  updateListPriceFlag: cfmlConvertibleFlagMember,
   listPrice: decimalAmountMember.optional(),
 });
+
+/**
+ * The rule text for a default-image file name. Names the CONSTRUCTS and never the value.
+ *
+ * Deliberately terse where the service's own messages are specific: the service raises a different
+ * sentence per rejected construct, and reproducing that vocabulary here would be a second copy free
+ * to drift. One sentence naming what a valid value IS tells a caller everything actionable.
+ *
+ * AND IT NAMES NO STORE PATH. An earlier draft opened "must be a single file name inside
+ * product/default/", which is where the service composes the path - a detail of this deployment's
+ * storage layout that a caller neither needs nor should be handed. The constraint a caller can act on
+ * is that the value be ONE BARE FILE NAME, and that is stated without disclosing where it lands.
+ */
+const IMAGE_FILE_NAME_RULE =
+  'must be a single file name - not empty, no path separator, no "." or ".." segment ' +
+  'and no percent sign';
+
+/**
+ * A default-image file name as it travels.
+ *
+ * THE GRAMMAR IS DELEGATED TO THE SERVICE'S OWN PATH-TRAVERSAL GUARD, which is the third and last
+ * delegation in this file - `cfTruthy` for the two flags, `toDecimalString` for the price, and
+ * `assertPlainImageFileName` here. Without it the schema admitted any string, the service's guard
+ * raised a plain `Error`, and an unrecognized throw is a server fault by construction, so an empty
+ * `imageFile` answered HTTP 500. An empty or traversing file name is a CALLER mistake and owes a 400
+ * naming the member.
+ *
+ * IT DOES NOT REPLACE THE SERVICE'S GUARD AND MUST NOT BE READ AS DOING SO. That guard is the
+ * security boundary, it runs before any path is composed, and it protects every in-process caller
+ * including the upload path, whose legacy `try` converts the refusal into a recorded validation error
+ * rather than a throw. This predicate makes the boundary UNREACHABLE from the wire by refusing earlier
+ * and more informatively; it is not the boundary.
+ */
+const wireImageFileName = z.string().refine(
+  (value: string): boolean => {
+    try {
+      assertPlainImageFileName(value);
+
+      return true;
+    } catch {
+      // The caught value is deliberately not inspected: this is a PREDICATE, and the reported message
+      // is the schema's own so that no service sentence reaches a response body.
+      return false;
+    }
+  },
+  { message: IMAGE_FILE_NAME_RULE },
+);
 
 /**
  * The one sibling whose second parameter is `required struct data` rather than a process object
@@ -818,7 +996,7 @@ const updateSkusBody = z.strictObject({
  */
 const deleteDefaultImageBody = z.strictObject({
   productID: existingRowIdentifier,
-  imageFile: z.string().optional(),
+  imageFile: wireImageFileName.optional(),
 });
 
 /**
@@ -840,6 +1018,7 @@ const saveProductBody = z.strictObject({
   productName: z.string().optional(),
   productCode: z.string().optional(),
   productDescription: z.string().optional(),
+  price: wireDecimalNumeral.optional(),
   activeFlag: z.boolean().optional(),
   publishedFlag: z.boolean().optional(),
   sortOrder: z.number().optional(),
@@ -1269,6 +1448,7 @@ function planInvocation(
         ...(supplied.productDescription === undefined
           ? {}
           : { productDescription: supplied.productDescription }),
+        ...(supplied.price === undefined ? {} : { price: Money.fromDecimalString(supplied.price) }),
         ...(supplied.activeFlag === undefined ? {} : { activeFlag: supplied.activeFlag }),
         ...(supplied.publishedFlag === undefined ? {} : { publishedFlag: supplied.publishedFlag }),
         ...(supplied.sortOrder === undefined ? {} : { sortOrder: supplied.sortOrder }),
@@ -1821,7 +2001,7 @@ export type CatalogQueryLambdaHandler = (
  */
 function readNamedOperation(event: APIGatewayProxyEvent): string | undefined {
   const single = event.queryStringParameters;
-  if (single !== null) {
+  if (single !== null && single !== undefined) {
     const named = single[OPERATION_PARAMETER];
     if (named !== undefined && named.trim().length > 0) {
       return named.trim();
@@ -1829,7 +2009,7 @@ function readNamedOperation(event: APIGatewayProxyEvent): string | undefined {
   }
 
   const repeated = event.multiValueQueryStringParameters;
-  if (repeated !== null) {
+  if (repeated !== null && repeated !== undefined) {
     const values = repeated[OPERATION_PARAMETER];
     if (values !== undefined) {
       for (const value of values) {
@@ -1993,6 +2173,62 @@ export function createCatalogQueryHandler(
         return servedOrRefused(served, requestId, mappingContext);
       }
     } catch (thrown: unknown) {
+      // THE CLIENT-SHAPED ARM. A well-formed, schema-admitted payload can still name an
+      // `optionGroup` or an `option` that does not exist, and the refusal then comes from the service
+      // resolving the reference rather than from the schema. `./errorMapper.js`'s recognized set is
+      // deliberately CLOSED, so without this arm such a request reached the generic 500: a caller was
+      // told this service had failed when the caller had, and a 5xx alarm counted a typo as an
+      // outage.
+      //
+      // `unusableRequestInput` is the reason, deliberately: the payload's SHAPE was fine - it is the
+      // CONTENT that names nothing this operation can resolve - and `./errorMapper.js` maps that reason
+      // to the same fixed sentence its schema-rejection arm publishes, so choosing it withholds detail
+      // rather than inventing any. The detail a caller can act on travels in `fields`, which
+      // `MissingAssociationError` builds from a server-authored member name and one fixed constraint
+      // sentence: no identifier, no row, no row count, no table and no statement. See that class in
+      // `../services/productService.js` for the disclosure argument, and for why a dereference of
+      // SERVER state deliberately does NOT raise it and stays on the arm below.
+      //
+      // Narrowed by `instanceof`, never by a structural `name` probe - which is the same decision
+      // `./errorMapper.js` documents for `ZodError` and for the identical reason: `name` is a writable
+      // string and a deserialized request body can wear it, so a structural probe would let a caller
+      // choose both the status and which member it blamed.
+      if (thrown instanceof MissingAssociationError) {
+        return invalidRequestResponse('unusableRequestInput', mappingContext, thrown.fields);
+      }
+
+      // THE NOT-IMPLEMENTED ARM. The routed `processProduct_deleteDefaultImage`, given the one
+      // argument that makes it meaningful, reaches `RefusingImageStore.deleteImageFile`; without this
+      // arm that rejection answered HTTP 500 `unrecognized` on both the source and packaged tiers,
+      // with the real cause visible only in the log. AAP 0.2.1 designates the image service a STUB
+      // PORT, so nothing failed: this deployment does not implement it, which is a permanent
+      // client-visible fact, and 501 is the registered status that states it.
+      //
+      // THE SUBSCRIPTION SIBLING IS NARROWED TOO, THOUGH NOTHING ROUTED REACHES IT.
+      // `processProduct_addSubscriptionTerm` is out of scope and unpublished, so this arm is
+      // unreachable through it. Including it is the point: the two stub ports refuse identically, so
+      // they are classified identically, and publishing that method later cannot reintroduce the
+      // same 500 through the other port.
+      //
+      // Narrowed by `instanceof` against the classes `./bootstrap.js` exports, never by a structural
+      // `name` probe - `name` is a writable string that a deserialized body can wear, and
+      // `./errorMapper.js` refuses to let a thrown value choose its own status for exactly that reason.
+      // Which is also why the STATUS is decided here rather than there: the recognizer set stays
+      // closed and this handler makes the refusal, as it does for 400, 401 and 403.
+      if (
+        thrown instanceof ImageStoreNotConfiguredError ||
+        thrown instanceof SubscriptionTermsNotConfiguredError
+      ) {
+        return notImplementedResponse(mappingContext);
+      }
+
+      // THE ONE FUNNEL. The caught value is of genuinely unknown type and is passed nowhere: it goes
+      // to `./errorMapper.js`, which narrows it by `instanceof` and by bounded property probes, and
+      // publishes a classification rather than the value. Nothing is re-thrown, so a Lambda
+      // invocation always answers with a response.
+      // THE ROUTED CONTEXT, not an unrouted one. `mappingContext` carries the route from the
+      // moment resolution succeeded, so a service failure is logged against the URL surface that
+      // was being served rather than against nothing (finding F8).
       return mapErrorToApiGatewayResponse(thrown, mappingContext);
     }
   };

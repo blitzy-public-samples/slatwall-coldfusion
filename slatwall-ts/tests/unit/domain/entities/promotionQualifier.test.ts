@@ -78,6 +78,13 @@ type MembershipPairProbe = {
   readonly farSide: () => readonly PromotionQualifier[];
 };
 
+// --- The schema and surface contracts, stated once
+
+// The physical table `SwPromoQual` - ABBREVIATED, never `SwPromotionQualifier`
+// [model/entity/PromotionQualifier.cfc:L49] - is no longer restated as a constant here. Schema
+// continuity is binding (AAP 0.8.1), and it is checked against the shipped source rather than
+// against a literal in this file: tests/traceability/legacyTestMap.ts block A30.
+
 /**
  * All thirteen many-to-many link tables, verbatim, keyed by the property that declares each.
  *
@@ -1414,6 +1421,15 @@ describe('the thirteen associations split three ways, and the fourteenth is not 
       expect(probe.nearSide(), `${probe.property} must default to empty`).toEqual([]);
     }
   });
+
+  // C5 SCHEMA CONTINUITY - `SwPromoQual` is not `SwPromotionQualifier`, and none of the thirteen
+  // link tables spells `Excluded` out - is NOT asserted here. `LEGACY_TABLE` and
+  // `LEGACY_LINK_TABLES` are declared in this file, so comparing them with the same literals proves
+  // only that the file holds what it was written to hold; a target module that misspelled a table
+  // would sail past it. The check lives where the shipped text is readable:
+  // tests/traceability/legacyTestMap.ts block A30 derives all thirteen `SwPromoQual*` names from
+  // [model/entity/PromotionQualifier.cfc:L73-L87] and holds `src/` to them, in code and in
+  // commentary. The constants stay because the membership probes below are LABELLED with them.
 
   it('carries the type="array" declaration inconsistency forward without normalising it', () => {
     // CFML parity [model/entity/PromotionQualifier.cfc:L83-L84]: only `excludedBrands` and

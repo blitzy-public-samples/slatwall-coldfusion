@@ -1247,6 +1247,100 @@ interface ProductSalePriceResolver {
    * @returns one detail per SKU that has one; empty when the product has no sale-price rewards.
    */
   getSalePriceDetailsForProductSkus(productID: string): Promise<CfStruct<SalePriceDetail>>;
+
+  /**
+   * Read a whole product set's sale-price rows ahead of the per-product resolutions, so that those
+   * resolutions have nothing left to read.
+   *
+   * WHY A SECOND MEMBER HERE RATHER THAN A SECOND RESOLUTION SHAPE. QA measured the sequenced
+   * price-group-then-promotion pass and counted the statements one request executed: 32 for a
+   * one-item order, 48 for ten, 228 for a hundred, 1028 for five hundred. The single-product
+   * resolution below was issued once per DISTINCT PRODUCT, so the six-branch sale-price reduction -
+   * the most involved statement in the slice - ran five hundred times for one request. AAP T3 makes
+   * this boundary's fetch shape "an explicit, documented decision per method", and a count that is a
+   * function of the caller's item count is not a decision this file had taken; AAP 0.4.3 names that
+   * same statement as the one whose reduction was moved into SQL. This member is how the decision gets
+   * taken, WITHOUT touching a single signature that has a legacy counterpart:
+   *
+   * `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1022] still takes ONE
+   * product and still performs the whole reduction-and-rounding loop, and the exported
+   * `SalePriceResolver` port still declares exactly one method.
+   *
+   * IT IS OPTIONAL, FOR THE SAME REASON THE RESOLVER ITSELF IS. Over a hundred construction sites
+   * in the integration suites build this adapter with a capturing executor and a one-method resolver
+   * object; a required member would break every one of them. Its absence is precise and bounded: the
+   * per-product resolutions below simply do what they have always done, one read each. Nothing degrades
+   * except the statement count, and no product hydrates differently.
+   *
+   * THE MAPPING IS SUPPLIED BECAUSE THE ROWS CANNOT SUPPLY IT. The reduced result set projects
+   * eight columns and no owning product identifier, and §4.3 of
+   * `./sql/salePricePromotionRewards.sql.ts` forbids adding one - `noQualifierDiscounts` takes
+   * `DISTINCT` over exactly the nine columns it projects, and that set IS the reviewer's guarantee. So
+   * the implementation is handed the `productID -> skuIDs` mapping this adapter has ALREADY read, from
+   * {@link MysqlProductRepository.readSkus}, and partitions with it. An implementation that cannot
+   * partition a row must abandon the batch rather than drop the row.
+   *
+   * @param skuIDsByProductID every product to be resolved, mapped to the identifiers of the SKUs it
+   *   owns. Implementations must treat an EMPTY map as a no-op and must NOT read the whole catalogue
+   *   for one.
+   * @returns nothing observable. Whatever it read is answered through
+   *   `getSalePriceDetailsForProductSkus`, which is still the only way a detail is obtained.
+   */
+  prefetchSalePriceDetailsForProducts?(
+    skuIDsByProductID: ReadonlyMap<string, readonly string[]>,
+  ): Promise<void>;
+}
+
+/**
+ * The `productID -> skuIDs` mapping a batched sale-price read partitions its rows with, projected from
+ * the SKUs this adapter has already materialized.
+ *
+ * THE KEYS ARE THE IDENTIFIERS THE RESOLVER WILL BE ASKED FOR, and the values are drawn from the SKU
+ * index under a FOLDED lookup. The two sides come from different statements - the product graph read
+ * projects `p_productID`, the SKU read projects `SwSku.productID` - and MySQL's default collation is
+ * case-insensitive, so two spellings of one identifier are the same product to the database and two
+ * different keys to a `Map`. Folding the lookup is what stops a product being narrowed on while its
+ * SKUs are attributed to nobody, which is precisely the state that makes a batch unpartitionable.
+ *
+ * A product with no materialized SKUs maps to an EMPTY list rather than being omitted: it must still be
+ * narrowed on, so that the batch covers it and its answer is "no sale-price rows" rather than "not
+ * read". A batch that quietly skipped it would leave the per-product call to read it alone, which is
+ * the statement this exists to avoid.
+ *
+ * A module-level function rather than a private method, deliberately: it is a pure projection over its
+ * two arguments, it reaches no field, and
+ * `tests/integration/repositories/mysqlProductRepository.test.ts` pins this class's prototype member
+ * list exactly - a helper that needs no instance should not appear on it.
+ *
+ * @param productIDs the distinct products about to be resolved, in the caller's own spelling.
+ * @param skusByProductID every materialized SKU, indexed by the owning identifier the SKU rows carried.
+ * @returns one entry per requested product, mapped to the identifiers of its materialized SKUs.
+ */
+function salePriceSkuIdentifiers(
+  productIDs: readonly string[],
+  skusByProductID: ReadonlyMap<string, readonly Sku[]>,
+): ReadonlyMap<string, readonly string[]> {
+  const skuIDsByFoldedProductID = new Map<string, string[]>();
+
+  for (const [owningProductID, skus] of skusByProductID) {
+    const folded = cfFoldKey(owningProductID);
+    const collected = skuIDsByFoldedProductID.get(folded);
+    const skuIDs = skus.map((sku: Sku): string => sku.getSkuID());
+
+    if (collected === undefined) {
+      skuIDsByFoldedProductID.set(folded, skuIDs);
+    } else {
+      collected.push(...skuIDs);
+    }
+  }
+
+  const mapping = new Map<string, readonly string[]>();
+
+  for (const productID of productIDs) {
+    mapping.set(productID, skuIDsByFoldedProductID.get(cfFoldKey(productID)) ?? []);
+  }
+
+  return mapping;
 }
 
 /**
@@ -1638,6 +1732,7 @@ function toProductTypeFromGraphRow(
   row: SqlRow,
   statementLabel: string,
   productTypeRepository: ProductTypeRepository,
+  parentProductType: ProductType | undefined,
 ): ProductType {
   return new ProductType({
     productTypeID: readIdentifier(row, 'pt_productTypeID', statementLabel),
@@ -1648,7 +1743,7 @@ function toProductTypeFromGraphRow(
     productTypeName: readOptionalText(row, 'pt_productTypeName', statementLabel),
     productTypeDescription: readOptionalText(row, 'pt_productTypeDescription', statementLabel),
     systemCode: readOptionalText(row, 'pt_systemCode', statementLabel),
-    parentProductType: undefined,
+    parentProductType,
     remoteID: readOptionalText(row, 'pt_remoteID', statementLabel),
     createdDateTime: readTimestamp(row, 'pt_createdDateTime', statementLabel),
     createdByAccountID: readOptionalText(row, 'pt_createdByAccountID', statementLabel),
@@ -2311,12 +2406,40 @@ export class MysqlProductRepository implements ProductRepository {
     }
 
     const materializedSkus = await this.readSkus(foundProductIDs, [...new Set(defaultSkuIDs)]);
-    const salePriceDetails = await this.readSalePriceDetails(foundProductIDs);
 
-    // Keyed by the folded identifier.
+    // AFTER the SKUs and BEFORE any product is constructed, because the entity takes the map as a
+    // constructed-with value and there is no later moment at which it could be attached - see
+    // {@link ProductSalePriceResolver}. The SKU materialization is handed over as well, because its
+    // `productID -> skus` index is exactly the mapping a batched sale-price read needs in order to
+    // partition its rows, and this is the moment at which it is already in hand.
+    const salePriceDetails = await this.readSalePriceDetails(
+      foundProductIDs,
+      materializedSkus.byProductID,
+    );
+
+    // AND THE PARENT OF EVERY PRODUCT TYPE THIS BATCH REACHED, resolved once per distinct parent
+    // through the SAME loader a standalone product-type read uses. Before this pre-read existed the
+    // hydrated product type had no parent at all, so the price-group cascade's pointer walk
+    // [model/service/PriceGroupService.cfc:L66-L79] could not climb and an ancestor's rate was silently
+    // skipped - measured as 17.99 charged where 20.00 was configured (finding F-08). Resolved BEFORE any
+    // product is constructed for the same reason the sale-price map is: the entity takes its parent as a
+    // constructed-with value and there is no later moment at which one could be attached.
+    const productTypeParents = await this.readProductTypeParents(graphRows);
+
+    // KEYED BY THE FOLDED IDENTIFIER. The map is built from the identifier the DATABASE
+    // returned and read back with the identifier the CALLER supplied, and `productID IN (...)`
+    // matches under MySQL's case-insensitive default collation - so a caller spelling that differs
+    // in case from the stored column found no entry and the product was silently DROPPED from the
+    // answer, turning a found row into a missing one. Folding both sides restores the CFML struct
+    // identity the ORM-backed lookup had.
     const productsByID = new Map<string, Product>();
     for (const row of graphRows) {
-      const product = this.buildProduct(row, materializedSkus, salePriceDetails);
+      const product = this.buildProduct(
+        row,
+        materializedSkus,
+        salePriceDetails,
+        productTypeParents,
+      );
       productsByID.set(cfFoldKey(product.getProductID()), product);
     }
 
@@ -2395,10 +2518,14 @@ export class MysqlProductRepository implements ProductRepository {
    * until something asked a product for its sale prices - and this is eager.
    *
    * @param productIDs the products whose sale-price details are wanted; duplicates are collapsed.
+   * @param skusByProductID the SKUs already materialized for those products, indexed by owning
+   *   product - handed to the batched prefetch so it can partition its rows. A product absent from
+   *   this index is still resolved; it simply contributes no SKU identifiers to the partition.
    * @returns the details, indexed by product identifier; empty when no resolver was supplied.
    */
   private async readSalePriceDetails(
     productIDs: readonly string[],
+    skusByProductID: ReadonlyMap<string, readonly Sku[]>,
   ): Promise<ReadonlyMap<string, CfStruct<SalePriceDetail>>> {
     const indexed = new Map<string, CfStruct<SalePriceDetail>>();
     const resolver = this.collaborators.salePriceResolver;
@@ -2418,6 +2545,15 @@ export class MysqlProductRepository implements ProductRepository {
       }
     }
 
+    // THE ONE BATCHED READ, WHEN THE COLLABORATOR OFFERS ONE. It is given the SAME distinct
+    // identifiers the per-product calls below will use, each mapped to the SKUs already read for it,
+    // so the batch covers exactly the products about to be asked for and nothing else. The `?.` is
+    // what makes the member genuinely optional at the call site; the `??` keeps the awaited expression
+    // a promise in both directions so a reader does not have to reason about a conditional await.
+    await (resolver.prefetchSalePriceDetailsForProducts?.(
+      salePriceSkuIdentifiers(distinctProductIDs, skusByProductID),
+    ) ?? Promise.resolve());
+
     const resolved = await Promise.all(
       distinctProductIDs.map(
         async (productID: string): Promise<readonly [string, CfStruct<SalePriceDetail>]> => [
@@ -2432,6 +2568,117 @@ export class MysqlProductRepository implements ProductRepository {
     }
 
     return indexed;
+  }
+
+  /**
+   * Resolve the parent product type named by every graph row that declares one, indexed by identifier.
+   *
+   * THIS METHOD EXISTS BECAUSE THE PRICE-GROUP CASCADE CLIMBS POINTERS, NOT PATHS. Its third level
+   * walks `currentProductType.getParentProductType()` up the chain
+   * [model/service/PriceGroupService.cfc:L66-L79] - a MUST-PRESERVE behaviour (AAP 0.1.1) - and until
+   * this read existed `toProductTypeFromGraphRow` hydrated `parentProductType` as `undefined`, so the
+   * walk stopped at the first hop and the ancestor's rate was never seen. The consequence was money:
+   * a global 17.99 selected where the ancestor configured 20.00, on the same SKU and the same price
+   * group, through both `getProductByProductID` and `getSkuBySkuIdentity` - while the standalone
+   * product-type loader read the SAME row and selected the ancestor's rate correctly.
+   *
+   * IT DELEGATES TO `getProductTypeByProductTypeID`, AND THAT IS THE WHOLE CORRECTNESS ARGUMENT.
+   * F-08's acceptance criterion is that a product type reached through a PRODUCT and one reached
+   * through the product-type loader select the SAME RATE. Resolving through the very method that
+   * loader is makes them the same by CONSTRUCTION rather than by argument: the chain this index holds
+   * is byte-for-byte the chain the standalone loader builds, including its pointer-following order, its
+   * per-identifier fallback for an ancestor a stale `productTypeIDPath` fails to name, and its
+   * `ProductTypeCycleError` on corrupt data. Nothing about ancestry is re-derived here, so there is no
+   * second traversal to keep in step - the objection this adapter's single-graph-loader comment makes
+   * about fetch shapes generally.
+   *
+   * ⚠ THE COST, STATED PLAINLY RATHER THAN GLOSSED. One resolve per DISTINCT PARENT IDENTIFIER in the
+   * batch - not one per product, and NOT one per hop up the tree, because that loader reads a whole
+   * ancestry from `productTypeIDPath` in a single statement. A page of products sharing a taxonomy
+   * therefore costs as many resolves as the page has distinct parent types, which for real catalogue
+   * data is a small number and is often zero: a batch whose types are all ROOTS issues NO statement at
+   * all, because a root declares no `pt_parentProductTypeID` and the loop below never runs.
+   *
+   * ⚠ A SINGLE COMBINED `getProductTypesByProductTypeIDPath` READ WAS CONSIDERED AND REJECTED. Joining
+   * every row's `productTypeIDPath` into one comma-list would answer the whole batch in ONE statement,
+   * and it would be wrong in precisely the way this finding is about: that read links only the rows the
+   * path MATCHED, so an ancestor a stale path fails to name is hydrated with no parent, while
+   * `getProductTypeByProductTypeID` reads it by identifier and finds it. Nothing rewrites a
+   * descendant's path when an ancestor moves - `mysqlProductTypeRepository.saveProductType` says so
+   * outright - so stale paths are a reachable state, and a cheaper read that disagrees with the
+   * standalone loader in exactly that state would reintroduce F-08 in a narrower form. AAP 0.8.1
+   * forbids inventing a performance requirement to trade a must-preserve money path against, so the
+   * provable answer is the one taken.
+   *
+   * DE-DUPLICATION IS BY FOLDED IDENTIFIER and is local to this call. `productTypeID` is an opaque
+   * persisted string matched under MySQL's case-insensitive default collation, so two rows spelling one
+   * parent differently name the same parent and must resolve once - the same folding
+   * {@link MysqlProductRepository.materializeProducts} applies to its own product index. The memo is
+   * NOT held on the instance: `saveProductType` can move a parent within one request, and an
+   * instance-lifetime cache would serve a chain that the request itself has already invalidated.
+   *
+   * @param graphRows the rows one product graph read returned.
+   * @returns the resolved parents by folded identifier; an identifier whose row does not exist is
+   *   simply absent, which stops that chain quietly - the same answer the standalone loader gives for
+   *   the same dangling key, and deliberately NOT a `ProductAssociationError`, because raising here
+   *   would make the two loaders disagree again in the other direction.
+   * @throws An error named `ProductColumnError` when a projected column is missing or malformed.
+   * @throws An error named `ProductTypeCycleError` when the chain above a row cycles, raised by the
+   *   loader this method delegates to.
+   */
+  private async readProductTypeParents(
+    graphRows: readonly SqlRow[],
+  ): Promise<ReadonlyMap<string, ProductType>> {
+    const wantedParentIDs: string[] = [];
+    const seenParentIdentities = new Set<string>();
+
+    for (const row of graphRows) {
+      // THE PRODUCT-TYPE COLUMN IS TESTED FIRST, AND THE ORDER IS LOAD-BEARING RATHER THAN TIDY. A
+      // product with no product type contributes no `pt_*` value at all, and asking such a row for its
+      // parent key would be asking a question about an association that is not there - which
+      // {@link buildProduct} answers, correctly, by not constructing a product type either. Reading the
+      // parent key unconditionally also makes this method demand a column of every row shape a caller
+      // can hand it, including the product-type-less ones, which is a wider contract than the work
+      // needs.
+      if (readOptionalText(row, 'pt_productTypeID', PRODUCT_GRAPH_LABEL) === undefined) {
+        continue;
+      }
+
+      // Absent for a ROOT product type, which declares no parent. Ordinary, and it means there is
+      // nothing above this row to read.
+      const parentProductTypeID = readOptionalText(
+        row,
+        'pt_parentProductTypeID',
+        PRODUCT_GRAPH_LABEL,
+      );
+
+      if (parentProductTypeID === undefined) {
+        continue;
+      }
+
+      const identity = cfFoldKey(parentProductTypeID);
+      if (!seenParentIdentities.has(identity)) {
+        seenParentIdentities.add(identity);
+        wantedParentIDs.push(parentProductTypeID);
+      }
+    }
+
+    const resolvedParents = new Map<string, ProductType>();
+
+    // SEQUENTIAL, not `Promise.all`. Every read on this adapter travels the SAME executor, which may be
+    // a transaction-scoped connection, and a MySQL connection cannot carry concurrent statements. The
+    // sale-price pre-read above parallelises safely only because it calls a SERVICE-level resolver
+    // rather than this adapter's executor.
+    for (const parentProductTypeID of wantedParentIDs) {
+      const parent =
+        await this.productTypeRepository.getProductTypeByProductTypeID(parentProductTypeID);
+
+      if (parent !== undefined) {
+        resolvedParents.set(cfFoldKey(parentProductTypeID), parent);
+      }
+    }
+
+    return resolvedParents;
   }
 
   /**
@@ -2532,6 +2779,7 @@ export class MysqlProductRepository implements ProductRepository {
     row: SqlRow,
     materializedSkus: MaterializedSkus,
     salePriceDetails: ReadonlyMap<string, CfStruct<SalePriceDetail>>,
+    productTypeParents: ReadonlyMap<string, ProductType>,
   ): Product {
     const productID = readIdentifier(row, 'p_productID', PRODUCT_GRAPH_LABEL);
 
@@ -2639,11 +2887,31 @@ export class MysqlProductRepository implements ProductRepository {
 
       // The port travels with the entity, so a product type reached through a PRODUCT read can
       // resolve the root of its own `productTypeIDPath` exactly as one reached through
-      // `mysqlProductTypeRepository` can.
+      // `mysqlProductTypeRepository` can. Before this argument existed the two disagreed, and the
+      // disagreement was a 500 on the promotion-application journey.
+      //
+      // AND THE PARENT NOW TRAVELS TOO, WHICH CLOSES THE SECOND HALF OF THE SAME DISAGREEMENT.
+      // The port fixed `getBaseProductType()`, which reads the ROOT of `productTypeIDPath`; it did
+      // nothing for the consumers that climb POINTERS, and the third level of the price-group cascade
+      // is one of those [model/service/PriceGroupService.cfc:L66-L79]. So this loader still answered a
+      // different object graph than the standalone one, and the difference was MONEY: a global 17.99
+      // selected where the ancestor configured 20.00. The parent is looked up by
+      // the row's own `pt_parentProductTypeID` - a column this projection has always carried and never
+      // read - in the index {@link readProductTypeParents} resolved through that same standalone
+      // loader, so the two are now the same chain by construction.
+      const parentProductTypeID = readOptionalText(
+        row,
+        'pt_parentProductTypeID',
+        PRODUCT_GRAPH_LABEL,
+      );
+
       draft.productType = toProductTypeFromGraphRow(
         row,
         PRODUCT_GRAPH_LABEL,
         this.productTypeRepository,
+        parentProductTypeID === undefined
+          ? undefined
+          : productTypeParents.get(cfFoldKey(parentProductTypeID)),
       );
     }
 

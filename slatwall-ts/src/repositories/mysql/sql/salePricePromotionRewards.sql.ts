@@ -39,12 +39,48 @@ interface SalePricePromotionRewardsInput {
   readonly dialect: DatabaseDialect;
 
   /**
-   * Optional product identifier narrowing every branch. Omit it for every product.
+   * Optional product narrowing, applied to every branch. Omit it for every product.
    *
    * A PRESENT but empty string is a real, reachable case and is not intercepted: it binds
    * `SwSku.productID = ''` in all six branches and returns no rows, exactly as the legacy does.
+   *
+   * IT ADMITS A SET AS WELL AS A SINGLE IDENTIFIER, AND THE SINGLE-IDENTIFIER EMISSION IS
+   * BYTE-IDENTICAL TO WHAT IT ALWAYS WAS. `[model/dao/PromotionDAO.cfc:L299]` declares one optional
+   * `productID` and its six `structKeyExists` guards each emit `SwSku.productID = ?`; a `string`, or a
+   * one-element array, still emits exactly that text with exactly that bind. An array of two or more
+   * emits `SwSku.productID in (?, ?, ...)` in the same six positions, with one bind per member per
+   * branch.
+   *
+   * JUDGMENT CALL [model/dao/PromotionDAO.cfc:L299]: the set form has no legacy counterpart and is
+   * admitted on a proved equivalence rather than on a preference. Issuing this statement once per
+   * distinct product makes its count grow with the item count, which AAP T3 makes this boundary's own
+   * decision to state rather than to inherit, and AAP 0.4.3 names this statement as the one whose
+   * reduction moved into SQL for exactly that reason.
+   *
+   * WHAT MAKES A SET SAFE IS THAT THE REDUCTION DOES NOT MIX PRODUCTS.
+   * `noQualifierCurrentActivePromotionPeriods` does not read `SwSku` at all; every branch's product
+   * predicate is a per-ROW filter on `SwSku.productID`, so the union over a set is the union of the
+   * six-branch results the members produce one at a time; and `noQualifierDiscounts` is a `DISTINCT`
+   * row-wise projection joined to CTE 1 row-wise.
+   *
+   * `skuPrice` groups by `skuID` ALONE - and `SwSku.productID` is single-valued per SKU, so every row
+   * bearing one `skuID` came through one product's filter. The group for a SKU is therefore the same
+   * whether the filter named that SKU's product alone or any superset of it, and so is
+   * `MIN(salePrice)`. The final join-back matches on `skuID` and `salePrice`, row-wise again.
+   *
+   * So a batched result set is exactly the union of the per-product result sets, per SKU, and a caller
+   * holding the product-to-SKU mapping recovers each product's rows unchanged. That mapping stays
+   * OUTSIDE this statement: section 4.3 of this module's contract forbids a tenth column, so no owning
+   * identifier is projected to make the partition self-describing, and the caller that already holds
+   * the mapping does the partitioning. See `../mysqlPromotionRepository.ts`, which will not use a
+   * batched result it cannot partition completely.
+   *
+   * ⚠ AN EMPTY ARRAY IS REFUSED, because it has no honest emission. Absence means "every product"
+   * and an empty string means "a product whose identifier is empty"; a caller narrowing to NO
+   * product is asking for something the legacy has no shape for, and both `in ()` - invalid SQL -
+   * and a fabricated `= ''` bind would answer a question that was not asked. It raises instead.
    */
-  readonly productID?: string;
+  readonly productID?: string | readonly string[];
 }
 
 interface SalePricePromotionRewardsStatement {
@@ -92,6 +128,58 @@ const BRANCH_UNION_SEPARATOR = '\n  UNION\n';
  * The optional product predicate, appended to a branch's `WHERE` when `productID` is present.
  */
 const BRANCH_PRODUCT_ID_PREDICATE = '        SwSku.productID = ?';
+
+/** The indent every branch predicate is written at, shared by the equality and membership forms. */
+const BRANCH_PREDICATE_INDENT = '        ';
+
+/**
+ * The product predicate for a narrowing of `count` identifiers.
+ *
+ * ONE identifier renders {@link BRANCH_PRODUCT_ID_PREDICATE} verbatim, so a single-product call emits
+ * the text it has always emitted and the committed bind census over it is unaffected. Two or more
+ * render a membership test at the same indent, with one placeholder per identifier - never an
+ * interpolated value, and never a placeholder count that is not exactly the identifier count.
+ *
+ * @param count - how many identifiers the caller is narrowing to; at least one.
+ * @returns the predicate line.
+ */
+function branchProductIDPredicate(count: number): string {
+  if (count === 1) {
+    return BRANCH_PRODUCT_ID_PREDICATE;
+  }
+
+  return `${BRANCH_PREDICATE_INDENT}SwSku.productID in (${Array.from({ length: count }, (): string => '?').join(', ')})`;
+}
+
+/**
+ * The narrowing identifiers a caller supplied, as an array, with the refusal for the one shape that
+ * has no emission.
+ *
+ * A bare `string` - including `''` - is one identifier. An array is taken as given, in order, WITHOUT
+ * de-duplication or folding: this module binds what it is handed, and collapsing two spellings of one
+ * identifier is a decision about identity that belongs to the caller that knows the collation.
+ *
+ * @param narrowing - the value of the input's `productID` member, which is known to be present.
+ * @returns the identifiers to bind, in order.
+ * @throws Error when an empty array is supplied - see the member's own contract for why that shape is
+ *   refused rather than approximated.
+ */
+function branchProductIDValues(narrowing: string | readonly string[]): readonly string[] {
+  if (typeof narrowing === 'string') {
+    return [narrowing];
+  }
+
+  if (narrowing.length === 0) {
+    throw new Error(
+      'buildSalePricePromotionRewardsStatement: productID was supplied as an EMPTY array, which ' +
+        'has no faithful emission. Omit the member to narrow to no product at all (every product ' +
+        'is then in scope, as [model/dao/PromotionDAO.cfc:L299] intends), or pass at least one ' +
+        'identifier. A caller with no products to ask about must not issue this statement.',
+    );
+  }
+
+  return narrowing;
+}
 
 /**
  * The value bound to the active-flag placeholder in the preliminary query.
@@ -230,14 +318,14 @@ function discountBranchDatePredicates(periodAlias: string): readonly string[] {
  * @param includeProductID whether the caller supplied a product identifier.
  * @returns the `WHERE` keyword line and every predicate, `AND`-separated.
  */
-function discountBranchWhereClause(branch: DiscountBranch, includeProductID: boolean): string {
+function discountBranchWhereClause(branch: DiscountBranch, productIDCount: number): string {
   const predicates = [
     ...branch.leadingPredicates,
     ...discountBranchDatePredicates(branch.periodAlias),
   ];
 
-  if (includeProductID) {
-    predicates.push(BRANCH_PRODUCT_ID_PREDICATE);
+  if (productIDCount > 0) {
+    predicates.push(branchProductIDPredicate(productIDCount));
   }
 
   return `${BRANCH_WHERE_KEYWORD}\n${predicates.join(BRANCH_PREDICATE_SEPARATOR)}`;
@@ -501,13 +589,18 @@ WHERE
  * @param input the instant every date predicate is compared against, the already-resolved dialect,
  * and optionally a product identifier narrowing every branch.
  * @returns the statement text and the values to bind to it, in placeholder order.
+ * @throws Error when `productID` is present as an EMPTY array.
  * @throws An error named `UnsupportedDialectError`, from `../dialect.js`, when `input.dialect` is
  * `MicrosoftSQLServer` or `Oracle10g`.
  */
 export function buildSalePricePromotionRewardsStatement(
   input: SalePricePromotionRewardsInput,
 ): SalePricePromotionRewardsStatement {
-  const productIDIsPresent = 'productID' in input;
+  // Key PRESENCE, mirroring `structKeyExists` - not `!== undefined`, because a present-but-empty
+  // identifier is a reachable state the six guards deliberately admit. The values are resolved once
+  // here so the count drives both the emitted predicate and the binds, and the two cannot disagree.
+  const productIDValues =
+    'productID' in input ? branchProductIDValues(input.productID) : ([] as readonly string[]);
 
   // The fragment is composed here, inside the body, from the dialect the CALLER already decided
   // and that ARRIVES on the input, so this builder reads no configuration and no environment at
@@ -526,15 +619,15 @@ export function buildSalePricePromotionRewardsStatement(
       [
         discountBranchProjection(branch),
         branch.fromClause,
-        discountBranchWhereClause(branch, productIDIsPresent),
+        discountBranchWhereClause(branch, productIDValues.length),
       ].join('\n'),
     );
 
     params.push(...branch.leadingBindValues, input.now, input.now);
 
-    if (productIDIsPresent) {
-      params.push(input.productID);
-    }
+    // One bind per identifier per branch, in the order the caller supplied them - which is the order
+    // the placeholders were just emitted in.
+    params.push(...productIDValues);
   }
 
   const sql =

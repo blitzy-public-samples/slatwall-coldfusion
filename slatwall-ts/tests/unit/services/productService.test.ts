@@ -19,6 +19,7 @@ import { listToArray } from '../../../src/lib/cfml/list.js';
 import { structFindKey } from '../../../src/lib/cfml/struct.js';
 import { CfmlBooleanConversionError } from '../../../src/lib/cfml/truthiness.js';
 import {
+  MissingAssociationError,
   ProductPagingCriteriaError,
   ProductService,
 } from '../../../src/services/productService.js';
@@ -581,13 +582,23 @@ class RecordingSkuBatchWrite implements SkuBatchWritePort {
   readonly batches: (readonly Sku[])[] = [];
 
   /**
-   * When set, the unit of work fails and forwards nothing - the rollback, modelled.
+   * The parent product key handed over with each batch, one entry per call.
+   *
+   * RECORDED BECAUSE ITS ABSENCE WAS A CRITICAL DATA-LOSS DEFECT. The collaborator's first
+   * parameter used not to exist, and the composition root consequently let the adapter fall back to
+   * a product back-reference the read never materializes - so `SwSku.productID` was written as SQL
+   * NULL and QA measured one call orphaning four of five SKU rows. Capturing the key here is what
+   * lets a case assert that the service names the parent it was handed.
    */
+  readonly parentProductIDs: string[] = [];
+
+  /** When set, the unit of work fails and forwards nothing - the rollback, modelled. */
   failure: Error | undefined = undefined;
 
   constructor(private readonly repository: RecordingSkuRepository) {}
 
-  async saveMutatedSkus(skus: readonly Sku[]): Promise<void> {
+  async saveMutatedSkus(productID: string, skus: readonly Sku[]): Promise<void> {
+    this.parentProductIDs.push(productID);
     this.batches.push([...skus]);
 
     if (this.failure !== undefined) {
@@ -786,7 +797,7 @@ function attachOneDesignatedDraftSku(product: Product): void {
  * A recording stand-in for the SKU-creation collaborator.
  *
  * `saveProduct` reproduces the legacy's SECOND `!hasErrors()` ask
- * [model/service/ProductService.cfc:L286] as `product.isNew() && product.getSkus().length === 0`,
+ * [model/service/ProductService.cfc:L286] as `product.isNew() && product.getSkus().length  0`,
  * and that equivalence is provable precisely because every arm of the real collaborator that
  * completes attaches at least one SKU.
  */
@@ -1551,7 +1562,7 @@ describe('ProductService', () => {
 
     it('ACTIVATION - numeric 1 fires the condition', async () => {
       // CFML parity `model/validation/Product_UpdateSkus.json`: the condition compares `eq 1`, and
-      // CFML equality is LOOSE, so the activation set is wider than a strict `===` would admit -
+      // CFML equality is LOOSE, so the activation set is wider than a strict `` would admit -
       // numeric 1 and the string '1' both activate it, and so does boolean `true`.
       const issues = await captureZodIssues(() =>
         service.processProduct_updateSkus(skulessProduct(), { updatePriceFlag: 1 }),
@@ -1869,7 +1880,60 @@ describe('ProductService', () => {
       expect(skuRepository.savedSkus).toStrictEqual([skus[0], skus[1], skus[2]]);
     });
 
-    it('★★★ ATOMICITY - a PERMANENT failure inside the unit of work persists NOTHING', async () => {
+    it('★★★ NAMES THE PARENT PRODUCT, so no write can erase SwSku.productID', async () => {
+      // THE REGRESSION TEST FOR A CRITICAL DATA-LOSS FINDING. `saveMutatedSkus` used to take
+      // the SKU set ALONE, and the composition root satisfied it by handing the adapter NOTHING for
+      // its parent-key override - which made the adapter fall back to
+      // `sku.getProduct()?.getProductID()`, an association the read behind this path
+      // (`SkuRepository.getProductSkus`) does not materialize. `SwSku.productID` was therefore
+      // written as SQL NULL: one call orphaned FOUR OF FIVE SKU rows on the measured product, after
+      // which every identity-addressed price operation answered `skuNotFound`, the Google product
+      // feed fell from four items to zero, and the product's sale-price details were lost.
+      //
+      // The key is now a REQUIRED first parameter, so the call that caused it no longer type-checks,
+      // and this case pins the value: the identifier of the product the service was handed, which is
+      // by definition the parent of every SKU in its own collection.
+      const { product } = productWithThreeSkus();
+
+      await service.processProduct_updateSkus(product, {
+        updatePriceFlag: 1,
+        price: '8.40',
+        updateListPriceFlag: 1,
+        listPrice: '15.00',
+      });
+
+      expect(skuBatchWrite.parentProductIDs).toStrictEqual(['product-batch-write']);
+      expect(product.getProductID()).toBe('product-batch-write');
+    });
+
+    it('★★ writes NOTHING for a TRANSIENT product, because the aggregate write owns its SKUs', async () => {
+      // A product with no persisted key has no row for a SKU to name, and `SwSku.productID` naming
+      // nothing is exactly the state the finding above produced - so the write is not attempted.
+      // Nothing is lost: `Product.skus` declares `cascade="all-delete-orphan"`
+      // [model/entity/Product.cfc:L73], so `ProductRepository.saveProduct` inserts a transient
+      // product's SKUs after the parent row exists. Every ROUTED operation loads its product by
+      // identifier first, so this branch is unreachable from the API.
+      const skus = [makeSkuFixture({ skuID: 'sku-transient-parent' })];
+      const transient = makeProductFixture({ productID: '', skus });
+
+      expect(transient.isNew()).toBe(true);
+
+      await service.processProduct_updateSkus(transient, {
+        updatePriceFlag: 1,
+        price: '8.40',
+        updateListPriceFlag: 0,
+      });
+
+      expect(skuBatchWrite.batches).toStrictEqual([]);
+      expect(skuBatchWrite.parentProductIDs).toStrictEqual([]);
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+
+      // The in-memory mutation still happened - it is the aggregate write's to persist.
+      expect(skus[0]?.getPrice().toFixed2()).toBe('8.40');
+    });
+
+    it('★★★ ATOMICITY - a PERMANENT failure inside the unit of work persists NOTHING (F3)', async () => {
+      // THE CASE THE PER-SKU LOOP COULD NOT PASS, AND THE REASON THIS COLLABORATOR EXISTS.
       // A loop over `saveSku` opened one unit of work per SKU, so a failure on the sixth of ten
       // left one to five durably repriced.
       const { product, skus } = productWithThreeSkus();
@@ -2568,6 +2632,72 @@ describe('ProductService', () => {
       expect(imageStore.deletedPaths).toStrictEqual([]);
     });
 
+    it('★★★ AND FLAGS THE UNPERFORMED PROCESS on the register, so it is not mistakable for success', async () => {
+      // THE SILENT-RETURN CLOSURE. A silent success on an unimplemented feature is
+      // indistinguishable from a real one, so this method signals on the same two channels
+      // `processProduct_uploadDefaultImage` already writes. Making all four stub-touching methods
+      // THROW instead is declined on AAP 0.2.2 grounds, and the case above states why: a method that
+      // always throws is neither of the two treatments that section prescribes, and this one reaches
+      // no port to refuse FROM.
+      //
+      // WHAT IS ASSERTED INSTEAD IS THE OTHER HALF OF THE SAME PRESCRIPTION - "flagged as
+      // unexercised". The flag is written on the channel the framework itself uses:
+      // `HibachiEntity.getErrors()` [org/Hibachi/HibachiEntity.cfc:L133-L146] injects
+      // `addError('processObjects', <context>, true)` for a process object carrying errors, which is
+      // exactly how `processProduct_uploadDefaultImage`'s failure becomes visible on the product. So
+      // the two formerly-silent methods now report identically.
+      const product = makeProductFixture({ productID: 'product-under-review' });
+
+      const answered = await service.processProduct_addProductReview(product, {
+        newProductReviewID: 'review-candidate',
+      });
+
+      // The RETURN is still the same instance, unchanged - [model/service/ProductService.cfc:L170] is
+      // still honoured, and the pass-through is not converted into a refusal.
+      expect(answered).toBe(product);
+      expect(answered.getProductID()).toBe('product-under-review');
+
+      // THE PROCESS CONTEXT IS A DATA CONTRACT with the legacy admin, which is why the exact string
+      // is pinned rather than merely its presence.
+      expect(product.hasErrors()).toBe(true);
+      expect(product.getErrors()['processObjects']).toStrictEqual(['addProductReview']);
+      expect(product.getErrors()['newProductReview']).toStrictEqual([
+        'validate.processNotImplemented',
+      ]);
+
+      // AND THE RB KEY IS NOT RESOLVED HERE. JavaRB is not ported and no i18n runtime exists
+      // (AAP 0.5.3), so the identifier travels verbatim exactly as `validate.fileUpload` does.
+      expect(product.getErrors()['newProductReview']?.[0]).not.toContain(' ');
+    });
+
+    it('★★ reports an unperformed process IDENTICALLY to its formerly-silent sibling', async () => {
+      // The consistency F-09 actually asked for, asserted as a comparison rather than as two
+      // independent facts. Both methods answer the product, neither throws, and both leave the same
+      // two-channel signal - the `processObjects` context plus a key naming what did not happen.
+      const reviewed = makeProductFixture({ productID: 'product-reviewed' });
+      const uploaded = makeProductFixture({ productID: 'product-uploaded' });
+
+      await service.processProduct_addProductReview(reviewed, {
+        newProductReviewID: 'review-candidate',
+      });
+      await service.processProduct_uploadDefaultImage(uploaded, {
+        // An empty destination name reaches the path-traversal guard inside the legacy `try`
+        // [model/service/ProductService.cfc:L236-L254], which records rather than throws.
+        imageFile: '',
+        uploadFile: { clientFileExt: 'jpg', serverDirectory: '/tmp/upload', serverFile: 'in.jpg' },
+      });
+
+      for (const product of [reviewed, uploaded]) {
+        expect(product.hasErrors()).toBe(true);
+        expect(product.getErrors()['processObjects']).toHaveLength(1);
+      }
+
+      // The contexts differ - each names its own process - which is what makes the signal useful.
+      expect(reviewed.getErrors()['processObjects']).toStrictEqual(['addProductReview']);
+      expect(uploaded.getErrors()['processObjects']).toStrictEqual(['uploadDefaultImage']);
+      expect(uploaded.getErrors()['imageFile']).toStrictEqual(['validate.fileUpload']);
+    });
+
     it('processProduct_addSubscriptionTerm DELEGATES to the stub port, then answers the product', async () => {
       const product = makeProductFixture({ productID: 'product-under-subscription' });
 
@@ -3096,6 +3226,17 @@ describe('ProductService', () => {
         { productCode: 'SHOE100', imageGroupOptionCodes: ['blue'] },
       ]);
 
+      // AND THE NAMES ARE PERSISTED, WHICH IS A CRITICAL RUNTIME FINDING'S REGRESSION TEST.
+      // This method assigned names and wrote nothing, on the reasoning that "every one of the four
+      // dispatch sites is inside a method that performs its own write". Only `saveProduct` does, so
+      // the routed operation - and the two option mutations that dispatch here - answered HTTP 200
+      // having written NOTHING: QA measured `SwSku` and `SwSkuOption` row counts and column values
+      // identical before and after. The write is now this method's own, as ONE unit of work carrying
+      // every SKU on the product and naming the parent product.
+      expect(skuBatchWrite.batches).toStrictEqual([[redSku, blueSku]]);
+      expect(skuBatchWrite.parentProductIDs).toStrictEqual(['product-under-filename-refresh']);
+      expect(skuRepository.savedSkus).toStrictEqual([redSku, blueSku]);
+
       // The same instance back, per [model/service/ProductService.cfc:L213].
       expect(answered).toBe(product);
     });
@@ -3276,10 +3417,26 @@ describe('ProductService', () => {
       expect(answered).toBe(product);
     });
 
-    it('★ ASSIGNS ONLY - it writes nothing, saves nothing and deletes nothing', async () => {
-      // [model/service/ProductService.cfc:L208-L214] mutates managed entities and returns the
+    it('★★★ ASSIGNS AND PERSISTS - the renamed set reaches the datastore in ONE unit of work', async () => {
+      // THIS CASE ASSERTED THE OPPOSITE, AND THE OPPOSITE WAS A CRITICAL DEFECT. It was titled
+      // " ASSIGNS ONLY - it writes nothing, saves nothing and deletes nothing" and defended by:
+      // "[model/service/ProductService.cfc:L208-L214] mutates managed entities and returns the
       // product; Hibernate flushed at request end together with whatever the DISPATCHING process
-      // method saved.
+      // method saved. Every one of the four dispatch sites performs its own write, so a `saveSku`
+      // here would issue writes the legacy never did."
+      //
+      // THE FIRST SENTENCE IS RIGHT AND THE SECOND IS FALSE, and the false one carried the
+      // conclusion. Of the four dispatch sites, exactly ONE writes - `saveProduct` [model/service/ProductService.cfc:L282]. [model/service/ProductService.cfc:L123] and
+      // [model/service/ProductService.cfc:L152] end at their dispatch and return, `HibachiService.process()`
+      // [org/Hibachi/HibachiService.cfc:L84-L129] never saves, and [model/service/ProductService.cfc:L193] is a stub here. So the
+      // Hibernate flush the first sentence correctly describes had NO counterpart in the port for
+      // three of the four paths, and QA measured the consequence end to end: routed
+      // `processProduct_addOptionGroup`, `processProduct_addOption` and
+      // `processProduct_updateDefaultImageFileNames` requests each answered HTTP 200 with a
+      // save-shaped body and issued ZERO DML.
+      //
+      // The flush is now written down here, once, for all four dispatchers. This case pins it, and
+      // the transient case below pins the one path that is still exempt.
       const option = anImageOption({
         optionID: 'opt-quiet',
         optionCode: 'quiet',
@@ -3297,11 +3454,175 @@ describe('ProductService', () => {
       await service.processProduct_updateDefaultImageFileNames(product);
 
       expect(sku.getImageFile()).toBe('SHOE700-quiet.jpg');
+
+      // ONE unit of work carrying the whole set, which is what
+      // `SkuBatchWriteCollaborator.saveMutatedSkus` guarantees and what a per-SKU loop could not.
+      expect(skuBatchWrite.batches).toStrictEqual([[sku]]);
+
+      // And the set genuinely reached the write - the double forwards each member to the recording
+      // repository, so this is the assertion that would have failed before the fix.
+      expect(skuRepository.savedSkus).toStrictEqual([sku]);
+
+      // The PRODUCT row is still untouched: [org/Hibachi/HibachiService.cfc:L208-L214] dirties SKUs and nothing else, and the
+      // image store is not reached either.
       expect(productRepository.saves).toStrictEqual([]);
       expect(imageStore.deletedPaths).toStrictEqual([]);
+    });
 
-      // `skuRepository.saveSku` needs no assertion of its own and gets none: the double wires it
-      // to `unreachedPortMember`.
+    it('★★★ writes the WHOLE collection, in collection order, however few of the names changed', async () => {
+      // THE BREADTH IS DELIBERATE AND IS WHY THIS CASE EXISTS. This method cannot see what its
+      // caller mutated - `processProduct_addOptionGroup` changes a SKU's OPTIONS and may leave the
+      // composed file name identical - so a write set chosen by comparing image file names would skip
+      // exactly the SKU whose link rows have to be rewritten. Every member of the collection is
+      // therefore written, and the ORDER is the collection's, so the emitted statements can be read
+      // against the entity that produced them.
+      const first = anImageOption({
+        optionID: 'opt-a',
+        optionCode: 'aaa',
+        imageGroupFlag: true,
+        sortOrder: 1,
+      });
+      const second = anImageOption({
+        optionID: 'opt-b',
+        optionCode: 'bbb',
+        imageGroupFlag: true,
+        sortOrder: 2,
+      });
+
+      // The middle SKU ALREADY carries the exact name this call will compose for it, so a
+      // dirty-checking write set would have excluded it and this assertion would fail.
+      const alpha = makeSkuFixture({ idPrefix: 'sku-a', skuID: 'sku-a', options: [first] });
+      const unchanged = makeSkuFixture({
+        idPrefix: 'sku-b',
+        skuID: 'sku-b',
+        options: [],
+        imageFile: 'SHOE800.jpg',
+      });
+      const beta = makeSkuFixture({ idPrefix: 'sku-c', skuID: 'sku-c', options: [second] });
+
+      const product = makeProductFixture({
+        productID: 'product-whole-collection',
+        productCode: 'SHOE800',
+        skus: [alpha, unchanged, beta],
+      });
+
+      await service.processProduct_updateDefaultImageFileNames(product);
+
+      expect(unchanged.getImageFile()).toBe('SHOE800.jpg');
+      expect(skuBatchWrite.batches).toStrictEqual([[alpha, unchanged, beta]]);
+      expect(skuRepository.savedSkus).toStrictEqual([alpha, unchanged, beta]);
+    });
+
+    it('★★★ renames but does NOT write a TRANSIENT product, leaving the cascade the only writer', async () => {
+      // THE ONE EXEMPTION, AND IT IS THE SCHEMA'S DOING RATHER THAN A PREFERENCE. `saveProduct`
+      // dispatches this method from its NEW-PRODUCT branch [model/service/ProductService.cfc:L282],
+      // BEFORE `productRepository.saveProduct` has written the owning row - and `SwSku.productID`
+      // references `SwProduct`, so writing the children here would bind a product identifier that
+      // does not exist yet. The adapter already owns that sequence: product row, then the cascaded
+      // SKUs, then the deferred `defaultSkuID`, in one transaction. So the names are assigned and the
+      // write is left alone, which is exactly the behaviour this path had before the flush existed.
+      const option = anImageOption({
+        optionID: 'opt-new',
+        optionCode: 'new',
+        imageGroupFlag: true,
+        sortOrder: 1,
+      });
+      const draft = makeSkuFixture({
+        idPrefix: 'sku-draft',
+        skuID: 'sku-draft',
+        isNew: true,
+        options: [option],
+      });
+
+      // `makeProductFixture` defaults `productID` to the empty string, which IS `Product.isNew()`.
+      const transient = makeProductFixture({ productCode: 'SHOE900', skus: [draft] });
+
+      expect(transient.isNew()).toBe(true);
+
+      const answered = await service.processProduct_updateDefaultImageFileNames(transient);
+
+      // The rename still happened - the cascade persists whatever the entity carries when it runs.
+      expect(draft.getImageFile()).toBe('SHOE900-new.jpg');
+      expect(answered).toBe(transient);
+
+      // And NOTHING was written from here: no batch was opened at all, not even an empty one.
+      expect(skuBatchWrite.batches).toStrictEqual([]);
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+      expect(productRepository.saves).toStrictEqual([]);
+    });
+
+    it('★ REFUSES a product past the configured bound BEFORE a name is assigned or written', async () => {
+      // AAP 0.6.5 requires a bulk mutation path to bound its batch, and this path became one when it
+      // began to flush. The guard is the same one `processProduct_updateSkus` uses, so the two cannot
+      // drift apart - and the refusal names THIS method rather than that one, which is the whole
+      // reason the guard now takes a refusal descriptor.
+      const shared = makeSkuFixture({ skuID: 'sku-bounded', options: [] });
+      const overTheBound = makeProductFixture({
+        productID: 'product-past-the-rename-bound',
+        productCode: 'SHOE950',
+        skus: [shared, shared],
+      });
+
+      const boundedAtOne = new ProductService(
+        productRepository,
+        skuRepository,
+        productTypeRepository,
+        urlTitleGenerator,
+        imageStore,
+        subscriptionTermProvider,
+        skuCreation,
+        optionLoading,
+        skuBatchWrite,
+        1,
+      );
+
+      const rejected = boundedAtOne.processProduct_updateDefaultImageFileNames(overTheBound);
+
+      await expect(rejected).rejects.toThrow(
+        /would rename and rewrite 2 SKUs, above the configured bound of 1/,
+      );
+
+      // The message names the method a caller actually invoked, the product, and the legacy
+      // statement being bounded - so it is actionable without a stack trace.
+      await expect(rejected).rejects.toThrow(
+        /ProductService\.processProduct_updateDefaultImageFileNames:/,
+      );
+      await expect(rejected).rejects.toThrow(/product 'product-past-the-rename-bound'/);
+      await expect(rejected).rejects.toThrow(/\[model\/service\/ProductService\.cfc:L208-L214\]/);
+
+      // NOTHING was assigned and NOTHING was written: the bound is checked before the traversal, so
+      // the caller is not left holding names no row carries.
+      expect(shared.getImageFile()).toBeUndefined();
+      expect(imageStore.nameDescriptors).toStrictEqual([]);
+      expect(skuBatchWrite.batches).toStrictEqual([]);
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+    });
+
+    it('★ does NOT bound a TRANSIENT product, because this path does not write one', async () => {
+      // The other side of the bound. A new product's SKUs are bounded by `createSkus` and written by
+      // the adapter's cascade, so bounding them HERE would refuse work this method never undertakes -
+      // and would break `saveProduct` for a product `createSkus` had already accepted.
+      const shared = makeSkuFixture({ skuID: 'sku-unbounded', isNew: true, options: [] });
+      const transient = makeProductFixture({ productCode: 'SHOE960', skus: [shared, shared] });
+
+      const boundedAtOne = new ProductService(
+        productRepository,
+        skuRepository,
+        productTypeRepository,
+        urlTitleGenerator,
+        imageStore,
+        subscriptionTermProvider,
+        skuCreation,
+        optionLoading,
+        skuBatchWrite,
+        1,
+      );
+
+      const answered = await boundedAtOne.processProduct_updateDefaultImageFileNames(transient);
+
+      expect(answered).toBe(transient);
+      expect(shared.getImageFile()).toBe('SHOE960.jpg');
+      expect(skuBatchWrite.batches).toStrictEqual([]);
     });
 
     it('answers a SKU-less product unchanged, without inventing a name', async () => {
@@ -3384,6 +3705,18 @@ describe('ProductService', () => {
       // hydrated entity, which is proven by the legacy handing it straight to an entity loader.
       expect(optionLoading.requestedOptionGroupIDs).toStrictEqual(['og-material']);
 
+      // AND THE MUTATION IS PERSISTED, WHICH IS A CRITICAL RUNTIME FINDING'S REGRESSION TEST.
+      // The `addOption` loop above changes the product's PERSISTED SKUs in memory, and under
+      // Hibernate those changes - and the `SwSkuOption` membership rows they imply - were flushed at
+      // request end. Nothing in the port replaced that flush, so this published operation answered
+      // HTTP 200 having written NOTHING: QA measured `SwSkuOption` at 8 rows before and 8 after.
+      // The write arrives through the dispatched image-name refresh, as ONE unit of work naming the
+      // parent product, and `MysqlSkuRepository.saveSku` reconciles `SwSkuOption` from each entity's
+      // own collection - so the option added above travels with it.
+      expect(skuBatchWrite.batches).toStrictEqual([[first, second]]);
+      expect(skuBatchWrite.parentProductIDs).toStrictEqual(['product-gaining-an-option-group']);
+      expect(skuRepository.savedSkus).toStrictEqual([first, second]);
+
       expect(answered).toBe(product);
     });
 
@@ -3443,9 +3776,69 @@ describe('ProductService', () => {
       // nothing fails at the dereference.
       await expect(
         service.processProduct_addOptionGroup(product, { optionGroup: 'og-does-not-exist' }),
-      ).rejects.toThrow(/model\/service\/ProductService\.cfc:L115/);
+      ).rejects.toThrow(MissingAssociationError);
+
+      // The published detail is a MEMBER PATH plus one fixed constraint sentence - never the submitted
+      // identifier, never a row count, never a table.
+      const refusal = await service
+        .processProduct_addOptionGroup(product, { optionGroup: 'og-does-not-exist' })
+        .then(
+          () => undefined,
+          (thrown: unknown) => thrown,
+        );
+
+      expect(refusal).toBeInstanceOf(MissingAssociationError);
+      if (refusal instanceof MissingAssociationError) {
+        expect(refusal.fields).toStrictEqual([
+          { path: 'optionGroup', message: 'must name an existing record' },
+        ]);
+        expect(refusal.message).not.toContain('og-does-not-exist');
+      }
 
       expect(sku.getOptions()).toStrictEqual([]);
+
+      // Nothing was written either, because the dereference fails before the dispatch that flushes.
+      expect(skuBatchWrite.batches).toStrictEqual([]);
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+    });
+
+    it('★★★ PERSISTS the appended option - the mutation was previously unflushable', async () => {
+      // THE FINDING THIS CASE EXISTS FOR. QA routed this operation and measured HTTP 200 with a
+      // save-shaped body and ZERO DML statements: the option appended at
+      // [model/service/ProductService.cfc:L119] was mutated in memory and then discarded, and NO code
+      // path in the port could have written it - `HibachiService.process()`
+      // [org/Hibachi/HibachiService.cfc:L84-L129] never saves and [model/service/ProductService.cfc:L125] just returns, so the
+      // durability came entirely from a Hibernate session flush that had no counterpart here. The
+      // dispatched `processProduct_updateDefaultImageFileNames` now performs that flush, and this case
+      // asserts THE WRITE rather than the return value, because the return value never failed.
+      const material = buildOptionGroupWithOption({
+        optionGroupID: 'og-material',
+        optionGroupName: 'Material',
+        optionID: 'opt-cotton',
+        optionName: 'Cotton',
+        sortOrder: 1,
+      });
+
+      optionLoading.optionGroupsByID.set('og-material', material.group);
+
+      const first = makeSkuFixture({ skuID: 'sku-flushed-first', options: [] });
+      const second = makeSkuFixture({ skuID: 'sku-flushed-second', options: [] });
+      const product = makeProductFixture({
+        productID: 'product-whose-links-are-flushed',
+        skus: [first, second],
+      });
+
+      await service.processProduct_addOptionGroup(product, { optionGroup: 'og-material' });
+
+      // ONE unit of work, carrying BOTH mutated SKUs. The option-link rewrite the adapter performs
+      // per SKU is what makes `SwSkuOption` agree with the collection asserted below.
+      expect(skuBatchWrite.batches).toStrictEqual([[first, second]]);
+      expect(skuRepository.savedSkus).toStrictEqual([first, second]);
+
+      // And the state that travelled to the write is the appended membership, not an empty one - a
+      // flush of an unmutated collection would have satisfied the batch assertion above on its own.
+      expect(first.getOptions()).toStrictEqual([material.option]);
+      expect(second.getOptions()).toStrictEqual([material.option]);
     });
   });
   describe('processProduct_addOption', () => {
@@ -3538,6 +3931,32 @@ describe('ProductService', () => {
       ]);
 
       expect(answered).toBe(graph.product);
+    });
+
+    it('★★★ PERSISTS the SKU set after creation, rather than answering 200 having written nothing', async () => {
+      // THE REGRESSION TEST FOR A CRITICAL RUNTIME FINDING. `createSkus` attaches transient SKUs
+      // to the product's live collection and, as its own header records, "writes nothing to the
+      // database" - under Hibernate the cascade at [model/entity/Product.cfc:L73] inserted them at
+      // request-end flush. Nothing in the port replaced that, so this published operation answered
+      // HTTP 200 having written NOTHING: QA measured the correct cartesian product built in memory
+      // and `SwSku` row counts identical before and after. The write now arrives through the
+      // dispatched image-name refresh, as ONE unit of work naming the parent product.
+      //
+      // The recording SKU-creation double attaches nothing, so the set written here is the product's
+      // pre-existing SKU - which is the point: the write covers EVERY SKU on the product, whether the
+      // creation step added to the collection or not.
+      const graph = buildAddOptionGraph();
+
+      await service.processProduct_addOption(graph.product, { option: 'opt-cotton' });
+
+      // Read AFTER the call, because the collection is LIVE: whatever the creation step attached to
+      // it is part of the write set, which is exactly the property the finding was about.
+      const collection = [...graph.product.getSkus()];
+
+      expect(collection).toContain(graph.existingSku);
+      expect(skuBatchWrite.batches).toStrictEqual([collection]);
+      expect(skuBatchWrite.parentProductIDs).toStrictEqual(['product-gaining-an-option']);
+      expect(skuRepository.savedSkus).toStrictEqual(collection);
     });
 
     it('takes both prices from the DEFAULT SKU, unguarded and undefaulted', async () => {
@@ -3690,7 +4109,22 @@ describe('ProductService', () => {
       // [model/service/ProductService.cfc:L115].
       await expect(
         service.processProduct_addOption(graph.product, { option: 'opt-does-not-exist' }),
-      ).rejects.toThrow(/model\/service\/ProductService\.cfc:L130/);
+      ).rejects.toThrow(MissingAssociationError);
+
+      const refusal = await service
+        .processProduct_addOption(graph.product, { option: 'opt-does-not-exist' })
+        .then(
+          () => undefined,
+          (thrown: unknown) => thrown,
+        );
+
+      expect(refusal).toBeInstanceOf(MissingAssociationError);
+      if (refusal instanceof MissingAssociationError) {
+        expect(refusal.fields).toStrictEqual([
+          { path: 'option', message: 'must name an existing record' },
+        ]);
+        expect(refusal.message).not.toContain('opt-does-not-exist');
+      }
 
       // CFML parity [model/service/ProductService.cfc:L133]: and neither is the default SKU.
       // `makeProductFixture` leaves `defaultSku` ABSENT by default, which is load-bearing here - a
@@ -3701,7 +4135,43 @@ describe('ProductService', () => {
         service.processProduct_addOption(withoutDefaultSku, { option: 'opt-cotton' }),
       ).rejects.toThrow(/model\/service\/ProductService\.cfc:L133/);
 
+      // Server state, so NOT the client-shaped type - asserted explicitly so the distinction cannot
+      // erode into "everything is a 400".
+      await expect(
+        service.processProduct_addOption(withoutDefaultSku, { option: 'opt-cotton' }),
+      ).rejects.not.toBeInstanceOf(MissingAssociationError);
+
       expect(skuCreation.requests).toStrictEqual([]);
+
+      // Neither refusal wrote anything: both raise before the dispatch that flushes.
+      expect(skuBatchWrite.batches).toStrictEqual([]);
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+    });
+
+    it('★★★ PERSISTS the SKUs the collaborator attached - the ORM cascade, written out', async () => {
+      // THE FINDING THIS CASE EXISTS FOR. QA routed this operation and measured HTTP 200 with a
+      // save-shaped body and ZERO DML statements. `createSkus` persists nothing itself - its return is
+      // a constant `true` [model/service/SkuService.cfc:L207] - because [model/service/ProductService.cfc:L150]'s durability came from
+      // `Product.skus` declaring `cascade="all-delete-orphan"` [model/entity/Product.cfc:L73] and the
+      // session flushing at request end. Without an ORM that cascade has to be a statement, and the
+      // dispatched `processProduct_updateDefaultImageFileNames` now issues it.
+      const graph = buildAddOptionGraph();
+
+      await service.processProduct_addOption(graph.product, { option: 'opt-cotton' });
+
+      // The collaborator attached one designated draft SKU, so the product now carries the existing
+      // combination AND the new draft - and BOTH reach the datastore in one unit of work.
+      const written = graph.product.getSkus();
+
+      expect(written).toHaveLength(2);
+      expect(written[0]).toBe(graph.existingSku);
+      expect(skuBatchWrite.batches).toStrictEqual([written]);
+      expect(skuRepository.savedSkus).toStrictEqual(written);
+
+      // The attached SKU is TRANSIENT and carries its owning product, which is what lets the adapter
+      // bind `SwSku.productID` on the insert rather than writing an orphan.
+      expect(written[1]?.isNew()).toBe(true);
+      expect(written[1]?.getProduct()).toBe(graph.product);
     });
   });
   describe('saveProduct', () => {
@@ -3999,6 +4469,40 @@ describe('ProductService', () => {
       // The designated SKU is still TRANSIENT when persistence receives it, which is the state the
       // adapter reads to defer the `defaultSkuID` write.
       expect(product.getDefaultSku()?.isNew()).toBe(true);
+    });
+
+    it('★★★ writes the created SKUs EXACTLY ONCE - the cascade, never a second flush', async () => {
+      // THE REGRESSION THIS CASE GUARDS, AND WHY THIS PATH IS THE ONE EXEMPTION.
+      // `processProduct_updateDefaultImageFileNames` now flushes the product's SKU set, which is how
+      // three previously-unflushable operations became durable. It must NOT do so here.
+      // [model/service/ProductService.cfc:L282] dispatches it from the NEW-PRODUCT branch, BEFORE the
+      // save at [model/service/ProductService.cfc:L287] has written the owning row - and `SwSku.productID` references `SwProduct`, so a
+      // flush from here would bind a product identifier that does not exist yet. The method's
+      // `isNew()` gate is what keeps this path as it was: assign the names, let the adapter cascade
+      // the children after the parent row, in one transaction.
+      const product = makeProductFixture({});
+      const draft = makeSkuFixture({ skuID: PROVISIONAL_SKU_ID, isNew: true, product: undefined });
+
+      skuCreation.attachment = (created: Product): void => {
+        created.addSku(draft);
+        created.setDefaultSku(draft);
+      };
+
+      // The dispatch still happens - the names are still composed and assigned - which is what makes
+      // the absence of a write below a deliberate exemption rather than a missing call.
+      const dispatchSpy = vi.spyOn(service, 'processProduct_updateDefaultImageFileNames');
+
+      await service.saveProduct(product, {});
+
+      expect(dispatchSpy).toHaveBeenCalledTimes(1);
+      expect(product.isNew()).toBe(true);
+      expect(draft.getImageFile()).toBeDefined();
+
+      // NO batch was opened, so the draft is written by the product save's cascade and by nothing
+      // else. A second writer here would either insert the SKU twice or insert it before its parent.
+      expect(skuBatchWrite.batches).toStrictEqual([]);
+      expect(skuRepository.savedSkus).toStrictEqual([]);
+      expect(productRepository.saves).toStrictEqual([product]);
     });
 
     it('★ REFUSES on the sku-creation ground when a VALID new product ends with no skus', async () => {

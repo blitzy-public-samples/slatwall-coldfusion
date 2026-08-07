@@ -16,7 +16,7 @@
 // the 32-character identifiers the two framework writers below assign to new rows.
 import { randomUUID } from 'node:crypto';
 
-import { appConfig } from '../lib/config.js';
+import { appConfig, parseHostAuthority } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { cfEquals, cfFoldKey, structGet } from '../lib/cfml/struct.js';
 import { listFindNoCase, listToArray } from '../lib/cfml/list.js';
@@ -1324,8 +1324,15 @@ class AddressZoneEvaluationNotPreparedError extends Error {
 
 /**
  * The image store this root wires performs no I/O. See section 4.5.
+ *
+ * Exported so a primary adapter can narrow it: `processProduct_deleteDefaultImage` is routed, and
+ * `./catalogQueryHandler.js` classifies this rejection with `instanceof` and answers 501 through
+ * `./errorMapper.js`'s `notImplementedResponse` instead of letting it fall through the closed
+ * recognizer set to 500. That is the mechanism this file already established for
+ * `OrderViewDocumentDataError`. The refusal behaviour is unchanged - both members still reject, and
+ * the message still names the operation and the request for the log stream, never for a body.
  */
-class ImageStoreNotConfiguredError extends Error {
+export class ImageStoreNotConfiguredError extends Error {
   public constructor(operation: string, request: string) {
     super(
       `No image store is configured in this composition, so '${operation}' did not run. ` +
@@ -1339,8 +1346,12 @@ class ImageStoreNotConfiguredError extends Error {
 
 /**
  * The subscription term provider this root wires answers nothing. See section 4.6.
+ *
+ * Exported for the same reason as its sibling, so the two stub ports are classified identically.
+ * No routed operation reaches it - `processProduct_addSubscriptionTerm` is out of scope and
+ * unpublished - so this is consistency rather than a second fix, and the refusal is unchanged.
  */
-class SubscriptionTermsNotConfiguredError extends Error {
+export class SubscriptionTermsNotConfiguredError extends Error {
   public constructor(operation: string, request: string) {
     super(
       `No subscription term provider is configured in this composition, so '${operation}' ` +
@@ -2116,7 +2127,7 @@ class BootstrapSettingsProvider implements SettingsProvider {
  * CFML parity [model/service/CurrencyService.cfc:L87, L93]: the legacy hardcodes the literal
  * `"EUR"` at both ends of the pivot.
  *
- * The code is compared through `currencyCodeEquals`, never with `===`, because CFML's `eq` is
+ * The code is compared through `currencyCodeEquals`, never with ``, because CFML's `eq` is
  * case-insensitive and `"eur"` must satisfy the pivot test.
  */
 const EURO_CURRENCY_CODE = 'EUR';
@@ -2700,7 +2711,8 @@ export class UntrustedFeedHostError extends Error {
 /**
  * @param candidate the host observed on the request; never trusted for provenance.
  * @param allowedHosts the frozen, deployment-owned list resolved once at module scope.
- * @returns the normalized host, which is what the feed criteria carries.
+ * @returns the matched allow-list entry, normalized - the deployment's own spelling of the
+ * authority, which is what the feed criteria carries into the rendered document.
  * @throws UntrustedFeedHostError when the candidate is empty, or when it is not a member of the
  * authorized list - including the case where that list authorizes nothing at all.
  */
@@ -2711,11 +2723,17 @@ function assertAllowedFeedHost(candidate: string, allowedHosts: readonly string[
     throw new UntrustedFeedHostError(candidate, 'it is empty or contains only whitespace');
   }
 
-  // No `allowedHosts === undefined` ESCAPE. An unconfigured deployment reaches this test with an
-  // empty list and fails it, which is what makes the feed fail closed by default.
-  const permitted = allowedHosts.some((allowed) => allowed.trim().toLowerCase() === normalized);
+  const folded = foldDefaultAuthorityPort(normalized);
 
-  if (!permitted) {
+  // No `allowedHosts  undefined` escape. An unconfigured deployment reaches this test with an
+  // empty list, matches nothing, and fails - which is what makes the feed fail closed by default.
+  // The EXACT match is tested first so it is admitted whatever the fold does; the folded comparison
+  // is what admits the same authority written with its scheme's default port, in either direction.
+  const matched = allowedHosts
+    .map((allowed) => allowed.trim().toLowerCase())
+    .find((allowed) => allowed === normalized || foldDefaultAuthorityPort(allowed) === folded);
+
+  if (matched === undefined) {
     throw new UntrustedFeedHostError(
       candidate,
       allowedHosts.length === 0
@@ -2725,7 +2743,44 @@ function assertAllowedFeedHost(candidate: string, allowedHosts: readonly string[
     );
   }
 
-  return normalized;
+  return matched;
+}
+
+/**
+ * The two ports that name the same authority as the portless form, and no others.
+ *
+ * `80` is the default of the `http` scheme the renderer composes with
+ * [integrationServices/google/views/feed/product.cfm:L14]; `443` is the default of the `https`
+ * scheme a client writes its `Host` header against. RFC 3986 section 3.2.3 permits omitting a
+ * scheme's default port when comparing authorities, and permits it for no other port - so every
+ * other port stays significant here, and a deployment that publishes on one lists it.
+ */
+const DEFAULT_AUTHORITY_PORTS: readonly number[] = Object.freeze([80, 443]);
+
+/**
+ * Drop a trailing DEFAULT port from an already-normalized host authority, or answer it unchanged.
+ *
+ * Used on BOTH sides of the membership test in {@link assertAllowedFeedHost} and nowhere else: it
+ * exists to decide whether two spellings name one authority, never to rewrite a value that is then
+ * published. The value published is the allow-list entry the comparison matched.
+ *
+ * THREE CASES ANSWER THE INPUT UNCHANGED, and each is deliberate. A value carrying no port has
+ * nothing to drop. A value carrying a NON-default port keeps it, because that port is part of the
+ * authority. A value {@link parseHostAuthority} cannot parse at all keeps every character, which
+ * leaves it reachable by exact match only - so a malformed, newline-injected or credential-bearing
+ * candidate is never brought closer to an entry by this function.
+ *
+ * @param normalized a host authority already trimmed and lower-cased by the caller.
+ * @returns the authority with a `:80` or `:443` suffix removed, or the input unchanged.
+ */
+function foldDefaultAuthorityPort(normalized: string): string {
+  const parsed = parseHostAuthority(normalized);
+
+  if (parsed === undefined || parsed.port === undefined) {
+    return normalized;
+  }
+
+  return DEFAULT_AUTHORITY_PORTS.includes(parsed.port) ? parsed.host : normalized;
 }
 
 /**
@@ -3490,6 +3545,37 @@ export interface SkuSetLoader {
     products: readonly Product[],
     fetchOptions: boolean,
   ): Promise<ReadonlyMap<string, Sku[]>>;
+}
+
+/**
+ * The batched sale-price read the promotion adapter publishes, named so this root can compose it.
+ *
+ * WHY IT EXISTS. QA drove the sequenced price-group-then-promotion pass over orders of one, ten,
+ * one hundred and five hundred items and counted the statements each request executed: 32, 48, 228 and
+ * 1028. The six-branch sale-price reduction - `getSalePricePromotionRewardsQuery`, the most involved
+ * statement in the slice - was issued ONCE PER DISTINCT PRODUCT, because
+ * `getSalePriceDetailsForProductSkus` takes one product [model/service/PromotionService.cfc:L1022] and
+ * the product adapter calls it once per product it hydrates. AAP T3 requires that fetch shape to be an
+ * explicit decision at the repository boundary rather than an implicit consequence, and AAP 0.4.3 names
+ * that statement as the one whose reduction was moved into SQL for the same reason.
+ *
+ * NOTHING WITH A LEGACY COUNTERPART CHANGED. `PromotionRepository` is still SEVEN reads,
+ * `SalePriceResolver` still one method, and `PromotionService.getSalePriceDetailsForProductSkus` still
+ * takes one product and performs the whole reduction-and-rounding loop. The batched read is published on
+ * the ADAPTER and named here, which is the third instance of exactly that arrangement after
+ * {@link ProductSetLoader} and {@link SkuSetLoader} - and, like theirs, is why the adapter is held at
+ * its concrete type in the repositories group below.
+ *
+ * IT ANSWERS NOTHING. The rows it reads are answered through the single-product resolution, which
+ * remains the only way a sale-price detail is obtained; this member exists so that resolution has
+ * nothing left to read. The mapping it takes is `productID -> skuIDs`, supplied by the product adapter
+ * from SKUs it has already materialized, because the reduced projection carries no owning identifier and
+ * `salePricePromotionRewards.sql.ts` forbids adding one.
+ */
+interface SalePriceSetPrefetch {
+  prefetchSalePriceDetailsForProducts(
+    skuIDsByProductID: ReadonlyMap<string, readonly string[]>,
+  ): Promise<void>;
 }
 
 /**
@@ -4564,7 +4650,7 @@ function createRequestGraph(
    *
    * It goes into the repository, not only onto `RequestScope`, and that is the whole point.
    */
-  const salePriceResolver: SalePriceResolver = {
+  const salePriceResolver: SalePriceResolver & SalePriceSetPrefetch = {
     getSalePriceDetailsForProductSkus(productID: string): Promise<CfStruct<SalePriceDetail>> {
       if (promotionServiceBinding === undefined) {
         throw new CompositionWiringError('promotionService');
@@ -4572,12 +4658,71 @@ function createRequestGraph(
 
       return promotionServiceBinding.getSalePriceDetailsForProductSkus(productID);
     },
+
+    // THE SECOND MEMBER, AND IT DELEGATES TO THE ADAPTER RATHER THAN TO THE SERVICE. The batched
+    // read is a STATEMENT-SHAPE decision, so it belongs to the tier that owns statements: the promotion
+    // adapter publishes `prefetchSalePricePromotionRewards` as the set-based twin of its
+    // single-product read, and this member is the whole of the wiring for it. The reduction is NOT
+    // duplicated here - `getSalePriceDetailsForProductSkus` above still performs it, and still applies
+    // the rounding rule [model/service/PromotionService.cfc:L1024-L1028] to whatever the adapter
+    // answers. What the prefetch changes is only that the adapter already holds those rows.
+    //
+    // THE CONCRETE ADAPTER IS REFERENCED FROM INSIDE THE BODY, WHICH IS THE SAME DISCIPLINE THE
+    // MEMBER ABOVE USES AND FOR THE SAME REASON. `mysqlPromotionRepository` is declared BELOW this
+    // object, inside the uninterrupted repositories group that nothing may be inserted into, and this
+    // body does not run until a request reads a product - long after the whole graph is assembled and
+    // the completeness walk has passed. No binding variable, no `CompositionWiringError` and no
+    // reordering are needed for that: unlike `promotionService`, whose construction genuinely depends
+    // on a repository this object is handed to, the adapter has no cycle to break.
+    prefetchSalePriceDetailsForProducts(
+      skuIDsByProductID: ReadonlyMap<string, readonly string[]>,
+    ): Promise<void> {
+      return mysqlPromotionRepository.prefetchSalePricePromotionRewards(skuIDsByProductID);
+    },
   };
-  const promotionRepository: PromotionRepository = new MysqlPromotionRepository(
+
+  // --- THE SIX MYSQL REPOSITORIES, AS ONE UNINTERRUPTED GROUP
+  // Each receives the narrow executor as a constructor parameter and satisfies its
+  // correspondingly-named port. The four that WRITE receive the SAME `auditActor`, as
+  // their second parameter uniformly (S-07); the two that declare a one-method rounder
+  // receive the SAME `valueRounder` delegate; and the two that compare dates receive
+  // the SAME `requestClock`. Note that `MySqlPriceGroupRepository` spells its class
+  // name with a capital S, which is the shipped name and is used verbatim rather than
+  // "corrected".
+  //
+  // NOTHING BUT A REPOSITORY IS CONSTRUCTED BETWEEN HERE AND THE SERVICES BLOCK.
+  // That is the prescribed order made structural: a reader checking it does not have
+  // to trace which construction unblocked which, because the three delegates above
+  // already unblocked all of them. It is also why the two rounding consumers take the
+  // `valueRounder` DELEGATE rather than `roundingRuleService` itself - the service is
+  // constructed in the services block below, after every repository.
+  // NO `auditActor` HERE, AND THE ASYMMETRY IS DELIBERATE. `PromotionRepository` is locked
+  // at SEVEN methods, every one of them a read, so this adapter issues no INSERT, no UPDATE
+  // and no DELETE and has no write path for an actor to stamp. S-07 is unaffected: the four
+  // adapters that DO write are the four that receive it, immediately below. See the
+  // constructor doc on `MysqlPromotionRepository` for the withdrawn parameter.
+  //
+  // Held at its CONCRETE type as well, for the same reason `MysqlSkuRepository` and
+  // `MySqlPriceGroupRepository` are: one instance fills two roles. The `PromotionRepository` port -
+  // seven reads - is what `PromotionService` and `RequestScope` consume, and the adapter-only
+  // set-based twin `prefetchSalePricePromotionRewards`, which is deliberately NOT an eighth port
+  // member, is what {@link SalePriceSetPrefetch} below consumes. Narrowing first and widening back
+  // would need a cast; keeping the concrete type needs none.
+  const mysqlPromotionRepository = new MysqlPromotionRepository(
     graph.executor,
     valueRounder,
     requestClock,
   );
+
+  const promotionRepository: PromotionRepository = mysqlPromotionRepository;
+
+  // Held at its CONCRETE type as well, for the same reason `MysqlSkuRepository` is
+  // below: one instance fills two roles. The `PriceGroupRepository` port is what
+  // `PriceGroupService` and `RequestScope` consume, and the module-local
+  // {@link PriceGroupSetLoader} - the set-based by-key read, which is deliberately
+  // NOT a seventh port member - is what `SqlPriceGroupFrameworkReads` and
+  // `projectPriceGroupIntents` consume. Narrowing first and widening back would
+  // need a cast; keeping the concrete type needs none.
   const mysqlPriceGroupRepository = new MySqlPriceGroupRepository(
     graph.executor,
     auditActor,
@@ -4768,15 +4913,21 @@ function createRequestGraph(
   //
   // An empty set opens no transaction and issues no statement, which is what a Hibernate session
   // that dirtied no entity did.
+  //
+  // The parent key is bound from the identifier the service hands down rather than read back off
+  // `sku.getProduct()`. The SKUs on this path arrive from `getProductSkus`, a fetch shape that
+  // materializes no product back-reference, so the association read answered nothing and the
+  // statement wrote SQL NULL over `SwSku.productID` - orphaning every row it repriced. Naming the
+  // parent means the association is never consulted here at all.
   const skuBatchWrite: SkuBatchWriteCollaborator = {
-    saveMutatedSkus: async (skus): Promise<void> => {
+    saveMutatedSkus: async (productID, skus): Promise<void> => {
       if (skus.length === 0) {
         return;
       }
 
       await graph.executor.transaction(async (tx): Promise<void> => {
         for (const sku of skus) {
-          await mysqlSkuRepository.saveSku(sku, undefined, tx);
+          await mysqlSkuRepository.saveSku(sku, productID, tx);
         }
       });
     },
@@ -4837,6 +4988,11 @@ function createRequestGraph(
   //
   // `undefined` when no HOST was SUPPLIED, gated on exactly the condition that gates the port in
   // the projection.
+  //
+  // The host that reaches the renderer is the deployment's own spelling: `assertAllowedFeedHost`
+  // trims and case-folds the candidate, folds a scheme's default port (`:80`, `:443`) on both sides
+  // so one authority written two ways is one authority, requires membership of
+  // `graph.config.feed.allowedHosts`, and answers the entry it matched.
   const feedCriteria: FeedCriteria | undefined =
     input.feedHost === undefined
       ? undefined
@@ -5549,7 +5705,7 @@ async function projectPriceGroupIntents(
  *
  * CFML parity [model/entity/Order.cfc:L689, L691]: the type-code comparisons are CFML `==` on
  * strings and therefore CASE-INSENSITIVE, so they are routed through the case-folding helper
- * rather than through `===`.
+ * rather than through ``.
  */
 function computeProjectedOrderSubtotal(orderItems: readonly OrderItemView[]): Money {
   let subtotal = Money.zero;

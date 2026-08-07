@@ -766,6 +766,85 @@ describe('the five-level cascade: every level, in order', () => {
       graph.parentProductLevelRate,
     );
   });
+
+  it("★★★ an ANCESTOR TYPE's rate on a PARENT price group beats that group's own product rate (F-08)", () => {
+    // THIS CASE IS REACHABLE ONLY WHILE THE PARENT CHAIN ARRIVES. It combines the two recursions
+    // that this file documents separately - the product-type variant's climb up
+    // `getParentProductType()` [model/service/PriceGroupService.cfc:L65-L77] and that same variant's
+    // OWN recursion into the parent price group [model/service/PriceGroupService.cfc:L90-L93]. When
+    // `mysqlProductRepository` hydrates a product's `ProductType` with no parent the climb has
+    // nothing to climb, the ancestor's rate is never seen, and the global rate is selected instead -
+    // while the standalone product-type loader reads the same row and sees it.
+    //
+    // THE ORDERING IT PINS IS COUNTER-INTUITIVE AND WORTH STATING OUTRIGHT: the product variant
+    // delegates to the product-TYPE variant at [model/service/PriceGroupService.cfc:L114-L116]
+    // BEFORE it reaches its own parent recursion at [model/service/PriceGroupService.cfc:L130-L132],
+    // and the product-type variant recurses into the parent group itself. So the
+    // parent price group is first entered through the product-TYPE door, and a rate matched there
+    // answers even though the SAME group holds a rate naming this exact PRODUCT. That is the source's
+    // nesting, not a preference this port invented, and a reader tracing the cascade top-to-bottom
+    // would predict the product rate.
+    const product = makeProductFixture({ idPrefix: 'f08-prod-' });
+    const childType = requirePresent(product.getProductType(), 'the fixture product type');
+    const ancestorType = requirePresent(
+      childType.getParentProductType(),
+      'the fixture product type parent',
+    );
+    const sku = makeSkuFixture({
+      idPrefix: 'f08-sku-',
+      price: Money.fromDecimalString(SKU_BASE_PRICE),
+      product,
+    });
+    const graph = makePriceGroupFixtures({
+      idPrefix: 'f08-',
+      // Registered against the ANCESTOR only, so nothing but the climb can reach it.
+      productTypeLevelRateProductTypes: [ancestorType],
+      // And the same parent group also names this product outright, which is what makes the ordering
+      // observable rather than vacuous.
+      parentProductLevelRateProducts: [product],
+    });
+    const { service } = makeSubject();
+
+    // The product-type rate is MOVED from the child group to the PARENT, so reaching it requires both
+    // recursions rather than just the type climb.
+    graph.childPriceGroup.removePriceGroupRate(graph.productTypeLevelRate);
+    graph.parentPriceGroup.addPriceGroupRate(graph.productTypeLevelRate);
+
+    // And the ancestor GLOBAL rate is removed, because a global rate anywhere up the chain answers
+    // before either of these - see the level-4 case above.
+    graph.rootPriceGroup.removePriceGroupRate(graph.rootGlobalRate);
+
+    // THE PRECONDITIONS, so a passing assertion cannot be passing vacuously.
+    expect(graph.productTypeLevelRate.hasProductType(ancestorType)).toBe(true);
+    expect(graph.productTypeLevelRate.hasProductType(childType)).toBe(false);
+    expect(graph.parentProductLevelRate.hasProduct(product)).toBe(true);
+    expect(graph.parentPriceGroup.getPriceGroupRates()).toContain(graph.productTypeLevelRate);
+    expect(graph.childPriceGroup.getPriceGroupRates()).not.toContain(graph.productTypeLevelRate);
+
+    // AND THE ANSWER IS THE ANCESTOR TYPE'S RATE, THROUGH ALL THREE ENTRY POINTS.
+    expect(service.getRateForProductTypeBasedOnPriceGroup(childType, graph.childPriceGroup)).toBe(
+      graph.productTypeLevelRate,
+    );
+    expect(service.getRateForProductBasedOnPriceGroup(product, graph.childPriceGroup)).toBe(
+      graph.productTypeLevelRate,
+    );
+    expect(service.getRateForSkuBasedOnPriceGroup(sku, graph.childPriceGroup)).toBe(
+      graph.productTypeLevelRate,
+    );
+
+    // THE NEGATIVE CONTROL: sever the chain - which is exactly the shape the adapter used to
+    // hydrate - and the SAME fixture answers the parent's PRODUCT rate instead. This is the money
+    // divergence F-08 measured, reproduced here without a database.
+    const severed = new ProductType({
+      productTypeID: childType.getProductTypeID(),
+      productTypeIDPath: childType.getProductTypeIDPath(),
+    });
+
+    expect(severed.getParentProductType()).toBeUndefined();
+    expect(service.getRateForProductTypeBasedOnPriceGroup(severed, graph.childPriceGroup)).not.toBe(
+      graph.productTypeLevelRate,
+    );
+  });
 });
 
 describe('the five-level cascade: DEFECT 7, the parent-recursion asymmetry', () => {

@@ -674,7 +674,14 @@ describe('NET-NEW: the six many-to-many-inverse link tables, preserved verbatim'
    * that every abbreviation survives: `Promo` is not `Promotion`, `Qual` is not `Qualifier`,
    * `Excl` is not `Exclusion`.
    *
-   * What this block does assert is the part that lives on this class: which collections the entity
+   * That claim is NOT asserted here. Restating the six literals in this file and comparing them
+   * with themselves would prove only that a test-owned array holds what it was written to hold - it
+   * cannot notice a target module misspelling a table. The contract is checked where the shipped
+   * text can actually be read: tests/traceability/legacyTestMap.ts, block A30, derives all 53
+   * in-scope `linktable` declarations from the frozen legacy entities and holds `src/` to them,
+   * including the four of Brand's six that reach real SQL and the two that stay commentary.
+   *
+   * What this block does assert is the part that lives on THIS class: which collections the entity
    * materializes, and which it deliberately does not.
    */
 
@@ -1290,7 +1297,14 @@ describe('NET-NEW: the published surface is exactly the ported CFML surface', ()
   it('records SwBrand and hb_permission="this" as inert metadata, resolved by nothing', () => {
     // CFML parity [model/entity/Brand.cfc:L49]: the table is `SwBrand` and the entity name
     // `SlatwallBrand`, both preserved verbatim - schema continuity is binding and the property
-    // metadata is the contract.
+    // metadata IS the contract. `hb_permission="this"` is the literal four-character string `this`,
+    // NOT a resolved path; the same literal appears at [model/entity/Category.cfc:L49].
+    //
+    // `SwBrand` and `SlatwallBrand` are NOT restated here as local constants and compared with
+    // themselves; tests/traceability/legacyTestMap.ts block A30 derives both from the frozen
+    // `table=` / `entityname=` attributes and holds the shipped source to them, for all 18
+    // entities. `hb_permission` and `hb_serviceName` have no target expression at all, which is
+    // itself the assertion below: not one of the four metadata accessors is published.
     for (const absent of ['getTableName', 'getEntityName', 'getPermission', 'getServiceName']) {
       expect(prototypeMembers()).not.toContain(absent);
     }

@@ -623,6 +623,15 @@ describe('the FOURTEEN many-to-many collections, and the one that separates Rewa
     expect(fixtures.rewardManyToManyCollections[0]?.property).toBe('eligiblePriceGroups');
   });
 
+  // C5 SCHEMA CONTINUITY for all fourteen link tables - `SwPromoRewardEligiblePriceGrp` is never
+  // `...EligiblePriceGroup`, and the five `SwPromoRewardExcl*` names are never `...Excluded*` - used
+  // to be "asserted" by mapping the fixture census onto a second array declared in this same file.
+  // Two test-owned arrays agreeing proves nothing about the port, and nothing about the CFC either.
+  // Both the fourteen names and their declaration order are now derived from
+  // [model/entity/PromotionReward.cfc] and checked against the shipped source in
+  // tests/traceability/legacyTestMap.ts block A30, which also contrasts them with the qualifier's
+  // thirteen and pins `eligiblePriceGroups` as the single differentiator.
+
   it('records the table itself as the abbreviated SwPromoReward', () => {
     // CFML parity [model/entity/PromotionReward.cfc:L57]: `table="SwPromoReward"`, matching
     // `SwPromoQual` on [model/entity/PromotionQualifier.cfc:L49] and abbreviated for the same
@@ -651,6 +660,9 @@ describe('the FOURTEEN many-to-many collections, and the one that separates Rewa
     expect(
       fixtures.rewardManyToManyCollections.filter((collection) => !collection.declaresTypeArray),
     ).toHaveLength(11);
+
+    // The same three properties are derived from the frozen CFC - rather than from a second array in
+    // this file - in tests/traceability/legacyTestMap.ts block A30, alongside the qualifier's two.
   });
 
   it('preserves the Group A declaration order, which is REVERSED against the qualifier', () => {

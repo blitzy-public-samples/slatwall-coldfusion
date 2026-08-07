@@ -25,6 +25,9 @@ import type {
   PriceResolutionResultDocument,
   PriceResolutionScope,
   PriceResolutionSkuIdentity,
+  // The wire shape of one monetary value. Imported since finding F-05 gave the currency arm a
+  // discriminator: the cases about the VALUE now read through a helper that returns this or nothing.
+  SerializedMoney,
   UnresolvedReason,
 } from '../../../src/handlers/priceResolutionHandler.js';
 import {
@@ -412,6 +415,25 @@ function expectCurrencyPriceOutcome(
   }
 
   return result.price;
+}
+
+/**
+ * The MONETARY half of a `currencyPrice` answer - the value on a hit, `undefined` on a miss.
+ *
+ * ADDED WITH THE DISCRIMINATOR (finding F-05). The arm used to carry `price?: SerializedMoney`, so
+ * every case in this file could read `.price?.amount` for a hit and `.price  undefined` for a miss.
+ * It now carries `{ resolved: true, price } | { resolved: false, reason }`, because SECTION 2 of the
+ * subject forbids the omitted key that shape produced. Those cases are about the VALUE and their intent
+ * did not change, so this helper restores exactly the reading they had; the cases about the SHAPE assert
+ * the discriminator directly instead, which is what the finding was raised about.
+ *
+ * @param price what a `currencyPrice` arm carried.
+ * @returns the serialized money on a hit, `undefined` on a documented miss.
+ */
+function resolvedCurrencyMoney(
+  price: Extract<PriceResolutionResult, { outcome: 'currencyPrice' }>['price'],
+): SerializedMoney | undefined {
+  return price.resolved ? price.price : undefined;
 }
 
 /**
@@ -1141,7 +1163,47 @@ const INVALID_BODY_MESSAGES = {
   routeNotFound: 'The requested route does not exist.',
 } as const;
 
-// Concern 1 - parsing and validation.
+/**
+ * The message a refusing composition-root factory raises, so a case can name it.
+ *
+ * A constant rather than a literal at the call site, because one case asserts that the mapped
+ * response does not REPRODUCE it - an internal failure must not reach a client - and that assertion
+ * has to compare against the same string the factory raised.
+ */
+const REFUSED_ROOT_DETAIL = 'blitzy-refused-composition-root-detail';
+
+/**
+ * A handler instance whose composition root always refuses, supplied rather than inherited.
+ *
+ * ADDED FOR FINDING F-11. Concern 1 documents that "every case here resolves BEFORE the
+ * composition root is reached", and every case but one is refused by the schema so that is true of
+ * them by construction. The exception is the base64 case, whose document is VALID: it necessarily
+ * reaches the root, and it used to reach the PRODUCTION root, which resolves or fails according to
+ * whether the process happens to carry usable `DB_*` variables. That made one case in this suite
+ * environment-dependent, and a runtime acceptance run measured it failing under exactly the
+ * environment a developer running the integration tier has.
+ *
+ * The factory below removes the dependency instead of documenting it: the root is refused in this
+ * process, by this instance, for a reason this file owns. No environment is read, no pool is opened
+ * and no graph is built, so the section's stated contract holds under any environment at all.
+ *
+ * @returns a two-parameter handler whose root resolution rejects.
+ */
+function withRefusedCompositionRoot(): ReturnType<typeof createPriceResolutionHandler> {
+  return createPriceResolutionHandler({
+    compositionRoot: (): Promise<CompositionRoot> => Promise.reject(new Error(REFUSED_ROOT_DETAIL)),
+    // Redirected to a discarding sink so the refusal this factory manufactures does not reach the
+    // process sink, where a developer reading the run would meet it as a real failure. `withSink`
+    // rather than a threshold, because the emission is an `error` line and no threshold suppresses it.
+    logger: productionLogger.withSink((): void => undefined),
+  });
+}
+
+// CONCERN 1 - PARSING AND VALIDATION
+//
+// Driven through `handler`, because reading and validating the wire document is what `handler` does
+// before anything else exists. Every case here resolves BEFORE the composition root is reached, which
+// each case also proves: nothing is wired, no pool is opened, and no environment variable is read.
 
 describe('the request contract, and what it refuses (concern 1)', () => {
   it('refuses a request carrying no body at all, in the mapper vocabulary', async () => {
@@ -1174,14 +1236,27 @@ describe('the request contract, and what it refuses (concern 1)', () => {
   });
 
   it('decodes a base64 body before parsing it, because that is the same request', async () => {
+    // DRIVEN THROUGH THE SEAM SO THE CASE CANNOT DEPEND ON THE AMBIENT ENVIRONMENT. Reading the
+    // module-level `handler` and asserting an error envelope assumes the composition root is
+    // unreachable, which holds only while the process carries no usable `DB_*` configuration: with
+    // `DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD` exported - which a developer running the
+    // integration tier has - the production root RESOLVES, the request is SERVED, and
+    // `readErrorEnvelope` finds no `error` member. The seam supplies the refusing root instead, so
+    // the result is the same with and without a database in the environment.
+    //
+    // A test whose outcome depends on a variable it never names is not testing what it claims. The
+    // remedy is to SUPPLY the condition the case reasoned about rather than inherit it: a
+    // composition-root factory that refuses. The section's contract is then true by construction and no
+    // longer by luck - nothing is wired, no pool is opened, and no environment variable is read.
     const document = bodyOf({
       operation: 'convertCurrency',
       amount: '10.00',
       originalCurrencyCode: SECONDARY_CURRENCY_CODE,
       convertToCurrencyCode: SECONDARY_CURRENCY_CODE,
     });
+    const invoke = withRefusedCompositionRoot();
 
-    const response = await handler(
+    const decoded = await invoke(
       makeProxyEvent({
         body: Buffer.from(document, 'utf8').toString('base64'),
         isBase64Encoded: true,
@@ -1189,11 +1264,33 @@ describe('the request contract, and what it refuses (concern 1)', () => {
       makeLambdaContext(),
     );
 
-    // The document is valid, so it is not refused for its shape; it stops at the composition root
-    // instead, which this suite deliberately never reaches - see the boundary cases below.
-    expect(readErrorEnvelope(response).message).not.toBe(
+    // The document is valid, so it is NOT refused for its shape: it reaches the composition root, which
+    // this instance refuses. What is asserted here is only that the base64 form was not mistaken for an
+    // unparsable body - the original property, now reached deterministically.
+    expect(readErrorEnvelope(decoded).message).not.toBe(
       INVALID_BODY_MESSAGES.unparsableRequestBody,
     );
+    expect(readErrorEnvelope(decoded).message).not.toBe(INVALID_BODY_MESSAGES.missingRequestBody);
+    expect(readErrorEnvelope(decoded).message).not.toBe(INVALID_BODY_MESSAGES.unsupportedBodyShape);
+
+    // AND THE CASE'S OWN TITLE, ASSERTED RATHER THAN IMPLIED. "Because that is the same request"
+    // means the two encodings are indistinguishable downstream, so the PLAIN form is driven through the
+    // same instance and the two responses are compared whole. This is a stronger claim than the
+    // negative above and it is the one the title makes; it was not previously assertable, because the
+    // plain form and the base64 form would both have depended on the ambient environment.
+    const plain = await invoke(makeProxyEvent({ body: document }), makeLambdaContext());
+
+    expect(decoded.statusCode).toBe(plain.statusCode);
+    expect(decoded.body).toBe(plain.body);
+    expect(decoded.headers).toStrictEqual(plain.headers);
+
+    // AND THE MANUFACTURED FAILURE DOES NOT REACH THE CLIENT. The factory raises a marker string; a
+    // root failure is an internal condition, so the mapped response must name neither it nor the
+    // encoding it arrived under. Asserted on BOTH forms, since the base64 form additionally carries the
+    // request document in a shape a naive error path might echo.
+    expect(decoded.body).not.toContain(REFUSED_ROOT_DETAIL);
+    expect(plain.body).not.toContain(REFUSED_ROOT_DETAIL);
+    expect(decoded.body).not.toContain(SECONDARY_CURRENCY_CODE);
   });
 
   it('reports invalid base64 as an unparsable body, which is what it decodes to', async () => {
@@ -1549,7 +1646,17 @@ describe('the request contract, and what it refuses (concern 1)', () => {
         currencyCode: SHORT_CURRENCY_CODE,
       },
     );
-    expect(expectCurrencyPriceOutcome(result)).toBeUndefined();
+
+    // ANSWERED, NOT REFUSED - which is the whole point of this case and is unchanged. What changed is
+    // how the answer carries its absence (finding F-05): the line read
+    // `expect(expectCurrencyPriceOutcome(result)).toBeUndefined()` under "the answer is an OMITTED price
+    // member... Not a `{resolved:false}` sentinel", and an omitted key is what SECTION 2 of the subject
+    // forbids. The absence is now stated; that it is an ANSWER rather than a 400 is asserted exactly as
+    // before, and no monetary value is fabricated for it.
+    const shortCodeAnswer = expectCurrencyPriceOutcome(result);
+
+    expect(shortCodeAnswer.resolved).toBe(false);
+    expect(resolvedCurrencyMoney(shortCodeAnswer)).toBeUndefined();
   });
 });
 
@@ -3669,7 +3776,10 @@ async function resolveCurrency(
     'getPriceByCurrencyCode' | 'getListPriceByCurrencyCode' | 'getRenewalPriceByCurrencyCode',
   currencyCode: string,
 ): Promise<{
-  readonly price: ReturnType<typeof expectCurrencyPriceOutcome>;
+  /** The MONETARY half - present on a hit, `undefined` on a documented miss. See the helper. */
+  readonly price: SerializedMoney | undefined;
+  /** The whole discriminated member, so a case can assert the SHAPE rather than only the value. */
+  readonly answer: ReturnType<typeof expectCurrencyPriceOutcome>;
   readonly json: string;
 }> {
   const product = requireDefined(sku.getProduct(), 'product on the sku fixture');
@@ -3684,7 +3794,9 @@ async function resolveCurrency(
 
   const result = await dispatchPriceResolution(scope, { operation, sku: identity, currencyCode });
 
-  return { price: expectCurrencyPriceOutcome(result), json: JSON.stringify(result) };
+  const answer = expectCurrencyPriceOutcome(result);
+
+  return { price: resolvedCurrencyMoney(answer), answer, json: JSON.stringify(result) };
 }
 
 /**
@@ -3730,13 +3842,24 @@ describe('currency resolution, and the absences that are load-bearing (concern 3
         'getListPriceByCurrencyCode',
         'getRenewalPriceByCurrencyCode',
       ] as const) {
-        const { price, json } = await resolveCurrency(sku, operation, currencyCode);
+        const { price, answer, json } = await resolveCurrency(sku, operation, currencyCode);
+
+        // THE ABSENCE IS STATED, NOT OMITTED, AND THE SUBJECT'S OWN RULE IS WHAT DECIDES IT. The
+        // ported accessor's contract is `Money | undefined` [model/entity/Sku.cfc:L269-L273], which
+        // says nothing whatever about JSON - so an omitted `price` member is one boundary choice
+        // among several rather than the faithful one. SECTION 2 of the module under test forbids "an
+        // omitted key that a consumer would then default" and names the `resolved: false` arm as its
+        // replacement, so that is the shape asserted here.
+        //
+        // The MONETARY guarantee is untouched and is still what most of these lines assert.
         expect(price).toBeUndefined();
-        // Not zero, not an empty amount, and not a null a consumer can default away with one
-        // operator.
+        expect(answer.resolved).toBe(false);
+        // NOT zero, not an empty amount, and not a null a consumer can default away with one operator.
         expect(json).not.toContain('"amount"');
-        expect(json).not.toContain('"price"');
         expect(json).not.toContain('0.00');
+        expect(json).not.toContain('null');
+        // And absence is now POSITIVELY stated rather than inferred from a missing field.
+        expect(json).toContain('"resolved":false');
       }
     }
   });
@@ -3784,8 +3907,17 @@ describe('currency resolution, and the absences that are load-bearing (concern 3
     // Path three: a currency the map never held at all.
     expect(ineligible.price).toBeUndefined();
     expect(strandedList.json).toBe(ineligible.json);
-    expect(strandedList.json).not.toContain('noPriceForCurrencyCode');
-    expect(ineligible.json).not.toContain('reason');
+    expect(strandedList.json).toBe(strandedRenewal.json);
+    expect(strandedList.answer).toStrictEqual({
+      resolved: false,
+      reason: 'noPriceForCurrencyCode',
+    });
+    expect(ineligible.answer).toStrictEqual({ resolved: false, reason: 'noPriceForCurrencyCode' });
+    // And the absence STATES itself rather than being inferred from a missing member, which is the whole
+    // of what F-05 changed. No monetary member survives on either false arm.
+    expect(strandedList.json).toContain('"resolved":false');
+    expect(strandedList.json).not.toContain('"amount"');
+    expect(ineligible.json).not.toContain('"amount"');
   });
 
   it('never substitutes zero, an empty amount or a defaultable null for an absence', async () => {
@@ -3807,12 +3939,129 @@ describe('currency resolution, and the absences that are load-bearing (concern 3
     );
 
     expect(price).toBeUndefined();
-    expect(json).toBe('{"outcome":"currencyPrice"}');
-    // Stated three ways because each is a distinct way of getting this wrong: a numeric zero, the
-    // value object's own rendering of zero, and the two-decimal presentation of zero.
+    // The whole document, byte for byte. Before finding F-05 this line read
+    //
+    //     expect(json).toBe('{"outcome":"currencyPrice"}');
+    //
+    // under a note that "the `price` member is OMITTED on an absence rather than carrying a
+    // `{resolved:false, reason}` sentinel, so the outcome discriminant is all that is left - which is
+    // the point: `'currencyPrice'` with no price IS the absence". That is precisely the shape SECTION 2
+    // of the subject forbids, and it is what F-05 was raised about: a consumer reading a MISSING member
+    // has to decide for itself what a missing member means, and the one wrong decision - defaulting it
+    // to zero - is the decision this case exists to make impossible. The absence now states itself. The
+    // three negatives below are unchanged, and they remain the point of the case.
+    expect(json).toBe(
+      '{"outcome":"currencyPrice","price":{"resolved":false,"reason":"noPriceForCurrencyCode"}}',
+    );
+    // Stated three ways because each is a distinct way of getting this wrong: a numeric zero, the value
+    // object's own rendering of zero, and the two-decimal presentation of zero. The middle expectation
+    // builds zero through the value object rather than naming its zero constant, so that the only
+    // mention of a zero Money in this suite is the one proving a zero never reaches the wire.
     expect(json).not.toContain(':0');
     expect(json).not.toContain(Money.fromDecimalString(ZERO_DECIMAL).toDecimalString());
     expect(json).not.toContain('"0.00"');
+  });
+
+  it('states, never omits, every one of the TWELVE accessor-by-currency answers', async () => {
+    // THE FULL MATRIX FINDING F-05 WAS MEASURED OVER. Runtime acceptance testing drove three
+    // accessors across a set of currency inputs and reported the guarantee that matters as satisfied -
+    // "never 0, never null" - while reporting the REPRESENTATION as contradicting the subject's own
+    // SECTION 2, which forbids "an omitted key that a consumer would then default". The sibling cases in
+    // this block each pin ONE cell of that matrix; this one pins ALL TWELVE at once, so a future revision
+    // cannot restore the omission for some accessor or some currency and still pass the block.
+    //
+    // The map is built explicitly rather than through a fixture variant, because the SHAPE of the answer
+    // is the subject and every cell has to be unambiguous:
+    //
+    //   currency        | price | listPrice | renewalPrice
+    //   base (USD)      |  HIT  |    HIT    |    MISS      <- present currency, sub-key never recorded
+    //   secondary (EUR) |  HIT  |    MISS   |    MISS      <- Step 2 wrote `price` only
+    //                                                          [model/entity/Sku.cfc:L409]
+    //   ineligible(JPY) |  MISS |    MISS   |    MISS      <- currency absent from the map
+    //   empty ('')      |  MISS |    MISS   |    MISS      <- a LEGITIMATE call, answered not refused
+    //
+    // Three hits and nine misses. The two miss CAUSES - a currency the map never held, and a currency it
+    // holds whose sub-price was never written - are deliberately both present, because a discriminator
+    // that distinguished them would publish a fact the accessor's `Money | undefined` never carried.
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'secondaryPriceOnly' });
+    const baseCurrencyCode = sku.getCurrencyCode();
+
+    materialiseCurrencyDetails(sku, {
+      [baseCurrencyCode]: {
+        // [model/entity/Sku.cfc:L382]: the base-currency entry's prices come from the sku's own
+        // columns, so the row identifier is empty - [model/entity/Sku.cfc:L412] is the cascade's
+        // only non-empty write.
+        skuCurrencyID: '',
+        price: Money.fromDecimalString('19.99'),
+        priceFormatted: '19.99',
+        listPrice: Money.fromDecimalString('24.99'),
+        listPriceFormatted: '24.99',
+        converted: false,
+      },
+      [SECONDARY_CURRENCY_CODE]: {
+        skuCurrencyID: 'skucurrency-4a71b0',
+        price: Money.fromDecimalString('17.99'),
+        priceFormatted: '17.99',
+        converted: false,
+      },
+    });
+
+    const expectedHits: Readonly<Record<string, string>> = {
+      [`${baseCurrencyCode}/getPriceByCurrencyCode`]: '19.99',
+      [`${baseCurrencyCode}/getListPriceByCurrencyCode`]: '24.99',
+      [`${SECONDARY_CURRENCY_CODE}/getPriceByCurrencyCode`]: '17.99',
+    };
+    // Every miss must be the SAME document, whichever accessor and whichever cause produced it, so the
+    // one expected form is written once and compared against nine answers.
+    const expectedMissJson =
+      '{"outcome":"currencyPrice","price":{"resolved":false,"reason":"noPriceForCurrencyCode"}}';
+    let hits = 0;
+    let misses = 0;
+
+    for (const currencyCode of [
+      baseCurrencyCode,
+      SECONDARY_CURRENCY_CODE,
+      INELIGIBLE_CURRENCY_CODE,
+      '',
+    ]) {
+      for (const operation of [
+        'getPriceByCurrencyCode',
+        'getListPriceByCurrencyCode',
+        'getRenewalPriceByCurrencyCode',
+      ] as const) {
+        const cell = `${currencyCode}/${operation}`;
+        const { price, answer, json } = await resolveCurrency(sku, operation, currencyCode);
+        const expectedAmount: string | undefined = expectedHits[cell];
+
+        // EVERY cell is answered, never refused, and every answer carries the member: the absence is
+        // never reachable by reading a key that is not there.
+        expect(answer.resolved, cell).toBe(expectedAmount !== undefined);
+        expect(json, cell).toContain('"resolved":');
+
+        if (expectedAmount === undefined) {
+          misses += 1;
+          expect(price, cell).toBeUndefined();
+          expect(json, cell).toBe(expectedMissJson);
+          // The three ways a miss could still become money, ruled out per cell rather than once.
+          expect(json, cell).not.toContain('"amount"');
+          expect(json, cell).not.toContain('0.00');
+          expect(json, cell).not.toContain('null');
+          continue;
+        }
+
+        hits += 1;
+        expect(requireDefined(price, `serialized money for ${cell}`).amount, cell).toBe(
+          expectedAmount,
+        );
+        expect(json, cell).toContain('"resolved":true');
+      }
+    }
+
+    // The matrix was walked in full - twelve cells, three of them hits - so the counts are asserted
+    // rather than left to the reader to derive from the loop bounds.
+    expect(hits + misses).toBe(12);
+    expect(hits).toBe(3);
+    expect(misses).toBe(9);
   });
 
   it('resolves the base currency through the setting rather than a literal in the boundary', async () => {
@@ -4931,8 +5180,14 @@ describe('the Lambda entrypoint, through its dependency seam', () => {
     expect(bed.emitted.text()).not.toContain(ACCOUNT_ID);
   });
 
-  it('★★★ answers an EMPTY currencyCode with an omitted price rather than a refusal', async () => {
-    // All three accessors are driven, because all three shared the schema.
+  it('★★★ answers an EMPTY currencyCode with a STATED absence rather than a refusal', async () => {
+    // THE SECOND CASE THE REVIEW REQUIRED. CFML `required string currencyCode` rejects a MISSING
+    // argument and accepts an EMPTY one, so `Sku.getPriceByCurrencyCode('')`
+    // [model/entity/Sku.cfc:L269-L273] is a legitimate call: it misses the currency map exactly as any
+    // unknown code does and answers NOTHING. A `.min(1)` on the schema turned that answer into a 400,
+    // which inverted the one semantic AAP 0.9.2 calls the highest-consequence parity check in the plan.
+    //
+    // All THREE accessors are driven, because all three shared the schema.
     const world = makeSkuWorld();
     const graph = makePriceGroupFixtures();
     const rate = requireDefined(
@@ -4959,11 +5214,18 @@ describe('the Lambda entrypoint, through its dependency seam', () => {
       expect(response.statusCode).toBe(200);
       expect(envelope.operation).toBe(operation);
       expect(envelope.result['outcome']).toBe('currencyPrice');
-      // OMITTED, not `0`, not `null` and not a sentinel: `JSON.stringify` drops the member, so the
-      // absence a consumer reads is the exact `undefined` the accessor answered.
-      expect(envelope.result['price']).toBeUndefined();
-      expect('price' in envelope.result).toBe(false);
-      expect(response.body).not.toContain('"price"');
+      // THE SUBJECT OF THIS CASE IS THE STATUS: an empty `currencyCode` is ANSWERED rather than
+      // refused, which is the parity AAP 0.9.2 calls the highest-consequence check in the plan, and
+      // that is asserted above. The shape of the answer's absence is asserted here, and it is STATED
+      // rather than omitted, per the module's own SECTION 2.
+      expect(readObject(envelope.result['price'], 'the currency-price member')).toStrictEqual({
+        resolved: false,
+        reason: 'noPriceForCurrencyCode',
+      });
+      // Still not `0`, still not `null`, and still no monetary member anywhere in the document.
+      expect(response.body).not.toContain('"amount"');
+      expect(response.body).not.toContain('"price":null');
+      expect(response.body).not.toContain('"price":0');
 
       vi.restoreAllMocks();
     }

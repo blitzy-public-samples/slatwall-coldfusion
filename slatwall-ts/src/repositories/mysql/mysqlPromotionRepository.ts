@@ -32,7 +32,7 @@ import type {
 } from '../../domain/ports/promotionRepository.js';
 import { Money } from '../../domain/valueObjects/money.js';
 import { listAppend, listFindNoCase, listToArray } from '../../lib/cfml/list.js';
-import { cfEquals } from '../../lib/cfml/struct.js';
+import { cfEquals, cfFoldKey } from '../../lib/cfml/struct.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { PreparedStatementExecutor, SqlRow } from './connection.js';
@@ -725,7 +725,7 @@ const CLOSE_GROUP_CLAUSE = ' )';
 // Statement text - the bounded collection reads that complete method 1's graph.
 //
 // SUFFICIENT - every one of the eleven predicates compares one accessor:
-// `held.getBrandID() === candidateID` and its five siblings.
+// `held.getBrandID()  candidateID` and its five siblings.
 //
 // A projection is therefore never a substitute for a hydrated aggregate.
 
@@ -1753,7 +1753,49 @@ export class MysqlPromotionRepository implements PromotionRepository {
   private readonly requestClock: PromotionRequestClock;
 
   /**
-   * No audit actor is injected here, and the reason is recorded rather than left as an asymmetry.
+   * The sale-price rows a batched prefetch has already read, indexed by FOLDED product identifier.
+   *
+   * A REQUEST-SCOPED MEMO, WHICH IS THE ONLY KIND THIS SUBTREE PERMITS. AAP 0.6.5 catalogues four
+   * component-level caches in the legacy slice and rules that all of them become request-scoped in
+   * the target, because a module-level cache on a warm Lambda container persists between unrelated
+   * requests - and this one holds PRICES, so a leak across requests would quote one caller's sale
+   * price to another. This field is an instance field on an adapter the composition root builds ONE
+   * OF PER REQUEST, so its lifetime is exactly one request, and `src/repositories/mysql/connection.ts`
+   * remains the only sanctioned module-scope state in the layer.
+   *
+   * IT IS ADDITIVE AND IS NEVER INVALIDATED WITHIN THE REQUEST, and that is sound for one reason
+   * only: `requestClock` answers ONE epoch for the whole request - see {@link PromotionRequestClock}
+   * for why that agreement is load-bearing - so a row read at the start of a request and a row read at
+   * its end were selected against the same instant. Re-reading the same product would issue the same
+   * statement with the same fourteen timestamps and reduce to the same rows. This is the behaviour
+   * Hibernate's first-level session cache gave the legacy for free, restored explicitly.
+   *
+   * AN ABSENT ENTRY AND AN EMPTY ENTRY ARE DIFFERENT, AND THE DIFFERENCE IS THE WHOLE MECHANISM.
+   * An entry present and empty means "this product was covered by a batch and genuinely has no
+   * sale-price rows" - the memo answers it without a statement. An entry ABSENT means nothing is known
+   * and `getSalePricePromotionRewardsQuery` issues its own statement exactly as it always did. That is
+   * why `Map.has` is asked rather than truthiness of the value.
+   */
+  private readonly batchedSalePriceRowsByProductID = new Map<
+    string,
+    readonly SalePricePromotionRewardRow[]
+  >();
+
+  /**
+   * NO AUDIT ACTOR IS INJECTED HERE, AND THE REASON IS RECORDED RATHER THAN LEFT AS AN ASYMMETRY.
+   *
+   * NO AUDIT ACTOR IS TAKEN, BECAUSE THIS CLASS HOLDS NO WRITE. The port's method count is locked at
+   * SEVEN reads and declares no rounding-rule save or delete, so nothing here stamps
+   * `createdByAccountID` or `modifiedByAccountID` on anything. An actor with nothing to stamp would be
+   * an unused field rather than a control.
+   *
+   * S-07 IS STILL FULLY RESOLVED. The finding's subject is write paths that copied audit identifiers
+   * off caller-hydrated entities, and every adapter that HAS such a path - the product, product-type,
+   * price-group, price-group-rate and SKU write paths - still threads the request-scoped immutable
+   * actor and still leaves an unauthorised column untouched via `COALESCE`. This file issues no
+   * INSERT, no UPDATE and no DELETE, so it has no such path to protect. `RoundingRuleService`
+   * performs only the cache-invalidation half [model/service/RoundingRuleService.cfc:L56-L63]; the
+   * `super.save()` half has no persistence port in the locked inventory and none was invented.
    *
    * @param executor the prepared-statement executor this repository reads through.
    * @param valueRounder the rounding arithmetic a hydrated `RoundingRule` delegates to.
@@ -2002,6 +2044,24 @@ export class MysqlPromotionRepository implements PromotionRepository {
   async getSalePricePromotionRewardsQuery(
     productID?: string,
   ): Promise<SalePricePromotionRewardRow[]> {
+    // THE MEMO IS CONSULTED FIRST, AND ONLY FOR A NAMED PRODUCT. A batched prefetch may already
+    // have read this product's rows - see {@link prefetchSalePricePromotionRewards} - in which case
+    // answering from the memo issues NO statement and returns exactly the rows this statement would
+    // have selected, against the same request epoch. An ABSENT `productID` means "every product" and
+    // is never answered from a memo built by narrowing, so the whole-catalogue call is untouched.
+    if (productID !== undefined) {
+      const batched = this.batchedSalePriceRowsByProductID.get(cfFoldKey(productID));
+
+      // `has` rather than a truthiness test on the value: a product covered by a batch and carrying
+      // NO sale-price rows is a real answer, and the empty array is it.
+      if (batched !== undefined) {
+        // A fresh array per call, because the port's contract answers a mutable
+        // `SalePricePromotionRewardRow[]` and the memo must not hand out a reference a caller could
+        // sort, splice or push into. The ROWS themselves are frozen row projections.
+        return [...batched];
+      }
+    }
+
     // CFML parity [model/dao/PromotionDAO.cfc:L306]: `var timeNow = now()`, captured once - and
     // captured from the INJECTED request clock, so this reduction and the active-reward statement
     // above evaluate their windows against one instant rather than two.
@@ -2023,6 +2083,131 @@ export class MysqlPromotionRepository implements PromotionRepository {
     const rows = await this.executor.execute(statement.sql, statement.params);
 
     return rows.map(toSalePricePromotionRewardRow);
+  }
+
+  /**
+   * Read the sale-price rows of a whole set of products in ONE statement, and remember them so that
+   * {@link getSalePricePromotionRewardsQuery} can answer each product from what was read.
+   *
+   * WHY THIS EXISTS - THE FINDING, STATED AS IT WAS MEASURED. QA drove the sequenced
+   * price-group-then-promotion pass over orders of one, ten, one hundred and five hundred items and
+   * counted the statements the request executed: 32, 48, 228 and 1028. Two statements repeated once
+   * per DISTINCT PRODUCT, and the six-branch sale-price reduction was one of them - five hundred
+   * executions of the most involved statement in the slice for one request. AAP T3 makes fetch shape
+   * "an explicit, documented decision per method rather than something left implicit", and names the
+   * elimination of implicit per-row reads as the reason the ORM's lazy traversal was replaced by
+   * repository methods at all; AAP 0.4.3 names this very statement as the one whose reduction moved
+   * into SQL. A read whose count is a function of the caller's item count is the shape both rule out,
+   *
+   * and it arose here because `getSalePriceDetailsForProductSkus`
+   * [model/service/PromotionService.cfc:L1022] takes ONE product - which is the legacy's signature and
+   * is preserved verbatim.
+   *
+   * SO THE SIGNATURE IS NOT TOUCHED AND NEITHER IS THE SERVICE. `PromotionRepository` stays LOCKED
+   * at seven reads, `SalePriceResolver` stays at one method, `PromotionService` keeps its single-product
+   * surface and its whole reduction-and-rounding loop unchanged, and the batching lives entirely
+   * inside this adapter. This member is therefore an ADAPTER-ONLY set-based twin of method 6, exactly
+   * as `MysqlSkuRepository.getProductSkusForProducts` is of `getProductSkus` and as
+   * `MysqlProductRepository.getProductsByProductID` and `MySqlPriceGroupRepository.getPriceGroupsByID`
+   * are of theirs. The composition root is the only holder of the concrete type and the only caller.
+   *
+   * THE PARTITION IS THE CALLER'S MAP, AND THAT IS FORCED BY THE PROJECTION. The reduced result
+   * set carries eight columns and NO owning product identifier: §4.3 of
+   * `./sql/salePricePromotionRewards.sql.ts` forbids a tenth column in the CTE projection, because
+   * `noQualifierDiscounts` takes `DISTINCT` over exactly the nine it projects and the reviewer's
+   * guarantee is that the set is the legacy's set. So the rows cannot say which product they belong to
+   * and this method is handed the mapping by the caller that already read it - the product adapter's
+   * own SKU materialization holds `productID -> skus` before it resolves any sale price. The
+   * per-SKU equivalence that makes a batched read faithful is proved at that statement module's
+   * `productID` member; in short, `skuPrice` groups by `skuID` alone and `SwSku.productID` is
+   * single-valued per SKU, so widening the filter cannot move any SKU's minimum.
+   *
+   * AN INCOMPLETE PARTITION ABANDONS THE MEMO ENTIRELY RATHER THAN NARROWING AN ANSWER. If a
+   * returned row's SKU is not in the supplied mapping, this method cannot say which product it belongs
+   * to - and attributing it to nobody would drop a sale price, which reads downstream as "this SKU is
+   * not on sale" and is the one failure mode that changes money silently. It therefore records NOTHING
+   * for the whole batch, leaving every product absent from the memo, so
+   * {@link getSalePricePromotionRewardsQuery} issues its own per-product statement exactly as it did
+   * before this method existed. The batched statement was still executed and its rows discarded; that
+   * is the cost of a mapping and a result set disagreeing, and it is paid in preference to a wrong
+   * price. By construction the two agree - both are read in one request from one product set - so this
+   * is a guard rather than a branch the composed read is expected to take.
+   *
+   * NOTHING IS WRITTEN, NOTHING IS ROUNDED AND NO ENTITY IS BUILT, exactly as in method 6: the rows
+   * are the same unrounded projection, and `PromotionService` still applies the rounding rule
+   * [model/service/PromotionService.cfc:L1024-L1028] to whatever it is handed.
+   *
+   * @param skuIDsByProductID the products to read, each mapped to the identifiers of every SKU it
+   *   owns. An EMPTY map is a no-op that issues no statement. A product mapped to an empty SKU list is
+   *   still narrowed on and still gets an entry, which will be empty.
+   * @returns nothing. The result is the memo; callers then use the single-product read as before.
+   */
+  async prefetchSalePricePromotionRewards(
+    skuIDsByProductID: ReadonlyMap<string, readonly string[]>,
+  ): Promise<void> {
+    const productIDs = [...skuIDsByProductID.keys()];
+
+    // No products means no narrowing to compose - and emphatically NOT a whole-catalogue read, which
+    // is what omitting the member from the statement would have meant.
+    if (productIDs.length === 0) {
+      return;
+    }
+
+    // Which product owns each SKU, folded on the way in so the lookup below matches the way CFML
+    // struct keys and `eq` comparisons match - case-INSENSITIVELY. Last spelling wins, which is
+    // immaterial: a SKU appears under one product because `SwSku.productID` is single-valued.
+    const owningProductIDBySkuID = new Map<string, string>();
+
+    for (const [productID, skuIDs] of skuIDsByProductID) {
+      for (const skuID of skuIDs) {
+        owningProductIDBySkuID.set(cfFoldKey(skuID), productID);
+      }
+    }
+
+    // CFML parity [model/dao/PromotionDAO.cfc:L306]: ONE instant for the whole batch, from the same
+    // request clock the single-product read uses - so a batched answer and a per-product answer
+    // compare their windows against the same moment rather than against two.
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: this.requestClock.now(),
+      dialect: STATEMENT_DIALECT,
+      productID: productIDs,
+    });
+
+    const rows = (await this.executor.execute(statement.sql, statement.params)).map(
+      toSalePricePromotionRewardRow,
+    );
+
+    // A bucket per product, created BEFORE the rows are walked so that a product with no rows ends up
+    // with a present-and-empty entry rather than an absent one. The two mean different things to
+    // `getSalePricePromotionRewardsQuery`.
+    const bucketsByFoldedProductID = new Map<string, SalePricePromotionRewardRow[]>();
+
+    for (const productID of productIDs) {
+      bucketsByFoldedProductID.set(cfFoldKey(productID), []);
+    }
+
+    for (const row of rows) {
+      const owningProductID = owningProductIDBySkuID.get(cfFoldKey(row.skuID));
+
+      if (owningProductID === undefined) {
+        return;
+      }
+
+      const bucket = bucketsByFoldedProductID.get(cfFoldKey(owningProductID));
+
+      // Unreachable: every owner came from `skuIDsByProductID`'s own keys, which is what seeded the
+      // buckets. Narrowed rather than asserted, because `!` is banned in `src/**`, and abandoning the
+      // batch is the same answer the unmapped-SKU case above gives for the same reason.
+      if (bucket === undefined) {
+        return;
+      }
+
+      bucket.push(row);
+    }
+
+    for (const [foldedProductID, bucket] of bucketsByFoldedProductID) {
+      this.batchedSalePriceRowsByProductID.set(foldedProductID, Object.freeze(bucket));
+    }
   }
 
   /**

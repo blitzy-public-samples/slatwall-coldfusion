@@ -1065,7 +1065,7 @@ describe('hasChildCategory compares by primary key', () => {
     expect(parent.hasChildCategory(divergent)).toBe(true);
   });
 
-  // The reference fallback is not a courtesy: every unsaved category has `categoryID === ''`, so
+  // The reference fallback is not a courtesy: every unsaved category has `categoryID  ''`, so
   // keys alone would report all of them as one member.
   it('finds an unsaved member by reference identity', () => {
     const parent = aCategory({ categoryID: 'parent-1' });

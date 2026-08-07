@@ -140,15 +140,82 @@ export const AUDIT_ACTOR_COLUMNS: readonly string[] = Object.freeze([
  * Every column renders as `name = ?` - EXCEPT the two audit account columns, which render as
  * `name = COALESCE(?, name)`.
  *
+ * THE SECOND PARAMETER GENERALISES THE SAME MECHANISM TO A CALLER-NAMED COLUMN, AND IT EXISTS
+ * BECAUSE A WHOLE-ROW UPDATE CAN ERASE A KEY IT WAS NEVER TOLD ABOUT. Repricing through
+ * `processProduct_updateSkus` wrote `SwSku.productID` as SQL NULL at HTTP 200, orphaning every SKU
+ * the request touched. The cause is
+ * structurally identical to the audit-actor case this helper already existed for: the
+ * statement bound a column the ENTITY COULD NOT REPORT. A SKU reached through the inverse
+ * side of its own association - `Product.skus` - carries no back-reference to its owner, so
+ * `sku.getProduct()` answered nothing and the whole-row UPDATE dutifully wrote that nothing
+ * over a stored foreign key.
+ *
+ * Hibernate never had that failure mode, and the reason is worth stating precisely: it
+ * flushed the DIRTY COLUMNS of a managed entity, and an association that was never
+ * initialised is not dirty, so no assignment for it was emitted at all. A hand-built
+ * whole-row UPDATE has no dirty-column knowledge to draw on. `COALESCE(?, column)` is the
+ * SQL expression of the same rule: bind the value when the entity can report one, and leave
+ * the stored value standing when it cannot.
+ *
+ * ⚠ WHAT THE CALLER IS ASSERTING BY NAMING A COLUMN HERE, stated plainly so the affordance is
+ * not used casually. A column rendered this way CANNOT BE SET TO NULL BY THAT STATEMENT.
+ * Naming one is therefore a claim that "no bound value" means "no change" for it and never
+ * "clear it" - which is true of a many-to-one foreign key whose association may legitimately
+ * be unmaterialised, and false of an ordinary nullable attribute a caller is entitled to
+ * blank. Every use of the parameter must record, at its own site, which behaviour it makes
+ * unreachable and why nothing in scope needs it.
+ *
+ * THE DEFAULT IS EMPTY, SO EVERY EXISTING CALL IS UNCHANGED. The two audit-actor columns
+ * remain preserved unconditionally, for every repository, whether or not a second argument is
+ * supplied; the parameter only ever ADDS to that floor.
+ *
  * @param columnName the column being assigned.
+ * @param additionalPreservedColumns further columns this statement must resolve against the
+ *   stored value rather than binding a bare placeholder. Supplied by the one adapter whose
+ *   entity can legitimately fail to report a column's value; empty for every other caller.
  * @returns the assignment fragment, with its single placeholder.
  */
-export function sqlUpdateAssignment(columnName: string): string {
-  if (AUDIT_ACTOR_COLUMNS.includes(columnName)) {
-    return `${columnName} = COALESCE(?, ${columnName})`;
+export function sqlUpdateAssignment(
+  columnName: string,
+  additionalPreservedColumns: readonly string[] = [],
+): string {
+  if (AUDIT_ACTOR_COLUMNS.includes(columnName) || additionalPreservedColumns.includes(columnName)) {
+    return sqlPreservingUpdateAssignment(columnName);
   }
 
   return `${columnName} = ?`;
+}
+
+/**
+ * Render one `SET` assignment that resolves a bound null against the value the row already holds.
+ *
+ * The same `COALESCE(?, name)` fragment {@link sqlUpdateAssignment} emits for the two audit account
+ * columns, published on its own so a repository can apply it to a column of ITS choosing without
+ * either restating the literal or widening the shared helper's rule for every table at once.
+ *
+ * WHY A SECOND ENTRY POINT RATHER THAN A SECOND COLUMN IN {@link AUDIT_ACTOR_COLUMNS}. That list
+ * is consulted by NAME for every UPDATE statement in the subtree, so adding a column to it changes
+ * every table that happens to carry a column of that name. The audit columns can be treated that way
+ * because their rule is genuinely universal - `preUpdate` behaves identically wherever they appear. A
+ * MANDATORY FOREIGN KEY is not universal: it is one statement's own invariant, and the statement that
+ * owns it is the only place that may declare it.
+ *
+ * THE ONE CONSUMER, AND THE DEFECT THAT ADDED IT. `MysqlSkuRepository`'s update renders
+ * `SwSku.productID` through this helper. A CRITICAL runtime finding had `processProduct_updateSkus`
+ * bind that column from a product association its fetch shape never materializes, so an update meant
+ * to change two price columns ERASED the parent key of every row it touched - four of five SKUs on the
+ * measured product - leaving them unreachable by identity and dropping them out of the product feed.
+ * The caller that caused it now names the parent explicitly, and this fragment is the floor beneath
+ * that fix: a bound null can no longer erase a stored parent key, whatever a future caller omits.
+ *
+ * MySQL evaluates the self-reference against the value the row held before the statement, exactly as
+ * it does for the audit columns, so no extra round trip and no read-modify-write race is introduced.
+ *
+ * @param columnName the column being assigned.
+ * @returns the assignment fragment, with its single placeholder.
+ */
+export function sqlPreservingUpdateAssignment(columnName: string): string {
+  return `${columnName} = COALESCE(?, ${columnName})`;
 }
 
 /**

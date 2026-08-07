@@ -850,9 +850,9 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
   it('STEP 1 — matches the base currency CASE-INSENSITIVELY, as CFML `eq` does', async () => {
     // CFML parity [model/entity/Sku.cfc:L385]:
     // `thisCurrency.getCurrencyCode() eq this.setting('skuCurrency')` is CFML `eq`, which is
-    // case-insensitive, so it goes through `cfEquals` rather than `===`.
+    // case-insensitive, so it goes through `cfEquals` rather than ``.
     //
-    // `converted === false` is the discriminator: had Step 1 been skipped, Step 3 would have
+    // `converted  false` is the discriminator: had Step 1 been skipped, Step 3 would have
     // filled the entry instead and marked it converted.
     const sku = makeSkuFixture({
       skuCurrency: SETTING_SKU_CURRENCY,
@@ -2337,7 +2337,7 @@ describe('Sku.getDefaultFlag [model/entity/Sku.cfc:L442-L447]', () => {
   it('answers true when the product default sku matches, false when it does not', () => {
     // CFML parity [model/entity/Sku.cfc:L443, L446]: `true` on a match and an explicit `false`
     // otherwise. The comparison is CFML `==` on strings, which is CASE-INSENSITIVE, so it goes
-    // through `cfEquals` rather than `===`.
+    // through `cfEquals` rather than ``.
     const theDefault = makeSkuFixture({ idPrefix: 'thedefault' });
     const product = makeProductFixture({
       productID: 'defaultflag-product',

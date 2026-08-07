@@ -548,12 +548,50 @@ export interface SkuBatchWriteCollaborator {
    * @throws Whatever the write raises, after the transaction has been rolled back - so a raise
    * from here means NOTHING was persisted.
    */
-  saveMutatedSkus(skus: readonly Sku[]): Promise<void>;
+  saveMutatedSkus(productID: string, skus: readonly Sku[]): Promise<void>;
 }
 
 /**
- * The narrow option-loading collaborator this service requires. See the JUDGMENT CALL on {@link
- * SkuCreationCollaborator} for why this is a local structural interface rather than a port.
+ * What a batch-bound refusal has to say about ITSELF, so one guard can serve more than one caller
+ * without either caller's message going vague.
+ *
+ * WHY THIS EXISTS. `assertWithinUpdateBound` was written for a single caller and hardcoded that
+ * caller's name, its verb and the legacy locator it was bounding, straight into the message it throws.
+ * A SECOND bulk-write path now runs through the same guard - see
+ * {@link ProductService.processProduct_updateDefaultImageFileNames} - and a shared guard that names
+ * the wrong method in its refusal is worse than two guards: the operator reading the message goes
+ * looking in the wrong place. So the three parts of the message that are the CALLER'S are supplied by
+ * the caller, and everything else - the count, the bound, the identifier, the "nothing was mutated or
+ * written" assurance - stays the guard's.
+ *
+ * IT IS NOT EXPORTED AND IT IS NOT A PORT. It carries no behaviour, describes no collaborator and
+ * crosses no layer; it exists so that a `throw` composed in one place can still read as though it were
+ * written at the site that raised it. `ProductService`'s published surface is unchanged by it.
+ */
+interface SkuBatchBoundRefusal {
+  /**
+   * The method that would have done the work, named exactly as the surface publishes it, so the
+   * refusal points at the method a caller actually invoked rather than at the guard.
+   */
+  readonly operation: string;
+
+  /**
+   * What that method would have done to the SKUs, in the infinitive - `reprice`, `rename and rewrite`.
+   * It completes the clause "would ... N SKUs", so a verb that does not fit that frame reads wrongly.
+   */
+  readonly verb: string;
+
+  /**
+   * The one sentence stating WHICH legacy statement is being bounded and WHY the bound exists at all,
+   * cited to its locator. It ends with a full stop; the guard supplies the sentence that follows it.
+   */
+  readonly legacyGround: string;
+}
+
+/**
+ * The narrow option-loading collaborator this service requires. See the JUDGMENT
+ * CALL on {@link SkuCreationCollaborator} for why this is a local structural
+ * interface rather than a port.
  *
  * Of the two sanctioned resolutions, the first - consume a member an existing port already
  * declares - was checked and does not fit: `src/domain/ports/optionRepository.ts` is closed at
@@ -632,6 +670,28 @@ const FILE_UPLOAD_VALIDATION_RB_KEY = 'validate.fileUpload';
  * rather than hoisted, because it is the framework's own literal and appears exactly once.
  */
 const UPLOAD_DEFAULT_IMAGE_PROCESS_CONTEXT = 'uploadDefaultImage';
+
+/**
+ * The process context `processProduct_addProductReview` is dispatched under.
+ *
+ * The sibling of {@link UPLOAD_DEFAULT_IMAGE_PROCESS_CONTEXT}, spelled the way this method's own
+ * suffix spells it, and a DATA CONTRACT with the legacy admin for the same reason: it is the value a
+ * caller reads back out of `product.getErrors().processObjects` after
+ * `HibachiEntity.getErrors()` [org/Hibachi/HibachiEntity.cfc:L133-L146] has injected it.
+ */
+const ADD_PRODUCT_REVIEW_PROCESS_CONTEXT = 'addProductReview';
+
+/**
+ * The resource-bundle key recording that a process this port does not implement was reached.
+ *
+ * IT IS A NEW KEY AND NOT A LEGACY ONE, AND SAYING SO PLAINLY MATTERS. Every other `rbKey` in
+ * this subtree is carried over verbatim so the legacy admin can still resolve it; this one has no
+ * legacy counterpart, because the legacy IMPLEMENTED the process it names and had nothing to report.
+ * It is spelled in the framework's own `<namespace>.<detail>` convention so a resolver treats it like
+ * any other missing key rather than choking on it, and it is never resolved here - JavaRB is not
+ * ported and no i18n runtime exists (AAP 0.5.3).
+ */
+const UNIMPLEMENTED_PROCESS_RB_KEY = 'validate.processNotImplemented';
 
 /**
  * The permitted upload extensions for a product's default image, verbatim from
@@ -872,10 +932,29 @@ const IMAGE_FILE_REFUSAL_OUTCOME = 'No file was touched.';
  * It runs before the path is composed, so no traversing string is ever built, let alone handed
  * across the port boundary.
  *
+ * EXPORTED, SO THE TRANSPORT TIER CAN APPLY THE SAME RULE RATHER THAN A COPY OF IT.
+ * `deleteDefaultImageBody` in `src/handlers/catalogQueryHandler.ts` publishes `imageFile`, and
+ * runtime acceptance testing (finding F-04) found an EMPTY one answering HTTP 500 - because this
+ * function's raise is a plain `Error` and the handler's error mapper reduces an unrecognized throw to
+ * a server fault. An empty or traversing file name is a CALLER mistake and owes a 400 naming the
+ * member. That schema now uses THIS FUNCTION as its predicate, so the wire grammar and the service's
+ * grammar are one rule by construction - the same delegation `cfTruthy` and `toDecimalString` receive
+ * for the two flags and the price - and a copied denylist cannot drift from this one.
+ *
+ * ⚠ THE RAISE STAYS, AND IS DEFENCE IN DEPTH RATHER THAN THE ONLY GUARD. This is the documented
+ * path-traversal boundary and it must keep refusing for every in-process caller, including
+ * `processProduct_uploadDefaultImage`, whose legacy `try` deliberately converts the refusal into a
+ * recorded validation error instead. Exporting the function moves nothing and weakens nothing.
+ *
+ * NO B4 LEDGER SLOT IS CONSUMED. The visibility-widening budget covers LEGACY methods promoted from
+ * `private`; this helper has no legacy antecedent at all - the block above says outright that "no
+ * legacy parity is owed for this member" - so it is port-authored code, like the net-new
+ * {@link MissingAssociationError}.
+ *
  * @param imageFile the caller-supplied name, already known to be present and defined.
  * @throws Error when the value is not a single, traversal-free file name.
  */
-function assertPlainImageFileName(imageFile: string): void {
+export function assertPlainImageFileName(imageFile: string): void {
   const outcome = IMAGE_FILE_REFUSAL_OUTCOME;
 
   if (imageFile.length === 0 || imageFile.trim().length === 0) {
@@ -1150,9 +1229,39 @@ function putOwnStructKey<TValue>(target: Record<string, TValue>, key: string, va
  */
 function collectProductSaveContextErrors(
   product: Product,
+  suppliedPrice: Money | undefined,
 ): { readonly propertyIdentifier: string; readonly errorMessage: string }[] {
   const errors: { readonly propertyIdentifier: string; readonly errorMessage: string }[] = [];
-  if (product.getPrice() === undefined) {
+
+  // `"price": [{"contexts":"save","required":true,"dataType":"numeric"}]`. The
+  // entity answers `Money | undefined`, and a `Money` is numeric by construction -
+  // it cannot hold NaN, an infinity or a non-numeral - so the `dataType` half of
+  // the rule is discharged by the type and only presence remains to be tested.
+  //
+  // THE PAYLOAD IS PROBED FIRST AND THE ENTITY SECOND, WHICH IS `getPrice()`'s OWN ORDER, AND
+  // OMITTING THE FIRST PROBE MADE THIS RULE UNSATISFIABLE. `price` is a DECLARED NON-PERSISTENT
+  // PROPERTY [model/entity/Product.cfc:L118]; `populate` writes it like any other simple column
+  // [org/Hibachi/HibachiTransient.cfc:L192-L204]; and `getPrice()` tests
+  // `structKeyExists(variables, "price")` BEFORE it reaches the default SKU
+  // [model/entity/Product.cfc:L561-L568]. So in the legacy, a payload that carried `price` satisfied
+  // this rule ON ITS OWN, whether or not the product had a default SKU to borrow from.
+  //
+  // This revision reads the entity ALONE, and runtime acceptance testing (finding F-07) measured what
+  // that cost: for a product with no default SKU, `saveProduct` refused with
+  // `{"path":"price","message":"price is required"}` and there was no request that could satisfy it,
+  // because the transport tier published no `price` member to supply. The operation was published,
+  // routed and unsatisfiable. `src/handlers/catalogQueryHandler.ts` now publishes the member and the
+  // rule now reads it here.
+  //
+  // WHY A PARAMETER RATHER THAN A WRITE ONTO THE ENTITY. `src/domain/entities/product.ts`
+  // deliberately publishes NO `setPrice` - the slot is a constructor-time hydration member and its own
+  // unit suite asserts the absence, because the legacy accessor set delegates every OTHER price
+  // reader to the default SKU and a setter would invite writing through them. `populateProduct` writes
+  // the eight SCALAR COLUMNS and this is not one. Threading the value to the ONE rule that reads it
+  // reproduces the legacy probe exactly, adds no entity member and leaves the payload's own
+  // `price` free to travel on to `createSkus` as it always did
+  // [model/service/SkuService.cfc:L93] - see the `skuCreation.createSkus` call in `saveProduct`.
+  if (suppliedPrice === undefined && product.getPrice() === undefined) {
     errors.push({ propertyIdentifier: 'price', errorMessage: 'price is required' });
   }
   if (!hasCfLength(product.getProductName())) {
@@ -1206,27 +1315,143 @@ function collectProductTypeSaveContextErrors(
 }
 
 /**
- * Narrows an association or lookup result that the legacy body DEREFERENCES without A NULL CHECK,
- * failing in the same place and for the same reason when it is absent.
+ * One unresolvable member of a caller's request, named as a member and never as a value.
+ *
+ * Mirrors `OrderViewDocumentFieldIssue` in `src/handlers/bootstrap.ts` deliberately, member for
+ * member, so that a caller reading a refusal from THIS capability meets the same two-part shape it
+ * meets everywhere else in this subtree. It is declared here rather than imported because
+ * `MappedFieldIssue` lives in `src/handlers/errorMapper.ts` and a service must not import from the
+ * handlers tier.
+ */
+export interface UnresolvedReferenceFieldIssue {
+  /** Dotted path to the offending member of the request payload. SERVER-AUTHORED, always. */
+  readonly path: string;
+  /** What the member had to satisfy and did not. NEVER the value it held. */
+  readonly message: string;
+}
+
+/**
+ * The single constraint sentence published for an unresolvable reference.
+ *
+ * Fixed and server-authored. It states the CONSTRAINT - a reference must name a row that exists -
+ * and states nothing about which rows do or do not exist beyond the answer the caller already has
+ * by asking. No identifier, no row count, no statement and no table name.
+ */
+const UNRESOLVED_REFERENCE_MESSAGE = 'must name an existing record';
+
+/**
+ * A member of the CALLER'S OWN PAYLOAD names a row that does not exist.
+ *
+ * WHY THIS TYPE EXISTS, AND WHAT IT COST NOT TO HAVE IT. `requireAssociation` threw a bare
+ * `Error`, so `src/handlers/errorMapper.ts` - whose recognized set is deliberately CLOSED - could only
+ * reach its `unrecognized` arm and answer HTTP 500 with no `fields`. Runtime acceptance testing
+ * (finding F-12) sent well-formed payloads naming a nonexistent `optionGroup` and a nonexistent
+ * `option` and received exactly that: the caller was told THIS SERVICE had failed when the CALLER had,
+ * and an operator's 5xx alarm counted a typo as an outage.
+ *
+ * THE MECHANISM IS THE ONE ALREADY SANCTIONED FOR THIS EXACT PROBLEM, not a new one.
+ * `OrderViewDocumentDataError` in `src/handlers/bootstrap.ts` is the precedent: the throwing module
+ * EXPORTS the class, the primary adapter narrows it with `instanceof` and answers
+ * `invalidRequestResponse('unusableRequestInput', ..., fields)`, and `errorMapper` is never asked to
+ * recognize anything new. No error module is created, no file is added to `src/lib/` or
+ * `src/handlers/`, and no back-edge from a service to a handler is introduced - all four of which
+ * `src/handlers/errorMapper.ts` names explicitly as things not to do.
+ *
+ * THE DISCLOSURE ARGUMENT, SETTLED THE SAME WAY IT WAS SETTLED THERE. Nothing published names an
+ * identifier: the refusal is a MEMBER PATH plus {@link UNRESOLVED_REFERENCE_MESSAGE}. The route is
+ * authenticated and requires an ADMINISTRATIVE principal before any database work happens, and the
+ * catalogue reads this same capability publishes already answer existence questions to that same
+ * principal - so the marginal disclosure of "the member you sent did not resolve" is nil, while the
+ * cost of mislabelling it is a caller who cannot tell a typo from an outage.
+ *
+ * ONLY A CLIENT-SUPPLIED REFERENCE RAISES THIS. `requireAssociation` throws it when - and only
+ * when - a `field` is named, which the four call sites decide individually. A dereference of SERVER
+ * STATE - an existing SKU's missing option group, a product's missing default SKU - is NOT a request
+ * the caller can fix, so those sites name no field, keep throwing a plain `Error`, and keep landing on
+ * the generic 500 arm where a service-shaped failure belongs. Mapping those to 400 would tell a caller
+ * to correct a payload that is already correct.
+ *
+ * The message on the `Error` itself is FIXED and names no member, because the handler owns the
+ * sentence a caller sees and this text only ever reaches a log.
+ */
+export class MissingAssociationError extends Error {
+  /** The member paths that could not be resolved, and the constraint each failed. */
+  public readonly fields: readonly UnresolvedReferenceFieldIssue[];
+
+  public constructor(fields: readonly UnresolvedReferenceFieldIssue[]) {
+    super(
+      'The request names catalogue data this operation cannot resolve, so nothing was mutated ' +
+        'and nothing was written.',
+    );
+    this.name = 'MissingAssociationError';
+    this.fields = fields;
+  }
+}
+
+/**
+ * Narrows an association or lookup result that the legacy body DEREFERENCES WITHOUT
+ * A NULL CHECK, failing in the same place and for the same reason when it is absent.
+ *
+ * JUDGMENT CALL: several legacy statements chain straight through a nullable result -
+ * `getOptionGroup(id).getOptions()` [model/service/ProductService.cfc:L115],
+ * `getDefaultSku().getPrice()` [model/service/ProductService.cfc:L133],
+ * `getOptionGroup().getOptionGroupID()` [model/service/ProductService.cfc:L144].
+ * Under CFML each of those raises at the dereference when the left side is null. The
+ * ported accessors answer `T | undefined`, and there are exactly three ways to
+ * handle that: assert with `!`, which is banned in `src/**` and would hide the case
+ * entirely; substitute a default, which for `getPrice()` would mean selling product
+ * at whatever the default was; or FAIL AT THE SAME POINT THE LEGACY FAILS. This
+ * helper is the third, applied uniformly so that every such site reads identically
+ * and carries its own locator in the message.
+ *
+ * It is not new behaviour and it is not a guard the legacy lacked: it is the legacy's
+ * own failure, given a message. Every call site is a place the CFML would have thrown.
+ *
+ * IT NOW DISTINGUISHES A CALLER'S MISTAKE FROM THE SERVICE'S OWN, AND THE `field` PARAMETER IS
+ * THE WHOLE OF THAT DISTINCTION. Every call site still fails at the same point for the same reason;
+ * what a site now also declares is WHOSE input made the value absent. A site that resolves a
+ * reference the CALLER SENT names the payload member it came from, and this raises
+ * {@link MissingAssociationError} so the primary adapter can answer a 400 naming that member. A site
+ * that dereferences SERVER STATE names nothing and keeps raising a plain `Error`, which is what keeps
+ * it on the generic 500 arm where it belongs. See {@link MissingAssociationError} for what finding
+ * F-12 measured when neither was distinguished.
+ *
+ * THE THROWN MESSAGE NO LONGER CARRIES THE CALLER'S VALUE, and that is a security correction
+ * rather than a tidy-up. `description` was interpolated with the submitted identifier - `Option group
+ * 'og-nonexistent'` - and a thrown message is read by `src/lib/logger.ts` and, on one arm, published.
+ * `src/handlers/errorMapper.ts` states the invariant plainly: a value the CALLER chose is not
+ * admissible in a published path or message. So `description` is still interpolated for the
+ * FIELD-LESS server-state sites, whose descriptions are literals, and the client-supplied sites hand
+ * their identifier NOWHERE - the diagnosis a caller and an operator both get is the member name plus
+ * the correlation identifier, which is what every schema rejection in this subtree already gives them.
  *
  * @param value the possibly-absent association.
- * @param description what was being dereferenced, for the message.
+ * @param description what was being dereferenced, for the message. SERVER-AUTHORED: never
+ *   interpolate a submitted value into it.
  * @param locator the `model/**` line that dereferences it without checking.
- * @throws Error when `value` is absent.
+ * @param field the request-payload member this value was resolved FROM, when it came from the
+ *   caller. Omit it for server state. Server-authored - a literal at the call site, never composed.
+ * @throws MissingAssociationError when `value` is absent and `field` was named.
+ * @throws Error when `value` is absent and no `field` was named.
  */
 function requireAssociation<TValue>(
   value: TValue | undefined,
   description: string,
   locator: string,
+  field?: string,
 ): TValue {
-  if (value === undefined) {
-    throw new Error(
-      `${description} could not be resolved. The legacy body at ${locator} dereferences ` +
-        `it without a null check and fails at the same point when it is absent.`,
-    );
+  if (value !== undefined) {
+    return value;
   }
 
-  return value;
+  if (field !== undefined) {
+    throw new MissingAssociationError([{ path: field, message: UNRESOLVED_REFERENCE_MESSAGE }]);
+  }
+
+  throw new Error(
+    `${description} could not be resolved. The legacy body at ${locator} dereferences ` +
+      `it without a null check and fails at the same point when it is absent.`,
+  );
 }
 
 /**
@@ -1424,8 +1649,9 @@ export class ProductService {
     const skus = product.getSkus();
     const optionGroup = requireAssociation(
       await this.optionLoading.getOptionGroup(input.optionGroup),
-      `Option group '${input.optionGroup}'`,
+      'Option group named by the request',
       'model/service/ProductService.cfc:L115',
+      'optionGroup',
     );
 
     const options = optionGroup.getOptions();
@@ -1469,10 +1695,14 @@ export class ProductService {
    */
   async processProduct_addOption(product: Product, input: ProductAddOptionInput): Promise<Product> {
     // L130, the same framework generic loader as L115.
+    // THE FOURTH ARGUMENT NAMES THE PAYLOAD MEMBER - see the sibling site in
+    // `processProduct_addOptionGroup` for the full reasoning. Client-supplied, so a miss is the
+    // caller's to fix.
     const newOption = requireAssociation(
       await this.optionLoading.getOption(input.option),
-      `Option '${input.option}'`,
+      'Option named by the request',
       'model/service/ProductService.cfc:L130',
+      'option',
     );
     const defaultSku = requireAssociation(
       product.getDefaultSku(),
@@ -1497,7 +1727,7 @@ export class ProductService {
     // per inner iteration.
     const newOptionGroup = requireAssociation(
       newOption.getOptionGroup(),
-      `Option group of option '${input.option}'`,
+      'Option group of the option named by the request',
       'model/service/ProductService.cfc:L144',
     );
 
@@ -1569,6 +1799,13 @@ export class ProductService {
     // The method is `async` for signature parity with its three siblings and because the
     // dispatcher awaits every process method; its body reaches no collaborator.
     await Promise.resolve();
+
+    // THE POSITIVE SIGNAL. Written on the SAME two channels
+    // `processProduct_uploadDefaultImage` writes, in the same order, so the two methods report an
+    // unperformed process identically. `'processObjects'` is the framework's own error NAME and the
+    // context is the value it injects under it - see the constants for why both are data contracts.
+    product.addError('newProductReview', UNIMPLEMENTED_PROCESS_RB_KEY);
+    product.addError('processObjects', ADD_PRODUCT_REVIEW_PROCESS_CONTEXT);
 
     return product;
   }
@@ -1661,15 +1898,175 @@ export class ProductService {
    *
    * It still must not THROW, and the constraint is now load-bearing rather than incidental.
    *
-   * @param product The product whose SKUs are renamed in place.
-   * @returns The same product instance that was passed in, matching
-   * [model/service/ProductService.cfc:L213].
+   * THIS BODY WAS ONCE A DOCUMENTED NO-OP, AND THE REASONING IS QUOTED RATHER THAN
+   * DELETED. It read: "The specification asserts that `generateImageFileName()` is a live
+   * public entity method with an in-scope caller. Against the SHIPPED ENTITY that is false:
+   * `src/domain/entities/sku.ts` publishes NEITHER `generateImageFileName()` NOR
+   * `setImageFile()` ... generating the name requires `productImageOptionCodeDelimiter` and
+   * `productImageDefaultExtension`, and both are outside the closed seven-key `SettingKey`
+   * union. THE SOURCE WINS. The entity set is closed at eighteen files and this service adds
+   * no member to any of them, so there is nothing here to call and nothing to assign." It
+   * closed with: "Recording the gap is the only honest option left."
+   *
+   * ONE CORRECTION INSIDE THAT QUOTE. The `SettingKey` union holds FOUR keys -
+   * `globalURLKeyProduct` [model/service/SettingService.cfc:L178], `globalURLKeyProductType`
+   * [model/service/SettingService.cfc:L179], `skuCurrency` [model/service/SettingService.cfc:L221]
+   * and `skuEligibleCurrencies` [model/service/SettingService.cfc:L222] - while
+   * `productImageDefaultExtension` [model/service/SettingService.cfc:L191],
+   * `productImageOptionCodeDelimiter` [model/service/SettingService.cfc:L192] and
+   * `productTitleString` [model/service/SettingService.cfc:L193] are resolved once in
+   * `src/handlers/bootstrap.ts` and handed inward as plain strings. The foot of
+   * `src/domain/ports/settingsProvider.ts` carries the authoritative record of that narrowing.
+   *
+   * THAT DOES NOT MOVE THE CONCLUSION, because what the quote got wrong was its PREMISE and not its
+   * count: the settings are resolvable, once, by the composition root, whether they sit on the port
+   * or beside it. The composition belongs to the image seam because that is where image-file naming
+   * is CONSUMED, not because a value was unreachable.
+   *
+   * Every observation in that was accurate. The conclusion was not the only option left, and
+   * it had a cost the note did not weigh: a method named
+   * `processProduct_updateDefaultImageFileNames`, awaited from four dispatch sites, updated no
+   * file name. The two halves of [model/service/ProductService.cfc:L210] were treated as one indivisible problem when they are
+   * two separable ones:
+   *
+   *   * `sku.setImageFile(...)` is the generated setter for a persisted column,
+   *     `property name="imageFile" ormtype="string" length="50"`
+   *     [model/entity/Sku.cfc:L58]. Publishing it needs no setting and no new signature - it
+   *     is an accessor the entity always owned, withheld only because its one caller was
+   *     unreachable. It is now published, cited to that caller.
+   *   * `sku.generateImageFileName()` does not live on the entity, though not for the reason
+   *     quoted: it moves to `ImageStore.generateSkuImageFileName(descriptor)`, the seam that
+   *     already owns the image subsystem, which is where the two settings are CONSUMED. The
+   *     port specifies the composition in full so no implementation can invent a naming
+   *     convention.
+   *
+   * So this method now does what [model/service/ProductService.cfc:L209-L211] does: it walks every SKU on the product, composes
+   * that SKU's name, and assigns it. NO ENTITY MEMBER WAS ADDED TO SATISFY THIS beyond the
+   * withheld setter, the entity set is still closed at eighteen files, and the `SettingKey`
+   * union is untouched.
+   *
+   * THE IMAGE-GROUP FILTER IS APPLIED HERE, NOT AT THE PORT. [model/service/ProductService.cfc:L134]
+   * tests `option.getOptionGroup().getImageGroupFlag()`, which reads an ASSOCIATION. Only a
+   * caller holding the entity graph can evaluate it, so the traversal and the test stay on
+   * this side and the port receives the codes that survived. An option whose group is absent
+   * contributes nothing: the legacy `getOptionGroup()` returning null would raise on the
+   * following method call, and a SKU whose options were loaded without their groups is a fetch
+   * shape this service does not control, so it is skipped rather than turned into a raise.
+   *
+   * THE RENAMING HALF STILL CANNOT THROW, AND THAT IS STILL LOAD-BEARING. Four methods on this
+   * class dispatch to this one - `processProduct_addOptionGroup` [model/service/ProductService.cfc:L123], `processProduct_addOption`
+   * [model/service/ProductService.cfc:L152], the out-of-scope `processProduct_addSubscriptionTerm` stub [model/service/ProductService.cfc:L193] and the new-product path
+   * of `saveProduct` [model/service/ProductService.cfc:L282] - so a raise from the traversal would take all four down. Nothing in the traversal can raise: absent
+   * groups are skipped, the port composes from values that admit `undefined`, and no assertion, cast
+   * or lookup failure is possible. What CAN now raise is the write below and the bound in front of it,
+   * and both are deliberate; see the next paragraph for why, and note that the bound is checked before
+   * the first assignment so a refusal leaves the product exactly as it was found.
+   *
+   * IT NOW PERSISTS, AND THE NOTE THAT SAID IT MUST NOT WAS FACTUALLY WRONG. The removed
+   * paragraph read: "⚠ IT ASSIGNS AND DOES NOT PERSIST, which is the legacy's own behaviour and not an
+   * omission. [model/service/ProductService.cfc:L208-L214] mutates managed entities and returns the product; Hibernate flushed them at
+   * request end, together with whatever the DISPATCHING process method went on to save. Every one of
+   * the four dispatch sites is inside a method that performs its own write, so the names travel with
+   * that write rather than needing one of their own. A `saveSku` per SKU here would issue writes the
+   * legacy did not."
+   *
+   * ITS FIRST TWO SENTENCES ARE RIGHT AND ITS THIRD IS FALSE, and the third is the one the conclusion
+   * rested on. Of the four dispatch sites, exactly ONE performs a write - `saveProduct` [model/service/ProductService.cfc:L282], whose
+   * save is dispatched AFTER this call and whose adapter cascades the new product's SKUs. The other
+   * three write NOTHING: [model/service/ProductService.cfc:L123] and [model/service/ProductService.cfc:L152] end at their dispatch and return, `HibachiService.process()`
+   * [org/Hibachi/HibachiService.cfc:L84-L129] validates, dispatches and returns without ever saving,
+   * and [org/Hibachi/HibachiService.cfc:L193]'s branch is a stub here. QA measured the consequence directly: routed
+   * `processProduct_addOptionGroup`, `processProduct_addOption` and
+   * `processProduct_updateDefaultImageFileNames` requests each answered HTTP 200 with a save-shaped
+   *
+   * body and issued ZERO DML statements. `processProduct_addOptionGroup`'s option-link mutation was
+   * unflushable by ANY code path in the port, so the operation could not be carried out at all.
+   *
+   * SO THE FLUSH IS WRITTEN DOWN, IN ONE PLACE, AND THIS IS THAT PLACE. It is not a new capability: the
+   * legacy's Hibernate session flushed every entity the request had dirtied - the SKUs renamed at
+   * [org/Hibachi/HibachiService.cfc:L209-L211] AND whatever the dispatching method changed before reaching here - as ONE unit inside
+   * the ambient `cftransaction`. There is no session here, so the flush has to be a statement. This
+   * method is where it belongs because it is the LAST STATEMENT OF ALL FOUR dispatchers: one flush here
+   * covers the option links [org/Hibachi/HibachiService.cfc:L119] appended, the SKUs `createSkus` attached at [org/Hibachi/HibachiService.cfc:L150], and the names
+   * assigned below, in ONE transaction, and it cannot be double-issued by a caller that also flushed.
+   *
+   * WHY THE WHOLE COLLECTION IS WRITTEN RATHER THAN A DIRTY SUBSET, which is the one respect in
+   * which this is BROADER than Hibernate's flush. This method cannot see what its caller changed - it
+   * receives a product, not a change log - and the mutation that most needs flushing is not its own:
+   * `processProduct_addOptionGroup` changes a SKU's OPTIONS and may leave its composed image file name
+   * identical, so a subset chosen by comparing image file names would skip exactly the SKU whose link
+   * rows have to be rewritten. Writing the set the caller handed over is therefore the only choice that
+   * covers a mutation this method is not told about. The cost is stated rather than hidden: a SKU whose
+   * columns are unchanged is still rewritten with its own current values, so its `modifiedDateTime`
+   * advances where Hibernate's dirty check would have left the row alone. The END STATE is identical
+   *
+   * and the write is idempotent by key - re-running reaches the same rows with the same values - which
+   * is what keeps this operation resendable. Contrast `processProduct_updateSkus`, which CAN see its
+   * own write set, collects it, and writes only that.
+   *
+   * AAP 0.6.5's THREE OBLIGATIONS, DISCHARGED HERE AS THEY ARE ON THE REPRICING PATH. BATCH LIMIT:
+   * the collection size is checked against {@link ProductService.maximumSkuUpdateBatchSize} BEFORE the
+   * first assignment, through the shared guard, so an over-large product is refused whole and
+   * untouched. IDEMPOTENCY: the name is a pure function of the SKU's own options and its product's
+   * code, and the link rewrite is a delete-then-insert of the collection in hand, so a retry reaches
+   * the same end state. COMPENSATION: there is nothing to compensate, because
+   * {@link SkuBatchWriteCollaborator} commits the whole set or none of it - "all written" and
+   * "unchanged" are the only reachable outcomes, the same two the legacy flush had.
+   *
+   * A TRANSIENT PRODUCT IS DELIBERATELY NOT FLUSHED HERE, AND THAT IS WHAT KEEPS [org/Hibachi/HibachiService.cfc:L282] CORRECT.
+   * `saveProduct` dispatches this method from its NEW-PRODUCT branch, BEFORE
+   * `productRepository.saveProduct` has written the owning row - and `SwSku.productID` references
+   * `SwProduct`, so inserting the children first would either violate that reference or bind a
+   * product identifier that does not exist yet. The adapter already owns that sequence: it writes the
+   * product row, cascades the transient SKUs, then sets the deferred `defaultSkuID`, all in ONE
+   * transaction. So the flush is gated on `!product.isNew()`, which leaves the new-product path
+   * behaving exactly as it did - assign, return, let the cascade persist - and confines the new write
+   * to the three paths that had no write at all. The gate is `isNew()`, the entity's own published
+   *
+   * test, not a flag threaded down from the caller: a method that has to be TOLD whether to persist
+   * can be told wrongly by a fifth caller, and this one cannot.
+   *
+   * @param product - The product whose SKUs are renamed in place and, unless it is still transient,
+   *   persisted as one unit before this method answers.
+   * @returns The same product instance that was passed in, matching [org/Hibachi/HibachiService.cfc:L213]. The persisted instances are
+   *   deliberately NOT spliced in - see {@link SkuBatchWriteCollaborator.saveMutatedSkus} for why
+   *   answering new objects would change the identity of the caller's collection members.
+   * @throws Error when the product carries more SKUs than the configured batch bound allows, before
+   *   anything has been mutated or written; or whatever the write raises, after its transaction has
+   *   been rolled back, in which case NOTHING was persisted.
    */
   async processProduct_updateDefaultImageFileNames(product: Product): Promise<Product> {
-    // [model/service/ProductService.cfc:L209] `for(var sku in arguments.product.getSkus())` -
-    // every SKU, unconditionally. There is no options guard, no count floor and no early return; a
-    // product with no SKUs simply renames nothing.
-    for (const sku of product.getSkus()) {
+    // The live association handle, bound ONCE and used for the traversal, the bound and the write, so
+    // all three are demonstrably talking about the same collection. [org/Hibachi/HibachiService.cfc:L209] re-reads
+    // `arguments.product.getSkus()` per iteration of a `for..in`, which CFML evaluates once anyway.
+    const skus = product.getSkus();
+
+    // THE ONE QUESTION THAT DECIDES WHETHER THIS CALL WRITES, ASKED BEFORE ANYTHING IS TOUCHED.
+    // Taken up front rather than at the write below because the bound is conditional on it too: a
+    // transient product is not bounded here, since its SKUs are bounded by `createSkus` and persisted
+    // by the adapter's cascade rather than by this method. `isNew()` cannot change while this method
+    // runs - it reads the identifier, and nothing here assigns one.
+    const persists = !product.isNew();
+
+    if (persists) {
+      // The AAP 0.6.5 batch limit, checked BEFORE the first assignment so an over-large product is
+      // refused with its SKUs untouched rather than renamed-then-refused. The count is the WHOLE
+      // collection because the loop below mutates every member unconditionally - there is no flag and
+      // no per-SKU condition to narrow it, unlike the repricing path's write set.
+      this.assertWithinUpdateBound(product, skus.length, {
+        operation: 'processProduct_updateDefaultImageFileNames',
+        verb: 'rename and rewrite',
+        legacyGround:
+          '[model/service/ProductService.cfc:L208-L214] renamed every SKU of a product and left the ' +
+          "flush to a Hibernate session inside the request's ambient transaction, neither of which " +
+          'exists on Lambda, so the batch is bounded per AAP 0.6.5.',
+      });
+    }
+
+    // [org/Hibachi/HibachiService.cfc:L209] `for(var sku in arguments.product.getSkus())` - every SKU, unconditionally.
+    // There is no options guard, no count floor and no early return; a product with no SKUs
+    // simply renames nothing.
+    for (const sku of skus) {
       const imageGroupOptionCodes: (string | undefined)[] = [];
 
       // [model/service/ProductService.cfc:L133-L137] The option traversal, in the entity's own
@@ -1699,7 +2096,19 @@ export class ProductService {
         }),
       );
     }
-    return await Promise.resolve(product);
+
+    // THE FLUSH THE LEGACY SESSION PERFORMED, ISSUED AFTER THE TRAVERSAL SO A RAISE FROM EITHER SIDE
+    // LEAVES THE ROWS AS THEY WERE FOUND. Every SKU on the product is handed over rather than a
+    // computed subset: [model/service/ProductService.cfc:L209] renames EVERY one of them
+    // unconditionally, so the write set and the collection are the same set. An empty collection
+    // opens no transaction and issues no statement, matching a session that dirtied no entity, and a
+    // transient product writes nothing - both guards live in
+    // {@link ProductService.persistMutatedSkus}, so this line carries no capacity reasoning of its
+    // own and `persists` above governs only the batch bound.
+    await this.persistMutatedSkus(product, skus);
+
+    // [model/service/ProductService.cfc:L213]
+    return product;
   }
 
   /**
@@ -1742,10 +2151,19 @@ export class ProductService {
         ? skus.length
         : 0;
 
-    // The AAP 0.6.5 batch limit, applied before the first mutation so that an over-large product
-    // is refused whole - and now applied to the actual update set, so a call that would mutate
-    // nothing is never refused.
-    this.assertWithinUpdateBound(product, updateSetSize);
+    // The AAP 0.6.5 batch limit, applied BEFORE the first mutation so that an
+    // over-large product is refused whole - and now applied to THE ACTUAL UPDATE SET, so a call
+    // that would mutate nothing is never refused. Placed after the schema parse because the
+    // declarative rules are the legacy's own first gate and a malformed request should
+    // fail as a validation error rather than as a capacity refusal.
+    this.assertWithinUpdateBound(product, updateSetSize, {
+      operation: 'processProduct_updateSkus',
+      verb: 'reprice',
+      legacyGround:
+        '[model/service/ProductService.cfc:L218-L230] repriced every SKU of a product under an ' +
+        'ambient transaction and an hour-long request budget, neither of which exists on ' +
+        'Lambda, so the batch is bounded per AAP 0.6.5.',
+    });
 
     // The SKUs this call actually changed, which is what gets written. An untouched SKU is not
     // persisted, matching a Hibernate session that dirtied no entity.
@@ -1808,11 +2226,71 @@ export class ProductService {
     // The write, issued after the loop rather than inside it, so a raise from either branch above
     // reaches the caller having persisted nothing at all.
     //
-    // `for (const mutatedSku of mutatedSkus) { await this.skuRepository.saveSku(mutatedSku); }`
-    // under a note reading: "one unit of work per sku, not one for the collection.
-    await this.skuBatchWrite.saveMutatedSkus(mutatedSkus);
+    // ONE UNIT OF WORK FOR THE COLLECTION, NOT ONE PER SKU. Idempotency by key makes a retry
+    // safe; it does not make an unreachable write succeed. A permanent mid-batch failure - a
+    // constraint the sixth of ten SKUs violates every time - would otherwise leave one to five
+    // repriced and seven to ten not, and every retry would reproduce that identical split.
+    //
+    // The set commits through {@link SkuBatchWriteCollaborator}, which is ONE transaction:
+    // all of them or none. That RESTORES the source's two reachable outcomes rather than
+    // improving on them - [model/service/ProductService.cfc:L232] handed back managed entities
+    // whose Hibernate session flushed every dirtied SKU as one unit inside the request's
+    // `cftransaction`, and `HibachiService.process()` [org/Hibachi/HibachiService.cfc:L84-L129]
+    // saved nothing itself. AAP 0.6.5's three obligations are all still discharged: the bound
+    // ran before the first mutation, the write is still idempotent by key, and there is now
+    // nothing left to compensate.
+    //
+    // THE PARENT KEY TRAVELS WITH THE SET, AND ITS ABSENCE IS A DATA-LOSS HAZARD. Without it the
+    // write binds `SwSku.productID` from `sku.getProduct()?.getProductID()` - an association this
+    // fetch shape never materializes - so every repriced row has its parent key ERASED to SQL
+    // NULL. See {@link SkuBatchWriteCollaborator.saveMutatedSkus}. The key is read off the product
+    // this method was handed, which is by definition the parent of every SKU in its own
+    // collection.
+    await this.persistMutatedSkus(product, mutatedSkus);
 
     return product;
+  }
+
+  /**
+   * Persists a set of this product's SKUs, binding the product's own identifier as their parent key.
+   *
+   * THE ONE PLACE THIS SERVICE HANDS SKUs TO PERSISTENCE, AND THE ONE PLACE THE PARENT KEY IS
+   * RESOLVED. Four operations reach it - `processProduct_updateSkus`,
+   * `processProduct_addOptionGroup`, `processProduct_addOption` and
+   * `processProduct_updateDefaultImageFileNames` - and every one of them holds the product whose
+   * collection it just mutated. Centralising the key resolution is what makes "a SKU is never written
+   * without its parent" checkable in one place rather than at four call sites.
+   *
+   * A TRANSIENT PRODUCT WRITES NOTHING HERE, AND THAT IS HIBERNATE'S OWN ORDERING RATHER THAN A
+   * SKIPPED WRITE. `Product.productID` is legitimately the empty string before the row exists
+   * [model/entity/Product.cfc:L52 `unsavedvalue=""`], and a `SwSku.productID` naming nothing is the
+   * orphaning state itself, so a row whose parent key cannot be named must not be written at all.
+   *
+   * It does not need to be, either: `Product.skus` declares `cascade="all-delete-orphan"`
+   * [model/entity/Product.cfc:L73], so the aggregate write inserts a transient product's SKUs, in
+   * one transaction, after the parent row exists. `MysqlProductRepository.saveProduct` reproduces
+   * that cascade and `saveProduct` is the one path that reaches it, so nothing is lost by returning
+   * early: the caller either goes on to save the product - which writes them - or discards it, which
+   * persists nothing at all, exactly as discarding an unflushed Hibernate session did.
+   *
+   * ⚠ THIS IS NOT THE SILENT DISCARD THE FINDING WAS ABOUT, and the difference is worth stating
+   * because the two look alike from a distance. The finding was a PERSISTED product answering HTTP
+   * 200 while its already-durable rows kept their old values. Every routed operation loads its
+   * product by identifier before reaching this service, so `productID` is non-empty on every one of
+   * them and the early return is unreachable from the API. What reaches it is an in-memory caller
+   * assembling a product it has not saved yet.
+   *
+   * @param product - The product whose collection the caller mutated; its identifier is the parent key.
+   * @param skus - The SKUs to write. An empty set writes nothing and opens no transaction.
+   */
+  private async persistMutatedSkus(product: Product, skus: readonly Sku[]): Promise<void> {
+    const productID = product.getProductID();
+
+    if (productID.length === 0) {
+      return;
+    }
+
+    await this.skuBatchWrite.saveMutatedSkus(productID, skus);
   }
 
   /**
@@ -1823,15 +2301,17 @@ export class ProductService {
    * either flag holds, and ZERO when neither does.
    * @throws Error when the count exceeds the bound.
    */
-  private assertWithinUpdateBound(product: Product, skuCount: number): void {
+  private assertWithinUpdateBound(
+    product: Product,
+    skuCount: number,
+    refusal: SkuBatchBoundRefusal,
+  ): void {
     if (skuCount > this.maximumSkuUpdateBatchSize) {
       throw new Error(
-        `ProductService.processProduct_updateSkus: product '${product.getProductID()}' would ` +
-          `reprice ${String(skuCount)} SKUs, above the configured bound of ` +
+        `ProductService.${refusal.operation}: product '${product.getProductID()}' would ` +
+          `${refusal.verb} ${String(skuCount)} SKUs, above the configured bound of ` +
           `${String(this.maximumSkuUpdateBatchSize)}. ` +
-          '[model/service/ProductService.cfc:L218-L230] repriced every SKU of a product under an ' +
-          'ambient transaction and an hour-long request budget, neither of which exists on ' +
-          'Lambda, so the batch is bounded per AAP 0.6.5. Refused before anything was mutated or ' +
+          `${refusal.legacyGround} Refused before anything was mutated or ` +
           'written, so the product is unchanged.',
       );
     }
@@ -1921,9 +2401,19 @@ export class ProductService {
       product.setUrlTitle(generatedUrlTitle);
     }
 
-    // CFML parity [model/service/ProductService.cfc:L273]: validate, reproduced service-locally
-    // for the save context.
-    const errors = collectProductSaveContextErrors(product);
+    // CFML parity [model/service/ProductService.cfc:L273]: validate, reproduced
+    // service-locally for the save context. It reads THE ENTITY for all five rules,
+    // including `urlTitle`, because populate and generation have both already landed on
+    // it - which is the state `arguments.product.validate(context="save")` saw. See
+    // `collectProductSaveContextErrors` for the five rules, the locator correction and
+    // the two `unique` qualifiers that are deliberately not asserted in memory.
+    //
+    // THE PAYLOAD'S `price` IS HANDED IN, because `getPrice()` probes that slot BEFORE the default
+    // SKU [model/entity/Product.cfc:L561-L568] and `populate`
+    // [org/Hibachi/HibachiTransient.cfc:L169-L205] had already written it by the time the legacy
+    // validated. Without it the rule is unsatisfiable for a product with no default SKU; the full
+    // account is at `collectProductSaveContextErrors`.
+    const errors = collectProductSaveContextErrors(product, data.price);
     const hasErrors = errors.length > 0;
 
     // CFML parity [model/service/ProductService.cfc:L276]: both conditions, in order - the product

@@ -160,9 +160,21 @@ const CFML_SHAPED_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
  * Total characters in a CFML-shaped UUID: 32 hexadecimal digits plus three hyphens.
  */
 const CFML_SHAPED_UUID_LENGTH = 35;
-/**
- * [model/entity/PromotionCode.cfc:L54-L55] - the null-display key for both date bounds.
- */
+
+// Schema strings: recorded, but NOT recorded here.
+// The port reads and writes the EXISTING tables unchanged - no migration, no rename, no new column
+// (AAP 0.8.1) - and `SwPromotionCode` [model/entity/PromotionCode.cfc:L49],
+// `SwPromotionCodeAccount` [model/entity/PromotionCode.cfc:L65], `SwOrderPromotionCode`
+// [model/entity/PromotionCode.cfc:L68], the ORM name `SlatwallPromotionCode` and the inert
+// `hb_serviceName`/`hb_permission` strings
+// all carry that contract. None of them is held in a constant in this file, because a constant
+// declared here and asserted here changes nothing when a target module misspells a table - the
+// rename it is supposed to catch happens somewhere this suite never reads.
+// tests/traceability/legacyTestMap.ts block A30 derives the table and entity names from the frozen
+// `table=`/`entityname=` attributes of all 18 entities and both link tables from the frozen
+//
+// `linktable=` declarations, then holds the shipped `src/` text to them.
+/** [model/entity/PromotionCode.cfc:L54-L55] - the null-display key for both date bounds. */
 const FOREVER_RB_KEY = 'define.forever';
 /**
  * [model/entity/PromotionCode.cfc:L56-L57] - the null-display key for both ceilings.
@@ -1682,6 +1694,12 @@ describe('the accounts many-to-many reproduces addAccount ASYMMETRIC guard polar
       expect(Array.isArray(link.getPromotionCodes())).toBe(true);
     }
   });
+
+  // `accounts` is the OWNER side of the many-to-many across `SwPromotionCodeAccount`
+  // [model/entity/PromotionCode.cfc:L65]. That physical name is checked against the frozen
+  // declaration and the shipped source in tests/traceability/legacyTestMap.ts block A30, which also
+  // records it as one of exactly six link tables the port names in commentary but never queries -
+  // its far side, Account, is outside the entity budget.
 });
 
 describe('the orders many-to-many is pure inverse-side delegation, kept entirely opaque', () => {
@@ -1796,6 +1814,14 @@ describe('the orders many-to-many is pure inverse-side delegation, kept entirely
       expect(typeof link.getOrderID()).toBe('string');
     }
   });
+
+  // `inverse="true" lazy="extra"` across `SwOrderPromotionCode` [model/entity/PromotionCode.cfc:L68].
+  // `lazy="extra"` asked Hibernate to answer size and containment questions with a targeted query
+  // instead of hydrating the collection - a fetch STRATEGY with no equivalent in a driver-only stack.
+  // In the target the shape is chosen at the repository method that produced the row, which is why
+  // the collection arrives already materialized and why `hasOrder` is a synchronous scan. The
+  // physical table name is held to the frozen declaration in tests/traceability/legacyTestMap.ts
+  // block A30 rather than to a literal in this file.
 
   it('connects the delete-context schema to the member that consults it', () => {
     const subject = aPromotionCode({ promotionCodeID: 'pc-1', orders: [anOrderLink('order-1')] });
@@ -2370,6 +2396,15 @@ describe('the structural facts the row carries', () => {
     expect(subject.getPromotion()).toBe(promotion);
     expect(subject.getPromotionID()).toBeUndefined();
   });
+
+  // The table, ORM entity name, `hb_serviceName` and `hb_permission` strings
+  // [model/entity/PromotionCode.cfc:L49] are all schema-or-metadata continuity, and all four used to
+  // be asserted here against constants this file declared itself. The first two are now derived from
+  // the frozen attributes and checked against `src/` in tests/traceability/legacyTestMap.ts block
+  // A26. The other two have NO target expression at all: the bean name the legacy factory routed
+  // CRUD through is replaced by explicit wiring in the composition root, and the admin permission key
+  // is never consulted by this port - which block A12b proves by showing no module publishes a
+  // permission accessor.
 
   it('carries none of the component metadata warts into the ported class', () => {
     const subject = aPromotionCode();

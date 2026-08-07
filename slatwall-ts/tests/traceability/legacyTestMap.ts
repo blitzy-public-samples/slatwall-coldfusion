@@ -13,13 +13,97 @@
 
 // Nothing was deleted in either move and no coverage was thinned.
 //
-// JUDGMENT CALL: the module census keeps three categories - covered, exempt and pending - even
-// where the third holds no entries, so a module owed a suite has a category to be filed under.
+// Coverage runs BOTH ways against that plan. It EXCEEDS it in seven places, each owning
+// a dedicated suite that the plan either budgeted as exempt or never listed at all:
+// `lib/config.ts`, `lib/logger.ts`, `repositories/mysql/connection.ts`,
+// `sql/skusBySelectedOptions.sql.ts`, `handlers/bootstrap.ts`, `handlers/errorMapper.ts` and
+// `handlers/router.ts`. It now FALLS SHORT NOWHERE: the pending register is empty.
+//
+//     165 files  =  12 root artifacts + 89 source modules + 57 suites + 5 fixtures
+//                   + tests/setup.ts + this file
+//      89 source modules  =  57 mapped + 32 exempt          [AAP 0.6.6, 0.9.4]
+//      57 suites          =  51 unit (seven categories) + 6 integration   [AAP 0.3.1]
+//
+// The tree holds 174 files, and every one of the nine beyond the frozen enumeration is a
+// row in `recordedScopeAdditions` naming the AAP 0.2.1 / 0.4.4 trailing pattern that admits
+// it and the reason it exists. Eight of the nine are SUITES - 57 frozen plus 8 recorded is
+// the 65 on disk - and the ninth is the root `.gitignore`, a ROOT ARTIFACT carrying the ignore
+// rules the working tree needs, so the frozen source census of 89 modules stands untouched by
+// the drift. `A18`
+// recomputes the frozen figures from DISK MINUS those nine and requires them to equal the
+// numbers above, directory by directory and category by category. A tenth path fails by name;
+// a recorded path that disappears fails too. The frozen contract can therefore be read off
+// this file, and drift can only ever be recorded, never absorbed.
+//
+// AND THESE TWO SENTENCES ARE THEMSELVES ASSERTED, because they are exactly the kind that rots:
+// a prose total sits beside a computed one, so it can go stale on a green run while `A18` twenty
+// pages below asserts a file count against the register's nine rows. `A18`'s "states the drift it
+// itemises in words" case reads this paragraph off disk and requires the total, the addition
+// count and the suites-versus-root-artifact split to agree with what it derives, the same way
+// `A2` already holds the module-census sentence. A number here can no longer disagree with the
+// tree.
+//
+// THE REGISTER ARITHMETIC, RECONCILED STEP BY STEP, because a reviewer holding the plan will
+// otherwise read a discrepancy where there is an accounted-for difference:
+//
+//     frozen                                        57 mapped   32 exempt    0 pending
+//     seven frozen-EXEMPT modules earned suites     64 mapped   25 exempt    0 pending
+//       (config.ts, logger.ts, connection.ts, sql/skusBySelectedOptions.sql.ts,
+//        handlers/bootstrap.ts, handlers/errorMapper.ts, handlers/router.ts - every one a row
+//        in `frozenExemptPromotions`, each naming the recorded addition that superseded it)
+//     no recorded MODULE additions remain           64 mapped   25 exempt    0 pending
+//       (both former rows left the tree: the euro-pivot converter was re-homed into
+//        handlers/bootstrap.ts, and lib/jsonDocumentKeys.ts into handlers/errorMapper.ts -
+//        by way of lib/cfml/struct.ts, which held it only until a security review
+//        removed the path-returning form altogether)
+//
+// which reconciles as sixty-four covered, twenty-five exempt, zero pending, eighty-nine
+// modules - the plan's own eighty-nine, and what A2 measures off disk on every run.
+//
+// `src/handlers/router.ts` IS COVERED, and it reached that classification through both of the
+// register's other states in turn - which makes it the worked example of how the register is
+// meant to move. It was first recorded as PENDING, owing `tests/unit/handlers/router.test.ts`.
+// That was corrected to EXEMPT, on the ground that AAP 0.3.1 budgets five handler suites - one
+// per capability entrypoint - names no router suite, and treats the module as a shared internal
+// of the handler tier like `bootstrap.ts` and `errorMapper.ts`, whose dispatch all five
+// capability suites drive; recording a suite as OWED invented a plan requirement and then
+// reported the tree as failing it.
+//
+// The suite now EXISTS, and it pins dispatch decisions no capability suite observes: that the
+// table publishes five capabilities and no sixth, that a method mismatch is an ordinary miss
+// with no `Allow` header inviting a retry, that percent-encoded and dot-segment paths stay
+// unmatched rather than decoded, and - as a full five-by-five matrix - that no capability's URL
+// reaches another capability's action. So the exemption is superseded rather than overruled: its
+// text is preserved verbatim in `frozenExemptPromotions` and beside the exempt register, and a
+// five-suite BUDGET is not read as an argument for deleting a sixth suite that exists and passes.
+// The pending register is consequently EMPTY, which is the shape the frozen contract predicts.
+//
+// The composition root's own promotion is the worked example of how the register is meant to
+// move. `src/handlers/bootstrap.ts` sat in THIS FILE'S `pendingModules` - the plan itself
+// classified it among the thirty-two exemptions, under the five-suite handler budget - with
+// `tests/unit/handlers/bootstrap.test.ts` named as its planned path; that suite now exists,
+// so the entry was deleted, the module appears in `coveredModules`, and the frozen
+// classification it left behind is preserved as a `frozenExemptPromotions` row rather than
+// discarded. Authoring the suite WITHOUT making that move fails four assertions - two in A9,
+// because a pending module would then own a suite named after it and a planned path would
+// exist on disk, and two in A14, because the suite census would no longer balance.
+//
+// JUDGMENT CALL: the module census keeps THREE categories - covered, exempt and pending -
+// even though the third holds no entries. Folding a module that is merely OWED coverage
+// into "exempt" is precisely the false-parity failure AAP 0.9.4 forbids, so the distinction
+// has to exist BEFORE it is needed; and asserting that the third part is empty is a stronger
+// claim than having nowhere to put a debt. The register stays self-tightening: an assertion
+// requires every planned path to be ABSENT from disk, so a suite arriving for a pending
+// module fails this file until the module is promoted.
+//
+// What is NOT here: no assertion about any legacy runtime, no database, no network,
+// no environment read, no schema statement, and no claim about how long anything
+// takes. This module reads files and compares sets.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import type { Dirent } from 'node:fs';
 
@@ -45,7 +129,57 @@ requireAnchor(path.join(SUBTREE_ROOT, 'vitest.config.ts'), 'the runner configura
 requireAnchor(path.join(REPOSITORY_ROOT, 'version.txt'), 'the legacy release marker');
 requireAnchor(path.join(REPOSITORY_ROOT, 'model', 'entity'), 'the legacy entity directory');
 
-// Node built-ins only: no glob dependency is added, and the pinned package set is untouched.
+// --- Readers
+//
+// Node built-ins only: no glob dependency is added, and the pinned package set is
+// untouched. Every reader raises on absence.
+//
+// The pin COUNT is deliberately not written down here. The plan says fourteen and then
+// enumerates thirteen; the manifest ships those thirteen, every one an exact version with
+// no range. Recording either number as prose would be a claim this file cannot keep, so
+// the assertion further down reads the manifest and checks that each pin is EXACT instead
+// of counting them.
+//
+// EVERY READ IS MEMOIZED, AND A FAILING COVERAGE RUN IS WHY. QA finding F-6 caught
+// `npm run test:coverage` failing in two runs of six with `Test timed out in 5000ms` on the
+// first case of `A19` - the case that reads all sixty-six suites and scans each one. Nothing
+// was wrong with the assertion: the same work was simply being done over and over. `A19`
+// re-read and re-scanned every suite in EACH of its three cases, `A26`'s `shippedSource()`
+// re-read and re-scanned all eighty-nine `src` modules in EACH of its six, and
+// `declaredLinkTables()` re-read eighteen legacy components alongside them - so the ledger
+// was paying for the same bytes a dozen times while v8 coverage instrumentation multiplied
+// the per-character cost of the scanner below.
+//
+// THE WORKING TREE CANNOT CHANGE UNDER A RUN, so a read is a pure function of its path and
+// caching it changes no result - only how many times the same file is decoded. What the
+// cache deliberately does NOT do is remember a FAILURE: only a successful read is stored, so
+// `readSubtreeFile('src/no-such-file.ts')` raises on the first call and on every call after
+// it, which `A0` asserts directly. `listTypeScriptFiles` is left uncached on purpose - it
+// walks directories rather than decoding bytes, its results are already hoisted into
+// module-scope constants, and caching a directory listing would be the one place a stale
+// entry could hide a file that appeared mid-run.
+//
+// This is a runner-cost fix and states no requirement: no assertion reads a clock, which
+// `A19` bans outright, and no budget below is a claim about how fast anything must be.
+
+/** Successful subtree reads, keyed by repository-relative path. Never negative-cached. */
+const subtreeFileContents = new Map<string, string>();
+
+/** Successful legacy-tree reads, keyed by repository-relative path. Never negative-cached. */
+const repositoryFileContents = new Map<string, string>();
+
+/**
+ * The allowance given to the one hook that reads and scans the whole test tree.
+ *
+ * It is an ALLOWANCE, not a target: nothing asserts against it, no case reads a clock, and AAP
+ * 0.8.1's prohibition on inventing a performance requirement is untouched by it - `A19` is the block
+ * that enforces that prohibition and it is the block this budget serves. It exists because the
+ * runner's implicit per-hook default was the only thing standing behind the heaviest unit of work in
+ * this tier, and QA finding F-6 measured that default being crossed on a four-core host under v8
+ * coverage instrumentation with nothing wrong. Generous on purpose: an over-tight budget fails a
+ * correct suite, while a loose one only delays the report of a genuinely stuck read.
+ */
+const WHOLE_TREE_SCAN_BUDGET_MS = 60_000;
 
 function listTypeScriptFiles(relativeDirectory: string): string[] {
   const absolute = path.join(SUBTREE_ROOT, relativeDirectory);
@@ -71,8 +205,15 @@ function listTypeScriptFiles(relativeDirectory: string): string[] {
 }
 
 function readSubtreeFile(relativePath: string): string {
+  const memoized = subtreeFileContents.get(relativePath);
+  if (memoized !== undefined) {
+    return memoized;
+  }
+
   try {
-    return readFileSync(path.join(SUBTREE_ROOT, relativePath), 'utf8');
+    const contents = readFileSync(path.join(SUBTREE_ROOT, relativePath), 'utf8');
+    subtreeFileContents.set(relativePath, contents);
+    return contents;
   } catch (cause) {
     throw new Error(`legacyTestMap expected a subtree file that is missing: ${relativePath}`, {
       cause,
@@ -81,8 +222,15 @@ function readSubtreeFile(relativePath: string): string {
 }
 
 function readRepositoryFile(relativePath: string): string {
+  const memoized = repositoryFileContents.get(relativePath);
+  if (memoized !== undefined) {
+    return memoized;
+  }
+
   try {
-    return readFileSync(path.join(REPOSITORY_ROOT, relativePath), 'utf8');
+    const contents = readFileSync(path.join(REPOSITORY_ROOT, relativePath), 'utf8');
+    repositoryFileContents.set(relativePath, contents);
+    return contents;
   } catch (cause) {
     throw new Error(`legacyTestMap expected a legacy file that is missing: ${relativePath}`, {
       cause,
@@ -301,12 +449,40 @@ interface ScannedSource {
 }
 
 /**
+ * Scanned results, keyed by the exact text scanned.
+ *
+ * THE SCANNER IS THE EXPENSIVE THING IN THIS FILE, AND IT WAS BEING RUN REPEATEDLY OVER THE
+ * SAME TEXT. It walks one character at a time and pushes two entries per character, so a single
+ * pass over the sixty-six suites is millions of pushes - and QA finding F-6 measured that cost
+ * crossing the runner's per-test budget under v8 coverage instrumentation, in a case whose only
+ * fault was doing the pass a second and third time. Keying on the TEXT rather than on a path keeps
+ * every one of the eleven call sites unchanged, including the ones that scan a string assembled at
+ * runtime, and the function stays pure: the same input yields the identical result object, which is
+ * exactly the property that makes memoizing it invisible to every assertion.
+ */
+const scannedSources = new Map<string, ScannedSource>();
+
+/**
  * Splits a JavaScript or TypeScript source file into its executable half and a brace-safe mask.
  *
- * Both outputs are exactly as long as the input, and every newline survives in both, so an offset
- * or a line number means the same thing in all three texts.
+ * Both outputs are exactly as long as the input, and every newline survives in both, so an offset or
+ * a line number means the same thing in all three texts.
+ *
+ * Memoized on the input text; see {@link scannedSources}.
  */
 function scanSource(text: string): ScannedSource {
+  const memoized = scannedSources.get(text);
+  if (memoized !== undefined) {
+    return memoized;
+  }
+
+  const scanned = scanSourceText(text);
+  scannedSources.set(text, scanned);
+  return scanned;
+}
+
+/** The scan itself. Call {@link scanSource} instead, which memoizes this. */
+function scanSourceText(text: string): ScannedSource {
   const executable: string[] = [];
   const masked: string[] = [];
   const comments: string[] = [];
@@ -2038,6 +2214,30 @@ export const LEGACY_TEST_MAP: {
   // Transport-tier policy on the net-new adapter surface. Not divergences; see the interface.
   observableRefinements: [
     {
+      // A silent success on an unimplemented feature is indistinguishable from a real one, which is
+      // why this path signals. Making all four stub-touching process methods THROW instead is
+      // declined on AAP 0.2.2 grounds: a method that always throws is neither of the two treatments
+      // that section prescribes, and this one reaches no port to refuse from.
+      summary:
+        '`processProduct_addProductReview` records two entries on the product\u2019s error register - ' +
+        'the framework\u2019s own `processObjects` channel plus a key naming what did not happen - so a ' +
+        'caller can tell the call apart from one that created a review. The legacy SUCCEEDS here and ' +
+        'creates the review, which the port cannot: `ProductReview` is not among the eighteen in-scope ' +
+        'entities and `Product_AddProductReview.cfc` is out of scope by name. So the port already ' +
+        'differed by doing nothing; the only thing that changed is that the difference is now ' +
+        'announced instead of hidden. The RETURN VALUE is unchanged - the same product instance, its ' +
+        'own columns untouched - so [model/service/ProductService.cfc:L170] is still honoured.',
+      owningModule: 'src/services/productService.ts',
+      assertedBy: 'tests/unit/services/productService.test.ts',
+      aapAuthority:
+        'AAP 0.2.2 prescribes that an out-of-scope method appearing in an in-scope file be "ported as ' +
+        'thin pass-throughs to stub ports, OR FLAGGED AS UNEXERCISED, rather than being made to ' +
+        'work". These two register entries ARE the flag, written on the channel ' +
+        '`HibachiEntity.getErrors()` [org/Hibachi/HibachiEntity.cfc:L133-L146] itself uses and the ' +
+        'channel `processProduct_uploadDefaultImage` already writes - which is what makes the pair ' +
+        'consistent. The same section is the authority for NOT throwing.',
+    },
+    {
       summary:
         'A sorted-SKU placement whose query returns more rows than the supplied SKU array covers ' +
         'is REFUSED through SkuSortOrderError, rather than returning an array with unfilled ' +
@@ -2222,6 +2422,80 @@ export const LEGACY_TEST_MAP: {
         'this module as having no legacy equivalent at all.',
     },
     {
+      // `processProduct_deleteDefaultImage` is ROUTED, and supplying the one argument that makes it
+      // meaningful reaches `RefusingImageStore.deleteImageFile` - whose rejection falls through the
+      // mapper's deliberately CLOSED recognizer set unless the handler narrows it. A publicly
+      // reachable 500 for a feature AAP 0.2.1 designates a STUB PORT would report a permanent
+      // by-design limitation as a service fault.
+      summary:
+        'A stub-port refusal - the image store and the subscription-term provider AAP 0.2.1 ' +
+        'designates STUB PORTS - is answered 501 `notImplemented` with a fixed, actionable sentence, ' +
+        'rather than the 500 `unrecognized` a routed operation used to receive. The RECOGNIZER SET IS ' +
+        'UNCHANGED and no thrown value chooses its own status: the capability handler narrows the ' +
+        'exported refusal class with `instanceof` and this module PRODUCES the refusal, exactly as it ' +
+        'does for 400, 401 and 403. The body names no operation, port, class or configuration key.',
+      owningModule: 'src/handlers/errorMapper.ts',
+      assertedBy: 'tests/unit/handlers/errorMapper.test.ts',
+      unchangedServiceContract:
+        'No service method observes the status code, and the stub ports still REFUSE exactly as ' +
+        'before - both members reject, no member answers plausibly, and nothing was made to work. ' +
+        'AAP 0.4.2 freezes `processProduct_deleteDefaultImage(product, data)` on the ' +
+        'interface-parity table and it is still published, still routed and still delegating to the ' +
+        'same port; only the status the transport chooses for the refusal changed. AAP 0.4.1 records ' +
+        'this module as having no legacy equivalent at all.',
+    },
+    {
+      // The two flags are REQUIRED on the wire because the service reads each through `cfTruthy` at
+      // the line CFML raises: an optional flag let the schema admit a payload the service tier
+      // could only answer with HTTP 500. A schema that admits a payload is a published promise that
+      // the payload is servable.
+      summary:
+        'Three transport members are held to the grammar the service tier will actually apply, by ' +
+        'DELEGATING to the service-tier validator rather than restating it: the two ' +
+        '`processProduct_updateSkus` flags are REQUIRED and must be `cfTruthy`-convertible, the ' +
+        '`saveProduct` price must satisfy `Money`\u2019s own brander, and a supplied ' +
+        '`processProduct_deleteDefaultImage` `imageFile` must satisfy the service\u2019s CWE-22 ' +
+        'guard. Each refusal is a 400 naming the member, where each was previously a 500.',
+      owningModule: 'src/handlers/catalogQueryHandler.ts',
+      assertedBy: 'tests/unit/handlers/catalogQueryHandler.test.ts',
+      unchangedServiceContract:
+        'Every one of the three predicates CALLS the service-tier or domain validator itself - ' +
+        '`cfTruthy`, `toDecimalString` and `assertPlainImageFileName` - so admission and application ' +
+        'are one rule and neither can drift. Not one of those three functions was modified: ' +
+        '`cfTruthy` still RAISES for an absent or unconvertible flag at the line CFML raises, and the ' +
+        'ported suite still pins the legacy mid-loop half-application that raise produces ' +
+        '[model/service/ProductService.cfc:L222, L226]. What changed is only that the wire no longer ' +
+        'admits a request that would reach it. AAP 0.4.1 records this module as a net-new entrypoint ' +
+        'with no legacy equivalent.',
+    },
+    {
+      // `requireAssociation` raises a TYPED error, so a well-formed payload naming a nonexistent
+      // option group answers 400 naming the member rather than 500 with no `fields`. A bare `Error`
+      // told the caller this service had failed when the caller had, and enforced one rule two ways:
+      // a `productID` miss became a 400, an `optionGroup` or `option` miss a 500.
+      summary:
+        'A well-formed payload member naming a row that does not exist is answered 400 ' +
+        '`unusableRequestInput` carrying a server-authored member path and one fixed constraint ' +
+        'sentence, rather than 500 `unrecognized` with no fields. Only a CLIENT-SUPPLIED reference ' +
+        'qualifies; a dereference of SERVER state stays on the 500 arm, because no payload member ' +
+        'names it and no caller can correct it.',
+      owningModule: 'src/handlers/catalogQueryHandler.ts',
+      assertedBy: 'tests/unit/handlers/catalogQueryHandler.test.ts',
+      unchangedServiceContract:
+        'The service still FAILS AT THE SAME POINT for the same reason - `requireAssociation` still ' +
+        'refuses to dereference an absent association, at the locator the legacy dereferences it ' +
+        'without a null check - and still mutates and writes nothing. Only the TYPE of the thrown ' +
+        'value and the status the transport chooses for it changed. The mechanism is the one ' +
+        '`OrderViewDocumentDataError` already established for the identical problem, so the ' +
+        'recognizer set in `errorMapper` stays closed. Nothing published names an identifier, a row, ' +
+        'a count, a table or a statement.',
+    },
+    {
+      // The refusal publishes the offending key NAME and not its dotted path: a path is assembled
+      // from the caller's own ancestor key names and would reach both a 400 body and the log stream,
+      // which is how a refusal starts echoing caller-authored text. The name is a literal of the
+      // owning module - the only name involved the caller did not choose - and the detection is a
+      // boolean predicate with no path to assemble.
       summary:
         'A parsed request document carrying an own `__proto__` key is refused with a fixed, ' +
         'server-authored field issue naming the offending key and nothing else - no ancestor path, ' +
@@ -2249,6 +2523,46 @@ export const LEGACY_TEST_MAP: {
         'had no such endpoint.',
     },
     {
+      // THIS ROW EXISTS BECAUSE THE MODULE CONTRADICTED ITSELF IN WRITING AND RUNTIME ACCEPTANCE
+      // TESTING MEASURED IT. The module's SECTION 2 header forbids representing a monetary absence as
+      // "an omitted key that a consumer would then default", and the three currency accessors did
+      // exactly that: `200 {"outcome":"currencyPrice"}` with no `price` member at all. The MONETARY
+      // guarantee was never at risk - never `0`, never `null`, measured across the full accessor-by-
+      // currency matrix - so this is a representation decision at the transport tier, which is what
+      // this register is for, and not a defect-budget question.
+      summary:
+        'A currency accessor that answers nothing publishes a POSITIVE absence - ' +
+        '`price: {resolved:false, reason:"noPriceForCurrencyCode"}` - rather than omitting the ' +
+        '`price` member. The member is therefore always present, so no consumer can reach the ' +
+        'absence by reading a key that is not there and defaulting it, which is the one wrong reading ' +
+        'the whole section exists to prevent. ONE reason token covers both legacy causes - a currency ' +
+        'the cascade map never held, and a currency it holds whose list or renewal sub-price was never ' +
+        'recorded - so the wire says only that no price was answered and claims nothing about which ' +
+        'cause applied. The shape is the one the sibling absence on this same route already used for ' +
+        'an unresolved rate, so the tier has one absence grammar rather than two.',
+      owningModule: 'src/handlers/priceResolutionHandler.ts',
+      assertedBy: 'tests/unit/handlers/priceResolutionHandler.test.ts',
+      unchangedServiceContract:
+        'Sku.getPriceByCurrencyCode, getListPriceByCurrencyCode and getRenewalPriceByCurrencyCode ' +
+        '[model/entity/Sku.cfc:L269-L285] still answer `Money | undefined`, synchronously, with the ' +
+        'ONE key check on the price accessor and the SECOND sub-key check on the other two, and the ' +
+        'four-step cascade behind them is untouched - the boundary performs no lookup of its own and ' +
+        'supplies no fallback. Nothing in the service or domain tier observes the wire shape: the ' +
+        'discriminator is built at the serialization step from the exact `undefined` the accessor ' +
+        'returned, and a hit still carries that accessor\u2019s Money and nothing else. The legacy ' +
+        'published no HTTP surface for these accessors at all - AAP 0.4.1 lists this handler as ' +
+        'CREATE with no source file - so there is no legacy response shape to have departed from; ' +
+        'the omitted key was itself a boundary invention, not the faithful rendering it was taken for.',
+    },
+    {
+      // THE PROMOTION ROUTE NEEDS ITS OWN GRANT, NOT THE ADMINISTRATIVE CLAIM. The row below this
+      // one records `catalogQueryHandler` admitting ORDINARY HUMAN CATALOG ADMINISTRATORS with that
+      // claim, so one claim answering two trust questions would accept every catalog administrator
+      // as the promotion-pricing service - free to name a subject account and submit self-authored
+      // prices and `promotionAppliedID` values that become REMOVE intents. Hence a dedicated
+      // service-only grant, registered HERE rather than against the defect budget for the reason
+      // this register exists: the route is net-new, so there is no ported behaviour to measure it
+      // against and no budget slot to spend.
       summary:
         'The promotion-application route admits a caller only when the authorizer publishes a ' +
         'DEDICATED service grant naming this route\u2019s own capability - not merely an identified ' +
@@ -2924,6 +3238,44 @@ describe('A0 anti-vacuity: the map is anchored, populated, and loud on absence',
     expect(() =>
       requireAnchor(path.join(SUBTREE_ROOT, 'no-such-anchor'), 'a missing anchor'),
     ).toThrow(/could not anchor itself/);
+  });
+
+  it('★★★ gives every gate block a unique id, so a citation names exactly one gate', () => {
+    // AN ID USED TWICE MAKES EVERY CITATION OF IT AMBIGUOUS, WHICH IS WHY THIS IS A GATE. These ids
+    // are how everything else refers to these blocks: `README.md` cites `A20` in four places for the
+    // census and the one-runtime-unit rule and `A29` for the delivery-size sum, and comments across
+    // six entity suites point at schema continuity by id. Two blocks answering to one label leave a
+    // reader with two places to land and no way to tell which was meant, even though both blocks run
+    // and pass. Schema continuity is `A30` and the environment delivery-size contract is `A29`, so
+    // every published citation resolves to exactly one block.
+    //
+    // DERIVED FROM THIS FILE'S OWN DECLARATIONS, not from a list maintained beside them, because a
+    // maintained list is the thing that goes stale. The ids carry an optional letter suffix - `A6b`,
+    // `A12b`, `A12c`, `A13b` are deliberate refinements of the gate they sit next to - so the pattern
+    // admits one and treats `A6b` as distinct from `A6`, which is what makes those four legal while a
+    // second bare `A20` is not.
+    const own = readSubtreeFile('tests/traceability/legacyTestMap.ts');
+    const declaredIds = [...own.matchAll(/^describe\('(?<id>A[0-9]+[a-z]?) /gmu)].map(
+      (match) => match.groups?.['id'] ?? '',
+    );
+
+    // Non-vacuity first: a broken pattern would find nothing and the duplicate check would then pass
+    // by having nothing to compare.
+    expect(declaredIds.length).toBeGreaterThan(25);
+    expect(declaredIds.filter((id) => id === '')).toEqual([]);
+
+    expect(
+      duplicatesIn(declaredIds),
+      'Two gate blocks share an identifier. Every citation of that id - in this file, in a suite ' +
+        'comment, or in README.md - now names two different gates and resolves to neither. Give the ' +
+        'newer block the next unused number and move any citation that pointed at it.',
+    ).toEqual([]);
+
+    // And the two blocks that carry the re-homed identifiers are really present under them, so the
+    // separation cannot be undone by deleting a block rather than by re-colliding it. `A26` is a
+    // deliberate hole in the sequence, recorded at the census below, so it is not asserted here.
+    expect(declaredIds).toContain('A29');
+    expect(declaredIds).toContain('A30');
   });
 
   it('holds itself to the annotation convention it reports on', () => {
@@ -4758,7 +5110,258 @@ describe('A22 README accuracy: the overstated claims, corrected and pinned', () 
     }
   });
 
-  it('explains why the euro-pivot converter is not the excluded non-Google adapter', () => {
+  it('★★★ states the one-unit rule as a RUNTIME-unit rule, which is the only true reading', () => {
+    const readme = readSubtreeFile('README.md');
+
+    // The bare claim was false as written: twenty modules export more than one runtime unit, each
+    // authorized by AAP 0.3.1's own plural entries. A20 is the gate; this is the documentation of it.
+    expect(readme).toMatch(/One exported [*_]runtime[*_] unit per file/u);
+    expect(readme).toMatch(/not one\s+exported [*_]symbol[*_]/u);
+    expect(readme).toContain('**A20**');
+    expect(readme).toContain('listLen/listGetAt/listAppend/listToArray/listFindNoCase');
+
+    // The no-barrel half stays absolute, in the README as in A20.
+    expect(readme).toMatch(/admits no\s+exemption at all/u);
+  });
+
+  it('★★★ says `engines.node` WARNS rather than gating the install, because it does (F-7)', () => {
+    // THE FILE PROMISED A GATE THAT CANNOT EXIST IN THIS SUBTREE. QA finding F-7 ran the claim:
+    // with the system Node 22 on PATH, `npm ci` against this manifest prints five `EBADENGINE` warnings,
+    // installs 174 packages and EXITS 0. npm honours `engines` only when `engine-strict=true`, and
+    // there is no `.npmrc` anywhere - which this file declares as a deliberate property, since there is
+    // no private registry and no auth token to configure. The old wording told a contributor on a
+    // system Node that the bound was "enforced at install time either way", so the one person who most
+    // needed to check `node -v` was told they did not have to.
+    //
+    // THE DOCUMENTATION MOVED AND THE CONFIGURATION DID NOT, deliberately. `engine-strict=true` would
+    // make the refusal real, at the cost of a fourteenth root artifact AAP 0.3.1 does not enumerate -
+    // the same recorded-addition ceremony `.gitignore` needed - to buy a check `node -v` already
+    // performs. That trade is declined and the decline is stated, so a later reader does not read the
+    // absence as an oversight.
+    const readme = readSubtreeFile('README.md');
+
+    // The overstatement is gone in both of the places it was made.
+    //
+    // THE VERB IS MATCHED IN BOTH FORMS, AND A NEGATIVE CONTROL IS WHY. Written as `enforced at
+    // install time` alone this passed while the original sentence - "which `engines.node` enforces at
+    // install time either way" - sat in the file untouched, because that one is the third person. A ban
+    // that misses the exact text it was written to ban is worse than no ban, so both inflections are
+    // covered.
+    //
+    // A BROADER BAN WAS TRIED AND WITHDRAWN: forbidding `engines.node` within a few words of
+    // "enforce"/"refuse"/"gate" also matched the CORRECTION - "`engines.node` warns; it does not
+    // refuse" - so it would have forbidden the honest sentence along with the overstated one. The two
+    // exact phrasings below, plus the positive requirements after them, are what actually distinguishes
+    // the claim from its correction.
+    expect(readme).not.toMatch(/enforce[sd] at install time/u);
+    expect(readme).not.toMatch(/makes a newer major fail the install/u);
+
+    // The truth is stated: declares, warns, exits zero, and the operator checks the runtime. Matched
+    // across line breaks, because these sentences sit in paragraphs `prettier` re-wraps.
+    expect(readme).toMatch(/\*\*`engines\.node` warns; it does not refuse/u);
+    expect(readme).toContain('EBADENGINE');
+    expect(readme).toMatch(
+      /\*\*checking\s+`node -v`\s+before you build\s+is the\s+operator's job\*\*/u,
+    );
+    expect(readme).toMatch(/\*\*exits 0\*\*/u);
+
+    // And the reason the real gate is declined is recorded with the plan section that decides it.
+    expect(readme).toContain('engine-strict=true');
+    expect(readme).toContain('fourteenth');
+    expect(readme).toContain('AAP 0.3.1');
+
+    // The configuration really is as described: `engines` declared, and no `.npmrc` in the subtree for
+    // npm to read a strictness setting from. A claim about npm's behaviour is only checkable here to
+    // the extent that the inputs it depends on are - so both inputs are asserted.
+    const manifest: unknown = JSON.parse(readSubtreeFile('package.json'));
+    const engines = (manifest as { engines?: Record<string, string> }).engines ?? {};
+    expect(engines['node']).toBe('>=20.19.0 <21');
+    expect(subtreeFileExists('.npmrc')).toBe(false);
+    expect(LEGACY_TEST_MAP.recordedScopeAdditions.map((addition) => addition.path)).not.toContain(
+      '.npmrc',
+    );
+
+    // `.nvmrc` is named as the mechanism, and it agrees with the declared range - `A16` pins the
+    // version itself across every artifact that states it; this only requires the two to be consistent
+    // with the sentence that now sends a reader to them.
+    expect(readSubtreeFile('.nvmrc').trim()).toMatch(/^20\./u);
+    expect(readme).toContain('`.nvmrc` is the mechanism');
+  });
+
+  it('★★★ keeps no per-artifact annotation count in the build sample (F-8)', () => {
+    // A SAMPLE OF COMMAND OUTPUT IS STILL A CLAIM, so the fence carries placeholders rather than
+    // digits. The paragraph directly above it forbids reading an annotation total off a paragraph,
+    // and the five artifacts do not even share a figure - each bundle contains only the modules its
+    // entrypoint reaches - so no single number could be right for a sample of all five.
+    const readme = readSubtreeFile('README.md');
+
+    // The sample is a placeholder now, and no digit-bearing annotation total survives anywhere in the
+    // file for either marker. `xN`/`xM` are what a reader is meant to substitute from the command.
+    expect(readme).toContain('LEGACY-DEFECT xN, DELIBERATE DIVERGENCE xM');
+    expect(
+      readme
+        .split('\n')
+        .filter((line) => /(?:LEGACY-DEFECT|DELIBERATE DIVERGENCE)\s+x\d/u.test(line)),
+      'A per-artifact annotation count is back in README.md. The bundler reports these per entrypoint ' +
+        'and they change with every added marker; read them off `npm run bundle`, never off this file.',
+    ).toEqual([]);
+
+    // The instruction to read it off the command is stated where the sample is.
+    expect(readme).toMatch(/read them off the command,\s+never off this page/u);
+
+    // And the report the placeholder stands for is really produced, with both markers required - so the
+    // sample describes output that exists rather than output that was imagined.
+    const bundler = scanSource(readSubtreeFile('esbuild.config.mjs')).executable;
+    expect(bundler).toContain('Annotations recoverable from');
+    expect(bundler).toContain('LEGACY-DEFECT [');
+    expect(bundler).toContain('DELIBERATE DIVERGENCE [');
+  });
+
+  it('★★★ documents the unavailable-rate outcome as the pass-through the code performs (F-1)', () => {
+    // THE COMMITTED TEMPLATE MUST STATE WHAT THE SHIPPED CODE DOES, because `.env.example` is the
+    // file an operator CONFIGURES FROM. A note saying that leaving the rate-table variables blank
+    // makes any conversion needing a quote fail loudly describes a refusal the adapter does not
+    // perform: it resolves and hands back the amount unchanged. Refusing is defensible on the
+    // legacy's cold-start raise [model/service/CurrencyService.cfc:L104-L131], and it is not what
+    // ships, because that throw lands on the whole `getCurrencyDetails()` build rather than on one
+    // conversion. The template states the pass-through instead.
+    //
+    // PINNED AGAINST THE CODE, NOT AGAINST THE OTHER DOCUMENT. Comparing two prose files would only
+    // prove they agree; this reads the composition root and requires the total-function shape to be
+    // what is really shipped, so the day the adapter starts refusing again, the template's promise
+    // fails here instead of misinforming an operator.
+    const template = readSubtreeFile('.env.example');
+    const root = scanSource(readSubtreeFile('src/handlers/bootstrap.ts')).executable;
+
+    // (1) The template states the pass-through, in the imperative present, and no longer promises a
+    // failure. `fails loudly` was the operative phrase and it may not come back in any form.
+    expect(template).toMatch(/PASSES THE AMOUNT THROUGH\s+#?\s*UNCONVERTED/u);
+    expect(template).not.toContain('fails loudly');
+    expect(template).not.toContain('REFUSES A CONVERSION');
+
+    // (2) It keeps BOTH legacy citations, because the two failure states really do differ in the
+    // legacy and the divergence is only meaningful next to the line it diverges from.
+    expect(template).toContain('model/service/CurrencyService.cfc:L100-L101');
+    expect(template).toContain('model/service/CurrencyService.cfc:L104-L131');
+
+    // (3) It names the divergence as a divergence, and gives the blast-radius reason rather than
+    // leaving a reader to assume the legacy behaved this way too.
+    expect(template).toContain('THIS PORT DELIBERATELY DOES NOT');
+    expect(template).toContain('getCurrencyDetails()');
+    expect(template).toContain('model/entity/Sku.cfc:L416-L428');
+
+    // (4) And it still says what the pass-through COSTS. A total function that publishes a
+    // base-currency numeral as a foreign price is the hazard the removed paragraph was worried about;
+    // the conclusion changed and the hazard did not.
+    expect(template).toMatch(/parity|at par/u);
+
+    // (5) The code really is total on an unavailable rate: the observer notification is what reports
+    // the gap, and no refusal class is thrown on that branch anywhere in the tree.
+    //
+    // READ OFF THE EXECUTABLE HALF, WHICH IS THE WHOLE POINT. Two modules still NAME that class in
+    // prose - `src/domain/ports/currencyConverter.ts` where the port explains what it does not do, and
+    // `src/handlers/bootstrap.ts` where the absence is recorded at the branch that answers instead -
+    // and those records are why the decision is still legible. What may not appear is a declaration or
+    // a `throw`, so the search is for the identifier in code.
+    expect(root).toContain('onUnconvertedPassThrough');
+    expect(
+      listTypeScriptFiles('src').filter((file) =>
+        scanSource(readSubtreeFile(file)).executable.includes('CurrencyRateTableUnavailableError'),
+      ),
+      'The empty-table refusal is back. `convertCurrency` is published as a total function by ' +
+        'src/domain/ports/currencyConverter.ts and consumed by the SKU currency cascade for every ' +
+        'eligible currency, so a throw here fails every price the SKU can answer. Either the port ' +
+        'contract and both committed documents move first, or this class does not exist.',
+    ).toEqual([]);
+  });
+
+  it('★★★ states the three conditional environment keys as conditional (F-2, F-3)', () => {
+    // NO ROW MAY SAY "OPTIONAL" WHERE THE RUNTIME REFUSES TO START. `DB_TLS_CA` is unconditionally
+    // required with `verify-ca`, and each of the two rate-table variables becomes required the moment
+    // the other is set - all three enforced as hard startup errors by `src/lib/config.ts`. A summary
+    // table is the entry point, so understating a refusal there costs an operator a failed deployment
+    // rather than a moment's confusion.
+    const readme = readSubtreeFile('README.md');
+    const config = scanSource(readSubtreeFile('src/lib/config.ts')).executable;
+
+    // The heading no longer promises five freely-omittable keys, and the qualification is stated
+    // before the table rather than buried in one cell.
+    expect(readme).toMatch(/### Optional — five keys, three of them conditional/u);
+    expect(readme).toMatch(/has no default\s+you must override/u);
+
+    // The anchor is required with `verify-ca`, and the README says so in those terms.
+    expect(readme).toContain('**Conditionally required.**');
+    expect(readme).toMatch(/REQUIRED with `verify-ca`/u);
+
+    // The co-requirement is stated on BOTH rows, because a reader consults the row of the variable
+    // they are setting, not the pair.
+    expect(readme).toMatch(/\*\*Optional only while `ECB_RATES_RETRIEVED_AT` is unset too\*\*/u);
+    expect(readme).toMatch(/\*\*Required whenever `ECB_REFERENCE_RATES` is set\*\*/u);
+
+    // And all three refusals are really in the resolver, so the documentation is describing behaviour
+    // rather than intent. These are the diagnostics `config.ts` raises, read off its executable half.
+    expect(config).toContain('DB_TLS_MODE is verify-ca but DB_TLS_CA is not set');
+    expect(config).toContain('ECB_RATES_RETRIEVED_AT is required whenever ECB_REFERENCE_RATES is');
+    expect(config).toContain('ECB_RATES_RETRIEVED_AT is set but ECB_REFERENCE_RATES is not');
+  });
+
+  it('★★★ states the runner allowance as the number the runner is actually given (F-6)', () => {
+    // THIS CLAIM EXISTS BECAUSE THE OPPOSITE ONE WENT STALE THE MOMENT IT STOPPED BEING TRUE.
+    // `vitest.config.ts` used to state, in its own header, that "No timeout is overridden anywhere in
+    // this file, so the runner's own defaults apply" - accurate when written, and the reason QA finding
+    // F-6 could report `npm run test:coverage` failing in two runs of six on the implicit 5,000 ms
+    // default while `npm test` and `npm run verify` stayed green. Both timeouts are explicit now, and
+    // the figure the README publishes is checked against the figure the runner is handed rather than
+    // restated beside it: a maintainer raising or lowering either value fails here instead of leaving
+    // the documentation quietly wrong, which is the same failure this whole block exists to prevent.
+    const readme = readSubtreeFile('README.md');
+    const runner = scanSource(readSubtreeFile('vitest.config.ts')).executable;
+
+    // The stale claim is gone from the configuration, and the two settings are really present in its
+    // EXECUTABLE half - a promise written in a comment would satisfy neither assertion.
+    expect(readSubtreeFile('vitest.config.ts')).not.toContain('No timeout is overridden anywhere');
+    const testTimeout = /testTimeout:\s*(?<ms>[0-9_]+)/u.exec(runner)?.groups?.['ms'];
+    const hookTimeout = /hookTimeout:\s*(?<ms>[0-9_]+)/u.exec(runner)?.groups?.['ms'];
+    expect(testTimeout).toBeDefined();
+    expect(hookTimeout).toBeDefined();
+
+    // Both are the same allowance, which is what lets the README describe it in the singular.
+    const milliseconds = Number((testTimeout ?? '').replace(/_/gu, ''));
+    expect(Number((hookTimeout ?? '').replace(/_/gu, ''))).toBe(milliseconds);
+    expect(milliseconds).toBeGreaterThan(5_000);
+
+    // And the README states THAT allowance, in the seconds a reader thinks in.
+    expect(readme).toMatch(new RegExp(`at\\s+${String(milliseconds / 1_000)}\\s+seconds`, 'u'));
+
+    // The two structural halves of the fix are named where a maintainer would look for them, because
+    // raising a timeout alone would have hidden the redundant work rather than removed it.
+    expect(readme).toContain('**memoized**');
+    expect(readme).toMatch(/hoisted into a\s+`beforeAll`/u);
+
+    // AND THE ALLOWANCE IS STILL NOT A REQUIREMENT. `A19` is the gate that forbids inventing a
+    // non-functional requirement, so the README says so where it publishes the number - otherwise a
+    // later reader has a millisecond figure in the documentation and no statement of its standing.
+    //
+    // Matched across a line break, because the sentence sits inside a paragraph `prettier` is free to
+    // re-wrap: pinning it to one line would fail on a reflow that changed nothing.
+    expect(readme).toMatch(/Neither\s+allowance\s+is a performance target/u);
+    expect(readme).toContain('AAP 0.8.1');
+  });
+
+  it('★★★ explains why the euro-pivot converter is not the excluded non-Google adapter', () => {
+    const readme = readSubtreeFile('README.md');
+
+    // The exclusion itself must still be stated - it is real and it still holds.
+    expect(readme).toContain('**Every integration adapter other than Google**');
+
+    // ... and the thing that reads like a breach of it must be explained where a reader meets it,
+    // because it has now been queried twice and the answer is in the legacy source, not in judgement.
+    expect(readme).toContain('model/service/CurrencyService.cfc:L53');
+    expect(readme).toContain('europeanCentralBankRates');
+    expect(readme).toMatch(/no HTTP\s+>?\s*client and no URL anywhere in it/u);
+    expect(readme).toContain('in scope by name');
+
+    // The file whose PLACEMENT was the valid half of that finding is really gone.
     expect(subtreeFileExists('src/integrations/europeanCentralBankCurrencyConverter.ts')).toBe(
       false,
     );
@@ -6096,6 +6699,80 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
     expect(Object.keys(ROOT_SCOPE_EXCEPTIONS)).toContain('.gitignore');
   });
 
+  it('★★★ states the root-artifact count as the number on disk, not the plan\u2019s twelve (F-4)', () => {
+    // THE README'S GATE MUST AGREE WITH THE README'S OWN RECORD. A `git ls-files` check that tells
+    // an operator to expect "the twelve root artifacts", three paragraphs after the same file
+    // explains that `.gitignore` is a sanctioned THIRTEENTH, makes the operator flag the one file
+    // that stops a real `.env` reaching the index - and a tidy-up that deletes it is exactly how the
+    // rules went missing before.
+    //
+    // BOTH NUMBERS ARE TRUE OF DIFFERENT THINGS and both have to survive: AAP 0.3.1 enumerates twelve
+    // and the plan is frozen, while the working tree holds thirteen. So the count is DERIVED here -
+    // the frozen enumeration plus the recorded additions that are root artifacts - and the README is
+    // required to state the derived number in the words a reader will scan for. A fourteenth root file
+    // fails the census cases above, and it fails this one too until the register and the README are
+    // both brought along with it.
+    const rootAdditions = ADDITIONS.filter((addition) => addition.kind === 'rootArtifact');
+    const onDisk = FROZEN.rootArtifacts.length + rootAdditions.length;
+
+    // The frozen half is what the plan says, and the addition is the one file that took it past that.
+    expect(FROZEN.rootArtifacts).toHaveLength(12);
+    expect(rootAdditions.map((addition) => addition.path)).toEqual(['.gitignore']);
+    expect(onDisk).toBe(13);
+
+    // Every one of them is really a file sitting in the subtree root, so the arithmetic describes disk
+    // rather than two lists agreeing with each other.
+    const missingOnDisk = [...FROZEN.rootArtifacts, ...rootAdditions.map((a) => a.path)].filter(
+      (artifact) => !subtreeFileExists(artifact),
+    );
+    expect(missingOnDisk).toEqual([]);
+
+    const readme = readSubtreeFile('README.md');
+    const NUMBER_WORDS: readonly string[] = [
+      'zero',
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+      'six',
+      'seven',
+      'eight',
+      'nine',
+      'ten',
+      'eleven',
+      'twelve',
+      'thirteen',
+      'fourteen',
+      'fifteen',
+    ];
+    const derivedWord = NUMBER_WORDS[onDisk] ?? String(onDisk);
+
+    // The gate sentence exists exactly once, and it names the derived count, emphasised. The count is
+    // matched across a possible line break because the sentence sits in a bullet `prettier` re-wraps.
+    const gateLines = readme
+      .split('\n')
+      .filter((line) => line.includes('`git ls-files slatwall-ts` must list only'));
+    expect(gateLines).toHaveLength(1);
+    expect(
+      readme,
+      `The git ls-files gate must state the ${derivedWord} root artifacts on disk. Stating the ` +
+        "plan's twelve turns the committed .gitignore into apparent scope drift, and deleting it " +
+        'un-protects a real .env - which is how SEC-G happened. Keep both facts: the plan enumerates ' +
+        'twelve, the tree holds the sanctioned thirteenth.',
+    ).toMatch(
+      new RegExp(`must list only[\\s\\S]{0,120}?\\*\\*${derivedWord}\\*\\* root artifacts`, 'u'),
+    );
+
+    // ... and the superseded phrasing is really gone, so the gate cannot say both.
+    expect(readme).not.toMatch(/the twelve root artifacts/u);
+
+    // And the reconciliation is stated where the gate is, so a reader meets the reason with the number
+    // rather than having to remember a paragraph from earlier in the file.
+    expect(readme).toMatch(/Thirteen,\s+not twelve/u);
+    expect(readme).toContain('recordedScopeAdditions');
+  });
+
   it('holds every frozen source directory at its planned size, addition by addition', () => {
     const offenders: string[] = [];
     for (const entry of FROZEN.sourceDirectories) {
@@ -6155,6 +6832,144 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
       SUPPORT_FILES_ON_DISK.length;
     expect(onDisk).toBe(FROZEN.totalFiles + ADDITIONS.length);
     expect(onDisk).toBe(174);
+  });
+
+  // AND THE PARAGRAPH THAT EXPLAINS THE DRIFT IS READ TOO, NOT JUST THE REGISTER.
+  //
+  // The case above makes the REGISTER impossible to leave stale: a file added to the subtree
+  // without a row fails the run. It says nothing about the header of this file, which narrates
+  // that same drift in spelled-out English and is therefore the one place a count can rot
+  // unobserved - the arithmetic beside the prose is computed and the prose is not. The ninth
+  // register row is the root `.gitignore` and is not a suite at all, so a header sentence can be
+  // wrong in kind as well as in number.
+  //
+  // This is the mechanical form of the difference, and it is deliberately modelled on `A2`'s
+  // census-prose case rather than invented: the same comment-stripped, whitespace-collapsed
+  // normalization, and the same compositional numeral generator, so a total that moves to any
+  // other value is still checked instead of falling outside a fixed table the assertion knows
+  // how to read. Matching normalized text matters because the formatter wraps these sentences
+  // across lines, and an assertion over raw text would break on reflow rather than on an
+  // untrue claim - failing for the wrong reason is worse than not asserting at all.
+  it('states the drift it itemises in words, so the explanation cannot rot either', () => {
+    const UNITS = [
+      'zero',
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+      'six',
+      'seven',
+      'eight',
+      'nine',
+      'ten',
+      'eleven',
+      'twelve',
+      'thirteen',
+      'fourteen',
+      'fifteen',
+      'sixteen',
+      'seventeen',
+      'eighteen',
+      'nineteen',
+    ] as const;
+    const TENS = [
+      '',
+      '',
+      'twenty',
+      'thirty',
+      'forty',
+      'fifty',
+      'sixty',
+      'seventy',
+      'eighty',
+      'ninety',
+    ] as const;
+
+    const inWords = (value: number): string => {
+      if (value < 20) {
+        return UNITS[value] ?? String(value);
+      }
+      if (value < 100) {
+        const ten = TENS[Math.floor(value / 10)] ?? '';
+        const unit = value % 10;
+        return unit === 0 ? ten : `${ten}-${UNITS[unit] ?? String(unit)}`;
+      }
+      return String(value);
+    };
+
+    // The header is this file's own leading comment block, read off disk rather than taken from
+    // the running module, so what a reader sees is what is checked.
+    const ownSource = readSubtreeFile('tests/traceability/legacyTestMap.ts');
+    const header = ownSource.slice(0, ownSource.indexOf('\nimport '));
+    const prose = header
+      .split('\n')
+      .map((line) => line.replace(/^\s*\/\/ ?/, ''))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+
+    const onDisk =
+      ROOT_FILES_ON_DISK.length +
+      SOURCE_MODULES_ON_DISK.length +
+      TEST_FILES_ON_DISK.length +
+      FIXTURES_ON_DISK.length +
+      SUPPORT_FILES_ON_DISK.length;
+
+    // Derived from the register's own `kind` field rather than counted by hand, so a row that
+    // changes kind moves this figure with it.
+    const suiteAdditions = ADDITIONS.filter(
+      (addition) => addition.kind === 'unitSuite' || addition.kind === 'integrationSuite',
+    ).length;
+
+    // THE FILE TOTAL, located by shape and compared as a whole so a failure names the one
+    // phrase that disagrees rather than the entire header.
+    const statedTotal = prose.match(/the tree holds \d+ files/)?.[0];
+
+    expect(statedTotal, 'the header states no file total at all').toBeDefined();
+    expect(
+      statedTotal,
+      'the header states a file total that disagrees with the subtree on disk',
+    ).toBe(`the tree holds ${String(onDisk)} files`);
+
+    // THE ADDITION COUNT, in the two places the header commits to it: the sentence that
+    // introduces the register, and the one that describes how `A18` recomputes around it.
+    // Both are checked, so correcting one and leaving the other is still a failure.
+    const statedAdditions = prose.match(
+      /every one of the [a-z-]+ beyond the frozen enumeration/,
+    )?.[0];
+
+    expect(
+      statedAdditions,
+      'the header does not introduce the recorded additions at all',
+    ).toBeDefined();
+    expect(statedAdditions, 'the header miscounts the recorded scope additions').toBe(
+      `every one of the ${inWords(ADDITIONS.length)} beyond the frozen enumeration`,
+    );
+    expect(
+      prose,
+      'the header describes A18 recomputing around the wrong number of additions',
+    ).toContain(`disk minus those ${inWords(ADDITIONS.length)}`);
+
+    // THE SPLIT BY KIND, which is what the stale sentence got wrong in kind rather than in
+    // number: it claimed every addition was a suite while one is a root artifact.
+    const statedSplit = prose.match(/[a-z-]+ of the [a-z-]+ are suites/)?.[0];
+
+    expect(statedSplit, 'the header does not state how many additions are suites').toBeDefined();
+    expect(
+      statedSplit,
+      'the header misstates the suite-versus-root-artifact split of the recorded additions',
+    ).toBe(`${inWords(suiteAdditions)} of the ${inWords(ADDITIONS.length)} are suites`);
+
+    // And the non-suite remainder is named rather than left as a residue, because "eight of
+    // nine are suites" is only checkable by a reader who is told what the ninth is.
+    expect(prose, 'the header leaves the non-suite addition unnamed').toContain('.gitignore');
+
+    // NON-VACUITY. Every assertion above would pass against an empty string if the header
+    // extraction silently failed, so the extraction itself is proven to have produced the real
+    // paragraph - and `A19` separately proves this file quotes text its executable half does not.
+    expect(prose.length).toBeGreaterThan(5_000);
+    expect(prose).toContain('recordedscopeadditions');
   });
 
   it('reconciles the register: 57 mapped and 32 exempt, moved only by recorded rows', () => {
@@ -6225,20 +7040,31 @@ describe('A18 frozen scope: the plan\u2019s census is stated exactly, and drift 
 // Read as executable code, which is why the records of the removals survive.
 
 describe('A19 no invented non-functional requirement, and no sampled entropy, in any suite', () => {
-  /**
-   * Every suite on disk, as executable code with its comments blanked.
-   */
-  const executableSuites = (): readonly { readonly file: string; readonly code: string }[] =>
-    TEST_FILES_ON_DISK.map((file) => ({
+  /** Every suite on disk, as executable code with its comments blanked. */
+  let suites: readonly { readonly file: string; readonly code: string }[] = [];
+
+  // THE WHOLE-TREE READ HAPPENS HERE, ONCE, AND OUTSIDE ANY TEST'S BUDGET. QA finding F-6
+  // measured the first case below timing out in two coverage runs of six: it read and scanned all
+  // sixty-six suites inside its own `it()`, and the two cases after it each did the same work again.
+  // The readers are memoized now, so the pass costs what one pass costs - and it is hoisted into
+  // this hook so that what a CASE is timed on is its assertions rather than the file system. The
+  // hook carries its own explicit budget for the same reason `vitest.config.ts` now carries one:
+  // this is the heaviest single unit of work in the tier, and leaving it on an implicit default is
+  // what made a green suite go red with nothing wrong.
+  //
+  // NEITHER THE BUDGET NOR THIS HOOK IS A REQUIREMENT STATEMENT. AAP 0.8.1 forbids inventing a
+  // performance requirement and the bans below are what enforce that; a runner allowance is not an
+  // assertion, and no case here reads a clock.
+  beforeAll(() => {
+    suites = TEST_FILES_ON_DISK.map((file) => ({
       file,
       code: scanSource(readSubtreeFile(file)).executable,
     }));
+  }, WHOLE_TREE_SCAN_BUDGET_MS);
 
   it('reads every suite on disk as code, so neither ban below can pass vacuously', () => {
-    const suites = executableSuites();
-
-    // The census this block runs over is the same one `A14` partitions, and the volume is stated
-    // so that a reader mangling `scanSource` into returning empty strings fails here first.
+    // The census this block runs over is the same one `A14` partitions, and the volume is stated so
+    // that a reader mangling `scanSource` into returning empty strings fails here first.
     expect(suites).toHaveLength(TEST_FILES_ON_DISK.length);
     expect(suites.length).toBeGreaterThan(50);
     expect(suites.reduce((total, suite) => total + suite.code.length, 0)).toBeGreaterThan(
@@ -6260,7 +7086,7 @@ describe('A19 no invented non-functional requirement, and no sampled entropy, in
     const CLOCK_READS = ['Date.now()', 'performance.now()', 'hrtime'];
     const offenders: string[] = [];
 
-    for (const { file, code } of executableSuites()) {
+    for (const { file, code } of suites) {
       const lines = code.split('\n');
 
       lines.forEach((line, index) => {
@@ -6292,7 +7118,7 @@ describe('A19 no invented non-functional requirement, and no sampled entropy, in
     // which is the whole point: the deterministic route stays open and the sampling route closes.
     const offenders: string[] = [];
 
-    for (const { file, code } of executableSuites()) {
+    for (const { file, code } of suites) {
       if (code.includes('Math.random(')) {
         offenders.push(file);
       }

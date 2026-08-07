@@ -3574,7 +3574,7 @@ describe('B16.6 behaviour - the promotion and price-group delegations, as two-si
   });
 
   it('★★ but a NEW product is admitted TWICE, which is the legacy guard reproduced literally', () => {
-    // `isNew()` is `productID === ''` `model/entity/Product.cfc`, and the legacy guard
+    // `isNew()` is `productID  ''` `model/entity/Product.cfc`, and the legacy guard
     // SHORT-CIRCUITS on it: an unsaved row has no identifier to compare, so the guard admits it
     // unconditionally.
     const draft = new Product({ productID: '' });

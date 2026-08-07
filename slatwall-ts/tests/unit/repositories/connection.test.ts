@@ -899,21 +899,116 @@ describe('sqlPlaceholderList - the IN-list body, and its guard order', () => {
   });
 });
 
-// The pool lifecycle - refusals only, so no pool is ever built.
+// The pool lifecycle - refusals first, so no pool is built until the accepted path below asks for
+// one.
+//
+// EVERY CASE SETS THE WHOLE ENVIRONMENT IT NEEDS - AND "THE WHOLE ENVIRONMENT" MEANS THE WHOLE
+// CONTRACT, NOT JUST THE KEYS THE CASE CARES ABOUT. `getConnectionPool` calls `appConfig.load()`
+// with no argument, which validates `process.env` AS A WHOLE and reports EVERY problem it finds in
+// one pass [src/lib/config.ts]. One unrelated contract variable left malformed in the ambient
+// environment therefore aborts a case before it can reach its own subject, and aborts with a message
+// about that variable - so the failure points at the wrong place as well as firing for the wrong
+// reason.
+//
+// The exposure is not theoretical: `NODE_ENV=production` alone fails twelve of these cases, and
+// `DB_PORT=0`, `DB_CONNECTION_LIMIT=abc`, `DB_IDLE_TIMEOUT_MS=abc`, `ECB_REFERENCE_RATES=bogus` and
+// a malformed `FEED_ALLOWED_HOSTS` each do the same. `NODE_ENV=production` matters most in practice,
+// because it is set by default in many Node CI images and container build stages.
+//
+// `vi.stubEnv` is the right tool, and it overrides only the keys it is GIVEN. So the helper below
+// drives the full contract: the keys a case names get its values, and every other contract key is
+// stubbed to `undefined`, which DELETES it for the duration of the test. Absence is then a fact this
+// suite establishes rather than a property of the machine it runs on - the same reasoning
+// `tests/setup.ts` records under "THE EMPTY-ENVIRONMENT GUARANTEE", applied to the whole contract
+// instead of a subset of it.
+//
+// Nothing about the assertions changes. A clean checkout has none of these variables set, which is
+// the condition these cases already passed in, so deleting them reproduces that condition exactly
+// rather than creating a new one.
+
+/**
+ * Every variable `src/lib/config.ts` treats as part of the environment contract.
+ *
+ * Kept in step with `CONTRACT_KEY_MAX_VALUE_BYTES` in that module, which is the
+ * authoritative list and is itself asserted against this contract's own size budget by
+ * `tests/traceability/legacyTestMap.ts`. A key added there and not here would leave a
+ * new hole of exactly the kind this list closes.
+ *
+ * `TZ` is deliberately NOT among them: it is not a contract variable, `tests/setup.ts`
+ * assigns it as its first executable statement, and several suites assert it is `UTC`.
+ */
+const CONFIGURATION_CONTRACT_KEYS: readonly string[] = Object.freeze([
+  'DB_HOST',
+  'DB_PORT',
+  'DB_NAME',
+  'DB_USER',
+  'DB_PASSWORD',
+  'DB_TLS_MODE',
+  'DB_TLS_MIN_VERSION',
+  'DB_TLS_CA',
+  'DB_DIALECT',
+  'DB_CONNECTION_LIMIT',
+  'DB_CONNECT_TIMEOUT_MS',
+  'DB_MAX_IDLE',
+  'DB_IDLE_TIMEOUT_MS',
+  'NODE_ENV',
+  'LOG_LEVEL',
+  'FEED_ALLOWED_HOSTS',
+  'ECB_REFERENCE_RATES',
+  'ECB_RATES_RETRIEVED_AT',
+  'TEST_LIVE_DATABASE',
+]);
+
+/**
+ * Replaces the ENTIRE configuration contract for the duration of one test.
+ *
+ * @param overrides - The keys this case is about, with the values it wants them to
+ *   have. An empty string is a legitimate value and is passed through as one, because
+ *   "present but empty" is the shape a misconfigured deployment actually has and one
+ *   case below asserts the refusal it produces.
+ *
+ * Every contract key NOT named in `overrides` is stubbed to `undefined`, which deletes
+ * it. `vitest.config.ts` sets `unstubEnvs`, so the real environment is restored after
+ * each test whether or not a case unstubs explicitly.
+ *
+ * `TEST_LIVE_DATABASE` is deleted along with the rest, and that is safe: it is read
+ * once, at setup time, by `tests/setup.ts` - which has already resolved
+ * `liveDatabaseTestsEnabled` before any case here runs - so removing it inside a test
+ * cannot change which tests execute. It is included because `src/lib/config.ts`
+ * budgets its length, which makes it capable of failing a load like any other key.
+ */
+const stubConfigurationContract = (overrides: Readonly<Record<string, string>>): void => {
+  for (const key of CONFIGURATION_CONTRACT_KEYS) {
+    vi.stubEnv(key, overrides[key]);
+  }
+};
 
 describe('getConnectionPool and getPreparedStatementExecutor - refusal before construction', () => {
   /**
-   * The five variables that have no default, with `DB_DIALECT` chosen by the caller.
+   * The five variables that have no default, with `DB_DIALECT` chosen by the caller -
+   * supplied through the whole-contract helper, so the other fourteen are ABSENT rather
+   * than inherited.
    *
-   * A dialect this port does not implement is what makes the case hermetic: `getConnectionPool`
-   * resolves the dialect and calls `assertMySqlDialect` before `createPool`.
+   * A dialect this port does not implement is what makes the case hermetic:
+   * `getConnectionPool` resolves the dialect and calls `assertMySqlDialect` BEFORE
+   * `createPool`, so nothing here can construct a pool or open a socket.
+   *
+   * `NODE_ENV` IS NAMED EXPLICITLY, because this fixture's admissibility depends on it.
+   * `DB_TLS_MODE: 'disabled'` is accepted only against a provable loopback host and never when the
+   * runtime is production [src/lib/config.ts], so leaning on the `development` default would leave
+   * the fixture's validity resting on a value the case never states - which is how an ambient
+   * `NODE_ENV=production` aborts all five of these refusals with a TLS message instead of the
+   * dialect one they assert.
    */
   const stubDatabaseEnvironment = (dialect: string, host = '127.0.0.1'): void => {
-    vi.stubEnv('DB_HOST', host);
-    vi.stubEnv('DB_USER', 'connection_suite_user');
-    vi.stubEnv('DB_PASSWORD', 'connection_suite_password');
-    vi.stubEnv('DB_TLS_MODE', 'disabled');
-    vi.stubEnv('DB_DIALECT', dialect);
+    stubConfigurationContract({
+      DB_HOST: host,
+      DB_USER: 'connection_suite_user',
+      DB_PASSWORD: 'connection_suite_password',
+      DB_TLS_MODE: 'disabled',
+      DB_DIALECT: dialect,
+      NODE_ENV: 'test',
+    });
   };
 
   beforeEach(() => {
@@ -1013,11 +1108,17 @@ describe('closeConnectionPool - safe in an unconditional cleanup hook', () => {
     // close and reopen.
     await closeConnectionPool();
 
-    vi.stubEnv('DB_HOST', '127.0.0.1');
-    vi.stubEnv('DB_USER', 'connection_suite_user');
-    vi.stubEnv('DB_PASSWORD', 'connection_suite_password');
-    vi.stubEnv('DB_TLS_MODE', 'disabled');
-    vi.stubEnv('DB_DIALECT', 'Oracle10g');
+    // The whole contract, not five of nineteen keys - so an unrelated ambient variable
+    // cannot make this acquisition fail for a reason that has nothing to do with the
+    // dialect being asserted.
+    stubConfigurationContract({
+      DB_HOST: '127.0.0.1',
+      DB_USER: 'connection_suite_user',
+      DB_PASSWORD: 'connection_suite_password',
+      DB_TLS_MODE: 'disabled',
+      DB_DIALECT: 'Oracle10g',
+      NODE_ENV: 'test',
+    });
     appConfig.reset();
 
     expect(() => getConnectionPool()).toThrow(/Oracle10g/u);
@@ -1055,12 +1156,22 @@ describe('getConnectionPool and getPreparedStatementExecutor - the accepted path
     return { pool: pool as unknown as Pool, executed, ends: (): number => ends };
   };
 
+  /**
+   * The accepted path's environment, supplied as the WHOLE contract for the same reason
+   * the refusal block does it: `getConnectionPool` validates `process.env` in one pass,
+   * so a case that named only the five no-default keys could be aborted by any of the
+   * other fourteen and would never reach the pool it is about. `NODE_ENV` is named
+   * because `DB_TLS_MODE: 'disabled'` depends on the runtime not being production.
+   */
   const stubMySqlEnvironment = (): void => {
-    vi.stubEnv('DB_HOST', '127.0.0.1');
-    vi.stubEnv('DB_USER', 'connection_suite_user');
-    vi.stubEnv('DB_PASSWORD', 'connection_suite_password');
-    vi.stubEnv('DB_TLS_MODE', 'disabled');
-    vi.stubEnv('DB_DIALECT', 'MySQL');
+    stubConfigurationContract({
+      DB_HOST: '127.0.0.1',
+      DB_USER: 'connection_suite_user',
+      DB_PASSWORD: 'connection_suite_password',
+      DB_TLS_MODE: 'disabled',
+      DB_DIALECT: 'MySQL',
+      NODE_ENV: 'test',
+    });
   };
 
   beforeEach(() => {

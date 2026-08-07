@@ -1792,6 +1792,121 @@ describe('createRequestScope', () => {
     expect(error.message).toContain('empty or contains only whitespace');
   });
 
+  it('★★★ admits a DEFAULT port form of an authorized host, and publishes the ENTRY not the request', async () => {
+    // FINDING F-10. Runtime acceptance testing drove `Host: shop.example.com:443` against a
+    // deployment that authorized `shop.example.com` and measured a 400. It filed the result as an
+    // operational note - "exact-match/fail-closed is the documented posture and an operator can list
+    // the port form" - and both halves of that are true. It is still the wrong answer, because
+    // `shop.example.com:443` and `shop.example.com` name ONE authority under RFC 3986 section 3.2.3,
+    // and a hardening control that refuses an authority the deployment DID authorize over an
+    // insignificant spelling difference teaches an operator to widen the list. A list widened to
+    // silence a false refusal is worse security than the false refusal was.
+    const root = await bootWith(makeExecutor(), FEED_ENVIRONMENT);
+
+    for (const candidate of [`${FEED_HOST}:443`, `${FEED_HOST}:80`, `  ${FEED_HOST}:443  `]) {
+      const scope = await root.createRequestScope({ now: PINNED_INSTANT, feedHost: candidate });
+
+      expect(scope.productFeedPort, candidate).toBeDefined();
+      // AND THE PUBLISHED AUTHORITY IS THE DEPLOYMENT'S OWN SPELLING. The host reaches the five URL
+      // sites of a merchant feed, so it must be an entry the operator wrote - never the caller's
+      // spelling, and never a form the fold invented. The fold decides MEMBERSHIP only.
+      expect(scope.feedCriteria?.feedHost, candidate).toBe(FEED_HOST);
+    }
+  });
+
+  it('★★★ admits the BARE form when the deployment listed the port form, and publishes THAT entry', async () => {
+    // The fold is symmetric, so the remedy the finding named - "an operator can list the port form" -
+    // keeps working and now also admits the bare spelling. The answer is still the entry, which here
+    // CARRIES the port: a deployment that authorized `:443` gets `:443` written into its feed.
+    const root = await bootWith(
+      makeExecutor(),
+      Object.freeze({ ...BASE_ENVIRONMENT, FEED_ALLOWED_HOSTS: `${FEED_HOST}:443` }),
+    );
+
+    for (const candidate of [FEED_HOST, `${FEED_HOST}:443`, FEED_HOST.toUpperCase()]) {
+      const scope = await root.createRequestScope({ now: PINNED_INSTANT, feedHost: candidate });
+
+      expect(scope.feedCriteria?.feedHost, candidate).toBe(`${FEED_HOST}:443`);
+    }
+  });
+
+  it('★★★ keeps every NON-default port significant, and every other host refused', async () => {
+    // THE FOLD MUST NOT BE A LOOSENING, AND THIS IS WHERE THAT IS PROVED RATHER THAN ASSERTED.
+    // Only `:80` and `:443` are folded, and the fold removes ONLY a default-port suffix - so the host
+    // half must still be equal for a candidate to be admitted. Every hostile candidate the acceptance
+    // run refused is re-driven here WITH a default port attached, because attaching one is the cheapest
+    // thing an attacker can do to a rejected value.
+    const root = await bootWith(makeExecutor(), FEED_ENVIRONMENT);
+
+    for (const candidate of [
+      // A port the deployment never authorized. This is the whole of what the fold does not admit.
+      `${FEED_HOST}:8443`,
+      `${FEED_HOST}:8080`,
+      `${FEED_HOST}:0`,
+      // A different host, with and without a default port.
+      'evil.example.com',
+      'evil.example.com:443',
+      // The suffix attack, which a naive `endsWith` would admit.
+      `${FEED_HOST}.evil.com`,
+      `${FEED_HOST}.evil.com:443`,
+      // A prefix of an authorized host is not that host.
+      'shop.example.co:443',
+      // Loopback, which no deployment authorized here.
+      '127.0.0.1:443',
+      // A newline-injected candidate: `parseHostAuthority` cannot parse it, so it folds to itself and
+      // stays reachable by exact match alone - which it never is.
+      `${FEED_HOST}\n${FEED_HOST}:443`,
+      `${FEED_HOST}:443\r\nX-Injected: 1`,
+      // A URL is not a bare authority, whatever port it names.
+      `https://${FEED_HOST}:443/feed/product`,
+      // Two ports are not one port.
+      `${FEED_HOST}:443:443`,
+    ]) {
+      const error = await rejectionOf(() => root.createRequestScope({ feedHost: candidate }));
+
+      expect(error.name, candidate).toBe('UntrustedFeedHostError');
+      expect(error.message, candidate).toContain('authorized-host list');
+    }
+  });
+
+  it('★★★ folds nothing into an EMPTY allow-list, so the default deployment still serves no feed', async () => {
+    // The fold runs BEFORE membership and changes only what two spellings are compared as. An empty
+    // list has nothing to compare against, so a default-port candidate is refused for the same reason
+    // and with the same actionable message as any other - the fail-closed default is untouched by
+    // the fold.
+    const root = await bootWith(makeExecutor());
+
+    for (const candidate of [FEED_HOST, `${FEED_HOST}:443`, `${FEED_HOST}:80`]) {
+      const error = await rejectionOf(() => root.createRequestScope({ feedHost: candidate }));
+
+      expect(error.name, candidate).toBe('UntrustedFeedHostError');
+      expect(error.message, candidate).toContain('authorizes no feed host at all');
+      expect(error.message, candidate).toContain('FEED_ALLOWED_HOSTS');
+    }
+  });
+
+  it('★★★ authorizes a NON-default port when the deployment lists it, and only then', async () => {
+    // The other side of the significance claim: `:8443` is refused above against a portless list and
+    // admitted here against a list that names it, byte for byte. Nothing was folded either way.
+    const root = await bootWith(
+      makeExecutor(),
+      Object.freeze({ ...BASE_ENVIRONMENT, FEED_ALLOWED_HOSTS: `${FEED_HOST}:8443` }),
+    );
+
+    const scope = await root.createRequestScope({
+      now: PINNED_INSTANT,
+      feedHost: `${FEED_HOST}:8443`,
+    });
+
+    expect(scope.feedCriteria?.feedHost).toBe(`${FEED_HOST}:8443`);
+
+    // And the bare form is NOT admitted by it, because `:8443` is part of the authority.
+    const error = await rejectionOf(() => root.createRequestScope({ feedHost: FEED_HOST }));
+
+    expect(error.name).toBe('UntrustedFeedHostError');
+    expect(error.message).toContain('authorized-host list');
+  });
+
   it('resolves both construction cycles before returning, so no wiring fault is reachable', async () => {
     const root = await bootWith(makeExecutor());
 

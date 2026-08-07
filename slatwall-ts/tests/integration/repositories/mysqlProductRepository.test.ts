@@ -98,6 +98,10 @@ function aProductRepository(
 }
 import { MysqlProductRepository } from '../../../src/repositories/mysql/mysqlProductRepository.js';
 import { MysqlProductTypeRepository } from '../../../src/repositories/mysql/mysqlProductTypeRepository.js';
+// The cross-loader cascade cases (F-08) run the REAL service over BOTH loaders' output, because the
+// finding was a MONEY divergence and only the service turns an object graph into a selected rate.
+import { PriceGroupService } from '../../../src/services/priceGroupService.js';
+import { makePriceGroupFixtures } from '../../fixtures/priceGroupFixtures.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 // The aggregate cascade is driven by the product's own sku collection, so the cascade cases have
 // to build SKUs. Nothing else in this file constructs one.
@@ -448,6 +452,100 @@ function requireProduct(product: Product | undefined): Product {
   }
 
   return product;
+}
+
+/**
+ * A value the cross-loader cases refuse to proceed without, with the reason named.
+ *
+ * Distinct from {@link requireProduct} because these cases assert about product TYPES and about a
+ * rate, and a bare "expected a product" would misreport which of the two loaders came back empty.
+ *
+ * @param value what a loader or accessor answered.
+ * @param what a description used in the failure message.
+ * @returns the value, narrowed.
+ * @throws When the value is absent.
+ */
+function requirePresent<T>(value: T | undefined, what: string): T {
+  if (value === undefined) {
+    throw new Error(`Expected ${what} to be present, but it was undefined.`);
+  }
+
+  return value;
+}
+
+/**
+ * The identifiers of a product type and every ancestor above it, leaf first.
+ *
+ * IT WALKS POINTERS, NOT `productTypeIDPath`, WHICH IS THE WHOLE VALUE OF IT (F-08). The stored path
+ * was CORRECT throughout the finding - what was missing was the object graph the price-group cascade
+ * climbs [model/service/PriceGroupService.cfc:L66-L79] - so an assertion built on the path would have
+ * passed while the defect stood. This one cannot: it can only report what `getParentProductType()`
+ * actually returns.
+ *
+ * BOUNDED, because a cyclic chain is a reachable state on corrupt data and a test must fail rather
+ * than hang. The ceiling is far above any real taxonomy, and reaching it is itself a failure.
+ *
+ * @param productType the leaf to walk up from; `undefined` answers an empty array.
+ * @returns the identifiers, leaf first, root last.
+ * @throws When the walk exceeds the bound, which means the chain cycles.
+ */
+function ancestryIdentifiersOf(productType: ProductType | undefined): readonly string[] {
+  const identifiers: string[] = [];
+  let current: ProductType | undefined = productType;
+
+  while (current !== undefined) {
+    if (identifiers.length > 32) {
+      throw new Error(
+        `The product-type ancestry did not terminate within 32 hops: ${identifiers.join(', ')}.`,
+      );
+    }
+
+    identifiers.push(current.getProductTypeID());
+    current = current.getParentProductType();
+  }
+
+  return identifiers;
+}
+
+/**
+ * A `PriceGroupService` for the cascade cases, wired to ports that REFUSE.
+ *
+ * REFUSING RATHER THAN ANSWERING, FOR THE REASON {@link UNREACHED_PRODUCT_TYPE_PORT} GIVES. All
+ * three cascade methods are synchronous and consult no collaborator - AAP 0.4.2 declares them so - and
+ * `getRateForProductTypeBasedOnPriceGroup` is the one these cases drive. Wiring doubles that throw if
+ * consulted means the cases PROVE that property instead of assuming it, and it means a future change
+ * that quietly reached for a repository from inside the cascade would fail here rather than pass with
+ * a plausible answer.
+ *
+ * @returns the service.
+ */
+function aCascadeOnlyPriceGroupService(): PriceGroupService {
+  const refuse = (member: string): never => {
+    throw new Error(`the cascade must not reach a collaborator: ${member}`);
+  };
+
+  return new PriceGroupService(
+    {
+      getAccountSubscriptionPriceGroups: () => refuse('getAccountSubscriptionPriceGroups'),
+      getPriceGroup: () => refuse('getPriceGroup'),
+      getPriceGroupRate: () => refuse('getPriceGroupRate'),
+      savePriceGroup: () => refuse('savePriceGroup'),
+      savePriceGroupRate: () => refuse('savePriceGroupRate'),
+      deletePriceGroup: () => refuse('deletePriceGroup'),
+    },
+    {
+      getAttributeSets: () => refuse('getAttributeSets'),
+      loadDataFromFile: () => refuse('loadDataFromFile'),
+      searchProductsByProductType: () => refuse('searchProductsByProductType'),
+      getProductByProductID: () => refuse('getProductByProductID'),
+      saveProduct: () => refuse('saveProduct'),
+      deleteProduct: () => refuse('deleteProduct'),
+    },
+    {
+      getAccountPriceGroups: () => refuse('getAccountPriceGroups'),
+      getPriceGroupPageRecords: () => refuse('getPriceGroupPageRecords'),
+    },
+  );
 }
 
 /**
@@ -1211,6 +1309,27 @@ const PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE: SqlRow = Object.freeze({
  * Fourteen UNPREFIXED columns - this is the sibling adapter's own projection, not the product
  * graph's aliased one.
  */
+/**
+ * The LEAF product-type row as the STANDALONE loader reads it, un-prefixed.
+ *
+ * IT IS THE SAME PHYSICAL ROW AS THE `pt_`-PREFIXED HALF OF
+ * {@link PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE}, AND THAT IS THE ENTIRE POINT (F-08). The finding
+ * was two loaders answering DIFFERENT OBJECT GRAPHS - and therefore different money - for one row of
+ * one table, so the cross-loader cases have to read the same values through both projections. The
+ * column sets are byte-identical: `PRODUCT_TYPE_READ_COLUMNS` in the product adapter and
+ * `PRODUCT_TYPE_PROJECTION` in the product-type adapter list the same fourteen columns of
+ * `SwProductType`, differing only in the alias prefix, so this constant is derived from the graph
+ * fixture by stripping `pt_` rather than restated by hand - a hand-restated copy could drift and the
+ * cases would then be comparing two fixtures instead of two loaders.
+ */
+const LEAF_PRODUCT_TYPE_ROW: SqlRow = Object.freeze(
+  Object.fromEntries(
+    Object.entries(PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE)
+      .filter(([column]: readonly [string, unknown]) => column.startsWith('pt_'))
+      .map(([column, value]: readonly [string, unknown]) => [column.slice('pt_'.length), value]),
+  ),
+);
+
 const ROOT_PRODUCT_TYPE_ROW: SqlRow = Object.freeze({
   productTypeID: ROOT_PRODUCT_TYPE_ID,
   productTypeIDPath: ROOT_PRODUCT_TYPE_ID,
@@ -1392,6 +1511,16 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         // seventh member for the same reason `cascadeTransientSkus` below is: it exists to satisfy
         // an internal ordering obligation.
         'readSalePriceDetails',
+        // The product-type ancestry step of the read path, and a PRIVATE HELPER for exactly the same
+        // reason as its neighbour above: `src/domain/entities/productType.ts` takes
+        // `parentProductType` as a constructed-with value, so the parent has to be resolved BEFORE a
+        // `ProductType` constructor runs and there is no later moment at which one could be attached.
+        // It exists because the price-group cascade climbs `getParentProductType()` pointer by pointer
+        // [model/service/PriceGroupService.cfc:L66-L79] and this adapter used to hydrate that pointer
+        // as absent, so the cascade could not reach an ancestor's rate - runtime acceptance testing
+        // measured 17.99 charged where 20.00 was configured (finding F-08). Nothing outside this class
+        // may drive it, and the six asserted above are still the port.
+        'readProductTypeParents',
         // The batching branch of `readSkus`, and a PRIVATE HELPER for the same reason: it decides
         // whether the two identifier sets fit one statement or have to be split into product-keyed
         // and default-SKU-keyed batches.
@@ -2430,29 +2559,52 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         [PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE],
         [],
         [ROOT_PRODUCT_TYPE_ROW],
+        [ROOT_PRODUCT_TYPE_ROW],
       ]);
       const repository = aProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
-      expect(executor.calls).toHaveLength(2);
+      expect(executor.calls).toHaveLength(3);
+
+      // THE PARENT ARRIVED, WHICH IS THE FINDING ITSELF. The leaf's own row named
+      // `ROOT_PRODUCT_TYPE_ID` in `pt_parentProductTypeID` all along - the projection has always
+      // carried that column - and the hydration factory used to discard it.
+      const productType = product.getProductType();
+      expect(productType?.getParentProductType()?.getProductTypeID()).toBe(ROOT_PRODUCT_TYPE_ID);
+
+      // Read BY IDENTIFIER, bound, never interpolated - the same discipline every read here keeps.
+      const parentRead = statementAt(executor.calls, 2);
+      expect(parentRead.params).toStrictEqual([ROOT_PRODUCT_TYPE_ID]);
+      expect(parentRead.sql).toContain('FROM SwProductType');
+      expect(parentRead.sql).not.toContain(ROOT_PRODUCT_TYPE_ID);
 
       // ANSWERS rather than raising, and answers the ROOT's system code - which is what
       // [model/entity/ProductType.cfc:L110-L115] resolves through
       // `getProductType(listFirst(getProductTypeIDPath())).getSystemCode()`.
       await expect(product.getBaseProductType()).resolves.toBe(ROOT_PRODUCT_TYPE_SYSTEM_CODE);
 
-      // The root was read by IDENTIFIER, bound, never interpolated - and it is the first element
-      // of the STORED PATH, not a parent pointer walked in memory.
-      expect(executor.calls).toHaveLength(3);
-      const rootRead = statementAt(executor.calls, 2);
+      // The root was read BY IDENTIFIER, bound, never interpolated - and it is the first
+      // element of the STORED PATH, not a parent pointer walked in memory.
+      expect(executor.calls).toHaveLength(4);
+      const rootRead = statementAt(executor.calls, 3);
       expect(rootRead.params).toStrictEqual([ROOT_PRODUCT_TYPE_ID]);
       expect(rootRead.sql).toContain('FROM SwProductType');
       expect(rootRead.sql).not.toContain(ROOT_PRODUCT_TYPE_ID);
     });
 
-    it('★ costs NO extra statement for a product type that carries its own systemCode', async () => {
-      // The refusing port is what makes that claim airtight now.
+    it('★ getBaseProductType() costs NO extra statement for a product type that carries its own systemCode', async () => {
+      // The complement, and it is not redundant: it proves the ROOT read is a FALLBACK PATH rather than
+      // an unconditional extra read. A base product type answers from its own column, so no
+      // product-type statement is issued ON THAT ACCOUNT at all.
+      //
+      // THE CLAIM IS ABOUT `getBaseProductType()`, SO THE COUNT IS PINNED ON BOTH SIDES OF IT. A
+      // single total would cover the entity's root read AND the adapter's parent read together, and
+      // could no longer distinguish them: the adapter resolves the parent this row DECLARES
+      // unconditionally and by design, because the price-group cascade climbs those pointers
+      // [model/service/PriceGroupService.cfc:L66-L79] and hydrating them as absent selects the global
+      // rate where an ancestor configured one. So the count is asserted before the accessor and
+      // again after it, unchanged, which is what "costs no extra statement" means.
       const executor = new RecordingExecutor([
         [
           {
@@ -2461,13 +2613,19 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
           },
         ],
         [],
+        [ROOT_PRODUCT_TYPE_ROW],
       ]);
       const repository = aProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
+      // The graph, the SKU read that matches nothing, and the parent read - and nothing else.
+      expect(executor.calls).toHaveLength(3);
+
       await expect(product.getBaseProductType()).resolves.toBe(ROOT_PRODUCT_TYPE_SYSTEM_CODE);
-      expect(executor.calls).toHaveLength(2);
+
+      // THE ASSERTION THAT CARRIES THIS CASE: the accessor added no statement of its own.
+      expect(executor.calls).toHaveLength(3);
     });
 
     it('★ uses the WIRED product-type port, which is now the ONLY port it can use', async () => {
@@ -2495,15 +2653,159 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
-      await expect(product.getBaseProductType()).resolves.toBe(ROOT_PRODUCT_TYPE_SYSTEM_CODE);
+      // TWO READS THROUGH THE WIRED PORT NOW, AND THEY ARE DIFFERENT QUESTIONS ASKED OF THE SAME
+      // IDENTIFIER (F-08). The FIRST is the adapter's, during hydration: `readProductTypeParents`
+      // resolving the `pt_parentProductTypeID` this row declares, so that the price-group cascade can
+      // climb `getParentProductType()` [model/service/PriceGroupService.cfc:L66-L79] - it could not
+      // before, and the consequence was 17.99 charged where 20.00 was configured on the ancestor. The
+      // SECOND is the entity's, inside `getBaseProductType()`, reading the FIRST ELEMENT OF THE STORED
+      // PATH [model/entity/ProductType.cfc:L112]. They coincide on one identifier only because this
+      // fixture's tree is two deep; the case asserted a single-element array before the adapter had a
+      // parent read at all.
       expect(wiredReads).toStrictEqual([ROOT_PRODUCT_TYPE_ID]);
+
+      // And the parent the substitute answered is the parent the entity carries.
+      expect(product.getProductType()?.getParentProductType()?.getProductTypeID()).toBe(
+        ROOT_PRODUCT_TYPE_ID,
+      );
+
+      await expect(product.getBaseProductType()).resolves.toBe(ROOT_PRODUCT_TYPE_SYSTEM_CODE);
+      expect(wiredReads).toStrictEqual([ROOT_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID]);
+
+      // UNCHANGED, and that is the point of a double: neither read touched the executor, so a wired
+      // port's answer stays distinguishable from a row-driven one.
       expect(executor.calls).toHaveLength(2);
     });
 
-    it('★★★ CANNOT BE CONSTRUCTED without a product-type port at all, and the compiler is the one that says so', () => {
-      // Expression it guards ever starts compiling, so each one pins a construction the adapter
-      // must keep refusing.
+    // THE TWO LOADERS MUST SELECT THE SAME RATE
+    //
+    // The finding, in one line: a `ProductType` reached through a `Product` had no
+    // `parentProductType`, so the third level of the price-group cascade - which climbs
+    // `currentProductType.getParentProductType()` pointer by pointer
+    // [model/service/PriceGroupService.cfc:L66-L79], a MUST-PRESERVE behaviour under AAP 0.1.1 -
+    // stopped at the first hop. An ancestor's rate is therefore never seen and the GLOBAL rate is
+    // selected in its place - a global 17.99 where the ancestor configured 20.00, on the same SKU and
+    // the same price group - while the standalone product-type loader reads the SAME row from the
+    // SAME table and selects the ancestor's rate correctly.
+    //
+    // The two cases below are the pairing the finding asked for, and they are deliberately at
+    // different grains. The first compares the two loaders' OBJECT GRAPHS, which is where the defect
+    // physically was. The second runs the real `PriceGroupService` over both of them and compares the
+    // RATE, which is where the money was - and it is not redundant, because a chain can be present
+    // and still be the wrong chain.
+
+    it('★★★ hydrates the SAME parent chain the standalone product-type loader does (F-08)', async () => {
+      // Two loaders, two executors, one row set. The product path gets the graph read, the SKU read
+      // that matches nothing, and the parent read; the standalone path gets its own row read and then
+      // its ancestry read from `productTypeIDPath`.
+      const productExecutor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE],
+        [],
+        [ROOT_PRODUCT_TYPE_ROW],
+      ]);
+      const standaloneExecutor = new RecordingExecutor([
+        [LEAF_PRODUCT_TYPE_ROW],
+        [ROOT_PRODUCT_TYPE_ROW],
+      ]);
+
+      const product = requireProduct(
+        await aProductRepository(productExecutor, TEST_AUDIT_ACTOR).getProductByProductID(
+          PERSISTED_PRODUCT_ID,
+        ),
+      );
+      const throughProduct = product.getProductType();
+      const throughLoader = await new MysqlProductTypeRepository(
+        standaloneExecutor,
+        TEST_AUDIT_ACTOR,
+      ).getProductTypeByProductTypeID(LEAF_PRODUCT_TYPE_ID);
+
+      // Both answered, and both answered the SAME leaf.
+      expect(throughProduct?.getProductTypeID()).toBe(LEAF_PRODUCT_TYPE_ID);
+      expect(throughLoader?.getProductTypeID()).toBe(LEAF_PRODUCT_TYPE_ID);
+
+      // AND THE CHAINS ABOVE THEM ARE ELEMENT-FOR-ELEMENT EQUAL. Written as a walk rather than a
+      // single `getParentProductType()` comparison so that a chain which is merely one hop long
+      // cannot pass: the assertion is over the WHOLE ancestry, terminator included.
+      expect(ancestryIdentifiersOf(throughProduct)).toStrictEqual([
+        LEAF_PRODUCT_TYPE_ID,
+        ROOT_PRODUCT_TYPE_ID,
+      ]);
+      expect(ancestryIdentifiersOf(throughLoader)).toStrictEqual(
+        ancestryIdentifiersOf(throughProduct),
+      );
+    });
+
+    it('★★★ selects the ANCESTOR rate through BOTH loaders, not the global rate (F-08)', async () => {
+      const productExecutor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE],
+        [],
+        [ROOT_PRODUCT_TYPE_ROW],
+      ]);
+      const standaloneExecutor = new RecordingExecutor([
+        [LEAF_PRODUCT_TYPE_ROW],
+        [ROOT_PRODUCT_TYPE_ROW],
+      ]);
+
+      const product = requireProduct(
+        await aProductRepository(productExecutor, TEST_AUDIT_ACTOR).getProductByProductID(
+          PERSISTED_PRODUCT_ID,
+        ),
+      );
+      const throughProduct = requirePresent(
+        product.getProductType(),
+        'the product type reached through the product',
+      );
+      const throughLoader = requirePresent(
+        await new MysqlProductTypeRepository(
+          standaloneExecutor,
+          TEST_AUDIT_ACTOR,
+        ).getProductTypeByProductTypeID(LEAF_PRODUCT_TYPE_ID),
+        'the product type reached through the standalone loader',
+      );
+
+      // The rate is registered against the ROOT ONLY - `hasProductType` matches by identifier, so a
+      // bare stub carrying that identifier is the same product type as far as the rate is concerned.
+      // The price group also carries a GLOBAL rate, which is what the cascade fell through to while
+      // the chain was missing, so this fixture can distinguish the two answers.
+      const graph = makePriceGroupFixtures({
+        idPrefix: 'f08-',
+        productTypeLevelRateProductTypes: [
+          new ProductType({ productTypeID: ROOT_PRODUCT_TYPE_ID }),
+        ],
+      });
+      const service = aCascadeOnlyPriceGroupService();
+
+      expect(graph.productTypeLevelRate.hasProductType(throughProduct)).toBe(false);
+      expect(graph.productTypeLevelRate.hasProductType(throughLoader)).toBe(false);
+
+      // THE ASSERTION THE FINDING ASKED FOR, STATED TWICE OVER ONE EXPECTED VALUE.
+      expect(
+        service.getRateForProductTypeBasedOnPriceGroup(throughProduct, graph.childPriceGroup),
+      ).toBe(graph.productTypeLevelRate);
+      expect(
+        service.getRateForProductTypeBasedOnPriceGroup(throughLoader, graph.childPriceGroup),
+      ).toBe(graph.productTypeLevelRate);
+
+      // AND THE NEGATIVE CONTROL, so that "they agree" cannot be satisfied by both being wrong: a
+      // product type with NO chain - the exact shape this adapter used to hydrate - falls through the
+      // product-type level and takes a DIFFERENT rate.
+      const unchained = new ProductType({
+        productTypeID: LEAF_PRODUCT_TYPE_ID,
+        productTypeIDPath: `${ROOT_PRODUCT_TYPE_ID},${LEAF_PRODUCT_TYPE_ID}`,
+      });
+
+      expect(
+        service.getRateForProductTypeBasedOnPriceGroup(unchained, graph.childPriceGroup),
+      ).not.toBe(graph.productTypeLevelRate);
+    });
+
+    it('★★★ CANNOT BE CONSTRUCTED without a product-type port at all, and the compiler is the one that says so (F16)', () => {
       // THE DIRECTIVES BELOW **ARE** THE ASSERTIONS. `@ts-expect-error` fails the build if the
+      // expression it guards ever starts compiling, so each one pins a construction the adapter must
+      // keep refusing. This is the difference between "the composition root happens to pass the port"
+      // and "no construction site can omit it": the old optional-with-fallback shape compiled in both
+      // of the forms below, which is exactly how a site could silently substitute a second instance
+      // for the one the root wired.
       const executor = new RecordingExecutor([]);
 
       // No bag at all.
@@ -4500,6 +4802,96 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       expect([...resolver.calls].sort()).toStrictEqual(
         [PERSISTED_PRODUCT_ID, secondProductID].sort(),
       );
+    });
+
+    it('★★★ awaits the BATCHED prefetch ONCE, before any per-product resolution', async () => {
+      // THE FINDING THIS CLOSES. QA drove the sequenced price-group-then-promotion pass over orders
+      // of one, ten, one hundred and five hundred items and counted the statements each request
+      // executed: 32, 48, 228 and 1028. One resolution per product is faithful - the legacy entity
+      // resolved once per product at [model/entity/Product.cfc:L519] - but one STATEMENT per product is
+      // not a decision this boundary had taken, and AAP T3 requires it to take one. The prefetch is how:
+      // it is awaited ONCE with the whole product set, and the per-product resolutions then find their
+      // rows already read.
+      //
+      // ORDER IS ASSERTED, NOT INFERRED. A count cannot distinguish "prefetched then resolved" from
+      // "resolved then prefetched", and only the first order saves anything - so the calls are recorded
+      // as a sequence.
+      const order: string[] = [];
+      const prefetched: (readonly [string, readonly string[]])[][] = [];
+      const secondProductID = UNMATCHED_PRODUCT_ID;
+
+      const resolver = {
+        getSalePriceDetailsForProductSkus: (
+          productID: string,
+        ): Promise<Readonly<Record<string, SalePriceDetail>>> => {
+          order.push(`resolve:${productID}`);
+
+          return Promise.resolve({});
+        },
+        prefetchSalePriceDetailsForProducts: (
+          skuIDsByProductID: ReadonlyMap<string, readonly string[]>,
+        ): Promise<void> => {
+          order.push('prefetch');
+          prefetched.push([...skuIDsByProductID]);
+
+          return Promise.resolve();
+        },
+      };
+
+      const executor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW, { ...PRODUCT_GRAPH_ROW, p_productID: secondProductID }],
+        [SKU_ROW],
+        [SKU_OPTION_ROW],
+      ]);
+      const repository = aProductRepository(executor, TEST_AUDIT_ACTOR, {
+        salePriceResolver: resolver,
+      });
+
+      await repository.getProductsByProductID([PERSISTED_PRODUCT_ID, secondProductID]);
+
+      // ONE prefetch, and it came FIRST.
+      expect(order[0]).toBe('prefetch');
+      expect(order.filter((entry) => entry === 'prefetch')).toHaveLength(1);
+      expect(order.slice(1).sort()).toStrictEqual(
+        [`resolve:${PERSISTED_PRODUCT_ID}`, `resolve:${secondProductID}`].sort(),
+      );
+
+      // THE MAPPING IS THE PARTITION KEY, AND IT COVERS EVERY PRODUCT ABOUT TO BE RESOLVED. The
+      // reduced sale-price projection carries no owning identifier, so the batched read can only
+      // partition its rows with what this adapter already knows - and a product with no materialized
+      // SKUs must still be present, mapped to the empty list, or the batch would not cover it.
+      expect(prefetched).toHaveLength(1);
+      expect(new Map(prefetched[0] ?? [])).toStrictEqual(
+        new Map<string, readonly string[]>([
+          [PERSISTED_PRODUCT_ID, [PERSISTED_SKU_ID]],
+          [secondProductID, []],
+        ]),
+      );
+    });
+
+    it('★ resolves exactly as before when the collaborator offers NO prefetch', async () => {
+      // The second member is OPTIONAL, and the many construction sites in this file that build a
+      // one-method resolver are why. Its absence must change nothing: the per-product resolutions still
+      // happen, one per distinct product, and no call is attempted on a member that is not there.
+      const resolver = makeRecordingSalePriceResolver(CANNED_SALE_PRICE_DETAILS);
+      const executor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW_WITH_DEFAULT_SKU],
+        [SKU_ROW],
+        [SKU_OPTION_ROW],
+      ]);
+      const repository = aProductRepository(executor, TEST_AUDIT_ACTOR, {
+        salePriceResolver: resolver,
+      });
+
+      expect('prefetchSalePriceDetailsForProducts' in resolver).toBe(false);
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      expect((await product.getSkuSalePriceDetails(PERSISTED_SKU_ID))?.salePrice.toFixed2()).toBe(
+        '52.47',
+      );
+      expect(resolver.calls).toStrictEqual([PERSISTED_PRODUCT_ID]);
+      expect(executor.calls).toHaveLength(3);
     });
   });
 });

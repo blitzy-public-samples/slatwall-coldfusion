@@ -116,16 +116,30 @@ invariant above.
 | npm       | `10.8.2`       | `engines.npm` `">=10.8.2"` (ships with Node 20.20.2) |
 
 Node is bounded at the `20.x` line because that is the Lambda runtime this port targets, and
-`engines.node` makes a newer major fail the install rather than silently build against a runtime the
-artifact will never see. The lower bound is `20.19.0` for a specific and checkable reason:
-`eslint@10.8.0` declares an engine requirement of `^20.19.0`, so that — not preference — is why the
-baseline is `20.20.2` rather than an earlier `20.x`. `.nvmrc` and `engines.node` must always agree.
+`engines.node` **declares** that bound so a newer major cannot be used by accident without being told.
+The lower bound is `20.19.0` for a specific and checkable reason: `eslint@10.8.0` declares an engine
+requirement of `^20.19.0`, so that — not preference — is why the baseline is `20.20.2` rather than an
+earlier `20.x`. `.nvmrc` and `engines.node` must always agree.
+
+**`engines.node` warns; it does not refuse, and this file used to claim that it did.** npm enforces
+`engines` only when `engine-strict=true`, and this subtree ships **no `.npmrc`** — which is stated as a
+deliberate property below, because there is no private registry and no auth token to configure. So
+`npm ci` on a newer major prints `npm warn EBADENGINE Unsupported engine` — naming the required range
+and the running version — then installs the whole locked tree and **exits 0**. (No package count is
+quoted here on purpose; read it off the command, for the reason the packaging section gives.) A
+warning in a scrolling install log is not a gate: **checking `node -v` before you build is the
+operator's job**, and
+`.nvmrc` is the mechanism that makes it a one-command job. Adding `engine-strict=true` would turn the
+declaration into a real refusal, and it is deliberately not done: `.npmrc` would become a fourteenth
+root artifact that AAP 0.3.1's enumeration does not name, requiring the same recorded-scope-addition
+treatment `.gitignore` needed, in exchange for a check the third command below already performs.
 
 The two `nvm` lines below assume [nvm](https://github.com/nvm-sh/nvm) is installed; it is a
 prerequisite of this recipe and not something this repository provides or checks for. Any equivalent
 version manager works, as does a system Node — all that matters is that `node -v` reports a `20.x`
-release of at least `20.19.0`, which `engines.node` enforces at install time either way. If you have
-no version manager, skip the first two lines and verify the third.
+release of at least `20.19.0`. **Read that line, do not assume it**: per the paragraph above, an
+install on the wrong major warns and then succeeds, so the third command is the check, not a
+formality. If you have no version manager, skip the first two lines and run the third.
 
 ```bash
 nvm install        # honours .nvmrc                    (requires nvm)
@@ -266,7 +280,7 @@ All commands run from this directory.
 | `npm run format:check`  | `prettier --check` over an explicit, **quoted** glob list — covers TypeScript, JSON **and** Markdown, including this file. |
 | `npm run format`        | The same globs, with `--write`. Only ever from this directory.                                                             |
 | `npm test`              | `vitest run`. Single pass, never watch mode. Needs no database and no environment variables.                               |
-| `npm run test:coverage` | `vitest run --coverage`, enforcing the thresholds in `vitest.config.ts`.                                                   |
+| `npm run test:coverage` | `vitest run --coverage`, enforcing the thresholds in `vitest.config.ts`. Slower per case; see **Testing**.                 |
 | `npm run compile`       | `tsc -p tsconfig.build.json` — emits `.js`, `.d.ts` and maps for `src/**` into `build/`.                                   |
 | `npm run bundle`        | `node esbuild.config.mjs` — emits the bundled Lambda artifacts into `dist/`.                                               |
 | `npm run build`         | `typecheck` then `bundle`.                                                                                                 |
@@ -385,8 +399,13 @@ fails — a missing map, a map without embedded sources, or a marker set that ha
 success it reports the per-artifact counts:
 
 ```text
-[esbuild] Annotations recoverable from productFeedHandler.cjs.map: LEGACY-DEFECT x100, DELIBERATE DIVERGENCE x7
+[esbuild] Annotations recoverable from productFeedHandler.cjs.map: LEGACY-DEFECT xN, DELIBERATE DIVERGENCE xM
 ```
+
+`xN` and `xM` are placeholders, and that is the third time this position has taught the same lesson:
+the sample used to carry the real figures and went stale by one within a single change set, exactly as
+the paragraph above says a written total does. The counts differ per artifact — each bundle contains
+only the modules its entrypoint reaches — so read them off the command, never off this page.
 
 The `.cjs` extension is not cosmetic. `package.json` declares `"type": "module"`, so a CommonJS
 payload in a `.js` file would be loaded as ESM and throw; `outExtension: { '.js': '.cjs' }` makes the
@@ -662,15 +681,20 @@ The four pool values map one-to-one onto `mysql2` pool options. They are conserv
 to be tuned per environment and are **not targets of any kind**: the legacy system defines none, and
 none is invented here.
 
-### Optional — five keys
+### Optional — five keys, three of them conditional
+
+**"Optional" here means "has no default you must override", not "can always be left blank."** Three
+of the five carry a condition that `src/lib/config.ts` enforces as a **hard startup error**, so a
+deployment filled in from the summary alone can refuse to start. Each condition is stated in its own
+row below and at greater length in `.env.example`, which is the authority for the contract.
 
 | Key                      | Accepted values                 | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------ | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DB_TLS_MIN_VERSION`     | `TLSv1.2` (default), `TLSv1.3`  | A floor, not a selection. TLS 1.0 and 1.1 are deliberately not accepted.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `DB_TLS_CA`              | PEM certificate authority       | Supply when `DB_TLS_MODE` is `verify-ca` or `verify-identity` and the CA is not in the system trust store.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `DB_TLS_CA`              | PEM certificate authority       | **Conditionally required.** REQUIRED with `verify-ca` — that mode is defined by omitting the host-name check, so the trust anchor is the ONLY thing binding the connection to the intended server, and leaving this blank is a **hard startup error** regardless of what the system trust store holds. Optional with `verify-identity`, where the host-name check does that binding and the runtime's public root store is trusted when this is blank. Ignored with `disabled`. `.env.example` states the three cases in full.                                                                |
 | `FEED_ALLOWED_HOSTS`     | comma-separated host list       | **Required to serve the feed.** The deployment-owned allow-list the product feed's absolute URLs are built from, so a request can never choose the emitted origin. **Absent or empty means NO host is trusted and the feed route answers no document** — it fails closed, and there is no allow-all state. Entries are bare host authorities validated by the same parser `src/integrations/google/rssFeedRenderer.ts` applies to the host it publishes — one grammar, so an authorized host can never be refused at render time — with a port, when written, of 1–65535 and no leading zero. |
-| `ECB_REFERENCE_RATES`    | `CODE=rate` pairs               | Deployment-supplied conversion rates for the currency cascade's conversion step. Absent, conversions pass through unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `ECB_RATES_RETRIEVED_AT` | ISO-8601 instant, zone required | When the rates above were captured, so a stale set is visible rather than silently trusted. A zone designator (`Z` or `±HH:MM`) is mandatory, an impossible calendar date is refused rather than rolled forward, and a future instant is refused — it would make the age negative, which every staleness check reads as fresh.                                                                                                                                                                                                                                                                |
+| `ECB_REFERENCE_RATES`    | `CODE=rate` pairs               | Deployment-supplied conversion rates for the currency cascade's conversion step. Absent, conversions pass through unchanged — the amount is published as a foreign-currency price with no quote applied, reported once per resolution on the log stream and never raised to a caller. **Optional only while `ECB_RATES_RETRIEVED_AT` is unset too**: setting one without the other is a hard startup error.                                                                                                                                                                                   |
+| `ECB_RATES_RETRIEVED_AT` | ISO-8601 instant, zone required | When the rates above were captured, so a stale set is visible rather than silently trusted. A zone designator (`Z` or `±HH:MM`) is mandatory, an impossible calendar date is refused rather than rolled forward, and a future instant is refused — it would make the age negative, which every staleness check reads as fresh. **Required whenever `ECB_REFERENCE_RATES` is set**, and refused on its own: neither is optional once the other is set.                                                                                                                                         |
 
 ### Connections, and what not to commit
 
@@ -749,11 +773,13 @@ order of preference:
 Two things hold either way:
 
 - **The gate is `git ls-files`.** `git ls-files slatwall-ts` must list only hand-authored sources —
-  the root artifacts, `src/**`, `tests/**`. The root holds **thirteen** files: the twelve AAP 0.3.1
-  enumerates plus `.gitignore`, admitted as the one recorded scope exception described above. Both
-  figures are stated on purpose — the frozen figure is twelve and the committed figure is thirteen — so
-  that the difference cannot go missing behind whichever one a sentence happens to use. If it ever names
-  a path under `node_modules/`, `dist/`, `build/` or `coverage/`, or names a `.env` that is not
+  the **thirteen** root artifacts, `src/**`, `tests/**`. Thirteen, not twelve: AAP 0.3.1 enumerates
+  twelve and the committed `.gitignore` is the sanctioned thirteenth recorded above, so applying this
+  gate with the plan's number in hand would flag the very file the paragraph above exists to protect —
+  which is how it was deleted once already. `tests/traceability/legacyTestMap.ts` derives the count
+  from the frozen enumeration plus `recordedScopeAdditions` rather than restating it, so a fourteenth
+  root file is reported as drift and this sentence cannot drift from the register. If the listing ever
+  names a path under `node_modules/`, `dist/`, `build/` or `coverage/`, or names a `.env` that is not
   `.env.example`, that artifact has been committed and must be removed from the index.
 - **Check before staging, do not assume.** Run `git status --porcelain` and confirm only intended
   files under `slatwall-ts/` appear. Nothing generated is ever staged by name here; `git add`
@@ -1400,6 +1426,22 @@ so there is no interactive mode to fall into. The integration tier asserts SQL t
 binding against a capturing fake executor rather than a live server, and `tests/setup.ts` pins
 `process.env.TZ` to UTC before any suite imports a subject so the date-sensitive assertions are
 deterministic.
+
+**The per-case and per-hook allowance is set explicitly, at 30 seconds, and `test:coverage` is why
+it had to be.** `vitest.config.ts` used to override no timeout and said so; the runner's implicit
+5,000 ms default was then the only thing standing behind the heaviest read in the tree — the
+traceability ledger's whole-tree scan, which reads and scans every module under `src/**` and every
+suite under `tests/**`. Under `--coverage` the v8 instrumentation multiplies the cost of every
+character scanned, and on a four-core host that crossed the default in **two runs of six** with
+nothing wrong: a green `npm test` and a red `npm run test:coverage`, and — because a failing run
+writes no report at all — the coverage gate missing precisely when it was being asked for. Two
+changes fixed it and both are load-bearing: every read and every scan in the ledger is now
+**memoized**, so the same file is decoded once per run instead of once per case, and the whole-tree
+pass is hoisted into a `beforeAll` carrying its own explicit budget so a case is timed on its
+assertions rather than on the file system. The unit tier is nowhere near either figure. **Neither
+allowance is a performance target**: nothing asserts against them, and block `A19` of
+`tests/traceability/legacyTestMap.ts` fails any suite that reads a clock inside an `expect(`, which
+is how AAP 0.8.1's prohibition on inventing a non-functional requirement is actually enforced here.
 
 **`TEST_LIVE_DATABASE` gates nothing that exists.** No suite in this repository consults it, and
 setting it changes nothing about what any of them proves — the seven repository suites each say so in

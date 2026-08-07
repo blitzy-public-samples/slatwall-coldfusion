@@ -87,6 +87,12 @@ const ENGINE_APPLIED_TYPES: readonly PromotionAppliedType[] = [
   'orderFulfillment',
 ];
 
+// SCHEMA CONTINUITY IS BINDING [model/entity/PromotionApplied.cfc:L49]: the port reads and writes
+// `SwPromotionApplied` unchanged, with no migration, no rename, no new table and no column change.
+// The name is not held in a local constant here, because a constant can only be compared with
+// itself; tests/traceability/legacyTestMap.ts block A30 holds the shipped source to the frozen
+// `table=` attribute instead.
+
 /**
  * The four `fkcolumn` values, verbatim, keyed by the property that declares each.
  *
@@ -271,6 +277,13 @@ describe('the ported surface, and the six helpers deliberately dropped', () => {
       expect(members).not.toContain(invented);
     }
   });
+
+  // C5 schema continuity - the physical name is `SwPromotionApplied` and the entity name
+  // `SlatwallPromotionApplied` [model/entity/PromotionApplied.cfc:L49] - is checked against the
+  // shipped source in tests/traceability/legacyTestMap.ts block A30, which derives both from the
+  // frozen `table=` / `entityname=` attributes for all 18 entities. Restating them here as a
+  // constant and asserting it back proved only that this file can hold its own literals; the
+  // `getTableName` half is already covered by the metadata case above.
 
   it('carries no hb_permission-derived member, because the component declares none', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L49]: this component declares no
@@ -603,7 +616,13 @@ describe('the three order-side foreign keys are opaque identifiers with getters 
   it('keeps the lowercase-f orderfulfillmentID column spelling distinct from the accessor', () => {
     // CFML parity [model/entity/PromotionApplied.cfc:L60]: the fkcolumn is spelled
     // `orderfulfillmentID` with a LOWERCASE f, unlike orderItemID (L59) and orderID (L61).
-    // Preserved verbatim as a schema contract.
+    // Preserved verbatim as a schema contract. The COLUMN spellings are not restated here and
+    // compared with themselves - `LEGACY_FK_COLUMNS` is authored in this file, so that loop could
+    // not notice a target module mis-casing the join. Both halves are read from the frozen
+    // component and from the emitted SQL in tests/traceability/legacyTestMap.ts block A30, which
+    // also shows the lowercase-f owning column and the capitalised far-side column meeting in the
+    // same live join. What IS checkable from here is the accessor this class publishes, which is
+    // camel-cased from the PROPERTY name `orderFulfillment` rather than from the column:
     expect(prototypeMembers()).toContain('getOrderFulfillmentID');
     expect(prototypeMembers()).not.toContain('getOrderfulfillmentID');
 
@@ -916,7 +935,7 @@ describe('removePromotion deletes by index and clears the near side unconditiona
   });
 
   it('removes the correct instance when two unsaved rows share the empty key', () => {
-    // The reference-identity fallback. Both rows have `promotionAppliedID === ''`, so a
+    // The reference-identity fallback. Both rows have `promotionAppliedID  ''`, so a
     // primary-key comparison alone would conflate them and remove whichever came first.
     const promotion = aPromotion('p-1');
     const firstUnsaved = aPromotionApplied();

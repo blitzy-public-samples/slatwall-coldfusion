@@ -270,7 +270,28 @@ export type UnresolvedReason =
   | 'productNotFound'
   | 'skuNotFound'
   | 'priceGroupNotFound'
-  | 'priceGroupRateNotFound';
+  | 'priceGroupRateNotFound'
+  /**
+   * One of the three currency accessors answered nothing for the currency the request named.
+   *
+   * ADDED SO THAT ABSENCE COULD STOP BEING AN OMITTED KEY (finding F-05). It is the reason on the
+   * false arm of {@link OptionalSerializedCurrencyPrice}, and it is a NINTH token rather than a reuse
+   * of one above because none of them is true of this state: the SKU was found, the currency code was
+   * well formed, and nothing was "not found" in the identifier sense - the SKU simply carries no price
+   * for that currency.
+   *
+   * ⚠ IT DELIBERATELY DOES NOT SAY WHICH OF THE TWO LEGACY CAUSES APPLIED. The currency may be absent
+   * from `Sku.getCurrencyDetails()` [model/entity/Sku.cfc:L270], or present with the `listPrice` /
+   * `renewalPrice` sub-key unset [model/entity/Sku.cfc:L276, L282]. The entity's own accessors answer the same nothing
+   * either way, so a token per cause would be this tier asserting a distinction the published surface
+   * does not make. One token, one observable fact.
+   *
+   * ⚠ AND IT IS NEVER AN `outcome: 'unresolved'` REASON. A miss here is a successful answer about a
+   * SKU that was found, so it travels inside the `currencyPrice` arm; reporting it as `unresolved`
+   * would conflate "this SKU has no GBP price" with "there is no such SKU", which is the conflation
+   * the five identifier tokens above exist to prevent.
+   */
+  | 'noPriceForCurrencyCode';
 
 /**
  * A monetary value on the wire.
@@ -353,6 +374,36 @@ export type OptionalSerializedPriceGroupRate =
   | { readonly resolved: false; readonly reason: UnresolvedReason };
 
 /**
+ * A currency-specific price, or the documented absence of one.
+ *
+ * IT EXISTS BECAUSE SECTION 2 OF THIS FILE FORBIDS REPRESENTING THE ABSENCE AS AN OMITTED KEY, in
+ * as many words. The shape is deliberately IDENTICAL to
+ * {@link OptionalSerializedPriceGroupRate} - same `resolved` discriminator, same `reason` on the false
+ * arm - rather than a new convention: a consumer that already narrows a rate narrows this the same way,
+ * and this file gains no second vocabulary for the same idea.
+ *
+ * ⚠ THE `reason` IS SINGULAR ON PURPOSE, AND IT CLAIMS NO MORE THAN IS KNOWN. Two legacy causes produce
+ * a miss - the currency may be absent from the SKU's map [model/entity/Sku.cfc:L270], or present with
+ * the `listPrice` / `renewalPrice` sub-key unset [model/entity/Sku.cfc:L276, L282] - and the published accessor answers the
+ * same nothing either way. Reporting which one applied would mean re-implementing the entity's second
+ * key-existence check at this tier, which this module does not do for any other read, so
+ * `noPriceForCurrencyCode` names the observable fact and stops there. Both causes therefore produce a
+ * BYTE-IDENTICAL false arm, and the suite asserts that identity directly.
+ *
+ * THE TOKEN IS A BOUNDARY CHOICE, AND SO IS EVERY ALTERNATIVE TO IT. The accessor's contract carries
+ * no reason channel, but it carries no ABSENCE channel either: `Money | undefined` says nothing about
+ * JSON, so every wire representation of that `undefined` is decided here - an omitted key as much as
+ * a discriminator. Two things decide it. SECTION 2 of this file forbids the omitted key outright and
+ * names "the `resolved: false` arm" as the alternative; and {@link OptionalSerializedPriceGroupRate}
+ * already publishes an absent rate as `resolved: false` WITH a reason, so the same shape leaves this
+ * file one convention rather than two. The token claims nothing about cause, and it never appears as
+ * an `outcome: 'unresolved'` reason.
+ */
+export type OptionalSerializedCurrencyPrice =
+  | { readonly resolved: true; readonly price: SerializedMoney }
+  | { readonly resolved: false; readonly reason: UnresolvedReason };
+
+/**
  * What one operation produced.
  */
 export type PriceResolutionResult =
@@ -363,14 +414,28 @@ export type PriceResolutionResult =
   /**
    * One of the three currency accessors, whose absence is load-bearing.
    *
-   * Both legacy causes of a miss produce the same absence, deliberately: the currency may be
-   * absent from the SKU's map [model/entity/Sku.cfc:L270], or present with the `listPrice` /
-   * `renewalPrice` sub-key unset [model/service/PriceGroupService.cfc:L276].
+   * `price` IS NEVER OMITTED ON A MISS, and never `0`, never `null` and never a sentinel object.
+   * AAP 0.4.2 declares all three accessors `Money | undefined` and AAP 0.9.2 names preserving that
+   * `undefined` the single highest-consequence parity check in the plan, so the negatives are the
+   * contract. The positive half is this file's own SECTION 2, which forbids "an omitted key that a
+   * consumer would then default": an omitted `price` member is exactly that, so a miss states its
+   * absence instead - `{"outcome":"currencyPrice","price":{"resolved":false,...}}`.
+   *
+   * The remedy keeps every negative and removes the inference: `price` is now
+   * {@link OptionalSerializedCurrencyPrice}, ALWAYS PRESENT, carrying `resolved: true` with the value or
+   * `resolved: false` with a reason. It is not a "sentinel" in the sense the old sentence rejected - the
+   * objection there was to a magic monetary value, such as a zero or an empty `Money`, and this is a
+   * discriminator on a member that is never itself a monetary quantity. It is also not a new
+   * convention: a rate publishes its absence identically, so a consumer learns one narrowing, not two.
+   *
+   * BOTH LEGACY CAUSES OF A MISS PRODUCE THE SAME ABSENCE, deliberately: the currency may be absent
+   * from the SKU's map [model/entity/Sku.cfc:L270], or present with the `listPrice` / `renewalPrice`
+   * sub-key unset [model/entity/Sku.cfc:L276, L282]. The published accessor answers the same nothing either way, and
+   * distinguishing them here would mean re-implementing its second key-existence check at this tier -
+   * which is why the false arm carries ONE reason token.
    */
-  | { readonly outcome: 'currencyPrice'; readonly price?: SerializedMoney | undefined }
-  /**
-   * The best-price-group report [model/service/PriceGroupService.cfc:L343-L362].
-   */
+  | { readonly outcome: 'currencyPrice'; readonly price: OptionalSerializedCurrencyPrice }
+  /** The best-price-group report [model/service/PriceGroupService.cfc:L343-L362]. */
   | {
       readonly outcome: 'bestPriceGroupDetails';
       readonly price: SerializedMoney;
@@ -689,8 +754,28 @@ function serializeOptionalMoney(value: Money | undefined): SerializedMoney | und
 }
 
 /**
- * Project a rate onto the wire. Reads the entity's own accessors and computes nothing.
+ * Project a currency accessor's answer onto the wire, with absence stated rather than omitted.
+ *
+ * THIS REPLACED A BARE {@link serializeOptionalMoney} AT THE THREE ACCESSOR SITES (finding F-05).
+ * That helper answers `undefined`, and an `undefined` member is DROPPED by `JSON.stringify` - which is
+ * precisely the omitted-then-defaulted field SECTION 2 forbids. Runtime acceptance testing measured the
+ * consequence as `200 {"outcome":"currencyPrice"}` with no `price` member at all.
+ *
+ * `serializeOptionalMoney` is NOT changed and NOT removed: it still serves
+ * `SerializedPriceGroupRate.amount`, where an omission is the right shape because the row is present and
+ * only its nullable column is empty. The two states are different and now have different shapes, which
+ * is the point.
+ *
+ * @param value what the accessor answered - `undefined` on a miss, which is load-bearing.
+ * @returns the resolved price, or the documented absence with its single reason token.
  */
+function serializeCurrencyPrice(value: Money | undefined): OptionalSerializedCurrencyPrice {
+  return value === undefined
+    ? { resolved: false, reason: 'noPriceForCurrencyCode' }
+    : { resolved: true, price: serializeMoney(value) };
+}
+
+/** Project a rate onto the wire. Reads the entity's own accessors and computes nothing. */
 function serializePriceGroupRate(rate: ResolvedPriceGroupRate): SerializedPriceGroupRate {
   return {
     priceGroupRateID: rate.getPriceGroupRateID(),
@@ -913,7 +998,7 @@ export async function dispatchPriceResolution(
 
       return {
         outcome: 'currencyPrice',
-        price: serializeOptionalMoney(loaded.sku.getPriceByCurrencyCode(request.currencyCode)),
+        price: serializeCurrencyPrice(loaded.sku.getPriceByCurrencyCode(request.currencyCode)),
       };
     }
 
@@ -926,7 +1011,7 @@ export async function dispatchPriceResolution(
 
       return {
         outcome: 'currencyPrice',
-        price: serializeOptionalMoney(loaded.sku.getListPriceByCurrencyCode(request.currencyCode)),
+        price: serializeCurrencyPrice(loaded.sku.getListPriceByCurrencyCode(request.currencyCode)),
       };
     }
 
@@ -939,7 +1024,7 @@ export async function dispatchPriceResolution(
 
       return {
         outcome: 'currencyPrice',
-        price: serializeOptionalMoney(
+        price: serializeCurrencyPrice(
           loaded.sku.getRenewalPriceByCurrencyCode(request.currencyCode),
         ),
       };

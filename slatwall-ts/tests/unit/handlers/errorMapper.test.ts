@@ -28,6 +28,7 @@ import {
   invalidRequestResponse,
   jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
+  notImplementedResponse,
   principalHasServiceScope,
   resolveRequestPrincipal,
   resolveServerRequestId,
@@ -948,6 +949,89 @@ describe('a refusal to serve a caller', () => {
 
     expect(response.body).not.toContain('POST /skus/resolve');
     expect(contextOf(soleEmission(emissions))['route']).toBe('POST /skus/resolve');
+  });
+
+  it('★★★ answers 501 for a published operation this deployment does not implement', () => {
+    // THE F-04 CLOSURE. A routed operation reaching a STUB PORT (AAP 0.2.1) used to answer HTTP
+    // 500 `unrecognized`, because the port's refusal is an ordinary `Error` and the recognizer set is
+    // deliberately closed. That reported a permanent, by-design, client-visible limitation as a server
+    // fault. 501 is the registered status that says what is actually true.
+    const { logger, emissions } = createRecordingLogger();
+
+    const response = notImplementedResponse(contextWith(logger));
+
+    expect(response.statusCode).toBe(501);
+    expect(bodyOf(response.body).category).toBe('notImplemented');
+    expect(soleEmission(emissions).level).toBe('warn');
+    expect(contextOf(soleEmission(emissions))['statusCode']).toBe(501);
+  });
+
+  it('★★ publishes an ACTIONABLE sentence for 501, unlike the two authorization refusals', () => {
+    // The asymmetry is deliberate and is asserted so it cannot be "harmonised" away. The two
+    // authorization sentences are uninformative because a refusal must not become a reconnaissance
+    // oracle; here the operation is already in the published selector list, the caller has already been
+    // admitted as administrative, and the limitation is permanent - so there is no fact left to
+    // withhold and the one thing worth saying is "stop retrying".
+    const { logger } = createRecordingLogger();
+
+    const notImplemented = bodyOf(notImplementedResponse(contextWith(logger)).body);
+
+    expect(notImplemented.message).not.toBe('The request was not served.');
+    expect(notImplemented.message).toContain('does not implement');
+    expect(notImplemented.message).toContain('no retry will succeed');
+  });
+
+  it('★★ names no operation, port, class or configuration key in the 501 body', () => {
+    // Finding F-04 was raised against a 500 whose LOG line read
+    // `ImageStoreNotConfiguredError @ RefusingImageStore.deleteImageFile`. That detail stays on the log
+    // stream under the echoed `requestId`; a body naming it would publish this service's internal
+    // composition to anyone who can reach the route.
+    const { logger } = createRecordingLogger();
+    const body = notImplementedResponse(contextWith(logger)).body ?? '';
+
+    for (const leak of [
+      'imageStore',
+      'ImageStore',
+      'RefusingImageStore',
+      'ImageStoreNotConfiguredError',
+      'subscriptionTerm',
+      'deleteDefaultImage',
+      'deleteImageFile',
+      'IMAGE_',
+    ]) {
+      expect(body).not.toContain(leak);
+    }
+    expect(bodyOf(body)).not.toHaveProperty('fields');
+  });
+
+  it('★★ sends no Retry-After with a 501, because the limitation is not temporal', () => {
+    const { logger } = createRecordingLogger();
+    const headers = notImplementedResponse(contextWith(logger)).headers ?? {};
+
+    expect(
+      Object.keys(headers)
+        .map((name): string => name.toLowerCase())
+        .sort(),
+    ).toEqual(['cache-control', 'content-type']);
+    expect(headers['retry-after']).toBeUndefined();
+  });
+
+  it('★★★ is never produced by the thrown-value mapping funnel either', () => {
+    // The invariant that made this a PRODUCER rather than a recognizer. A value arriving from a
+    // service, a driver or a deserialized document must not be able to choose 501 for itself - the
+    // handler narrows the exported class with `instanceof` and decides, which is a decision about a
+    // request rather than a failure that happened to it.
+    const { logger } = createRecordingLogger();
+    const forged = Object.assign(new Error('no image store is configured'), {
+      category: 'notImplemented',
+      statusCode: 501,
+      name: 'ImageStoreNotConfiguredError',
+    });
+
+    const response = mapErrorToApiGatewayResponse(forged, contextWith(logger));
+
+    expect(response.statusCode).toBe(500);
+    expect(bodyOf(response.body).category).toBe('unrecognized');
   });
 });
 

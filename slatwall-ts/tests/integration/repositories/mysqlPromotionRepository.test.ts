@@ -270,7 +270,45 @@ const REQUIRED_CONFIGURATION: readonly (readonly [string, string])[] = Object.fr
 const DIALECT_VARIABLE_NAME = 'DB_DIALECT';
 
 /**
- * The dialect this suite builds statements for, supplied as an ARGUMENT.
+ * Every variable `src/lib/config.ts` treats as part of the environment contract, kept in
+ * step with `CONTRACT_KEY_MAX_VALUE_BYTES` in that module.
+ *
+ * WHY THE FULL LIST IS NEEDED RATHER THAN THE SIX KEYS ABOVE. `resolveConfiguredDialect`
+ * reaches `appConfig.load()` with no argument, and that validates `process.env` AS A WHOLE,
+ * reporting every problem it finds in one pass. Stubbing only the no-default keys left the
+ * other thirteen inherited from the host, so any ONE of them being malformed aborted the two
+ * cases below before they could assert a dialect - with a message about that variable
+ * instead. QA reproduced exactly that with `FEED_ALLOWED_HOSTS`, `DB_CONNECTION_LIMIT`,
+ * `DB_IDLE_TIMEOUT_MS` and `ECB_REFERENCE_RATES`, none of which this suite has any interest
+ * in. Naming the whole contract is what makes "supplies one explicitly" true of the
+ * environment rather than of a subset of it.
+ *
+ * `TZ` is deliberately absent: it is not a contract variable and `tests/setup.ts` owns it.
+ */
+const CONFIGURATION_CONTRACT_KEYS: readonly string[] = Object.freeze([
+  'DB_HOST',
+  'DB_PORT',
+  'DB_NAME',
+  'DB_USER',
+  'DB_PASSWORD',
+  'DB_TLS_MODE',
+  'DB_TLS_MIN_VERSION',
+  'DB_TLS_CA',
+  'DB_DIALECT',
+  'DB_CONNECTION_LIMIT',
+  'DB_CONNECT_TIMEOUT_MS',
+  'DB_MAX_IDLE',
+  'DB_IDLE_TIMEOUT_MS',
+  'NODE_ENV',
+  'LOG_LEVEL',
+  'FEED_ALLOWED_HOSTS',
+  'ECB_REFERENCE_RATES',
+  'ECB_RATES_RETRIEVED_AT',
+  'TEST_LIVE_DATABASE',
+]);
+
+/**
+ * The dialect this suite builds statements FOR, supplied as an ARGUMENT.
  *
  * It is a literal here because it is a literal in the adapter.
  *
@@ -283,11 +321,18 @@ const STATEMENT_DIALECT: DatabaseDialect = 'MySQL';
 function applyConfiguration(dialectSpelling: string | undefined): void {
   appConfig.reset();
 
-  for (const [name, value] of REQUIRED_CONFIGURATION) {
-    vi.stubEnv(name, value);
-  }
+  const supplied = new Map<string, string | undefined>(REQUIRED_CONFIGURATION);
+  supplied.set(DIALECT_VARIABLE_NAME, dialectSpelling);
 
-  vi.stubEnv(DIALECT_VARIABLE_NAME, dialectSpelling);
+  // THE WHOLE CONTRACT, IN ONE PASS. The six fixture values above are set; every other
+  // contract key is stubbed to `undefined`, which DELETES it for the duration of the test.
+  // Absence is then something this suite establishes rather than something it inherits, which
+  // is what the fixture's own comment already claimed and what an ambient environment could
+  // previously falsify. A clean checkout has none of these set, so this reproduces the
+  // condition these cases already passed in rather than introducing a new one.
+  for (const name of CONFIGURATION_CONTRACT_KEYS) {
+    vi.stubEnv(name, supplied.get(name));
+  }
 }
 
 function applyMySqlConfiguration(): void {
@@ -2335,6 +2380,134 @@ describe('salePricePromotionRewards - the optional productID filter', () => {
     expect(statement.params.filter((value) => value === '')).toHaveLength(6);
     expect(cfLen('')).toBe(0);
   });
+
+  it('★★★ emits the IDENTICAL text and binds for a ONE-ELEMENT ARRAY as for a bare string', () => {
+    // THE COMPATIBILITY GUARANTEE THE SET FORM RESTS ON. The member now admits a set as well as a
+    // single identifier, and every assertion in the four cases above is about the single form - so the
+    // set form is only safe to add if one identifier still emits exactly what it always emitted. This
+    // compares the two forms BYTE FOR BYTE rather than re-asserting the shape, which is the strongest
+    // available statement of "nothing that existed changed".
+    const asString = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+      productID: 'product-1',
+    });
+    const asSingletonArray = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+      productID: ['product-1'],
+    });
+
+    expect(asSingletonArray.sql).toBe(asString.sql);
+    expect(asSingletonArray.params).toStrictEqual(asString.params);
+    expect(asSingletonArray.sql).toContain('SwSku.productID = ?');
+    expect(asSingletonArray.sql).not.toContain('SwSku.productID in (');
+  });
+
+  it('★★★ narrows all six branches with a membership test for a SET, at 18 + 6n binds', () => {
+    // THE READ THIS SHAPE EXISTS FOR. QA counted the statements the sequenced pricing pass
+    // executed - 32, 48, 228 and 1028 for orders of one, ten, one hundred and five hundred items -
+    // and this statement accounted for one execution per DISTINCT PRODUCT. The set form is what lets
+    // one execution serve the whole product set; the per-SKU equivalence that makes it faithful is
+    // proved at the member's own contract and turns on `skuPrice` grouping by `skuID` ALONE while
+    // `SwSku.productID` is single-valued per SKU.
+    //
+    // SIX BRANCHES STILL CARRY SIX SEPARATE GUARDS, so the narrowing cannot be applied to the last
+    // branch alone - a row from an unfiltered earlier branch would otherwise win the `MIN(salePrice)`
+    // reduction, which is the money-affecting reading the single-identifier case above records.
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+      productID: ['product-1', 'product-2', 'product-3'],
+    });
+
+    expect(occurrencesOf(statement.sql, 'SwSku.productID in (?, ?, ?)')).toBe(
+      SALE_PRICE_BRANCHES.length,
+    );
+    expect(statement.sql).not.toContain('SwSku.productID = ?');
+
+    // 18 + 6n: the eighteen the unnarrowed statement carries, plus one bind per identifier per branch.
+    expect(statement.params).toHaveLength(18 + 6 * 3);
+    expect(placeholderCount(statement.sql)).toBe(statement.params.length);
+
+    for (const productID of ['product-1', 'product-2', 'product-3']) {
+      expect(statement.params.filter((value) => value === productID)).toHaveLength(6);
+
+      // NO identifier reaches the SQL text; every one travels as a placeholder, which is the
+      // `<cfqueryparam>` guarantee the whole layer preserves.
+      expect(statement.sql).not.toContain(productID);
+    }
+  });
+
+  it('★ binds a SET in the caller order, after each branch own window predicates', () => {
+    // The single-identifier case pins the indexes [5, 8, 11, 14, 17, 23]. With three identifiers each
+    // of those positions becomes three, in the caller's order and with the order preserved per branch -
+    // so a reorder inside the builder would show up here as a permuted triple rather than as a count.
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+      productID: ['product-a', 'product-b'],
+    });
+
+    const boundIdentifiers = statement.params.filter(
+      (value) => value === 'product-a' || value === 'product-b',
+    );
+
+    expect(boundIdentifiers).toStrictEqual([
+      'product-a',
+      'product-b',
+      'product-a',
+      'product-b',
+      'product-a',
+      'product-b',
+      'product-a',
+      'product-b',
+      'product-a',
+      'product-b',
+      'product-a',
+      'product-b',
+    ]);
+  });
+
+  it('★ neither folds nor de-duplicates a SET, because identity is the caller decision', () => {
+    // The builder binds what it is handed. Collapsing two spellings of one identifier is a decision
+    // about collation, and the tier that knows the collation is the adapter that read the identifiers -
+    // so a repeated member produces a repeated placeholder rather than being silently dropped, and the
+    // statement still asks exactly what the caller asked.
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+      productID: ['product-1', 'PRODUCT-1'],
+    });
+
+    expect(occurrencesOf(statement.sql, 'SwSku.productID in (?, ?)')).toBe(
+      SALE_PRICE_BRANCHES.length,
+    );
+    expect(statement.params.filter((value) => value === 'product-1')).toHaveLength(6);
+    expect(statement.params.filter((value) => value === 'PRODUCT-1')).toHaveLength(6);
+  });
+
+  it('★ REFUSES an EMPTY set rather than emitting `in ()` or fabricating a bind', () => {
+    // ⚠ THE ONE SHAPE WITH NO HONEST EMISSION. Absence means "every product" and `''` means "a product
+    // whose identifier is empty"; a caller narrowing to NO product is asking something the legacy has
+    // no form for. `in ()` is invalid SQL and a fabricated `= ''` would answer a question that was not
+    // asked, so the builder raises - and the refusal names the two legitimate alternatives.
+    expect(() =>
+      buildSalePricePromotionRewardsStatement({
+        now: EXPLICIT_UTC_INSTANT,
+        dialect: STATEMENT_DIALECT,
+        productID: [],
+      }),
+    ).toThrow(/productID was supplied as an EMPTY array/);
+
+    expect(() =>
+      buildSalePricePromotionRewardsStatement({
+        now: EXPLICIT_UTC_INSTANT,
+        dialect: STATEMENT_DIALECT,
+        productID: [],
+      }),
+    ).toThrow(/model\/dao\/PromotionDAO\.cfc:L299/);
+  });
 });
 
 describe('salePricePromotionRewards - the query-of-queries steps rewritten as CTEs', () => {
@@ -2795,6 +2968,247 @@ describe('salePricePromotionRewards - the eliminated dead locals and scope leak'
   });
 });
 
+describe('prefetchSalePricePromotionRewards - the set-based twin (the N+1 finding)', () => {
+  /**
+   * A CONCRETE subject, because the prefetch is an adapter member and `makeSubject` answers the
+   * port-typed reference the seven reads are asserted through. That split is the point: a port-shaped
+   * consumer cannot see this member at all.
+   */
+  function makeConcreteSubject(cannedResultSets: readonly (readonly SqlRow[])[] = []): {
+    readonly executor: RecordingExecutor;
+    readonly repository: MysqlPromotionRepository;
+  } {
+    const executor = new RecordingExecutor(cannedResultSets);
+
+    return {
+      executor,
+      repository: new MysqlPromotionRepository(
+        executor,
+        IDENTITY_VALUE_ROUNDER,
+        LIVE_REQUEST_CLOCK,
+      ),
+    };
+  }
+
+  /** The mapping the product adapter hands over: one entry per product, mapped to its own SKUs. */
+  function mapping(
+    entries: readonly (readonly [string, readonly string[]])[],
+  ): ReadonlyMap<string, readonly string[]> {
+    return new Map(entries);
+  }
+
+  it('★★★ reads a THREE-product set in ONE statement, and the three per-product reads then issue NONE', async () => {
+    // THE FINDING, AS AN ASSERTION. QA drove the sequenced price-group-then-promotion pass over
+    // orders of one, ten, one hundred and five hundred items and counted the statements each request
+    // executed: 32, 48, 228 and 1028. This six-branch reduction accounted for ONE EXECUTION PER
+    // DISTINCT PRODUCT, because `getSalePriceDetailsForProductSkus`
+    // [model/service/PromotionService.cfc:L1022] takes one product and the product adapter calls it
+    // once per product it hydrates. AAP T3 makes that count this boundary's own decision to state.
+    //
+    // The count asserted here is ONE for the whole set, and then ZERO more - so the total is constant
+    // in the number of products rather than linear in it. That is the whole claim.
+    const { executor, repository } = makeConcreteSubject([
+      [
+        salePriceRow({ skuID: 'sku-a1', promotionID: 'promotion-a' }),
+        salePriceRow({ skuID: 'sku-b1', promotionID: 'promotion-b' }),
+        salePriceRow({ skuID: 'sku-b2', promotionID: 'promotion-b' }),
+      ],
+    ]);
+
+    await repository.prefetchSalePricePromotionRewards(
+      mapping([
+        ['product-a', ['sku-a1']],
+        ['product-b', ['sku-b1', 'sku-b2']],
+        ['product-c', ['sku-c1']],
+      ]),
+    );
+
+    expect(executor.calls).toHaveLength(1);
+    expect(occurrencesOf(requireOnlyCall(executor).sql, 'SwSku.productID in (?, ?, ?)')).toBe(6);
+    expect(requireOnlyCall(executor).params).toHaveLength(18 + 6 * 3);
+
+    // Each product is answered from what was read, in ONE partition per product - and `product-c`,
+    // which the batch covered and which has no rows, answers the EMPTY array rather than reading.
+    const a = await repository.getSalePricePromotionRewardsQuery('product-a');
+    const b = await repository.getSalePricePromotionRewardsQuery('product-b');
+    const c = await repository.getSalePricePromotionRewardsQuery('product-c');
+
+    expect(a.map((row) => row.skuID)).toStrictEqual(['sku-a1']);
+    expect(b.map((row) => row.skuID)).toStrictEqual(['sku-b1', 'sku-b2']);
+    expect(c).toStrictEqual([]);
+
+    // NOT ONE FURTHER STATEMENT. This is the assertion that fails if the memo is consulted with the
+    // wrong key, or only when the value is non-empty, or not at all.
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it('★★★ answers the SAME rows the per-product statement would have answered', async () => {
+    // Equivalence, asserted rather than argued. Two independent adapters read the same canned rows -
+    // one through the batch, one through the per-product statement - and their answers are compared.
+    // The proof that a batched result set IS the union of the per-product ones is recorded at the
+    // statement module's `productID` member; this pins the adapter's partitioning of it.
+    const batched = makeConcreteSubject([
+      [salePriceRow({ skuID: 'sku-a1', salePrice: '87.50' }), salePriceRow({ skuID: 'sku-b1' })],
+    ]);
+    const perProduct = makeConcreteSubject([
+      [salePriceRow({ skuID: 'sku-a1', salePrice: '87.50' })],
+    ]);
+
+    await batched.repository.prefetchSalePricePromotionRewards(
+      mapping([
+        ['product-a', ['sku-a1']],
+        ['product-b', ['sku-b1']],
+      ]),
+    );
+
+    const fromBatch = await batched.repository.getSalePricePromotionRewardsQuery('product-a');
+    const fromStatement =
+      await perProduct.repository.getSalePricePromotionRewardsQuery('product-a');
+
+    expect(fromBatch).toStrictEqual(fromStatement);
+  });
+
+  it('★ hands out a FRESH array, so a caller cannot mutate what the next caller receives', async () => {
+    // The port answers a mutable `SalePricePromotionRewardRow[]`, and the memo outlives the call - so a
+    // caller that sorted or spliced the result in place would corrupt every later answer for that
+    // product. Two calls therefore share their ROWS and not their array.
+    const { repository } = makeConcreteSubject([
+      [salePriceRow({ skuID: 'sku-a1' }), salePriceRow({ skuID: 'sku-a2' })],
+    ]);
+
+    await repository.prefetchSalePricePromotionRewards(
+      mapping([['product-a', ['sku-a1', 'sku-a2']]]),
+    );
+
+    const first = await repository.getSalePricePromotionRewardsQuery('product-a');
+    first.length = 0;
+
+    const second = await repository.getSalePricePromotionRewardsQuery('product-a');
+
+    expect(second.map((row) => row.skuID)).toStrictEqual(['sku-a1', 'sku-a2']);
+  });
+
+  it('★ matches the product identifier case-INSENSITIVELY, as CFML struct identity does', async () => {
+    // MySQL's default collation is case-insensitive, so two spellings of one identifier are one product
+    // to the database. A case-sensitive memo key would miss and issue a second statement for a product
+    // whose rows had already been read - the same failure the product adapter's own folded index exists
+    // to prevent.
+    const { executor, repository } = makeConcreteSubject([[salePriceRow({ skuID: 'sku-a1' })]]);
+
+    await repository.prefetchSalePricePromotionRewards(mapping([['Product-A', ['SKU-A1']]]));
+
+    const rows = await repository.getSalePricePromotionRewardsQuery('pRoDuCt-a');
+
+    expect(rows.map((row) => row.skuID)).toStrictEqual(['sku-a1']);
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it('★★★ ABANDONS the batch when a returned SKU is not in the mapping, rather than dropping the row', async () => {
+    // THE ONE GUARD THAT PROTECTS MONEY. The reduced projection carries no owning product
+    // identifier - §4.3 of the statement module forbids a tenth column - so the partition is the
+    // caller's mapping. If a returned SKU is not in it, the adapter cannot say which product the row
+    // belongs to, and attributing it to nobody would drop a sale price: downstream that reads as "this
+    // SKU is not on sale", which is a wrong price rather than a visible failure. So NOTHING is recorded
+    // for the whole batch and every per-product read proceeds exactly as it did before the prefetch
+    // existed.
+    const { executor, repository } = makeConcreteSubject([
+      // The batch returns a SKU the mapping does not mention.
+      [salePriceRow({ skuID: 'sku-nobody-claims' })],
+      // ...so the per-product read below still happens, and this is its result set.
+      [salePriceRow({ skuID: 'sku-a1' })],
+    ]);
+
+    await repository.prefetchSalePricePromotionRewards(mapping([['product-a', ['sku-a1']]]));
+
+    expect(executor.calls).toHaveLength(1);
+
+    const rows = await repository.getSalePricePromotionRewardsQuery('product-a');
+
+    expect(rows.map((row) => row.skuID)).toStrictEqual(['sku-a1']);
+
+    // TWO calls: the abandoned batch and the per-product statement that had to run anyway.
+    expect(executor.calls).toHaveLength(2);
+    expect(occurrencesOf(requireCall(executor, 1).sql, 'SwSku.productID = ?')).toBe(6);
+  });
+
+  it('★ issues NO statement for an EMPTY map, and emphatically does not read the whole catalogue', async () => {
+    // Omitting the narrowing from the statement means EVERY product, which is the opposite of what a
+    // caller with no products is asking for. The map is empty, so there is nothing to compose.
+    const { executor, repository } = makeConcreteSubject([]);
+
+    await repository.prefetchSalePricePromotionRewards(mapping([]));
+
+    expect(executor.calls).toHaveLength(0);
+  });
+
+  it('★ leaves a product the batch never covered to read for itself', async () => {
+    // An ABSENT memo entry and an EMPTY one are different: absent means "nothing is known", so the
+    // per-product statement runs. This is what keeps the prefetch an addition rather than a filter.
+    const { executor, repository } = makeConcreteSubject([
+      [salePriceRow({ skuID: 'sku-a1' })],
+      [salePriceRow({ skuID: 'sku-z1' })],
+    ]);
+
+    await repository.prefetchSalePricePromotionRewards(mapping([['product-a', ['sku-a1']]]));
+
+    const uncovered = await repository.getSalePricePromotionRewardsQuery('product-z');
+
+    expect(uncovered.map((row) => row.skuID)).toStrictEqual(['sku-z1']);
+    expect(executor.calls).toHaveLength(2);
+  });
+
+  it('★ never answers the WHOLE-CATALOGUE read from a memo built by narrowing', async () => {
+    // `getSalePricePromotionRewardsQuery()` with no argument means every product, and a memo keyed by
+    // product cannot answer it. It must issue its own unnarrowed statement - 18 binds, no product
+    // predicate - however much has been prefetched.
+    const { executor, repository } = makeConcreteSubject([
+      [salePriceRow({ skuID: 'sku-a1' })],
+      [salePriceRow({ skuID: 'sku-everything' })],
+    ]);
+
+    await repository.prefetchSalePricePromotionRewards(mapping([['product-a', ['sku-a1']]]));
+
+    const everything = await repository.getSalePricePromotionRewardsQuery();
+
+    expect(everything.map((row) => row.skuID)).toStrictEqual(['sku-everything']);
+
+    // Neither narrowing form appears. `SwSku.productID` itself still does, in the join chains that
+    // reach the reward link tables - which is why the assertion names the two PREDICATE shapes rather
+    // than the column.
+    expect(requireCall(executor, 1).sql).not.toContain('SwSku.productID = ?');
+    expect(requireCall(executor, 1).sql).not.toContain('SwSku.productID in (');
+    expect(requireCall(executor, 1).params).toHaveLength(18);
+  });
+
+  it('★ mutates nothing and opens no transaction', async () => {
+    const { executor, repository } = makeConcreteSubject([[salePriceRow({ skuID: 'sku-a1' })]]);
+
+    await repository.prefetchSalePricePromotionRewards(mapping([['product-a', ['sku-a1']]]));
+
+    expect(executor.mutationCalls).toHaveLength(0);
+    expect(requireOnlyCall(executor).inTransaction).toBe(false);
+  });
+
+  it('★ holds its memo on the INSTANCE, so a second repository observes nothing of the first', async () => {
+    // AAP 0.6.5 rules that the legacy's component-level caches become REQUEST-SCOPED here, because
+    // module-level state on a warm container leaks between unrelated requests - and this memo holds
+    // PRICES. The composition root builds one adapter per request, so an instance field IS request
+    // scope; this case proves the state is not module-level by constructing two adapters.
+    const first = makeConcreteSubject([[salePriceRow({ skuID: 'sku-of-the-first' })]]);
+    const second = makeConcreteSubject([[salePriceRow({ skuID: 'sku-of-the-second' })]]);
+
+    await first.repository.prefetchSalePricePromotionRewards(
+      mapping([['product-a', ['sku-of-the-first']]]),
+    );
+
+    const fromSecond = await second.repository.getSalePricePromotionRewardsQuery('product-a');
+
+    expect(fromSecond.map((row) => row.skuID)).toStrictEqual(['sku-of-the-second']);
+    expect(second.executor.calls).toHaveLength(1);
+    expect(occurrencesOf(requireOnlyCall(second.executor).sql, 'SwSku.productID = ?')).toBe(6);
+  });
+});
+
 describe('salePricePromotionRewards - the unanchored LIKE dialect site', () => {
   it('emits the MySQL concat arm exactly, unanchored on both sides', () => {
     // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L483]: the reward join matches a product-type
@@ -2971,11 +3385,11 @@ describe('the dialect contract - no fallback, no silent default', () => {
   });
 
   it('folds case for every MySQL spelling that appears in legacy source', () => {
-    // Three spellings exist in the source and a `===` comparison would fail on two of them:
+    // Three spellings exist in the source and a `` comparison would fail on two of them:
     // `MySQL` at [config/configORM.cfm:L10], and again at [model/dao/PromotionDAO.cfc:L482]
     // `mySQL` at [model/dao/PriceGroupDAO.cfc:L57], and again at [model/dao/ProductDAO.cfc:L288]
     // and `mySql` at [model/dao/ProductDAO.cfc:L304]. All three worked in the legacy because the
-    // comparison is CFML `eq`, which folds case; a `===` in the port would not.
+    // comparison is CFML `eq`, which folds case; a `` in the port would not.
     for (const spelling of ['mysql', 'MYSQL', 'MySQL', 'mySQL', 'mySql', '  MySQL  ']) {
       expect(resolveDialect(spelling)).toBe('MySQL');
     }
@@ -3558,9 +3972,38 @@ describe('the port surface this suite asserts against', () => {
   });
 
   it('★ publishes no public member the port does not declare - the build is the assertion', () => {
-    // `keyof` is the public surface: TypeScript excludes `private` and `protected` members from
-    // it, and a runtime prototype sweep cannot express the same thing because `private` is ERASED.
-    type ExtraPublicMembers = Exclude<keyof MysqlPromotionRepository, keyof PromotionRepository>;
+    // `keyof` IS the public surface: TypeScript excludes `private` and `protected` members from it,
+    // and a runtime prototype sweep cannot express the same thing because `private` is ERASED - every
+    // private helper in the adapter sits on the prototype indistinguishable from a public one. So the
+    // gate is expressed where `public` still means something, in the type system.
+    //
+    // `Exclude<keyof MysqlPromotionRepository, keyof PromotionRepository>` collapses to `never`
+    // exactly when the class publishes nothing beyond the port's seven, and `AssertNever` fails its
+    // own constraint the moment it does not. This catches BOTH shapes the drift took: a write added
+    // to the port and implemented here, and - the shape a hand-written name list would miss entirely -
+    // a private helper promoted to public.
+    //
+    // THE GATE ADMITS ONE NAMED EXTRA, AND ONLY BY NAME.
+    // `prefetchSalePricePromotionRewards` is the SET-BASED TWIN of
+    // `getSalePricePromotionRewardsQuery`, and it exists because the composed pricing pass otherwise
+    // issues that six-branch reduction ONCE PER DISTINCT PRODUCT - 500 executions for a 500-item
+    // order, a statement count that grows with the caller's item count, which AAP T3 and AAP 0.4.3
+    // both rule out for this boundary. It is deliberately NOT a port member: `PromotionRepository` is locked at
+    // SEVEN reads, so the capability is published on the ADAPTER and composed at the root through a
+    // structural contract - exactly as `MysqlSkuRepository.getProductSkusForProducts`,
+    // `MysqlProductRepository.getProductsByProductID` and `MySqlPriceGroupRepository.getPriceGroupsByID`
+    // are, and the case in the SKU suite that names ITS one exemption is the precedent followed here.
+    //
+    // THE GATE KEEPS ITS FORCE BECAUSE THE EXEMPTION IS A LITERAL. Any OTHER public member - a
+    // reinstated `saveRoundingRule` among them - still widens `ExtraPublicMembers` beyond the named
+    // union and still fails `AssertNever` at build time. Exempting by name rather than relaxing the
+    // check is the discipline, and the absence sweep below is unchanged.
+    type DeliberateExtraPublicMembers = 'prefetchSalePricePromotionRewards';
+
+    type ExtraPublicMembers = Exclude<
+      keyof MysqlPromotionRepository,
+      keyof PromotionRepository | DeliberateExtraPublicMembers
+    >;
 
     type AssertNever<T extends never> = T;
     type NoExtraPublicMembers = AssertNever<ExtraPublicMembers>;

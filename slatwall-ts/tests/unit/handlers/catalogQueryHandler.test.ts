@@ -16,10 +16,30 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-l
 import { Money } from '../../../src/domain/valueObjects/money.js';
 // The real composition root, imported because a double cannot be one without a cast.
 //
-// The way out is to stop hand-writing a root at all:
-// `bootstrapCompositionRoot({ executor, environment })` assembles the REAL one over an injected
-// statement executor and an explicit environment source - no pool, no socket, no `process.env`.
-import { bootstrapCompositionRoot, resetCompositionRoot } from '../../../src/handlers/bootstrap.js';
+// NO `double as unknown as CompositionRoot` CROSSING. Such a cast defeats contract-drift detection
+// for every unimplemented member and leaves an unintended read observing `undefined` rather than
+// failing loudly. The pressure for one is real: `RequestScope` publishes `productService`,
+// `optionService`, `brandService`, `skuService` and `roundingRuleService` as the CLASS types, every
+// one of those classes holds `private readonly` collaborators, and a TypeScript type with private
+// members can only be satisfied by an instance of the declaring class. The seam below answers that
+// without a cast.
+//
+// The way out is to stop hand-writing a root at all: `bootstrapCompositionRoot({ executor, environment })`
+// assembles the REAL one over an injected statement executor and an explicit environment source - no
+// pool, no socket, no `process.env` - which is the construction `tests/unit/handlers/bootstrap.test.ts`
+// is built on. The scope it hands back IS a `RequestScope`, so nothing needs asserting, and the
+// programmable answers below are installed on the class PROTOTYPES the real instances inherit from,
+// each through one typed `vi.spyOn`. The `Pick<>` service surfaces are unchanged and still fully typed,
+// so a signature change in any of the three services still breaks this file at compile time - and now
+// the OTHER members of `RequestScope` are checked too rather than suppressed.
+// The two stub-port refusal classes join the composition-root factory: the F-04 arm narrows them with
+// `instanceof`, so a case has to be able to construct the real thing rather than a look-alike.
+import {
+  ImageStoreNotConfiguredError,
+  SubscriptionTermsNotConfiguredError,
+  bootstrapCompositionRoot,
+  resetCompositionRoot,
+} from '../../../src/handlers/bootstrap.js';
 import type {
   CompositionRoot,
   InspectableRequestScope,
@@ -60,6 +80,7 @@ import type {
   ProductQueryCriteria,
 } from '../../../src/services/productService.js';
 import {
+  MissingAssociationError,
   ProductPagingCriteriaError,
   ProductService,
 } from '../../../src/services/productService.js';
@@ -1060,8 +1081,26 @@ interface CatalogQueryOutcomes {
   updateSkusRejectsWith: Error | undefined;
 
   /**
-   * Save-context rules to record on the entity instead of validating, as `[property, message]`
-   * pairs.
+   * When set, `processProduct_deleteDefaultImage` throws this.
+   *
+   * ADDED FOR THE F-04 ARM. `./bootstrap.js`'s `RefusingImageStore` rejects with
+   * `ImageStoreNotConfiguredError`, and this operation is ROUTED - so the adapter has to narrow that
+   * refusal and answer 501 rather than let it reach the generic 500 arm.
+   */
+  deleteDefaultImageRejectsWith: Error | undefined;
+
+  /**
+   * When set, `processProduct_addOptionGroup` throws this.
+   *
+   * ADDED FOR THE F-12 ARM. The service resolves the caller's `optionGroup` identifier and raises
+   * `MissingAssociationError` when it names no row [model/service/ProductService.cfc:L115]. That is a
+   * CLIENT-shaped failure and the adapter has to narrow it rather than let it reach the generic 500 arm,
+   * so a case needs to be able to programme it.
+   */
+  addOptionGroupRejectsWith: Error | undefined;
+
+  /**
+   * Save-context rules to record on the entity instead of validating, as `[property, message]` pairs.
    *
    * The failure is programmed on the entity, not as a throw, because that is the ported contract -
    * the three saves return the entity with its errors and never raise for a failed rule.
@@ -1238,6 +1277,8 @@ function makeTestBed(): CatalogQueryTestBed {
     formattedOptionGroups: [],
     productDeleted: true,
     updateSkusRejectsWith: undefined,
+    deleteDefaultImageRejectsWith: undefined,
+    addOptionGroupRejectsWith: undefined,
     saveProductRuleFailures: [],
     saveProductTypeRuleFailures: [],
     saveBrandRuleFailures: [],
@@ -1274,6 +1315,10 @@ function makeTestBed(): CatalogQueryTestBed {
       addOptionGroupCalls.push({ product, input });
       await passThroughGate();
 
+      if (outcomes.addOptionGroupRejectsWith !== undefined) {
+        throw outcomes.addOptionGroupRejectsWith;
+      }
+
       return product;
     },
 
@@ -1298,6 +1343,10 @@ function makeTestBed(): CatalogQueryTestBed {
     processProduct_deleteDefaultImage: async (product, input): Promise<Product> => {
       deleteDefaultImageCalls.push({ product, input });
       await passThroughGate();
+
+      if (outcomes.deleteDefaultImageRejectsWith !== undefined) {
+        throw outcomes.deleteDefaultImageRejectsWith;
+      }
 
       return product;
     },
@@ -1581,10 +1630,17 @@ const VALID_BODIES: Readonly<
     optionGroup: SENTINEL_OPTION_GROUP_ID,
   },
   processProduct_addOption: { productID: FIRST_PRODUCT_ID, option: FIRST_OPTION_ID },
+  // BOTH FLAGS, because both are REQUIRED members now and this table's job is to hold a body that
+  // is genuinely valid. A runtime finding (F-03) measured what "optional" cost: three of four
+  // schema-admitted payloads answered HTTP 500, because `processProduct_updateSkus` reads EACH flag
+  // through `cfTruthy` at the line CFML reads it [model/service/ProductService.cfc:L222, L226] and an
+  // ABSENT flag makes that read raise. `updateListPriceFlag` is set to `0`, so the list-price branch is
+  // deliberately not taken and this body still exercises exactly one repricing branch.
   processProduct_updateSkus: {
     productID: FIRST_PRODUCT_ID,
     updatePriceFlag: 1,
     price: SENTINEL_UNIT_PRICE,
+    updateListPriceFlag: 0,
   },
   processProduct_deleteDefaultImage: { productID: FIRST_PRODUCT_ID },
   processProduct_updateDefaultImageFileNames: { productID: FIRST_PRODUCT_ID },
@@ -2283,6 +2339,65 @@ describe('catalogQueryHandler', () => {
       expect(response.statusCode).toBe(200);
       expect(bed.findProductsCalls).toHaveLength(1);
     });
+
+    it('★★★ treats an OMITTED query-string map as no selector, rather than answering a 500', async () => {
+      // THE F-01 CLOSURE, AND WHY IT NEEDS AN EVENT THE TYPE SYSTEM SAYS CANNOT EXIST.
+      // `@types/aws-lambda` declares both query maps as `{...} | null`, so the three readers in the
+      // subject guarded only `!== null` and that type-checked. The type describes what API GATEWAY
+      // sends, not what every caller of a Lambda sends: a direct invocation, a test event, an event
+      // built by another AWS service and any hand-written JSON may simply OMIT the member, and an
+      // omitted member reads back `undefined`. Each reader then indexed `undefined`, the resulting
+      // `TypeError` escaped as an unrecognized failure, and a caller who sent no query string at all
+      // received HTTP 500 - which runtime acceptance testing reproduced (finding F-01).
+      //
+      // The double assertion is deliberate and is the ONLY way to state this case: the shape being
+      // asserted about is one the compiler is convinced is impossible, and the whole point is that the
+      // runtime disagrees. Nothing in `src/**` uses this escape; it is confined to constructing the
+      // event.
+      const complete = makeEvent({ query: { operation: 'findProducts', keyword: 'jorden' } });
+      const {
+        queryStringParameters: _single,
+        multiValueQueryStringParameters: _repeated,
+        ...withoutQueryMaps
+      } = complete;
+      const malformed = withoutQueryMaps as unknown as APIGatewayProxyEvent;
+
+      expect(Object.hasOwn(malformed, 'queryStringParameters')).toBe(false);
+      expect(Object.hasOwn(malformed, 'multiValueQueryStringParameters')).toBe(false);
+
+      const response = await bed.subject(malformed, makeContext());
+
+      // The DOCUMENTED fallback: zero supplied selectors, so the 400 that names the missing parameter -
+      // the same answer `query: null` already produced. Not a 500, and not a served response either.
+      expect(response.statusCode).toBe(400);
+      expect(readFailureBody(response).error.category).toBe('invalidRequest');
+      expect(readFailureBody(response).error.message).toBe(
+        'A required query parameter is missing.',
+      );
+      expect(bed.findProductsCalls).toEqual([]);
+    });
+
+    it('★★ serves a MUTATION whose event omits both query maps, from the body alone', async () => {
+      // The mutation arm reaches all three readers - `countSuppliedOperations`, `readNamedOperation`
+      // and `readOperationParameters` - and the last of them used to call `Object.entries(undefined)`.
+      // A mutation legitimately carries an EMPTY parameter set, so the corrected guard has to yield the
+      // empty set rather than refuse; the selector still has to arrive, so it is put on the multi-value
+      // map only, leaving the single-valued one omitted.
+      const complete = makeEvent({
+        method: 'POST',
+        repeatedQuery: { operation: ['processProduct_updateDefaultImageFileNames'] },
+        body: JSON.stringify({ productID: FIRST_PRODUCT_ID }),
+      });
+      const { queryStringParameters: _single, ...withoutSingleMap } = complete;
+      const malformed = withoutSingleMap as unknown as APIGatewayProxyEvent;
+
+      expect(Object.hasOwn(malformed, 'queryStringParameters')).toBe(false);
+
+      const response = await bed.subject(malformed, makeContext());
+
+      expect(response.statusCode).toBe(200);
+      expect(bed.updateDefaultImageFileNamesCalls).toHaveLength(1);
+    });
   });
 
   // Concern 1 - request parsing and validation: the closed criteria shape.
@@ -2978,21 +3093,102 @@ describe('catalogQueryHandler', () => {
 
       expect(response.statusCode).toBe(200);
       expect(call.product).toBe(bed.world.product);
-      expect(call.input).toEqual({ updatePriceFlag: 1, price: SENTINEL_UNIT_PRICE });
+      expect(call.input).toEqual({
+        updatePriceFlag: 1,
+        price: SENTINEL_UNIT_PRICE,
+        updateListPriceFlag: 0,
+      });
       expect(typeof call.input.price).toBe('string');
     });
 
-    it('forwards an OMITTED updateSkus member as absence rather than as a substituted value', async () => {
+    it('forwards an OMITTED updateSkus AMOUNT as absence rather than as a substituted value', async () => {
+      // THE OMITTED MEMBER IS NOW AN AMOUNT RATHER THAN A FLAG, AND THE SUPERSEDED CASE IS RECORDED
+      // BECAUSE ITS PREMISE WAS THE DEFECT. It sent `{productID}` alone and asserted a 200 with an
+      // EMPTY forwarded payload - which is exactly the request runtime testing (finding F-03) measured
+      // answering HTTP 500, because the service reads each flag through `cfTruthy` and an absent flag
+      // makes that read raise [model/service/ProductService.cfc:L222, L226]. A body with no flags is
+      // not servable, so asserting it was served was asserting the wrong thing. The two FLAGS are
+      // required members now; the two AMOUNTS remain conditional, which is [model/validation/
+      // Product_UpdateSkus.json]'s own distinction, so absence-forwarding is asserted on one of those.
       const response = await invokeOperation(bed, 'processProduct_updateSkus', {
-        body: JSON.stringify({ productID: FIRST_PRODUCT_ID }),
+        body: JSON.stringify({
+          productID: FIRST_PRODUCT_ID,
+          updatePriceFlag: 0,
+          updateListPriceFlag: 0,
+        }),
       });
       const call = atIndex(bed.updateSkusCalls, 0);
 
       expect(response.statusCode).toBe(200);
-      // `exactOptionalPropertyTypes` is on, so absence is forwarded as absence: the key is not
+      // `exactOptionalPropertyTypes` is on, so absence is forwarded AS absence: neither amount key is
       // present at all rather than present carrying `undefined`, and no `0`, `''` or `false` is
-      // invented.
-      expect(Object.keys(call.input)).toEqual([]);
+      // invented for either.
+      expect(Object.keys(call.input).sort()).toEqual(['updateListPriceFlag', 'updatePriceFlag']);
+      expect(Object.hasOwn(call.input, 'price')).toBe(false);
+      expect(Object.hasOwn(call.input, 'listPrice')).toBe(false);
+    });
+
+    it('refuses an updateSkus body that omits a flag, rather than answering a server error', async () => {
+      // THE F-03 CLOSURE, ASSERTED AS THE CONTRACT RATHER THAN AS AN IMPLEMENTATION DETAIL. Three
+      // payloads this schema used to ADMIT answered HTTP 500 `unrecognized`. Each is refused here as a
+      // 400 naming the missing member, and the service is never reached - which is the whole point: a
+      // schema that admits a payload is a published promise that the payload is servable.
+      for (const body of [
+        { productID: FIRST_PRODUCT_ID },
+        { productID: FIRST_PRODUCT_ID, updatePriceFlag: 1, price: SENTINEL_UNIT_PRICE },
+        { productID: FIRST_PRODUCT_ID, updatePriceFlag: 0 },
+      ]) {
+        bed.updateSkusCalls.length = 0;
+
+        const refused = await invokeOperation(bed, 'processProduct_updateSkus', {
+          body: JSON.stringify(body),
+        });
+
+        expect(refused.statusCode).toBe(400);
+        expect(readFailureBody(refused).error.message).toBe('The request input is not valid.');
+        expect(readFailureBody(refused).error.fields?.map((issue) => issue.path)).toContain(
+          'updateListPriceFlag',
+        );
+        expect(bed.updateSkusCalls).toEqual([]);
+      }
+    });
+
+    it('refuses an updateSkus flag whose value no CFML boolean context could convert', async () => {
+      // THE SECOND HALF OF F-03. `cfTruthy` RAISES for a non-empty string that is neither a boolean
+      // literal nor numeric, so a flag of `'active'` was admitted by the old string-or-number union and
+      // then became a 500 four layers down. The wire grammar now delegates to `cfTruthy` itself, so
+      // admission and conversion are one rule and the refusal names the member.
+      const refused = await invokeOperation(bed, 'processProduct_updateSkus', {
+        body: JSON.stringify({
+          productID: FIRST_PRODUCT_ID,
+          updatePriceFlag: 'active',
+          updateListPriceFlag: 0,
+        }),
+      });
+
+      expect(refused.statusCode).toBe(400);
+      expect(readFailureBody(refused).error.fields?.map((issue) => issue.path)).toContain(
+        'updatePriceFlag',
+      );
+      expect(bed.updateSkusCalls).toEqual([]);
+
+      // And every form a CFML boolean context DOES accept is still admitted, including the empty
+      // string, which `cfTruthy` reads as falsy per the currency-eligibility gate
+      // [model/entity/Sku.cfc:L373].
+      for (const flag of [true, false, 0, 1, '0', '1', 'yes', 'no', 'true', 'false', '']) {
+        bed.updateSkusCalls.length = 0;
+
+        const admitted = await invokeOperation(bed, 'processProduct_updateSkus', {
+          body: JSON.stringify({
+            productID: FIRST_PRODUCT_ID,
+            updatePriceFlag: 0,
+            updateListPriceFlag: flag,
+          }),
+        });
+
+        expect(admitted.statusCode).toBe(200);
+        expect(bed.updateSkusCalls).toHaveLength(1);
+      }
     });
 
     it('forwards the optional deleteDefaultImage member only when it was supplied', async () => {
@@ -3041,7 +3237,7 @@ describe('catalogQueryHandler', () => {
       });
     });
 
-    it.each([['options'], ['price'], ['listPrice']])(
+    it.each([['options'], ['listPrice'], ['productTypeID']])(
       'refuses the SKU-collaboration member %s on saveProduct',
       async (member) => {
         // CHECKABLE. Two of `ProductSaveInput`'s eleven members are typed `Money`, and this tier
@@ -3056,6 +3252,57 @@ describe('catalogQueryHandler', () => {
         expect(bed.saveProductCalls).toEqual([]);
       },
     );
+
+    it('★ ADMITS price on saveProduct and hands the service a Money, so the save rule is satisfiable', async () => {
+      // THE F-07 CLOSURE. `price` is a DECLARED NON-PERSISTENT PROPERTY
+      // [model/entity/Product.cfc:L118]; `populate` writes it like any other simple column; and
+      // `getPrice()` probes that slot BEFORE the default SKU [model/entity/Product.cfc:L561-L568]. So
+      // the legacy satisfied the `save`-context `price` rule FROM THE PAYLOAD. Publishing the member
+      // restores that, and the value arrives as the `Money` `ProductSaveInput` declares - minted here
+      // from a numeral the schema validated with `Money`'s own brander, so admission cannot disagree
+      // with minting.
+      const response = await invokeOperation(bed, 'saveProduct', {
+        body: JSON.stringify({
+          productID: FIRST_PRODUCT_ID,
+          productName: 'Renamed Product',
+          price: '9.99',
+        }),
+      });
+      const call = atIndex(bed.saveProductCalls, 0);
+
+      expect(response.statusCode).toBe(200);
+      expect(call.data.price).toBeInstanceOf(Money);
+      expect(call.data.price?.toFixed2()).toBe('9.99');
+    });
+
+    it('★ refuses a saveProduct price no Money could hold, as a field issue rather than a 500', async () => {
+      // Every one of these is a value `Money.fromDecimalString` throws on. Admitting them and letting
+      // the mint throw would be a 500 for a caller mistake; the delegated predicate makes it a 400
+      // naming `price`. `''` is included deliberately - it is falsy, not absent, and a blank price is
+      // not a price.
+      for (const price of ['', 'abc', '1,234.50', '12.', 'NaN', 'Infinity', '1e3', ' 9.99 ']) {
+        bed.saveProductCalls.length = 0;
+
+        const refused = await invokeOperation(bed, 'saveProduct', {
+          body: JSON.stringify({ productID: FIRST_PRODUCT_ID, price }),
+        });
+
+        expect(refused.statusCode).toBe(400);
+        expect(readFailureBody(refused).error.fields?.map((issue) => issue.path)).toContain(
+          'price',
+        );
+        expect(bed.saveProductCalls).toEqual([]);
+      }
+
+      // A JSON NUMBER is refused too: a double is precisely how IEEE-754 drift would enter, and
+      // `toDecimalString` refuses a non-string for that reason.
+      const refusedNumber = await invokeOperation(bed, 'saveProduct', {
+        body: JSON.stringify({ productID: FIRST_PRODUCT_ID, price: 9.99 }),
+      });
+
+      expect(refusedNumber.statusCode).toBe(400);
+      expect(bed.saveProductCalls).toEqual([]);
+    });
 
     it('hands saveProductType the loaded product type, resolved off the product fixture', async () => {
       const response = await invokeOperation(bed, 'saveProductType');
@@ -3184,7 +3431,13 @@ describe('catalogQueryHandler', () => {
         { productID: ABSENT_PRODUCT_ID, optionGroup: SENTINEL_OPTION_GROUP_ID },
       ],
       ['processProduct_addOption', { productID: ABSENT_PRODUCT_ID, option: FIRST_OPTION_ID }],
-      ['processProduct_updateSkus', { productID: ABSENT_PRODUCT_ID }],
+      // BOTH FLAGS, because both are REQUIRED members - see the F-03 cases above. Without them the
+      // request would be refused by the SCHEMA before any product load, so this case would assert
+      // "absent product answers productNotFound" against a request that never looked one up.
+      [
+        'processProduct_updateSkus',
+        { productID: ABSENT_PRODUCT_ID, updatePriceFlag: 0, updateListPriceFlag: 0 },
+      ],
       ['processProduct_deleteDefaultImage', { productID: ABSENT_PRODUCT_ID }],
       ['processProduct_updateDefaultImageFileNames', { productID: ABSENT_PRODUCT_ID }],
       ['saveProduct', { productID: ABSENT_PRODUCT_ID }],
@@ -3572,10 +3825,30 @@ describe('catalogQueryHandler', () => {
         CATALOG_OPERATION_TRANSPORT.processProduct_updateDefaultImageFileNames.resendable,
       ).toBe(true);
 
+      // TWO MORE ARE RESENDABLE THAN WERE, AND THE COUNT MOVED FROM 7 TO 5 FOR A MEASURED REASON.
+      // `processProduct_addOptionGroup` and `processProduct_addOption` were declared non-resendable on
+      // the LEGACY's behaviour, at a time when neither persisted anything at all (finding F-06) so the
+      // claim could not be checked. Both now write, and both CONVERGE by explicit design: `addOption`
+      // through `Sku.hasOption`, which exists so `SwSkuOption` cannot take a duplicate row, and
+      // `createSkus` through its retry reconciliation, which SKIPS a combination the product already
+      // carried. Measured three runs deep against MySQL on both the source and packaged tiers:
+      // `SwSkuOption` 8 -> 12 -> 12 -> 12 and `SwSku` 4 -> 8 -> 8 -> 8, with identical `skuCode` sets.
+      expect(CATALOG_OPERATION_TRANSPORT.processProduct_addOptionGroup.resendable).toBe(true);
+      expect(CATALOG_OPERATION_TRANSPORT.processProduct_addOption.resendable).toBe(true);
+
       const nonResendable = MUTATION_OPERATIONS.filter(
         (operation) => !CATALOG_OPERATION_TRANSPORT[operation].resendable,
       );
-      expect(nonResendable).toHaveLength(7);
+      expect(nonResendable).toHaveLength(5);
+      // The five that remain: a delete cannot be re-answered identically, and the three saves plus
+      // `deleteProduct` each answer differently once the row has changed or gone.
+      expect([...nonResendable].sort()).toEqual([
+        'deleteProduct',
+        'processProduct_deleteDefaultImage',
+        'saveBrand',
+        'saveProduct',
+        'saveProductType',
+      ]);
 
       for (const operation of READ_OPERATIONS) {
         expect(CATALOG_OPERATION_TRANSPORT[operation].resendable).toBe(true);
@@ -4005,6 +4278,156 @@ describe('catalogQueryHandler', () => {
       }
       expect(line.context['errorCode']).toBe('ER_BAD_FIELD_ERROR');
       expect(line.context['thrownShape']).toBe('DriverError');
+    });
+
+    it('★★★ maps a MissingAssociationError to a 400 naming the MEMBER and never the value', async () => {
+      // THE F-12 CLOSURE. Runtime acceptance testing sent a well-formed, schema-admitted payload
+      // naming a nonexistent `optionGroup` and received HTTP 500 `unrecognized` with no `fields`: the
+      // payload PASSED the schema, so the refusal came from the service resolving the reference, and
+      // `./errorMapper.js`'s recognizer set is deliberately CLOSED - so it could only reach its generic
+      // arm. The caller was told this service had failed when the caller had, and an operator's 5xx
+      // alarm counted a typo as an outage. The adapter now narrows the typed failure by `instanceof`.
+      bed.outcomes.addOptionGroupRejectsWith = new MissingAssociationError([
+        { path: 'optionGroup', message: 'must name an existing record' },
+      ]);
+
+      const response = await invokeOperation(bed, 'processProduct_addOptionGroup');
+      const failure = readFailureBody(response).error;
+
+      expect(response.statusCode).toBe(400);
+      expect(failure.category).toBe('invalidRequest');
+      // The SAME fixed sentence the schema-rejection arm publishes: `unusableRequestInput` is chosen
+      // precisely so no invented specificity reaches the body.
+      expect(failure.message).toBe('The request input is not valid.');
+      expect(failure.fields).toStrictEqual([
+        { path: 'optionGroup', message: 'must name an existing record' },
+      ]);
+
+      // NOTHING that identifies a row travels: not the submitted identifier, not a table, not a count.
+      for (const leak of [SENTINEL_OPTION_GROUP_ID, 'SwOptionGroup', 'select ']) {
+        expect(response.body).not.toContain(leak);
+      }
+
+      // And it is NOT logged as a server failure, so a 5xx alarm never sees it.
+      expect(decodedLines(bed).filter((entry) => entry.level === 'error')).toEqual([]);
+    });
+
+    it('★★★ maps a stub-port refusal to 501, so a routed operation stops answering 500', async () => {
+      // THE F-04 CLOSURE. `processProduct_deleteDefaultImage` is ROUTED, and the only argument that
+      // makes it meaningful drove it into `RefusingImageStore.deleteImageFile`, whose rejection fell
+      // through `./errorMapper.js`'s deliberately closed recognizer set to 500 `unrecognized` - on both
+      // the source and packaged tiers. AAP 0.2.1 designates the image service a STUB PORT, so nothing
+      // failed: this deployment does not implement it, and 501 says so.
+      bed.outcomes.deleteDefaultImageRejectsWith = new ImageStoreNotConfiguredError(
+        'deleteImageFile',
+        "filePath='product/default/nike.jpg'",
+      );
+
+      const response = await invokeOperation(bed, 'processProduct_deleteDefaultImage', {
+        body: JSON.stringify({ productID: FIRST_PRODUCT_ID, imageFile: 'nike.jpg' }),
+      });
+      const failure = readFailureBody(response).error;
+
+      expect(response.statusCode).toBe(501);
+      expect(failure.category).toBe('notImplemented');
+      expect(failure.message).toContain('does not implement');
+      expect(failure.fields).toBeUndefined();
+
+      // The composition detail stays on the log stream: nothing internal reaches the body.
+      for (const leak of [
+        'ImageStoreNotConfiguredError',
+        'RefusingImageStore',
+        'deleteImageFile',
+        'product/default',
+        'nike.jpg',
+      ]) {
+        expect(response.body).not.toContain(leak);
+      }
+
+      // And it is NOT logged at error level, so a 5xx alarm never counts a by-design limitation.
+      expect(decodedLines(bed).filter((entry) => entry.level === 'error')).toEqual([]);
+    });
+
+    it('★★ maps the SUBSCRIPTION stub-port refusal the same way, for consistency', async () => {
+      // No routed operation reaches this - `processProduct_addSubscriptionTerm` is out of scope and
+      // unpublished - so it is consistency rather than a second bug fix. Both stub ports refuse
+      // identically, so both are classified identically, and publishing that method later cannot
+      // reintroduce the 500 through the other port.
+      bed.outcomes.deleteDefaultImageRejectsWith = new SubscriptionTermsNotConfiguredError(
+        'getSubscriptionTerm',
+        "subscriptionTermID='st-1'",
+      );
+
+      const response = await invokeOperation(bed, 'processProduct_deleteDefaultImage');
+
+      expect(response.statusCode).toBe(501);
+      expect(readFailureBody(response).error.category).toBe('notImplemented');
+      expect(response.body).not.toContain('SubscriptionTermsNotConfiguredError');
+    });
+
+    it('★★★ refuses an unusable imageFile as a 400 naming the member, never a 500', async () => {
+      // THE SECOND HALF OF THE REFUSAL. `{"productID":"prod-1","imageFile":""}` answers 400 and not
+      // 500: an unconstrained string member would reach the service's path-traversal guard, which
+      // raises a plain `Error`, and an empty or traversing name is a CALLER mistake. The schema
+      // delegates to that very guard, so admission and application are one rule and the refusal
+      // names `imageFile`.
+      for (const imageFile of [
+        '',
+        '   ',
+        '../secrets.env',
+        'a/b.jpg',
+        'a\\b.jpg',
+        '.',
+        '..',
+        '%2e%2e/x.jpg',
+        'x'.repeat(300),
+      ]) {
+        bed.deleteDefaultImageCalls.length = 0;
+
+        const refused = await invokeOperation(bed, 'processProduct_deleteDefaultImage', {
+          body: JSON.stringify({ productID: FIRST_PRODUCT_ID, imageFile }),
+        });
+
+        expect(refused.statusCode).toBe(400);
+        expect(readFailureBody(refused).error.fields?.map((issue) => issue.path)).toContain(
+          'imageFile',
+        );
+        // The service is never reached, so the guard is never the thing that has to refuse.
+        expect(bed.deleteDefaultImageCalls).toEqual([]);
+      }
+
+      // A usable name is still forwarded verbatim, and absence is still absence - the legacy's
+      // `structKeyExists` gate [model/service/ProductService.cfc:L199] is untouched.
+      const served = await invokeOperation(bed, 'processProduct_deleteDefaultImage', {
+        body: JSON.stringify({ productID: FIRST_PRODUCT_ID, imageFile: 'red-large.jpg' }),
+      });
+
+      expect(served.statusCode).toBe(200);
+      expect(atIndex(bed.deleteDefaultImageCalls, 0).input).toEqual({ imageFile: 'red-large.jpg' });
+    });
+
+    it('★★ leaves a SERVER-STATE dereference failure on the generic 500 arm', async () => {
+      // The other half of the same decision, asserted so the distinction cannot erode into
+      // "everything is a 400". `requireAssociation` raises a plain `Error` when the absent value is
+      // SERVER STATE - an existing product's missing default SKU, an existing option's missing group -
+      // because no payload member names it and no caller can correct it. That is a data-integrity
+      // failure and belongs on the 500 arm.
+      bed.outcomes.addOptionGroupRejectsWith = new Error(
+        'Default SKU could not be resolved. The legacy body at ' +
+          'model/service/ProductService.cfc:L133 dereferences it without a null check and fails at ' +
+          'the same point when it is absent.',
+      );
+
+      const response = await invokeOperation(bed, 'processProduct_addOptionGroup');
+      const failure = readFailureBody(response).error;
+
+      expect(response.statusCode).toBe(500);
+      expect(failure.category).toBe('unrecognized');
+      expect(failure.message).toBe('The request could not be completed.');
+      expect(failure.fields).toBeUndefined();
+      // The message is withheld from the BODY and kept on the log stream, as for any unrecognized
+      // failure.
+      expect(response.body).not.toContain('ProductService.cfc');
     });
 
     it('reproduces the framework dead-call-target contract byte for byte', async () => {

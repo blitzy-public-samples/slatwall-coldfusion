@@ -19,11 +19,18 @@ import { logger } from '../lib/logger.js';
  *
  * A string-literal union rather than the TypeScript enumeration construct, so nothing survives
  * into the Lambda bundle as a runtime object.
+ *
+ * `notImplemented` is the seventh member. AAP 0.2.1 designates the image service and the
+ * subscription-term provider stub ports, and `./bootstrap.js` wires implementations that refuse
+ * rather than answer plausibly, so a routed operation reaching one has a permanent, by-design
+ * limitation to report rather than a fault. 501 is the registered status for that, and the handler
+ * decides it the same way it decides 400, 401 and 403 - no thrown value picks its own status.
  */
 export type MappedErrorCategory =
   | 'missingMethod'
   | 'routeNotFound'
   | 'invalidRequest'
+  | 'notImplemented'
   | 'unauthenticated'
   | 'forbidden'
   | 'unrecognized';
@@ -207,6 +214,9 @@ const STATUS_BY_CATEGORY: Readonly<Record<MappedErrorCategory, number>> = Object
   missingMethod: 500,
   routeNotFound: 404,
   invalidRequest: 400,
+  // Published and routed, and not implemented by this deployment: a permanent limitation rather
+  // than a failure. No `Retry-After` accompanies it, because the limitation is not temporal.
+  notImplemented: 501,
   // The caller was not identified.
   unauthenticated: 401,
   // The caller was identified and is not permitted the operation it named.
@@ -257,6 +267,28 @@ const UNAUTHENTICATED_MESSAGE = 'The request was not served.';
  * Body message for an identified caller that is not permitted the operation it named.
  */
 const FORBIDDEN_MESSAGE = UNAUTHENTICATED_MESSAGE;
+
+/**
+ * Body message for an operation this deployment does not implement.
+ *
+ * IT IS ACTIONABLE, AND THAT IS WHY IT IS NOT BYTE-IDENTICAL TO ITS NEIGHBOURS. The two
+ * authorization sentences are deliberately uninformative because a refusal must not become a
+ * reconnaissance oracle - a caller learning WHICH claim would have worked, or that an operation
+ * exists, is exactly what they withhold. NONE of that applies here: the operation is PUBLISHED in the
+ * closed selector list a 400 already enumerates, the caller has already been identified and admitted
+ * as administrative before this refusal is reachable, and the limitation is permanent rather than
+ * conditional on anything about the caller. So there is no fact left to withhold, and the one thing
+ * the caller needs - stop retrying, this is not built - is stated.
+ *
+ * ⚠ IT NAMES NO OPERATION, NO PORT, NO CLASS AND NO CONFIGURATION KEY. Finding F-04 was raised
+ * against a 500 whose LOG line read `ImageStoreNotConfiguredError @ RefusingImageStore.deleteImageFile`;
+ * that detail stays on the log stream under the same `requestId` this body echoes, exactly as every
+ * other withheld detail in this module does. A body naming `imageStore` would publish this service's
+ * internal composition to anyone who can reach the route.
+ */
+const NOT_IMPLEMENTED_MESSAGE =
+  'This deployment does not implement the operation. It is published for interface parity and no ' +
+  'retry will succeed.';
 
 /**
  * The sentence published for each `InvalidRequestReason`.
@@ -1084,6 +1116,34 @@ export function forbiddenResponse(context: ErrorMappingContext): APIGatewayProxy
     baseLogContext('forbidden', context),
   );
   return buildResponse('forbidden', FORBIDDEN_MESSAGE, context.requestId, undefined);
+}
+
+/**
+ * Build the response for a published operation this deployment does not implement.
+ *
+ * A producer rather than a recognizer, which is the whole design: the recognizer set in
+ * `mapErrorToApiGatewayResponse` stays closed at three shapes so a value arriving from a service, a
+ * driver or a deserialized document can never choose its own status. The handler narrows the
+ * stub-port refusal itself, with `instanceof` against the class `./bootstrap.js` exports - the
+ * mechanism `./promotionApplicationHandler.js` already uses for `OrderViewDocumentDataError` - and
+ * then decides 501.
+ *
+ * `fields` is not a parameter, for the same reason the two authorization producers omit it: the
+ * caller's input was not the problem, and every member it sent may have been well formed.
+ *
+ * The operation stays in the route table rather than being withdrawn, because AAP 0.4.2 publishes
+ * `processProduct_deleteDefaultImage(product, data)` on the interface-parity table that is this
+ * migration's acceptance contract. Withdrawing it would shrink the published surface and leave a
+ * caller unable to tell an unimplemented operation from a misspelled one.
+ *
+ * @param context Correlation identifier, the route being served if known, and an optional logger.
+ */
+export function notImplementedResponse(context: ErrorMappingContext): APIGatewayProxyResult {
+  resolveLogger(context).warn(
+    'request refused: the operation is published but not implemented in this deployment',
+    baseLogContext('notImplemented', context),
+  );
+  return buildResponse('notImplemented', NOT_IMPLEMENTED_MESSAGE, context.requestId, undefined);
 }
 
 // Section - the caller principal.

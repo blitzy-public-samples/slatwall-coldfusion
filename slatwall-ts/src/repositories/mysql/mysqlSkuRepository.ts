@@ -166,6 +166,42 @@ const UPDATED_SKU_COLUMNS = Object.freeze(
 );
 
 /**
+ * The columns whose UPDATE assignment must resolve against the STORED value when this adapter binds
+ * nothing for them - over and above the two audit-actor columns `sqlUpdateAssignment` preserves for
+ * every repository.
+ *
+ * ONE COLUMN, AND IT IS THE PARENT KEY. {@link MysqlSkuRepository.toSkuColumnValues} binds it from
+ * `sku.getProduct()?.getProductID()`, the many-to-one's foreign key [model/entity/Sku.cfc:L65]. A SKU
+ * reached through the INVERSE side of that association - the `Product.skus` collection
+ * [model/entity/Product.cfc:L73], which is how `ProductService.processProduct_updateSkus`
+ * [model/service/ProductService.cfc:L218] gets its write set - is hydrated without a back-reference
+ * to the product that owns it, so the accessor answers nothing, `undefined` reaches the placeholder,
+ * and a whole-row UPDATE writes SQL NULL over the stored key. Every SKU a reprice touched was
+ * orphaned from its product at HTTP 200, up to the shipped batch bound of 1000 rows in one call,
+ * while `SwProduct.defaultSkuID` went on pointing at the orphaned rows.
+ *
+ * HIBERNATE DID NOT HAVE THIS FAILURE MODE, AND THE REASON IS THE FIX. It flushed the DIRTY COLUMNS
+ * of a managed entity; an association that was never initialised is not dirty, so no assignment for
+ * it was emitted. This adapter emits a fixed whole-row assignment list and has no dirty-column
+ * knowledge to draw on, so the same rule is expressed in SQL instead: `productID = COALESCE(?,
+ * productID)`. An entity that CAN report its owner - every SKU read through this adapter's own paths,
+ * where hydration wires `product`, and every SKU written by the product aggregate cascade or by the
+ * batch write, both of which pass the parent key explicitly - binds exactly the value it bound
+ * before. An entity that CANNOT leaves the stored key standing.
+ *
+ * ⚠ WHAT THIS MAKES UNREACHABLE, RECORDED RATHER THAN GLOSSED. This statement can no longer set
+ * `SwSku.productID` to NULL. `Sku.removeProduct()` [model/entity/Sku.cfc:L610-L619] clears the
+ * association in memory and `Product.removeSku()` [model/entity/Product.cfc:L699-L701] delegates to
+ * it, so a caller COULD in principle detach a SKU and save it - but no in-scope service reaches
+ * either helper, so no ported path asks for that write. The trade is deliberate and it is the right
+ * way round: silently orphaning a product's whole SKU set on a reprice is a data-loss defect, while
+ * "detaching a SKU is not persisted by this statement" is an absence of a capability nothing uses.
+ * The INSERT path is untouched - {@link SKU_COLUMNS} still carries the column and a new row still
+ * binds whatever the entity or the cascade override reports, including nothing.
+ */
+const SKU_PRESERVED_ON_UPDATE_COLUMNS: readonly string[] = Object.freeze(['productID']);
+
+/**
  * The `SwSkuCurrency` columns the per-currency price map is built from.
  *
  * Order follows [model/entity/SkuCurrency.cfc:L52-L77]: the identifier, the three money columns in
@@ -852,9 +888,34 @@ const INSERT_SKU_SQL = `insert into SwSku (${SKU_COLUMNS.join(', ')}) values (${
 
 /**
  * Updates one `SwSku` row.
+ *
+ * The assignment list is {@link UPDATED_SKU_COLUMNS} - every column except the key and the creation
+ * timestamp - and the key is bound last, as the `WHERE` parameter. Both lists derive from
+ * {@link SKU_COLUMNS}.
+ *
+ * THIS SET LIST KEEPS `createdByAccountID`, WHICH IS NOT THE SAME AS TRUSTING IT. Hibernate flushed
+ * the WHOLE dirty entity rather than a computed delta, so the created pair was rewritten on every
+ * update with the values the entity had been loaded with - harmless there because the values came from
+ * the ROW. S-07 closed the actor half by rendering both account columns through `sqlUpdateAssignment`,
+ * whose `COALESCE(?, column)` resolves against the STORED value while the update binds `undefined`, so
+ * a hand-built entity's claimed creator can never be written.
+ *
+ * AND A LATER CODE REVIEW CLOSED THE TIMESTAMP HALF, WHICH THIS DOCBLOCK PREVIOUSLY DECLARED OUT OF
+ * SCOPE. `createdDateTime` was bound from the entity, so a hand-built `Sku` could rewrite creation
+ * chronology on any update. It is now absent from the assignment list entirely - see
+ * {@link UPDATED_SKU_COLUMNS} - so the statement emits no clause for it and the stored value survives
+ * unconditionally. The sentence that used to end "recorded as a discovered-not-fixed item" is gone
+ * because the item is fixed.
+ *
+ * AND `productID` NOW RENDERS THE SAME WAY, WHICH IS THE ANSWER TO A CRITICAL RUNTIME FINDING.
+ * It used to render as a bare `productID = ?`, so a SKU whose owning association was not materialised
+ * bound SQL NULL and the update ORPHANED THE ROW at HTTP 200. The whole argument - what was measured,
+ * why the entity could not report the value, and why Hibernate's dirty-column flush never wrote it -
+ * lives on {@link SKU_PRESERVED_ON_UPDATE_COLUMNS}, which is the list this builder now consults
+ * alongside the audit-actor floor.
  */
 const UPDATE_SKU_SQL = `update SwSku set ${UPDATED_SKU_COLUMNS.map((columnName) =>
-  sqlUpdateAssignment(columnName),
+  sqlUpdateAssignment(columnName, SKU_PRESERVED_ON_UPDATE_COLUMNS),
 ).join(', ')} where skuID = ?`;
 
 const DELETE_SKU_OPTIONS_SQL = 'delete from SwSkuOption where skuID = ?';
@@ -1121,6 +1182,46 @@ export class MysqlSkuRepository implements SkuRepository {
   private nextOptionGroupSortOrder: number | undefined;
 
   /**
+   * Each product type's resolved BASE type, for the life of this instance - which is one request.
+   *
+   * WHY IT EXISTS - THE FINDING, AS IT WAS MEASURED. QA drove the sequenced
+   * price-group-then-promotion pass over orders of one, ten, one hundred and five hundred items and
+   * counted the statements each request executed: 32, 48, 228 and 1028. TWO statements repeated once
+   * per DISTINCT PRODUCT, and one of them was a `SwProductType` load - five hundred single-row reads of
+   * a table holding thirty-one rows, in one request, because
+   * {@link MysqlSkuRepository.resolveProductSkusFetchJoin} asks every product for its base type and
+   * `ProductType.getBaseProductType()` [model/entity/ProductType.cfc:L110-L115] loads the ROOT row
+   * named by `productTypeIDPath` whenever the leaf carries no system code. AAP T3 makes an implicit
+   * per-row read this boundary's own decision to take rather than to inherit, and this field is the
+   * decision.
+   *
+   * IT IS THE HIBERNATE FIRST-LEVEL SESSION CACHE, RESTORED EXPLICITLY - not an optimisation
+   * layered on top of the legacy. Under the ORM the second and five-hundredth request for one product
+   * type were answered from the session's identity map with NO statement at all, and the legacy loop
+   * relied on that without saying so. AAP 0.6.5 catalogues the four component-level caches in the
+   * source slice and rules that they become REQUEST-SCOPED here, because module-level state on a warm
+   * container leaks between unrelated requests. This is an instance field on an adapter the composition
+   * root builds one of per request, so its lifetime is exactly one request; `connection.ts` remains the
+   * only sanctioned module-scope state in the layer.
+   *
+   * WHAT IS MEMOISED IS THE BASE-TYPE ANSWER, NOT THE ENTITY. Nothing about entity identity changes:
+   * two products of one type still hold their own `ProductType` instances and still see their own
+   * memos. Only the resolved discriminator string is shared, and it is derived from columns
+   * [model/entity/ProductType.cfc:L111-L114] that no in-scope write path touches during a read.
+   *
+   * `undefined` IS A LEGITIMATE ANSWER AND IS MEMOISED AS ONE. The root product type may carry no
+   * system code, in which case `getBaseProductType()` answers `undefined` - so the presence of a key
+   * is what says "already resolved", never the truthiness of its value.
+   */
+  private readonly baseProductTypeByProductTypeID = new Map<string, string | undefined>();
+
+  /**
+   * JUDGMENT CALL: THE EXECUTOR ARRIVES AS A CONSTRUCTOR PARAMETER AND IS NEVER REACHED AS A MODULE
+   * SINGLETON. `./connection.js` states this as a mandatory design constraint, and the reason is
+   * testability at exactly this boundary: the repository integration suites assert EMITTED SQL TEXT
+   * AND BOUND PARAMETER ARRAYS with no live database, which is only possible if the statement sink
+   * can be substituted.
+   *
    * JUDGMENT CALL: the hydration collaborators are a SECOND parameter defaulting to `{}`, which
    * lets a SQL-shape test construct this class with an executor alone.
    */
@@ -1302,20 +1403,10 @@ export class MysqlSkuRepository implements SkuRepository {
    * @returns the product's SKUs, unordered, with duplicates where the fetch join multiplies rows.
    */
   public async getProductSkus(product: Product, fetchOptions: boolean): Promise<Sku[]> {
-    let fetchJoin = NO_FETCH_JOIN;
-
-    if (cfTruthy(fetchOptions)) {
-      const baseProductType = await product.getBaseProductType();
-
-      if (cfEquals(baseProductType, 'contentAccess')) {
-        fetchJoin = CONTENT_ACCESS_FETCH_JOIN;
-      } else if (cfEquals(baseProductType, 'merchandise')) {
-        fetchJoin = MERCHANDISE_FETCH_JOIN;
-      } else if (cfEquals(baseProductType, 'subscription')) {
-        fetchJoin = SUBSCRIPTION_FETCH_JOINS;
-      }
-      // No `else`. The fifth path lands here and emits the bare statement.
-    }
+    // The five-branch chain lives on {@link MysqlSkuRepository.resolveProductSkusFetchJoin}, which
+    // the set-shaped read also calls, so both reads select the same join for the same product and
+    // both share the request-scoped base-type memo behind it.
+    const fetchJoin = await this.resolveProductSkusFetchJoin(product, fetchOptions);
 
     const rows = await this.executor.execute(buildProductSkusSql(fetchJoin), [
       product.getProductID(),
@@ -1436,7 +1527,7 @@ export class MysqlSkuRepository implements SkuRepository {
       return NO_FETCH_JOIN;
     }
 
-    const baseProductType = await product.getBaseProductType();
+    const baseProductType = await this.resolveBaseProductType(product);
 
     if (cfEquals(baseProductType, 'contentAccess')) {
       return CONTENT_ACCESS_FETCH_JOIN;
@@ -1454,7 +1545,57 @@ export class MysqlSkuRepository implements SkuRepository {
     return NO_FETCH_JOIN;
   }
 
-  // must-preserve behaviour: the option-group positional-weight odometer ordering (B2).
+  /**
+   * One product's base type, resolved through the entity and remembered per PRODUCT TYPE.
+   *
+   * THE ONE STATEMENT PER PRODUCT TYPE THAT REPLACES ONE STATEMENT PER PRODUCT. See
+   * {@link MysqlSkuRepository.baseProductTypeByProductTypeID} for the finding this closes and for why a
+   * request-scoped instance memo is the faithful shape rather than an added one. The resolution itself
+   * is UNCHANGED - it is still `Product.getBaseProductType()`, still reaching
+   * [model/entity/ProductType.cfc:L110-L115] and still loading the root named by `productTypeIDPath`
+   * the first time a type is seen. Nothing about WHICH answer a product gets changes; only how many
+   * times the same question is put to the datastore.
+   *
+   * THE MEMO IS EXACT BECAUSE THE ANSWER DEPENDS ON THE PRODUCT TYPE ALONE. [model/entity/ProductType.cfc:L111] reads the type's
+   * own `systemCode` and [model/entity/ProductType.cfc:L112] reads the root of its own `productTypeIDPath`; neither term mentions the
+   * product, so two products sharing a type cannot resolve differently. The key is the product type's
+   * identifier, folded, because CFML struct identity and MySQL's default collation are both
+   * case-insensitive and two spellings of one identifier are one product type.
+   *
+   * A PRODUCT WITH NO PRODUCT TYPE IS NOT MEMOISED, AND ITS PRESERVED RAISE STILL HAPPENS. There is
+   * no key to memoise under, and `Product.getBaseProductType()` dereferences the type unconditionally to
+   * reproduce [model/entity/Product.cfc:L494] - so the call is made, it raises exactly where it raised
+   * before, and no entry is recorded. Short-circuiting that to a default would convert a preserved
+   * failure into a silent answer, and the fetch join it chose would then decide which statement a
+   * product's SKUs are read with.
+   *
+   * @param product the product whose base type is wanted.
+   * @returns the base type discriminator, or `undefined` when the resolved root carries no system code.
+   * @throws whatever `Product.getBaseProductType()` raises, unchanged and unmemoised.
+   */
+  private async resolveBaseProductType(product: Product): Promise<string | undefined> {
+    const productTypeID = product.getProductType()?.getProductTypeID();
+
+    if (productTypeID === undefined) {
+      return await product.getBaseProductType();
+    }
+
+    const memoKey = cfFoldKey(productTypeID);
+
+    // `has`, not a truthiness test: `undefined` is a legitimate resolved answer and must be answered
+    // from the memo rather than re-resolved every time.
+    if (this.baseProductTypeByProductTypeID.has(memoKey)) {
+      return this.baseProductTypeByProductTypeID.get(memoKey);
+    }
+
+    const resolved = await product.getBaseProductType();
+
+    this.baseProductTypeByProductTypeID.set(memoKey, resolved);
+
+    return resolved;
+  }
+
+  // MUST-PRESERVE BEHAVIOUR: THE OPTION-GROUP POSITIONAL-WEIGHT ODOMETER ORDERING (B2).
   //
   // CFML parity [model/dao/SkuDAO.cfc:L172-L202]: the statement text is built by
   // `./sql/sortedProductSkus.sql.js` and is deliberately not re-authored here.

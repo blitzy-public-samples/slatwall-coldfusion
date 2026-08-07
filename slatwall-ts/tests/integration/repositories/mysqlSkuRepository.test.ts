@@ -20,7 +20,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Product } from '../../../src/domain/entities/product.js';
-// A VALUE import, not a type-only one, and both reasons are live in this file.
+// A VALUE import, because the base-type memo cases below CONSTRUCT product types: each of their
+// products holds its own leaf instance carrying one identifier, which is what the real adapter
+// produces from rows and is what makes an identifier-keyed memo the only one that saves a statement.
+import { ProductType } from '../../../src/domain/entities/productType.js';
+import type { ProductTypeRepository } from '../../../src/domain/ports/productTypeRepository.js';
+// A VALUE import, not a type-only one, and both reasons are live in this file. The cascade
+// contract's signature is restated structurally below, so `Sku` is named as a TYPE there; and
+// the currency-detail materialization is driven through the class's own static entry point,
+// `Sku.hydrate(sku)`, so `Sku` is also named as a VALUE. No test constructs one directly -
+// every entity here comes from the repository's hydration path or from `makeSkuFixture`.
 import { Sku } from '../../../src/domain/entities/sku.js';
 import type { SkuRepository } from '../../../src/domain/ports/skuRepository.js';
 import type { CurrencyCode } from '../../../src/domain/valueObjects/currencyCode.js';
@@ -214,7 +223,8 @@ const EXPECTED_INSERT_SKU_SQL =
   '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
 const EXPECTED_UPDATE_SKU_SQL =
   'update SwSku set activeFlag = ?, skuCode = ?, listPrice = ?, price = ?, renewalPrice = ?, ' +
-  'imageFile = ?, userDefinedPriceFlag = ?, calculatedQATS = ?, productID = ?, ' +
+  'imageFile = ?, userDefinedPriceFlag = ?, calculatedQATS = ?, ' +
+  'productID = COALESCE(?, productID), ' +
   'subscriptionTermID = ?, remoteID = ?, ' +
   'createdByAccountID = COALESCE(?, createdByAccountID), ' +
   'modifiedDateTime = ?, modifiedByAccountID = COALESCE(?, modifiedByAccountID) where skuID = ?';
@@ -297,6 +307,35 @@ const REAL_ROOT_PRODUCT_TYPE_ROW: SqlRow = Object.freeze({
   productTypeDescription: null,
   systemCode: 'merchandise',
   parentProductTypeID: null,
+  remoteID: null,
+  createdDateTime: null,
+  createdByAccountID: null,
+  modifiedDateTime: null,
+  modifiedByAccountID: null,
+});
+
+/**
+ * One `SwSku` row as `MysqlProductRepository`'s own SKU read projects it — sixteen UNPREFIXED
+ * columns, the same set `SKU_READ_COLUMNS` names there.
+ *
+ * IT CARRIES `productID`, AND THAT IS WHAT MAKES THE ORPHANING CASE MEANINGFUL. The row knows
+ * which product owns it; the ENTITY the product adapter builds from it does not, because
+ * `Product.skus` is the inverse side of the association and the hydration wires no back-reference.
+ * The stored key therefore exists and only the in-memory graph is silent about it — which is exactly
+ * the state in which a whole-row UPDATE used to write absence over a live foreign key.
+ */
+const PRODUCT_SKU_ROW: SqlRow = Object.freeze({
+  skuID: 'b7d3f19c0a5e42b8ae61c94d20f7538b',
+  activeFlag: 1,
+  skuCode: 'NIKEAIRJORDEN-1',
+  listPrice: '24.9900',
+  price: '19.9900',
+  renewalPrice: '0.0000',
+  imageFile: null,
+  userDefinedPriceFlag: 0,
+  calculatedQATS: null,
+  productID: PRODUCT_ID,
+  subscriptionTermID: null,
   remoteID: null,
   createdDateTime: null,
   createdByAccountID: null,
@@ -582,25 +621,74 @@ const CONFIGURED_DIALECT_ENVIRONMENT: readonly (readonly [string, string])[] = O
   Object.freeze(['DB_DIALECT', 'mysql'] as const),
 ]);
 
+/**
+ * Every variable `src/lib/config.ts` treats as part of the environment contract, kept in step
+ * with `CONTRACT_KEY_MAX_VALUE_BYTES` in that module.
+ *
+ * WHY THE WHOLE LIST AND NOT THE FOUR KEYS ABOVE. `resolveConfiguredDialect` reaches
+ * `appConfig.load()` with no argument, which validates `process.env` AS A WHOLE and reports every
+ * problem in one pass. Naming only the no-default keys left the other fifteen inherited from the
+ * host, so any one of them being malformed aborted the configured-dialect case below before it
+ * could resolve a dialect - and aborted with a message about that unrelated variable. QA
+ * reproduced it with `DB_PORT=0`, a malformed `FEED_ALLOWED_HOSTS`, `DB_CONNECTION_LIMIT=abc`,
+ * `DB_IDLE_TIMEOUT_MS=abc` and `ECB_REFERENCE_RATES=bogus`, none of which this suite reads.
+ *
+ * `TZ` is deliberately absent: it is not a contract variable, `tests/setup.ts` owns it, and cases
+ * in this file assert it is `UTC`.
+ */
+const CONFIGURATION_CONTRACT_KEYS: readonly string[] = Object.freeze([
+  'DB_HOST',
+  'DB_PORT',
+  'DB_NAME',
+  'DB_USER',
+  'DB_PASSWORD',
+  'DB_TLS_MODE',
+  'DB_TLS_MIN_VERSION',
+  'DB_TLS_CA',
+  'DB_DIALECT',
+  'DB_CONNECTION_LIMIT',
+  'DB_CONNECT_TIMEOUT_MS',
+  'DB_MAX_IDLE',
+  'DB_IDLE_TIMEOUT_MS',
+  'NODE_ENV',
+  'LOG_LEVEL',
+  'FEED_ALLOWED_HOSTS',
+  'ECB_REFERENCE_RATES',
+  'ECB_RATES_RETRIEVED_AT',
+  'TEST_LIVE_DATABASE',
+]);
+
+/**
+ * Applies the four fixture values as the WHOLE contract: they are set, and every other contract
+ * key is stubbed to `undefined`, which deletes it for the duration of the test.
+ *
+ * A clean checkout has none of the deleted keys set, which is the condition this case already
+ * passed in, so this reproduces that condition rather than inventing a new one.
+ */
 function applyConfiguredDialectEnvironment(): void {
   appConfig.reset();
 
-  for (const [name, value] of CONFIGURED_DIALECT_ENVIRONMENT) {
-    vi.stubEnv(name, value);
+  const supplied = new Map<string, string>(CONFIGURED_DIALECT_ENVIRONMENT);
+
+  for (const name of CONFIGURATION_CONTRACT_KEYS) {
+    vi.stubEnv(name, supplied.get(name));
   }
 }
 
 /**
- * Removes all five variables so that "the process is unconfigured" is a fact this suite
+ * Removes the whole contract so that "the process is unconfigured" is a fact this suite
  * establishes rather than a property of the machine it happens to run on.
  *
- * Without this, a developer with the variables exported in their shell would see the hard-error
- * assertions pass for the wrong reason, or fail for one.
+ * Without this, a developer with the variables exported in their shell would see the
+ * hard-error assertions pass for the wrong reason, or fail for one. Stubbing to `undefined` deletes the
+ * variable for the duration of the test, which is the deterministic form of "absent". It clears every
+ * contract key rather than only the four the fixture names, so an unrelated malformed variable cannot
+ * turn "no dialect configured" into a refusal about something else.
  */
 function applyUnconfiguredDialectEnvironment(): void {
   appConfig.reset();
 
-  for (const [name] of CONFIGURED_DIALECT_ENVIRONMENT) {
+  for (const name of CONFIGURATION_CONTRACT_KEYS) {
     vi.stubEnv(name, undefined);
   }
 }
@@ -1202,6 +1290,7 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
         [REAL_PRODUCT_GRAPH_ROW_WITH_LEAF_TYPE],
         NO_ROWS,
         [REAL_ROOT_PRODUCT_TYPE_ROW],
+        [REAL_ROOT_PRODUCT_TYPE_ROW],
       ]);
       // The product-type port is supplied EXPLICITLY, over the product adapter's own executor and
       // actor.
@@ -1224,11 +1313,18 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(statement.sql).toBe(EXPECTED_MERCHANDISE_PRODUCT_SKUS_SQL);
       expect(statement.params).toStrictEqual([PRODUCT_ID]);
 
-      // The root product type was read through the PRODUCT adapter's executor, by bound identifier
-      // so the resolution really did go to the datastore rather than being satisfied by a
-      // stubbed answer.
-      expect(productExecutor.calls).toHaveLength(3);
+      // The parent AND the root product type were both read through the PRODUCT adapter's
+      // executor, by bound identifier - so both resolutions really did go to the datastore
+      // rather than being satisfied by a stubbed answer.
+      expect(productExecutor.calls).toHaveLength(4);
       expect(productExecutor.calls[2]?.params).toStrictEqual([REAL_ROOT_PRODUCT_TYPE_ID]);
+      expect(productExecutor.calls[3]?.params).toStrictEqual([REAL_ROOT_PRODUCT_TYPE_ID]);
+
+      // AND THE PARENT CHAIN IS ON THE ENTITY, which is the second half of the pairing this case
+      // exists for: a product hydrated by the REAL adapter can be climbed, not just branched on.
+      expect(product.getProductType()?.getParentProductType()?.getProductTypeID()).toBe(
+        REAL_ROOT_PRODUCT_TYPE_ID,
+      );
     });
 
     it('emits the bare statement when fetchOptions is falsy', async () => {
@@ -1352,6 +1448,143 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(executor.calls[1]?.params).toStrictEqual([contentAccessID]);
       expect(executor.calls[2]?.sql).toContain('INNER JOIN SwSubscriptionTerm');
       expect(executor.calls[2]?.params).toStrictEqual([subscriptionID]);
+    });
+
+    it('★★★ resolves the base product type ONCE PER PRODUCT TYPE, not once per product', async () => {
+      // THE SECOND HALF OF THE N+1 FINDING. QA drove the sequenced price-group-then-promotion pass
+      // over orders of one, ten, one hundred and five hundred items and counted the statements each
+      // request executed: 32, 48, 228 and 1028. TWO statements repeated once per distinct product, and
+      // one of them was a `SwProductType` load - because this adapter asks every product for its base
+      // type, and `ProductType.getBaseProductType()` [model/entity/ProductType.cfc:L110-L115] loads the
+      // ROOT row named by `productTypeIDPath` whenever the leaf carries no system code. Five hundred
+      // single-row reads of a table holding thirty-one rows, in one request.
+      //
+      // THE MEMO IS THE HIBERNATE FIRST-LEVEL SESSION CACHE, RESTORED. Under the ORM the second and
+      // five-hundredth request for one product type were answered from the session's identity map with
+      // no statement at all, and the legacy loop relied on that silently. AAP 0.6.5 rules that such
+      // state becomes REQUEST-SCOPED here, which an instance field on a per-request adapter is.
+      //
+      // THE THREE PRODUCTS HOLD THREE DISTINCT `ProductType` INSTANCES CARRYING ONE IDENTIFIER, which is
+      // what the real adapter produces - each product hydrates its own from its own row. A memo keyed on
+      // the instance would therefore save nothing; this one is keyed on the identifier.
+      const rootLoads: string[] = [];
+      const countingProductTypeRepository = {
+        getProductTypeQuery: (): Promise<readonly never[]> => Promise.resolve([]),
+        getProductTypeByProductTypeID: (productTypeID: string): Promise<ProductType> => {
+          rootLoads.push(productTypeID);
+
+          return Promise.resolve(new ProductType({ productTypeID, systemCode: 'merchandise' }));
+        },
+        getProductTypesByProductTypeIDPath: (): Promise<ProductType[]> => Promise.resolve([]),
+        saveProductType: (productType: ProductType): Promise<ProductType> =>
+          Promise.resolve(productType),
+      } as unknown as ProductTypeRepository;
+
+      /** A leaf type with NO system code, so the root load at [model/entity/ProductType.cfc:L112] is the branch taken. */
+      function aLeafProductType(): ProductType {
+        return new ProductType({
+          productTypeID: 'pt-leaf',
+          productTypeIDPath: 'pt-root,pt-leaf',
+          systemCode: undefined,
+          productTypeRepository: countingProductTypeRepository,
+        });
+      }
+
+      const executor = new RecordingExecutor([NO_ROWS]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getProductSkusForProducts(
+        [
+          new Product({ productID: PRODUCT_ID, productType: aLeafProductType() }),
+          new Product({
+            productID: 'bbbdf2f7ea9c87e60051f3cd87b435bb',
+            productType: aLeafProductType(),
+          }),
+          new Product({
+            productID: 'cccdf2f7ea9c87e60051f3cd87b435cc',
+            productType: aLeafProductType(),
+          }),
+        ],
+        true,
+      );
+
+      // ONE root load for three products, and it asked for the ROOT of the path rather than the leaf.
+      expect(rootLoads).toStrictEqual(['pt-root']);
+
+      // And the answer is unchanged: all three resolved `merchandise`, so all three were read with the
+      // merchandise branch's statement, in ONE statement because they share a branch.
+      const statement = onlyStatement(executor.calls);
+
+      expect(statement.sql).toContain('INNER JOIN SwSkuOption');
+      expect(statement.params).toHaveLength(3);
+    });
+
+    it('★ still resolves per PRODUCT TYPE when the set spans two of them', async () => {
+      // The other side of the memo: it must not collapse two DIFFERENT product types into one answer.
+      // Two types, two loads, and the two products end up in the branches their own types selected.
+      const rootLoads: string[] = [];
+      const systemCodeByRoot: Readonly<Record<string, string>> = {
+        'pt-root-merch': 'merchandise',
+        'pt-root-content': 'contentAccess',
+      };
+      const countingProductTypeRepository = {
+        getProductTypeByProductTypeID: (productTypeID: string): Promise<ProductType> => {
+          rootLoads.push(productTypeID);
+
+          return Promise.resolve(
+            new ProductType({
+              productTypeID,
+              systemCode: systemCodeByRoot[productTypeID] ?? 'merchandise',
+            }),
+          );
+        },
+      } as unknown as ProductTypeRepository;
+
+      function aLeafOf(rootProductTypeID: string, leafProductTypeID: string): ProductType {
+        return new ProductType({
+          productTypeID: leafProductTypeID,
+          productTypeIDPath: `${rootProductTypeID},${leafProductTypeID}`,
+          systemCode: undefined,
+          productTypeRepository: countingProductTypeRepository,
+        });
+      }
+
+      const executor = new RecordingExecutor([NO_ROWS, NO_ROWS]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getProductSkusForProducts(
+        [
+          new Product({
+            productID: PRODUCT_ID,
+            productType: aLeafOf('pt-root-merch', 'pt-leaf-merch'),
+          }),
+          new Product({
+            productID: 'dddf2f7ea9c87e60051f3cd87b435dd',
+            productType: aLeafOf('pt-root-content', 'pt-leaf-content'),
+          }),
+        ],
+        true,
+      );
+
+      expect(rootLoads).toStrictEqual(['pt-root-merch', 'pt-root-content']);
+      expect(executor.calls).toHaveLength(2);
+      expect(executor.calls[0]?.sql).toContain('INNER JOIN SwSkuOption');
+      expect(executor.calls[1]?.sql).toContain('INNER JOIN SwSkuAccessContent');
+    });
+
+    it('★ does NOT memoise a product with no product type, so its preserved raise still fires', async () => {
+      // `Product.getBaseProductType()` dereferences the product type unconditionally, reproducing
+      // [model/entity/Product.cfc:L494]. There is no key to memoise under, and short-circuiting to a
+      // default would convert a preserved failure into a silent answer - and the fetch join it chose
+      // would then decide which statement the product's SKUs are read with.
+      const executor = new RecordingExecutor([NO_ROWS]);
+
+      await expect(
+        new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getProductSkusForProducts(
+          [new Product({ productID: PRODUCT_ID })],
+          true,
+        ),
+      ).rejects.toThrow(/getBaseProductType\(\) requires the product type/);
+
+      expect(executor.calls).toHaveLength(0);
     });
 
     it('issues NO statement for an empty product set, and collapses a repeated product', async () => {
@@ -2383,6 +2616,100 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(mutation.params[14]).toBe(saved.getSkuID());
       expect(mutation.sql).not.toContain(saved.getSkuID());
       expect(saved.getSkuID()).toBe(makeSkuFixture().getSkuID());
+    });
+
+    // THE ORPHANING REGRESSION — a CRITICAL runtime finding, pinned end to end
+    //
+    // Repricing through `processProduct_updateSkus` wrote `SwSku.productID` as NULL at HTTP 200:
+    // every SKU the request touched was detached from its product, up to the shipped batch bound
+    // of 1000 rows in one call, while `SwProduct.defaultSkuID` went on naming the orphans.
+    //
+    // WHY NO SUITE CAUGHT IT. The write set comes from `Product.skus`
+    // [model/service/ProductService.cfc:L218], the INVERSE side of the association, and
+    // `MysqlProductRepository` hydrates those SKUs WITHOUT a back-reference to their owner.
+    // Every case above builds its SKU from a fixture that carries no product either — so the
+    // bound value was correct in the fixture's own terms and simply meant something fatal once
+    // the statement wrote it. What was missing was the PAIRING: the real product hydration
+    // driving the real save. This case is that pairing, and the case below it states the
+    // positive half, so neither direction can regress alone.
+
+    it('★★★ preserves the STORED productID when the SKU came through Product.skus and can report no owner', async () => {
+      // The product adapter's documented fetch shape: the graph row, then the SKU read
+      // answering one row, then the option read for that SKU. No product-type read is
+      // reached, because nothing here asks for a base type.
+      const productExecutor = new RecordingExecutor([
+        [REAL_PRODUCT_GRAPH_ROW_WITH_LEAF_TYPE],
+        [PRODUCT_SKU_ROW],
+        NO_ROWS,
+      ]);
+
+      const product = await new MysqlProductRepository(productExecutor, TEST_AUDIT_ACTOR, {
+        productTypeRepository: new MysqlProductTypeRepository(productExecutor, TEST_AUDIT_ACTOR),
+      }).getProductByProductID(PRODUCT_ID);
+
+      const hydrated = product?.getSkus()[0];
+
+      if (hydrated === undefined) {
+        throw new Error('the suite expected the product adapter to hydrate one sku');
+      }
+
+      // THE PRECONDITION THAT MADE THE DEFECT REACHABLE, asserted rather than assumed. The
+      // SKU knows its own key and knows nothing about its owner, because the collection it
+      // arrived in is the inverse side and carries no back-reference.
+      expect(hydrated.getProduct()).toBeUndefined();
+
+      const executor = new RecordingExecutor([], ONE_ROW_WRITTEN);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(hydrated);
+
+      const mutation = statementAt(executor.mutationCalls, 0);
+
+      // The statement resolves the column against the stored value, so "the entity reports no
+      // owner" reaches the database as "leave the key alone" rather than as "clear the key".
+      expect(mutation.sql).toBe(EXPECTED_UPDATE_SKU_SQL);
+      expect(mutation.sql).toContain('productID = COALESCE(?, productID)');
+      expect(mutation.sql).not.toContain('productID = ?');
+
+      // And SQL NULL is bound for it — which is exactly what `COALESCE` needs in order to resolve
+      // against the stored column. `toBindableValue` normalises the entity's `undefined` to `null`
+      // on the way to the driver, which is the same journey the two audit-actor columns already
+      // make and the reason all three can share one mechanism. Index 8 is `productID`'s position
+      // in the fourteen assigned columns; index 14 is the key in the `WHERE`.
+      expect(mutation.params).toHaveLength(15);
+      expect(mutation.params[8]).toBeNull();
+      expect(mutation.params[14]).toBe(hydrated.getSkuID());
+    });
+
+    it('★★★ still binds the real productID when the SKU CAN report its owner, so the ordinary write is unchanged', async () => {
+      // The other direction, and the reason the fix is a preservation rather than a removal:
+      // an entity that knows its owner must still write that owner, or the column could never
+      // be populated by an update at all. Every read path on THIS adapter wires `product`
+      // through, and the product aggregate cascade passes the parent key explicitly.
+      const owner = makeProductFixture({ productID: PRODUCT_ID });
+      const sku = makeSkuFixture({ product: owner });
+
+      const executor = new RecordingExecutor([], ONE_ROW_WRITTEN);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(sku);
+
+      const mutation = statementAt(executor.mutationCalls, 0);
+
+      expect(mutation.sql).toBe(EXPECTED_UPDATE_SKU_SQL);
+      expect(mutation.params[8]).toBe(PRODUCT_ID);
+
+      // AND THE INSERT PATH IS UNTOUCHED, which is the other half of the claim: a new row has
+      // no stored key to preserve, so it binds a bare placeholder exactly as before.
+      const insertExecutor = new RecordingExecutor([], ONE_ROW_WRITTEN);
+
+      await new MysqlSkuRepository(insertExecutor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ isNew: true, product: owner }),
+      );
+
+      const insertion = statementAt(insertExecutor.mutationCalls, 0);
+
+      expect(insertion.sql).toBe(EXPECTED_INSERT_SKU_SQL);
+      expect(insertion.sql).not.toContain('COALESCE');
+      expect(insertion.params[9]).toBe(PRODUCT_ID);
     });
 
     it('★★ REFUSES an update that matched NO row rather than reporting the entity as persisted', async () => {

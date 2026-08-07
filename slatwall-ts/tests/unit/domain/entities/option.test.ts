@@ -626,7 +626,7 @@ describe('removeOptionGroup defaults its argument, and clears the near side UNCO
   });
 
   it('clears the near side when the assigned group holds no options at all', () => {
-    // The same unconditional clear, reached by the other route to `index === -1`: the collection
+    // The same unconditional clear, reached by the other route to `index  -1`: the collection
     // is empty, so there is nothing to splice and L106 still runs.
     const group = aGroup({ options: [] });
     const subject = anOption({ optionID: 'opt-1', optionGroup: group });

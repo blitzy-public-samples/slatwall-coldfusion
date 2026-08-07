@@ -29,6 +29,15 @@ import { makePriceGroupFixtures } from '../../../fixtures/priceGroupFixtures.js'
  */
 const APPLIES_TO_ALL_PRODUCTS_RB_KEY = 'admin.pricegroup.edit.priceGroupRateAppliesToAllProducts';
 
+// C5 SCHEMA CONTINUITY: the six physical link-table names from
+// [model/entity/PriceGroupRate.cfc:L71-L77] ARE the schema contract - including that ONLY
+// `excludedProductTypes` [model/entity/PriceGroupRate.cfc:L75] abbreviates `Group` to `Grp` while
+// [model/entity/PriceGroupRate.cfc:L76] and [model/entity/PriceGroupRate.cfc:L77] spell it in full.
+// They are deliberately NOT held in a constant here: a constant declared in this file can only ever
+// be compared with the same literals, which says nothing about the port. The contract is checked
+// against the frozen declarations AND the shipped source in tests/traceability/legacyTestMap.ts
+// block A30, which also proves each of the six collections is published as an accessor.
+
 /**
  * Every member the port ships, asserted as an exact set so a widening fails here.
  */
@@ -1044,7 +1053,7 @@ describe('getAmountFormatted: the percentage branch drops trailing zeros', () =>
 
   it('reaches the percentage branch on an exact, case-sensitive match', () => {
     // CFML `==` at [model/entity/PriceGroupRate.cfc:L263] compares strings case-INSENSITIVELY,
-    // while the port compares with `===`.
+    // while the port compares with ``.
     expect(
       aRate({
         amount: Money.fromDecimalString('9'),
