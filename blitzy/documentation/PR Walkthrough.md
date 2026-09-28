@@ -728,9 +728,21 @@ Each item below is delivered as described, for the stated reason, and is recorde
 ### 8.1 Open items (Project Guide 1.4, 1.5, 5.2 and 6)
 
 - **Runtime line.** The artifacts target Lambda `nodejs20.x`, which README records as deprecated by
-  AWS on 2026-04-30. The pin is frozen by the plan; moving it means changing all six artifacts that
-  state it (`.nvmrc`, `engines.node`, `package-lock.json`, `@types/node`, `target: 'node20'`,
-  `FROZEN_NODE_VERSION`) and re-proving the bundle format. Needs an owner decision.
+  AWS on 2026-04-30. The pin is frozen by the plan; moving it means changing the six pin artifacts
+  (`.nvmrc`, `engines.node`, `package-lock.json`, `@types/node`, `target: 'node20'`,
+  `FROZEN_NODE_VERSION`), `FROZEN_MAJOR` beside the last, and the two `A22` assertions that hold
+  `engines.node` to `">=20.19.0 <21"` and `.nvmrc` to a `20.` prefix; updating `README.md`, where 23
+  lines state the pin or name the runtime, among them its Toolchain table, prose and setup
+  commands, its "Runtime lifecycle" section, its dependency sections and its packaging section; and
+  re-proving the bundle format. README's "Six artifacts state the pin" list and the Project Guide
+  count only the six, and `A16` never reads `package-lock.json` and never checks the Node version
+  README states (section 4.1). `NOTICE-GPL.md` (L9 and its `@types/node` row), the `package.json`
+  `description` and comments in `eslint.config.mjs`, `esbuild.config.mjs`, `.env.example`,
+  `src/lib/config.ts` and three test files state the pin or name the runtime too. From the
+  repository root,
+  `git grep -nE '20\.(x|19|20)|[Nn]ode(\.js)? 20|node(js)?20' -- slatwall-ts ':!slatwall-ts/package-lock.json'`
+  prints all 43 such lines outside the lockfile, across 11 files; it cannot match `FROZEN_MAJOR` or
+  the `.nvmrc` assertion. Needs an owner decision.
 - **Feed route capacity.** `GET /feeds/google/products` recomputes and buffers the whole eligible
   catalog on every allow-listed request, with no cache, validator, rate limit or concurrency guard.
   The controls belong at the edge or need a plan amendment.
