@@ -697,7 +697,11 @@ failure reads as a pass. The explicit `process.exit` is still required: the bund
 
 The exported `DB_PASSWORD` reaches every command the shell starts, and a process's environment is
 readable to the same OS user and to root. When finished, run `unset DB_PASSWORD`, then
-`docker rm -f "$CONTAINER"` and `rm -r "$SECRETS_DIR"`.
+`docker rm -f -v "$CONTAINER"` and `rm -r "$SECRETS_DIR"`. The `-v` matters: the `mysql:8.4` image
+declares `VOLUME /var/lib/mysql`, so the step 1 container keeps its data directory, which holds the
+imported database and the grant tables with root's and `slatwall_app`'s password hashes, in an
+anonymous volume that `docker rm` without `-v` leaves on disk. No step deletes the dump file
+supplied at step 3; that is yours to do.
 
 ## 7. Deliberate departures and documented judgment calls
 
