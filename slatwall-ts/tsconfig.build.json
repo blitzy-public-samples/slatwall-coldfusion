@@ -1,0 +1,68 @@
+// Emit configuration, used by `npm run compile` (`tsc -p tsconfig.build.json`).
+//
+// It compiles `src/**` and nothing else, so no test, fixture or tooling module
+// can reach a production artifact. Everything about how code is CHECKED is
+// inherited from ./tsconfig.json and deliberately not restated, so the emit and
+// the typecheck gate cannot drift apart.
+//
+// Do not merge the two configs: widening `include` here would let test code into
+// the emitted output, and narrowing the base config's `include` would stop the
+// typecheck gate from covering the test tier.
+{
+  "extends": "./tsconfig.json",
+
+  "compilerOptions": {
+    // The base config is a checker only; this is the one place tsc may write.
+    "noEmit": false,
+
+    // `build/`, not `dist/`, and that is load-bearing: esbuild.config.mjs
+    // recursively removes `<subtree>/dist` at the start of every run, so
+    // declarations emitted there would be deleted by `npm run bundle`.
+    //   build/  tsc     -> .js + .d.ts + maps
+    //   dist/   esbuild -> bundled .cjs Lambda artifacts + their .cjs.map maps
+    "outDir": "build",
+
+    // Anchors the emitted tree at `src/`, so `src/domain/entities/skuCurrency.ts`
+    // becomes `build/domain/entities/skuCurrency.js` rather than
+    // `build/src/domain/entities/skuCurrency.js`. It also makes it a compile error
+    // for an input to sit outside `src/`, which is a second and independent guard
+    // on the `include` narrowing below.
+    "rootDir": "src",
+
+    // Comments are part of the deliverable: this port reproduces legacy defects
+    // rather than repairing them, and the preserved-defect annotations and
+    // carried-forward source TODOs are the audit trail for that. The compiler
+    // default is already false, but the base config never emits, so this is the
+    // only config where the option has an effect.
+    "removeComments": false
+  },
+
+  // Application sources only - the substantive difference from the base config.
+  // `include` is what keeps the test tier out of the program; `exclude` only
+  // subtracts from `include` and would not stop an imported file from being
+  // pulled in. Nothing under `src/**` imports from `tests/**`.
+  "include": ["src/**/*.ts"],
+
+  "exclude": [
+    "node_modules",
+
+    // Generated output. Naming `build` stops a second run from compiling the
+    // output of the first.
+    "dist",
+    "build",
+    "coverage",
+
+    // The point of this file: no test module or fixture may reach a production
+    // artifact. The `*.test.ts` / `*.spec.ts` patterns guard a colocated file.
+    "tests/**",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+
+    // Tooling, never shipped. Compiling vitest.config.ts would drag the test
+    // runner into the production program; the two `.mjs` files could not be
+    // inputs anyway with `allowJs` off, and are named to make that explicit.
+    "vitest.config.ts",
+    "eslint.config.mjs",
+    "esbuild.config.mjs"
+  ]
+}
